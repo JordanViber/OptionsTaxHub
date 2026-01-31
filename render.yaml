@@ -2,13 +2,13 @@ services:
   # Production Database
   - type: pserv
     name: options-tax-hub-db-prod
-    env: postgres
     plan: free
+    ipAllowList: []
 
   # Production Backend
   - type: web
     name: options-tax-hub-server-prod
-    env: python
+    runtime: python
     plan: free
     branch: main
     rootDir: server
@@ -16,8 +16,7 @@ services:
     startCommand: python main.py
     envVars:
       - key: DATABASE_URL
-        fromService:
-          type: pserv
+        fromDatabase:
           name: options-tax-hub-db-prod
           property: connectionString
       - key: FRONTEND_URL
@@ -28,7 +27,7 @@ services:
   # Production Frontend
   - type: web
     name: options-tax-hub-client-prod
-    env: node
+    runtime: node
     plan: free
     branch: main
     rootDir: client
@@ -39,18 +38,18 @@ services:
         fromService:
           type: web
           name: options-tax-hub-server-prod
-          property: host
+          property: hostUrl
 
   # Staging Database
   - type: pserv
     name: options-tax-hub-db-staging
-    env: postgres
     plan: free
+    ipAllowList: []
 
   # Staging Backend
   - type: web
     name: options-tax-hub-server-staging
-    env: python
+    runtime: python
     plan: free
     branch: staging
     rootDir: server
@@ -58,8 +57,7 @@ services:
     startCommand: python main.py
     envVars:
       - key: DATABASE_URL
-        fromService:
-          type: pserv
+        fromDatabase:
           name: options-tax-hub-db-staging
           property: connectionString
       - key: FRONTEND_URL
@@ -71,6 +69,7 @@ services:
   - type: web
     name: options-tax-hub-client-staging
     env: node
+    runtime: node
     plan: free
     branch: staging
     rootDir: client
@@ -81,4 +80,4 @@ services:
         fromService:
           type: web
           name: options-tax-hub-server-staging
-          property: host
+          property: hostUrl
