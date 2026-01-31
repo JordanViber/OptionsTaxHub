@@ -3,6 +3,8 @@ services:
   - type: pserv
     name: options-tax-hub-db-prod
     plan: free
+    databaseName: optionstaxhub_prod
+    databaseUser: optionstaxhub_prod_user
 
   # Production Backend
   - type: web
@@ -43,6 +45,8 @@ services:
   - type: pserv
     name: options-tax-hub-db-staging
     plan: free
+    databaseName: optionstaxhub_staging
+    databaseUser: optionstaxhub_staging_user
 
   # Staging Backend
   - type: web
