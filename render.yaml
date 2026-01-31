@@ -6,7 +6,7 @@ services:
     # PostgreSQL database for MVP (free tier)
 
   - type: web
-    name: options-tax-hub-frontend
+    name: options-tax-hub-client
     env: node
     plan: free
     buildCommand: npm install && npm run build
@@ -15,11 +15,11 @@ services:
       - key: PORT
         fromService:
           type: web
-          name: options-tax-hub-frontend
+          name: options-tax-hub-client
           property: port
 
   - type: web
-    name: options-tax-hub-backend
+    name: options-tax-hub-server
     env: python
     plan: free
     buildCommand: pip install -r requirements.txt
