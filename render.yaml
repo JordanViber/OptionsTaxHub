@@ -3,7 +3,6 @@ services:
   - type: pserv
     name: options-tax-hub-db-prod
     plan: free
-    ipAllowList: []
 
   # Production Backend
   - type: web
@@ -38,13 +37,12 @@ services:
         fromService:
           type: web
           name: options-tax-hub-server-prod
-          property: hostUrl
+          property: host
 
   # Staging Database
   - type: pserv
     name: options-tax-hub-db-staging
     plan: free
-    ipAllowList: []
 
   # Staging Backend
   - type: web
@@ -68,7 +66,6 @@ services:
   # Staging Frontend
   - type: web
     name: options-tax-hub-client-staging
-    env: node
     runtime: node
     plan: free
     branch: staging
@@ -80,4 +77,4 @@ services:
         fromService:
           type: web
           name: options-tax-hub-server-staging
-          property: hostUrl
+          property: host
