@@ -1,5 +1,17 @@
 # Ignore Playwright and other test results
 client/test-results/
+.playwright-mcp/
+
+# Python virtual environments
+venv/
+.venv/
+env/
+
+# Python test cache
+.pytest_cache/
+.coverage
+htmlcov/
+
 # Dependencies
 node_modules/
 __pycache__/

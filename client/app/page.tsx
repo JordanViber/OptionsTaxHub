@@ -8,6 +8,7 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
+    console.log("✅ Upload button clicked! File:", file?.name);
     e.preventDefault();
     if (!file) return;
 
