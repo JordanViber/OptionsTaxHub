@@ -1,3 +1,4 @@
+import os
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
@@ -27,3 +28,8 @@ async def upload_csv(file: UploadFile = File(...)):
     df = pd.read_csv(io.StringIO(contents.decode("utf-8")))
     # Return first 5 rows as dict for simplicity (no persistent storage yet)
     return df.head(5).to_dict(orient="records")
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8080))
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
