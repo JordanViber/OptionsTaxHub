@@ -1,32 +1,84 @@
 services:
+  # Production Database
   - type: pserv
-    name: options-tax-hub-db
+    name: options-tax-hub-db-prod
     env: postgres
     plan: free
-    # PostgreSQL database for MVP (free tier)
 
+  # Production Backend
   - type: web
-    name: options-tax-hub-client
-    env: node
-    plan: free
-    buildCommand: npm install && npm run build
-    startCommand: npm start
-    envVars:
-      - key: PORT
-        fromService:
-          type: web
-          name: options-tax-hub-client
-          property: port
-
-  - type: web
-    name: options-tax-hub-server
+    name: options-tax-hub-server-prod
     env: python
     plan: free
+    branch: main
+    rootDir: server
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    startCommand: python main.py
     envVars:
       - key: DATABASE_URL
         fromService:
           type: pserv
-          name: options-tax-hub-db
+          name: options-tax-hub-db-prod
           property: connectionString
+      - key: FRONTEND_URL
+        value: https://options-tax-hub-client-prod.onrender.com
+      - key: API_KEY_SECRET
+        generateValue: true
+
+  # Production Frontend
+  - type: web
+    name: options-tax-hub-client-prod
+    env: node
+    plan: free
+    branch: main
+    rootDir: client
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NEXT_PUBLIC_API_URL
+        fromService:
+          type: web
+          name: options-tax-hub-server-prod
+          property: host
+
+  # Staging Database
+  - type: pserv
+    name: options-tax-hub-db-staging
+    env: postgres
+    plan: free
+
+  # Staging Backend
+  - type: web
+    name: options-tax-hub-server-staging
+    env: python
+    plan: free
+    branch: staging
+    rootDir: server
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: DATABASE_URL
+        fromService:
+          type: pserv
+          name: options-tax-hub-db-staging
+          property: connectionString
+      - key: FRONTEND_URL
+        value: https://options-tax-hub-client-staging.onrender.com
+      - key: API_KEY_SECRET
+        generateValue: true
+
+  # Staging Frontend
+  - type: web
+    name: options-tax-hub-client-staging
+    env: node
+    plan: free
+    branch: staging
+    rootDir: client
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NEXT_PUBLIC_API_URL
+        fromService:
+          type: web
+          name: options-tax-hub-server-staging
+          property: host

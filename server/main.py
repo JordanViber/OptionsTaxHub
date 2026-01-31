@@ -1,15 +1,25 @@
 import os
+from dotenv import load_dotenv
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
 import io
 
+# Load environment variables from .env.local or .env
+load_dotenv(".env.local")
+load_dotenv(".env")
+
 app = FastAPI()
 
-# Enable CORS for frontend development (localhost:3000)
+# Get environment variables
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
+DATABASE_URL = os.environ.get("DATABASE_URL")
+API_KEY_SECRET = os.environ.get("API_KEY_SECRET")
+
+# Enable CORS for frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=[FRONTEND_URL],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

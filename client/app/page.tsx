@@ -19,7 +19,8 @@ export default function Home() {
     try {
       // POST to backend for CSV upload (MVP: parse and return first 5 rows)
       // This enables users to upload portfolio CSVs for tax-loss harvesting analysis
-      const response = await fetch("http://localhost:8080/upload-csv", {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+      const response = await fetch(`${apiUrl}/upload-csv`, {
         method: "POST",
         body: formData,
       });
