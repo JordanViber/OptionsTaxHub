@@ -1,0 +1,32 @@
+services:
+  - type: pserv
+    name: options-tax-hub-db
+    env: postgres
+    plan: free
+    # PostgreSQL database for MVP (free tier)
+
+  - type: web
+    name: options-tax-hub-frontend
+    env: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: PORT
+        fromService:
+          type: web
+          name: options-tax-hub-frontend
+          property: port
+
+  - type: web
+    name: options-tax-hub-backend
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DATABASE_URL
+        fromService:
+          type: pserv
+          name: options-tax-hub-db
+          property: connectionString
