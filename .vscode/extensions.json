@@ -1,0 +1,37 @@
+{
+  "recommendations": [
+    // Python Development
+    "ms-python.python",
+    "ms-python.vscode-pylance",
+    "ms-python.debugpy",
+
+    // JavaScript/TypeScript/React
+    "dbaeumer.vscode-eslint",
+    "esbenp.prettier-vscode",
+    "bradlc.vscode-tailwindcss",
+
+    // Testing
+    "ms-playwright.playwright",
+
+    // Git
+    "eamodio.gitlens",
+
+    // Database
+    "mtxr.sqltools",
+    "mtxr.sqltools-driver-pg",
+
+    // Docker (optional)
+    "ms-azuretools.vscode-docker",
+
+    // Environment files
+    "mikestead.dotenv",
+
+    // YAML
+    "redhat.vscode-yaml",
+
+    // General productivity
+    "streetsidesoftware.code-spell-checker",
+    "usernamehw.errorlens",
+    "github.copilot"
+  ]
+}

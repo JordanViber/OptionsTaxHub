@@ -1,0 +1,27 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Chrome DevTools: Next.js client",
+      "type": "chrome",
+      "request": "launch",
+      "preLaunchTask": "Client: dev server",
+      "url": "http://localhost:3000",
+      "webRoot": "${workspaceFolder}/client",
+      "sourceMaps": true,
+      "skipFiles": ["<node_internals>/**"],
+      "sourceMapPathOverrides": {
+        "webpack://./*": "${webRoot}/*"
+      }
+    },
+    {
+      "name": "Playwright: E2E tests",
+      "type": "node",
+      "request": "launch",
+      "preLaunchTask": "Client: dev server",
+      "cwd": "${workspaceFolder}/client",
+      "runtimeExecutable": "npx",
+      "args": ["playwright", "test", "--config=${workspaceFolder}/client/playwright.config.ts"]
+    }
+  ]
+}

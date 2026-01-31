@@ -1,0 +1,39 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Client: dev server",
+      "type": "shell",
+      "command": "npm",
+      "args": ["run", "dev"],
+      "options": {
+        "cwd": "${workspaceFolder}/client"
+      },
+      "isBackground": true,
+      "problemMatcher": {
+        "pattern": {
+          "regexp": ".*ready - started server on.*",
+          "file": 1,
+          "location": 2,
+          "message": 0
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": ".*starting.*",
+          "endsPattern": ".*ready - started server on.*"
+        }
+      }
+    },
+    {
+      "label": "Server: API",
+      "type": "shell",
+      "command": "uvicorn",
+      "args": ["main:app", "--host", "0.0.0.0", "--port", "8080", "--reload"],
+      "options": {
+        "cwd": "${workspaceFolder}/server"
+      },
+      "isBackground": true,
+      "problemMatcher": []
+    }
+  ]
+}

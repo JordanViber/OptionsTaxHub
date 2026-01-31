@@ -42,9 +42,14 @@ yarn-error.log*
 .Trashes
 ehthumbs.db
 Thumbs.db
+*~
 
-# IDE
-.vscode/
+# IDE - Keep extensions.json, settings.json, tasks.json, and launch.json for shared config
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
 .idea/
 
 # Build outputs
