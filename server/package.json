@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "start": "python main.py",
-    "dev": "python main.py"
+    "start": "python3 -m uvicorn main:app --host 0.0.0.0 --port 8080",
+    "dev": "python3 -m uvicorn main:app --host 0.0.0.0 --port 8080 --reload"
   }
 }
