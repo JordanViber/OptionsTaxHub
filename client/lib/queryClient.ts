@@ -2,7 +2,7 @@ import { QueryClient } from "@tanstack/react-query";
 
 /**
  * QueryClient configuration for React Query
- * 
+ *
  * Key settings for OptionsTaxHub:
  * - staleTime: 5 minutes for portfolio data (financial data changes frequently)
  * - gcTime: 15 minutes (keep data for offline PWA mode)

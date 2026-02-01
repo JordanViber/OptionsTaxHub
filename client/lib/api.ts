@@ -12,7 +12,7 @@ export interface PortfolioData {
 
 /**
  * Upload CSV file to backend for parsing
- * 
+ *
  * @param file - CSV file to upload
  * @returns Promise resolving to array of portfolio data
  */
@@ -34,7 +34,7 @@ async function uploadPortfolioCsv(file: File): Promise<PortfolioData[]> {
 
 /**
  * React Query mutation hook for CSV upload
- * 
+ *
  * Usage:
  * ```
  * const { mutate, isPending, error, data } = useUploadPortfolio();
@@ -54,12 +54,12 @@ export function useUploadPortfolio() {
 
 /**
  * Fetch portfolio history (placeholder for future backend implementation)
- * 
+ *
  * @returns Promise resolving to array of historical portfolio data
  */
 async function fetchPortfolioHistory(): Promise<PortfolioData[]> {
   const response = await fetch(`${API_URL}/portfolio-history`);
-  
+
   if (!response.ok) {
     throw new Error(`Fetch failed: ${response.statusText}`);
   }
@@ -69,7 +69,7 @@ async function fetchPortfolioHistory(): Promise<PortfolioData[]> {
 
 /**
  * React Query query hook for fetching portfolio history
- * 
+ *
  * Usage:
  * ```
  * const { data, isLoading, error } = usePortfolioHistory();
@@ -96,12 +96,12 @@ export interface PushSubscriptionData {
 
 /**
  * Subscribe to push notifications
- * 
+ *
  * @param subscription - Push subscription object from browser
  * @returns Promise resolving to subscription confirmation
  */
 async function subscribeToPushNotifications(
-  subscription: PushSubscriptionData
+  subscription: PushSubscriptionData,
 ): Promise<{ success: boolean; message: string }> {
   const response = await fetch(`${API_URL}/subscribe-push`, {
     method: "POST",
@@ -120,7 +120,7 @@ async function subscribeToPushNotifications(
 
 /**
  * React Query mutation hook for push notification subscription
- * 
+ *
  * Usage:
  * ```
  * const { mutate, isPending } = usePushNotificationSubscription();

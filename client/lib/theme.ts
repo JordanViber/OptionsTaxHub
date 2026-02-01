@@ -2,14 +2,14 @@ import { createTheme } from "@mui/material/styles";
 
 /**
  * Material UI Theme for OptionsTaxHub
- * 
+ *
  * Color palette designed for financial trading platform:
  * - Primary (Blue): Professional, trustworthy for financial app
  * - Secondary (Amber): Highlight/warnings for tax optimization opportunities
  * - Error (Red): Loss/risk indicators
  * - Success (Green): Gains/recommendations
  * - Warning (Orange): Tax warnings/considerations
- * 
+ *
  * Typography: Uses system fonts for performance (no Google Fonts load)
  */
 

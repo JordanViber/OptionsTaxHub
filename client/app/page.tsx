@@ -32,7 +32,12 @@ import { useUploadPortfolio, type PortfolioData } from "@/lib/api";
 
 export default function Home() {
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const { mutate: uploadPortfolio, isPending, error, data: portfolioData } = useUploadPortfolio();
+  const {
+    mutate: uploadPortfolio,
+    isPending,
+    error,
+    data: portfolioData,
+  } = useUploadPortfolio();
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -65,7 +70,11 @@ export default function Home() {
       {/* Header AppBar */}
       <AppBar position="static" sx={{ mb: 4 }}>
         <Toolbar>
-          <Typography variant="h6" component="div" sx={{ flexGrow: 1, fontWeight: 700 }}>
+          <Typography
+            variant="h6"
+            component="div"
+            sx={{ flexGrow: 1, fontWeight: 700 }}
+          >
             OptionsTaxHub
           </Typography>
           <Typography variant="body2" sx={{ opacity: 0.9 }}>
@@ -86,7 +95,8 @@ export default function Home() {
                     Upload Portfolio
                   </Typography>
                   <Typography variant="body2" color="textSecondary">
-                    Upload your portfolio CSV file to analyze tax-loss harvesting opportunities
+                    Upload your portfolio CSV file to analyze tax-loss
+                    harvesting opportunities
                   </Typography>
                 </Box>
 
@@ -135,7 +145,13 @@ export default function Home() {
                   size="large"
                   onClick={handleUploadClick}
                   disabled={isPending}
-                  endIcon={isPending ? <CircularProgress size={20} /> : <CloudUploadIcon />}
+                  endIcon={
+                    isPending ? (
+                      <CircularProgress size={20} />
+                    ) : (
+                      <CloudUploadIcon />
+                    )
+                  }
                   sx={{ py: 1.5 }}
                 >
                   {isPending ? "Uploading..." : "Upload CSV"}
@@ -167,7 +183,9 @@ export default function Home() {
           {displayData.length > 0 && (
             <Card>
               <CardContent>
-                <Box sx={{ mb: 3, display: "flex", alignItems: "center", gap: 1 }}>
+                <Box
+                  sx={{ mb: 3, display: "flex", alignItems: "center", gap: 1 }}
+                >
                   <CheckCircleIcon sx={{ color: "success.main" }} />
                   <Typography variant="h5" sx={{ fontWeight: 600 }}>
                     Portfolio Data (First 5 Rows)
@@ -214,7 +232,11 @@ export default function Home() {
                   </Table>
                 </TableContainer>
 
-                <Typography variant="caption" color="textSecondary" sx={{ mt: 2, display: "block" }}>
+                <Typography
+                  variant="caption"
+                  color="textSecondary"
+                  sx={{ mt: 2, display: "block" }}
+                >
                   Showing portfolio summary - full analysis features coming soon
                 </Typography>
               </CardContent>
