@@ -1,6 +1,7 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
+import RootLayoutClient from "./layout-client";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -17,13 +18,14 @@ export const metadata: Metadata = {
     icon: "/icons/icon-192x192.svg",
     apple: "/icons/icon-512x512.svg",
   },
-  themeColor: "#3b82f6",
-  viewport: {
-    width: "device-width",
-    initialScale: 1,
-    maximumScale: 5,
-    userScalable: true,
-  },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#1976d2",
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 5,
+  userScalable: true,
 };
 
 export default function RootLayout({
@@ -35,7 +37,7 @@ export default function RootLayout({
     <html lang="en">
       <head>
         <link rel="manifest" href="/manifest.json" />
-        <meta name="theme-color" content="#3b82f6" />
+        <meta name="theme-color" content="#1976d2" />
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta
           name="apple-mobile-web-app-status-bar-style"
@@ -44,7 +46,9 @@ export default function RootLayout({
         <meta name="apple-mobile-web-app-title" content="OptionsTaxHub" />
         <link rel="apple-touch-icon" href="/icons/icon-512x512.svg" />
       </head>
-      <body className={inter.className}>{children}</body>
+      <body className={inter.className}>
+        <RootLayoutClient>{children}</RootLayoutClient>
+      </body>
     </html>
   );
 }

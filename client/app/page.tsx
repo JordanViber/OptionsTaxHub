@@ -1,77 +1,227 @@
 "use client";
 
-import { useState } from "react";
+import { useRef } from "react";
+import {
+  AppBar,
+  Toolbar,
+  Container,
+  Box,
+  Card,
+  CardContent,
+  Button,
+  CircularProgress,
+  Alert,
+  Stack,
+  Typography,
+  Paper,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+} from "@mui/material";
+import {
+  CloudUpload as CloudUploadIcon,
+  CheckCircle as CheckCircleIcon,
+  Error as ErrorIcon,
+} from "@mui/icons-material";
 import InstallPrompt from "./components/InstallPrompt";
 import ServiceWorkerRegistration from "./components/ServiceWorkerRegistration";
+import { useUploadPortfolio, type PortfolioData } from "@/lib/api";
 
 export default function Home() {
-  const [file, setFile] = useState<File | null>(null);
-  const [data, setData] = useState<any[]>([]);
-  const [loading, setLoading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const { mutate: uploadPortfolio, isPending, error, data: portfolioData } = useUploadPortfolio();
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    console.log("✅ Upload button clicked! File:", file?.name);
-    e.preventDefault();
-    if (!file) return;
-
-    setLoading(true);
-    const formData = new FormData();
-    formData.append("file", file);
-
-    try {
-      // POST to backend for CSV upload (MVP: parse and return first 5 rows)
-      // This enables users to upload portfolio CSVs for tax-loss harvesting analysis
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
-      const response = await fetch(`${apiUrl}/upload-csv`, {
-        method: "POST",
-        body: formData,
-      });
-      const result = await response.json();
-      setData(result);
-    } catch (error) {
-      console.error("Upload failed:", error);
-    } finally {
-      setLoading(false);
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      console.log("✅ File selected:", file.name);
     }
   };
+
+  const handleUploadClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      console.log("✅ Upload button clicked! File:", file.name);
+      uploadPortfolio(file);
+    }
+  };
+
+  // Format portfolio data for table display
+  const displayData = portfolioData || [];
+  const columns = displayData.length > 0 ? Object.keys(displayData[0]) : [];
 
   return (
     <>
       <ServiceWorkerRegistration />
       <InstallPrompt />
-      <div className="min-h-screen flex flex-col items-center justify-center bg-gray-100 dark:bg-gray-900 p-4">
-        <h1 className="text-2xl md:text-3xl font-bold mb-8 text-center">
-          OptionsTaxHub – Tax-Optimized Options Trading
-        </h1>
-        <form
-          onSubmit={handleSubmit}
-          className="flex flex-col items-center space-y-4 w-full max-w-md"
-        >
-          <input
-            type="file"
-            accept=".csv"
-            onChange={(e) => setFile(e.target.files?.[0] || null)}
-            className="border border-gray-300 dark:border-gray-700 rounded p-2 w-full"
-          />
-          <button
-            type="submit"
-            disabled={!file || loading}
-            className="bg-blue-500 text-white px-4 py-2 rounded disabled:opacity-50 w-full"
-          >
-            {loading ? "Uploading..." : "Upload CSV"}
-          </button>
-        </form>
-        {data.length > 0 && (
-          <div className="mt-8 w-full max-w-4xl">
-            <h2 className="text-xl font-semibold mb-4">
-              Parsed Data (First 5 Rows):
-            </h2>
-            <pre className="bg-white dark:bg-gray-800 p-4 rounded shadow overflow-x-auto">
-              {JSON.stringify(data, null, 2)}
-            </pre>
-          </div>
-        )}
-      </div>
+
+      {/* Header AppBar */}
+      <AppBar position="static" sx={{ mb: 4 }}>
+        <Toolbar>
+          <Typography variant="h6" component="div" sx={{ flexGrow: 1, fontWeight: 700 }}>
+            OptionsTaxHub
+          </Typography>
+          <Typography variant="body2" sx={{ opacity: 0.9 }}>
+            Tax-Optimized Options Trading
+          </Typography>
+        </Toolbar>
+      </AppBar>
+
+      {/* Main Content */}
+      <Container maxWidth="lg" sx={{ py: 4 }}>
+        <Box sx={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          {/* Upload Section */}
+          <Card>
+            <CardContent>
+              <Stack spacing={3}>
+                <Box>
+                  <Typography variant="h5" sx={{ mb: 1, fontWeight: 600 }}>
+                    Upload Portfolio
+                  </Typography>
+                  <Typography variant="body2" color="textSecondary">
+                    Upload your portfolio CSV file to analyze tax-loss harvesting opportunities
+                  </Typography>
+                </Box>
+
+                {/* File Input Area */}
+                <Box
+                  sx={{
+                    border: "2px dashed",
+                    borderColor: "primary.main",
+                    borderRadius: 2,
+                    p: 3,
+                    textAlign: "center",
+                    cursor: "pointer",
+                    transition: "all 0.2s",
+                    "&:hover": {
+                      backgroundColor: "action.hover",
+                      borderColor: "primary.dark",
+                    },
+                  }}
+                  onClick={handleUploadClick}
+                >
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".csv"
+                    onChange={handleFileChange}
+                    style={{ display: "none" }}
+                  />
+                  <CloudUploadIcon
+                    sx={{
+                      fontSize: 48,
+                      color: "primary.main",
+                      mb: 1,
+                    }}
+                  />
+                  <Typography variant="body1" sx={{ fontWeight: 500 }}>
+                    Click to upload or drag and drop
+                  </Typography>
+                  <Typography variant="caption" color="textSecondary">
+                    CSV format only
+                  </Typography>
+                </Box>
+
+                {/* Upload Button */}
+                <Button
+                  variant="contained"
+                  size="large"
+                  onClick={handleUploadClick}
+                  disabled={isPending}
+                  endIcon={isPending ? <CircularProgress size={20} /> : <CloudUploadIcon />}
+                  sx={{ py: 1.5 }}
+                >
+                  {isPending ? "Uploading..." : "Upload CSV"}
+                </Button>
+              </Stack>
+            </CardContent>
+          </Card>
+
+          {/* Error Alert */}
+          {error && (
+            <Alert
+              severity="error"
+              icon={<ErrorIcon />}
+              sx={{ mb: 2 }}
+              onClose={() => {
+                // Error will persist in React Query cache, but can be dismissed from UI
+              }}
+            >
+              <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                Upload Failed
+              </Typography>
+              <Typography variant="caption">
+                {error instanceof Error ? error.message : "An error occurred"}
+              </Typography>
+            </Alert>
+          )}
+
+          {/* Results Section */}
+          {displayData.length > 0 && (
+            <Card>
+              <CardContent>
+                <Box sx={{ mb: 3, display: "flex", alignItems: "center", gap: 1 }}>
+                  <CheckCircleIcon sx={{ color: "success.main" }} />
+                  <Typography variant="h5" sx={{ fontWeight: 600 }}>
+                    Portfolio Data (First 5 Rows)
+                  </Typography>
+                </Box>
+
+                <TableContainer component={Paper} variant="outlined">
+                  <Table>
+                    <TableHead>
+                      <TableRow sx={{ backgroundColor: "#f5f5f5" }}>
+                        {columns.map((col) => (
+                          <TableCell
+                            key={col}
+                            sx={{
+                              fontWeight: 700,
+                              color: "primary.main",
+                              fontSize: "0.875rem",
+                            }}
+                          >
+                            {col}
+                          </TableCell>
+                        ))}
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {displayData.map((row, idx) => (
+                        <TableRow
+                          key={idx}
+                          sx={{
+                            "&:hover": { backgroundColor: "action.hover" },
+                            "&:last-child td": { borderBottom: 0 },
+                          }}
+                        >
+                          {columns.map((col) => (
+                            <TableCell key={col} sx={{ fontSize: "0.875rem" }}>
+                              {typeof row[col] === "number"
+                                ? parseFloat(String(row[col])).toFixed(2)
+                                : String(row[col])}
+                            </TableCell>
+                          ))}
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+
+                <Typography variant="caption" color="textSecondary" sx={{ mt: 2, display: "block" }}>
+                  Showing portfolio summary - full analysis features coming soon
+                </Typography>
+              </CardContent>
+            </Card>
+          )}
+        </Box>
+      </Container>
     </>
   );
 }
