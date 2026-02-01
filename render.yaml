@@ -15,6 +15,12 @@ services:
         value: https://options-tax-hub-client-prod.onrender.com
       - key: API_KEY_SECRET
         generateValue: true
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_CLAIM_EMAIL
+        value: jordankdog44@yahoo.com
 
   # Production Frontend
   - type: web
@@ -31,6 +37,8 @@ services:
           type: web
           name: options-tax-hub-server-prod
           property: host
+      - key: NEXT_PUBLIC_VAPID_PUBLIC_KEY
+        sync: false
 
   # Staging Backend
   - type: web
@@ -48,6 +56,12 @@ services:
         value: https://options-tax-hub-client-staging.onrender.com
       - key: API_KEY_SECRET
         generateValue: true
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_CLAIM_EMAIL
+        value: jordankdog44@yahoo.com
 
   # Staging Frontend
   - type: web
@@ -64,3 +78,5 @@ services:
           type: web
           name: options-tax-hub-server-staging
           property: host
+      - key: NEXT_PUBLIC_VAPID_PUBLIC_KEY
+        sync: false
