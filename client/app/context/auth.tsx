@@ -14,7 +14,17 @@ interface AuthContextType {
   user: User | null;
   loading: boolean;
   signIn: (email: string, password: string) => Promise<void>;
-  signUp: (email: string, password: string) => Promise<void>;
+  signUp: (
+    email: string,
+    password: string,
+    profile: {
+      firstName: string;
+      lastName: string;
+      displayName: string;
+      phone: string;
+      providerType: string;
+    },
+  ) => Promise<void>;
   signOut: () => Promise<void>;
 }
 
@@ -62,11 +72,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (error) throw error;
   };
 
-  const signUp = async (email: string, password: string) => {
-    const { error } = await supabase.auth.signUp({
-      email,
-      password,
-    });
+  const signUp = async (
+    email: string,
+    password: string,
+    profile: {
+      firstName: string;
+      lastName: string;
+      displayName: string;
+      phone: string;
+      providerType: string;
+    },
+  ) => {
+    const metadata = {
+      first_name: profile.firstName,
+      last_name: profile.lastName,
+      full_name: `${profile.firstName} ${profile.lastName}`.trim(),
+      display_name: profile.displayName,
+      phone: profile.phone,
+      provider_type: profile.providerType,
+    };
+
+    const signUpPayload =
+      profile.providerType === "phone"
+        ? {
+            phone: profile.phone,
+            password,
+            options: { data: metadata },
+          }
+        : {
+            email,
+            password,
+            options: { data: metadata },
+          };
+
+    const { error } = await supabase.auth.signUp(signUpPayload);
     if (error) throw error;
   };
 

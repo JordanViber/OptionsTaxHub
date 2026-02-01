@@ -95,6 +95,16 @@ export default function Home() {
     return null;
   }
 
+  const firstName = user.user_metadata?.first_name as string | undefined;
+  const lastName = user.user_metadata?.last_name as string | undefined;
+  const fullName = [firstName, lastName].filter(Boolean).join(" ");
+  const displayNameFromProfile =
+    (user.user_metadata?.display_name as string | undefined) ||
+    (user.user_metadata?.full_name as string | undefined);
+  const displayName =
+    displayNameFromProfile || fullName || user.email || "Account";
+  const avatarLetter = (displayName[0] || "A").toUpperCase();
+
   // Format portfolio data for table display
   const displayData = portfolioData || [];
   const columns = displayData.length > 0 ? Object.keys(displayData[0]) : [];
@@ -123,9 +133,9 @@ export default function Home() {
             sx={{ textTransform: "none" }}
           >
             <Avatar sx={{ mr: 1, width: 32, height: 32 }}>
-              {user.email?.[0].toUpperCase()}
+              {avatarLetter}
             </Avatar>
-            {user.email}
+            {displayName}
           </Button>
           <Menu
             anchorEl={menuAnchor}
@@ -133,7 +143,10 @@ export default function Home() {
             onClose={() => setMenuAnchor(null)}
           >
             <MenuItem disabled>
-              <Typography variant="body2">{user.email}</Typography>
+              <Typography variant="body2">
+                {displayName}
+                {user.email ? ` (${user.email})` : ""}
+              </Typography>
             </MenuItem>
             <MenuItem onClick={handleSignOut}>
               <LogoutIcon sx={{ mr: 1 }} />

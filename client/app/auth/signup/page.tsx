@@ -14,17 +14,28 @@ import {
   Stack,
   Link as MuiLink,
   CircularProgress,
+  InputAdornment,
+  IconButton,
+  MenuItem,
 } from "@mui/material";
+import { Visibility, VisibilityOff } from "@mui/icons-material";
 import { useAuth } from "@/app/context/auth";
 
 export default function SignUpPage() {
   const router = useRouter();
   const { signUp } = useAuth();
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [providerType, setProviderType] = useState("email");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -40,10 +51,28 @@ export default function SignUpPage() {
       return;
     }
 
+    if (providerType === "phone" && !phone.trim()) {
+      setError("Phone number is required for phone sign-up");
+      return;
+    }
+
+    if (providerType !== "phone" && !email.trim()) {
+      setError("Email is required for email sign-up");
+      return;
+    }
+
     setLoading(true);
 
     try {
-      await signUp(email, password);
+      const resolvedDisplayName =
+        displayName.trim() || `${firstName} ${lastName}`.trim();
+      await signUp(email, password, {
+        firstName,
+        lastName,
+        displayName: resolvedDisplayName,
+        phone,
+        providerType,
+      });
       // Show success message and redirect to sign in
       alert(
         "Sign up successful! Please check your email to confirm your account.",
@@ -83,31 +112,117 @@ export default function SignUpPage() {
             >
               <TextField
                 fullWidth
+                label="First Name"
+                value={firstName}
+                onChange={(e) => setFirstName(e.target.value)}
+                disabled={loading}
+                required
+              />
+              <TextField
+                fullWidth
+                label="Last Name"
+                value={lastName}
+                onChange={(e) => setLastName(e.target.value)}
+                disabled={loading}
+                required
+              />
+              <TextField
+                fullWidth
+                label="Display Name"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                disabled={loading}
+                helperText="Optional (defaults to First + Last Name)"
+              />
+              <TextField
+                fullWidth
+                label="Provider Type"
+                select
+                value={providerType}
+                onChange={(e) => setProviderType(e.target.value)}
+                disabled={loading}
+              >
+                <MenuItem value="email">Email</MenuItem>
+                <MenuItem value="phone">Phone</MenuItem>
+                <MenuItem value="google">Google</MenuItem>
+                <MenuItem value="github">GitHub</MenuItem>
+              </TextField>
+              <TextField
+                fullWidth
+                label="Phone"
+                type="tel"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                disabled={loading}
+                helperText={
+                  providerType === "phone"
+                    ? "Required for phone sign-up"
+                    : "Optional"
+                }
+              />
+              <TextField
+                fullWidth
                 label="Email"
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 disabled={loading}
-                required
+                required={providerType !== "phone"}
               />
               <TextField
                 fullWidth
                 label="Password"
-                type="password"
+                type={showPassword ? "text" : "password"}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 disabled={loading}
                 required
                 helperText="At least 6 characters"
+                InputProps={{
+                  endAdornment: (
+                    <InputAdornment position="end">
+                      <IconButton
+                        aria-label={
+                          showPassword ? "Hide password" : "Show password"
+                        }
+                        onClick={() => setShowPassword((prev) => !prev)}
+                        edge="end"
+                      >
+                        {showPassword ? <VisibilityOff /> : <Visibility />}
+                      </IconButton>
+                    </InputAdornment>
+                  ),
+                }}
               />
               <TextField
                 fullWidth
                 label="Confirm Password"
-                type="password"
+                type={showConfirmPassword ? "text" : "password"}
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
                 disabled={loading}
                 required
+                InputProps={{
+                  endAdornment: (
+                    <InputAdornment position="end">
+                      <IconButton
+                        aria-label={
+                          showConfirmPassword
+                            ? "Hide password"
+                            : "Show password"
+                        }
+                        onClick={() => setShowConfirmPassword((prev) => !prev)}
+                        edge="end"
+                      >
+                        {showConfirmPassword ? (
+                          <VisibilityOff />
+                        ) : (
+                          <Visibility />
+                        )}
+                      </IconButton>
+                    </InputAdornment>
+                  ),
+                }}
               />
               <Button
                 fullWidth

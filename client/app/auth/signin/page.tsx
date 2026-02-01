@@ -14,7 +14,10 @@ import {
   Stack,
   Link as MuiLink,
   CircularProgress,
+  InputAdornment,
+  IconButton,
 } from "@mui/material";
+import { Visibility, VisibilityOff } from "@mui/icons-material";
 import { useAuth } from "@/app/context/auth";
 
 export default function SignInPage() {
@@ -24,6 +27,7 @@ export default function SignInPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -77,11 +81,26 @@ export default function SignInPage() {
               <TextField
                 fullWidth
                 label="Password"
-                type="password"
+                type={showPassword ? "text" : "password"}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 disabled={loading}
                 required
+                InputProps={{
+                  endAdornment: (
+                    <InputAdornment position="end">
+                      <IconButton
+                        aria-label={
+                          showPassword ? "Hide password" : "Show password"
+                        }
+                        onClick={() => setShowPassword((prev) => !prev)}
+                        edge="end"
+                      >
+                        {showPassword ? <VisibilityOff /> : <Visibility />}
+                      </IconButton>
+                    </InputAdornment>
+                  ),
+                }}
               />
               <Button
                 fullWidth
