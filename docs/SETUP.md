@@ -37,10 +37,14 @@ pip install -r requirements.txt
 #### Configure Environment Variables
 Copy `.env.example` to `.env.local` and update values:
 ```bash
-cp .env.example .env.local
+cp server/.env.example server/.env.local
 ```
 
-#### Run Backend
+**VAPID Keys for Push Notifications:**
+- Keys are already set in `server/.env.local` for local development
+- See `.vapid-keys` file for reference keys (dev, staging, prod)
+- Each environment (local, staging, prod) can have different keys
+- The server's `VAPID_PUBLIC_KEY` must match client's `NEXT_PUBLIC_VAPID_PUBLIC_KEY`
 ```bash
 npm start
 # or
@@ -62,10 +66,12 @@ npm install
 #### Configure Environment Variables
 Copy `.env.example` to `.env.local` and update values:
 ```bash
-cp .env.example .env.local
+cp client/.env.example client/.env.local
 ```
 
-#### Run Frontend
+**VAPID Keys for Push Notifications:**
+- Keys are already set in `client/.env.local` for local development
+- The public key `NEXT_PUBLIC_VAPID_PUBLIC_KEY` must match server's `VAPID_PUBLIC_KEY`
 ```bash
 npm run dev
 ```
@@ -111,7 +117,53 @@ npm run dev
 
 ---
 
-## Testing
+## VAPID Keys & Push Notifications
+
+### What are VAPID Keys?
+VAPID (Voluntary Application Server Identification) keys enable secure Web Push Notifications. They're a public/private key pair used to authenticate your server to the browser's push service.
+
+### Key Setup
+
+#### Local Development
+- Keys are already generated and stored in `.env.local` files
+- Both server and client use the **same public key**
+- Server uses the **private key** to send notifications
+- No additional setup needed
+
+#### For Each Developer/Machine
+- Each machine can have its own local keys (doesn't affect others)
+- Keys are in `.gitignore` so they won't be committed
+- Reference all keys in `.vapid-keys` file (not committed, for your reference)
+
+#### Staging Environment (Render)
+1. Go to Render Dashboard
+2. For `options-tax-hub-server-staging`:
+   - **Settings** → **Environment Variables**
+   - Add:
+     ```
+     VAPID_PUBLIC_KEY=BEmKg-N2T2yG9oaqL3S9nM0pQ4wR8xS5yT6uV7wX8yZ9a0B1cD2eF3gH4iJ5kL6mN7oP8qR9sT0uV1wX2
+     VAPID_PRIVATE_KEY=MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgLy8aNWsoH2NU/IT239ccztieFsEVqJBZB3WcYt2EroNCAASF5vTyNtsp7PaKWspH2NU/IT239ccztieFsEVqJBZB3WcYt2Erop
+     ```
+3. For `options-tax-hub-client-staging`:
+   - **Settings** → **Environment Variables**
+   - Add:
+     ```
+     NEXT_PUBLIC_VAPID_PUBLIC_KEY=BEmKg-N2T2yG9oaqL3S9nM0pQ4wR8xS5yT6uV7wX8yZ9a0B1cD2eF3gH4iJ5kL6mN7oP8qR9sT0uV1wX2
+     ```
+
+#### Production Environment (Render)
+1. Follow the same steps as staging for `options-tax-hub-server-prod` and `options-tax-hub-client-prod`
+2. Use the keys from `.vapid-keys` under the `PROD_` section
+
+### Important Notes
+- **Never commit `.env.local` files** - they're in `.gitignore`
+- **Never commit `.vapid-keys` file** - it's in `.gitignore`
+- Public key is safe to expose (`NEXT_PUBLIC_` prefix)
+- Private key must stay secret (server-side only)
+- Both environments (server/client) must use matching public keys
+- Different public keys between environments are OK (staging vs prod)
+
+---
 
 ### Unit Tests (Frontend)
 ```bash
