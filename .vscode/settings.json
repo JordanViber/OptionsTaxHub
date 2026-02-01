@@ -51,6 +51,7 @@
   "terminal.integrated.defaultProfile.osx": "zsh",
   "terminal.integrated.defaultProfile.linux": "bash",
   "cSpell.words": [
+    "SUPABASE",
     "uvicorn"
   ]
 }

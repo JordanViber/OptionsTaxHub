@@ -1,6 +1,7 @@
 "use client";
 
-import { useRef } from "react";
+import { useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   AppBar,
   Toolbar,
@@ -20,18 +21,27 @@ import {
   TableContainer,
   TableHead,
   TableRow,
+  Menu,
+  MenuItem,
+  Avatar,
 } from "@mui/material";
 import {
   CloudUpload as CloudUploadIcon,
   CheckCircle as CheckCircleIcon,
   Error as ErrorIcon,
+  Logout as LogoutIcon,
 } from "@mui/icons-material";
 import InstallPrompt from "./components/InstallPrompt";
 import ServiceWorkerRegistration from "./components/ServiceWorkerRegistration";
 import { useUploadPortfolio, type PortfolioData } from "@/lib/api";
+import { useAuth } from "@/app/context/auth";
 
 export default function Home() {
+  const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const { user, loading: authLoading, signOut } = useAuth();
+  const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
+
   const {
     mutate: uploadPortfolio,
     isPending,
@@ -58,6 +68,33 @@ export default function Home() {
     }
   };
 
+  const handleSignOut = async () => {
+    await signOut();
+    setMenuAnchor(null);
+    router.push("/auth/signin");
+  };
+
+  // Redirect to sign in if not authenticated
+  if (authLoading) {
+    return (
+      <Box
+        sx={{
+          display: "flex",
+          justifyContent: "center",
+          alignItems: "center",
+          height: "100vh",
+        }}
+      >
+        <CircularProgress />
+      </Box>
+    );
+  }
+
+  if (!user) {
+    router.push("/auth/signin");
+    return null;
+  }
+
   // Format portfolio data for table display
   const displayData = portfolioData || [];
   const columns = displayData.length > 0 ? Object.keys(displayData[0]) : [];
@@ -77,9 +114,32 @@ export default function Home() {
           >
             OptionsTaxHub
           </Typography>
-          <Typography variant="body2" sx={{ opacity: 0.9 }}>
+          <Typography variant="body2" sx={{ opacity: 0.9, mr: 2 }}>
             Tax-Optimized Options Trading
           </Typography>
+          <Button
+            color="inherit"
+            onClick={(e) => setMenuAnchor(e.currentTarget)}
+            sx={{ textTransform: "none" }}
+          >
+            <Avatar sx={{ mr: 1, width: 32, height: 32 }}>
+              {user.email?.[0].toUpperCase()}
+            </Avatar>
+            {user.email}
+          </Button>
+          <Menu
+            anchorEl={menuAnchor}
+            open={Boolean(menuAnchor)}
+            onClose={() => setMenuAnchor(null)}
+          >
+            <MenuItem disabled>
+              <Typography variant="body2">{user.email}</Typography>
+            </MenuItem>
+            <MenuItem onClick={handleSignOut}>
+              <LogoutIcon sx={{ mr: 1 }} />
+              Sign Out
+            </MenuItem>
+          </Menu>
         </Toolbar>
       </AppBar>
 

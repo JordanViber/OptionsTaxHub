@@ -39,6 +39,10 @@ services:
           property: host
       - key: NEXT_PUBLIC_VAPID_PUBLIC_KEY
         sync: false
+      - key: NEXT_PUBLIC_SUPABASE_URL
+        sync: false
+      - key: NEXT_PUBLIC_SUPABASE_ANON_KEY
+        sync: false
 
   # Staging Backend
   - type: web
@@ -79,4 +83,8 @@ services:
           name: options-tax-hub-server-staging
           property: host
       - key: NEXT_PUBLIC_VAPID_PUBLIC_KEY
+        sync: false
+      - key: NEXT_PUBLIC_SUPABASE_URL
+        sync: false
+      - key: NEXT_PUBLIC_SUPABASE_ANON_KEY
         sync: false

@@ -1,37 +1,40 @@
 version: 2
 updates:
-  # Frontend dependencies
+  # Frontend dependencies (npm)
   - package-ecosystem: "npm"
     directory: "/client"
     schedule:
       interval: "weekly"
       day: "monday"
+      time: "03:00"
     open-pull-requests-limit: 5
-    reviewers:
-      - "JordanViber"
     labels:
       - "dependencies"
       - "frontend"
     commit-message:
-      prefix: "chore(deps)"
+      prefix: "chore(deps-frontend)"
+      prefix-development: "chore(deps-dev)"
+    allow:
+      - dependency-type: "direct"
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
 
-  # Backend dependencies
+  # Backend dependencies (pip)
   - package-ecosystem: "pip"
     directory: "/server"
     schedule:
       interval: "weekly"
       day: "monday"
+      time: "03:00"
     open-pull-requests-limit: 5
-    reviewers:
-      - "JordanViber"
     labels:
       - "dependencies"
       - "backend"
     commit-message:
-      prefix: "chore(deps)"
+      prefix: "chore(deps-backend)"
+    allow:
+      - dependency-type: "direct"
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
@@ -41,9 +44,11 @@ updates:
     directory: "/"
     schedule:
       interval: "monthly"
+      day: "monday"
     open-pull-requests-limit: 3
     labels:
       - "dependencies"
-      - "ci/cd"
+      - "ci-cd"
     commit-message:
       prefix: "chore(ci)"
+

@@ -15,27 +15,31 @@ Target users: DIY retail traders interested in tax efficiency (e.g., avoiding sh
 
 ## Folder Structure
 OptionsTaxHub/
-├── frontend/               # Next.js app (App Router, TypeScript, Tailwind)
-├── backend/                # FastAPI app
-├── shared/                 # (optional) shared types/interfaces
-├── docs/                   # documentation, tax rule references, etc.
+├── client/                 # Next.js 14 (App Router, TypeScript, Tailwind, Material UI)
+├── server/                 # FastAPI + Python
+├── docs/                   # Documentation
 ├── .github/
 │   └── instructions/
 │       └── copilot-instructions.md
-├── render.yaml             # Render Blueprint deployment
+├── render.yaml             # Render deployment configuration
+├── test.csv                # Sample test data
 └── README.md
 
 ## Tech Stack & Conventions
 
-- Monorepo structure: `/frontend` (Next.js 15+ App Router, TypeScript, Tailwind v4, dark mode), `/backend` (FastAPI + Python 3.12+, uvicorn)
+- Structure: `/client` (Next.js 14, TypeScript, Tailwind CSS v4, Material UI), `/server` (FastAPI + Python 3.9+, uvicorn)
 - Frontend runs on `http://localhost:3000` (default `npm run dev`)
-- Backend runs on `http://localhost:8080` (uvicorn --port 8080)
-- Database: PostgreSQL (managed on Render); use SQLAlchemy or Prisma (if added later)
-- API style: REST endpoints, JSON responses, Pydantic for models/validation
-- Styling: Tailwind CSS utility-first, responsive, dark mode support
-- Auth: MVP → no auth or simple session; plan for JWT or Supabase later
+- Backend runs on `http://localhost:8080` (uvicorn main:app --reload)
+- Database: Supabase PostgreSQL + Auth (free tier)
+- API style: REST endpoints, JSON responses, Pydantic models for validation
+- Frontend libraries: Material UI v7+ components, React Query v5+, Supabase client
+- Styling: Tailwind CSS + Material UI theme system
+- Auth: Supabase email/password authentication
+- PWA: Service Worker for offline support, Web Push API for notifications
+- Push Notifications: VAPID keys for Web Push Protocol authentication
+- Deployment: Render.com (free tier) for both frontend and backend
 - Data sources: Yahoo Finance / Alpha Vantage APIs for options quotes (free tiers)
-- AI/ML: Scikit-learn for rebalancing optimization (free/local); Hugging Face Transformers optional for text (e.g., post summaries) – keep 100% free/no paid APIs
+- AI/ML: Scikit-learn for rebalancing optimization (free/local)
 
 ## Coding Guidelines
 
@@ -45,6 +49,27 @@ OptionsTaxHub/
 - Add comments for tax logic (e.g., wash-sale rules, 2026 capital gains brackets).
 - Keep MVP lean: Start with CSV upload → parse → basic tax suggestions → export.
 - Responses: Suggest code with explanations, use modern patterns, avoid deprecated features.
+
+## Code Quality & Testing
+
+**Before completing any code changes:**
+1. **Check for syntax errors** - Use `get_errors()` tool to validate TypeScript and JavaScript
+2. **Check ESLint compliance** - Run ESLint checks for frontend code (Next.js, React)
+3. **Fix all errors immediately** - Do not leave failing code; always resolve issues before finishing
+4. **Type safety** - Ensure all TypeScript files pass strict type checking
+5. **Import paths** - Use absolute imports with `@/` alias in Next.js instead of relative paths
+
+**Before creating files:**
+- Verify directory structure exists or create if needed
+- Ensure proper TypeScript/JavaScript syntax
+- Check for ESLint violations (no `any` types unless absolutely necessary)
+- Validate imports reference correct paths
+
+**When modifying existing files:**
+- Always run `get_errors()` after editing to catch breaking changes
+- Ensure no regression in existing functionality
+- Maintain consistent code style with existing code
+- Update related type definitions if changing function signatures
 
 ## Security & Legal
 
