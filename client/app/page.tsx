@@ -88,12 +88,12 @@ export default function Home() {
     return null;
   }
 
-  const firstName = user.user_metadata?.first_name as string | undefined;
-  const lastName = user.user_metadata?.last_name as string | undefined;
+  const firstName = user.user_metadata?.first_name as string | null;
+  const lastName = user.user_metadata?.last_name as string | null;
   const fullName = [firstName, lastName].filter(Boolean).join(" ");
   const displayNameFromProfile =
-    (user.user_metadata?.display_name as string | undefined) ||
-    (user.user_metadata?.full_name as string | undefined);
+    (user.user_metadata?.display_name as string | null) ||
+    (user.user_metadata?.full_name as string | null);
   const displayName =
     displayNameFromProfile || fullName || user.email || "Account";
   const avatarLetter = displayName[0].toUpperCase();

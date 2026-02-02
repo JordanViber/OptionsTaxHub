@@ -4,7 +4,7 @@ import { useEffect } from "react";
 
 export default function ServiceWorkerRegistration() {
   useEffect(() => {
-    if (typeof window !== "undefined" && navigator.serviceWorker) {
+    if (typeof globalThis !== "undefined" && navigator.serviceWorker) {
       navigator.serviceWorker
         .register("/sw.js")
         .then((registration) => {

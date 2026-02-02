@@ -21,9 +21,9 @@ export function usePushNotifications() {
 
   useEffect(() => {
     if (
-      typeof window !== "undefined" &&
+      typeof globalThis !== "undefined" &&
       "serviceWorker" in navigator &&
-      "PushManager" in window
+      "PushManager" in globalThis
     ) {
       setIsSupported(true);
       setPermission(Notification.permission);
@@ -116,7 +116,7 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array {
     .replace(/\-/g, "+")
     .replace(/_/g, "/");
 
-  const rawData = window.atob(base64);
+  const rawData = globalThis.atob(base64);
   const outputArray = new Uint8Array(rawData.length);
 
   for (let i = 0; i < rawData.length; ++i) {

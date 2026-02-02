@@ -15,7 +15,7 @@ export default function InstallPrompt() {
 
   useEffect(() => {
     // Check if already installed
-    if (window.matchMedia("(display-mode: standalone)").matches) {
+    if (globalThis.matchMedia("(display-mode: standalone)").matches) {
       setIsInstalled(true);
       return;
     }
@@ -29,9 +29,9 @@ export default function InstallPrompt() {
       setTimeout(() => setShowPrompt(true), 10000);
     };
 
-    window.addEventListener("beforeinstallprompt", handler);
+    globalThis.addEventListener("beforeinstallprompt", handler);
 
-    return () => window.removeEventListener("beforeinstallprompt", handler);
+    return () => globalThis.removeEventListener("beforeinstallprompt", handler);
   }, []);
 
   const handleInstall = async () => {
