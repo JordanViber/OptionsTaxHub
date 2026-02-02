@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   AppBar,
@@ -36,6 +36,8 @@ import ServiceWorkerRegistration from "./components/ServiceWorkerRegistration";
 import { useUploadPortfolio, type PortfolioData } from "@/lib/api";
 import { useAuth } from "@/app/context/auth";
 
+export const dynamic = "force-dynamic";
+
 export default function Home() {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -67,8 +69,14 @@ export default function Home() {
     router.push("/auth/signin");
   };
 
+  useEffect(() => {
+    if (!authLoading && !user) {
+      router.push("/auth/signin");
+    }
+  }, [authLoading, user, router]);
+
   // Redirect to sign in if not authenticated
-  if (authLoading) {
+  if (authLoading || !user) {
     return (
       <Box
         sx={{
@@ -81,11 +89,6 @@ export default function Home() {
         <CircularProgress />
       </Box>
     );
-  }
-
-  if (!user) {
-    router.push("/auth/signin");
-    return null;
   }
 
   const firstName = user.user_metadata?.first_name as string | null;
