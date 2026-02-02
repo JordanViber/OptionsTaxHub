@@ -17,11 +17,24 @@ export default function InstallPrompt() {
   const [isMobile, setIsMobile] = useState(false);
 
   useEffect(() => {
-    // Detect if device is mobile
+    // Detect if device is mobile using multiple methods for reliability
     const isMobileDevice = () => {
-      return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
-        globalThis.navigator.userAgent,
-      );
+      // Check user agent
+      const userAgent = globalThis.navigator.userAgent;
+      const mobileRegex =
+        /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i;
+
+      // Also check viewport width as additional check
+      const isNarrowViewport = globalThis.window.innerWidth < 768;
+
+      // Check for touch capability (more reliable indicator of mobile)
+      const hasTouch = globalThis.matchMedia(
+        "(hover: none) and (pointer: coarse)",
+      ).matches;
+
+      // Only consider it mobile if user agent matches AND (has touch or narrow viewport)
+      // This prevents false positives on desktop
+      return mobileRegex.test(userAgent) && (hasTouch || isNarrowViewport);
     };
     setIsMobile(isMobileDevice());
 
@@ -106,6 +119,21 @@ export default function InstallPrompt() {
   };
 
   const handleOpenApp = () => {
+    // Add safeguard: check if we've already tried to open recently to prevent loops
+    const lastAttemptTime = sessionStorage.getItem("lastOpenAppAttempt");
+    if (lastAttemptTime) {
+      const timeSinceAttempt = Date.now() - parseInt(lastAttemptTime);
+      if (timeSinceAttempt < 1000) {
+        // Less than 1 second - likely a refresh loop, don't navigate
+        console.warn(
+          "Prevented rapid Open App attempts - possible refresh loop detected",
+        );
+        handleDismissInstalled();
+        return;
+      }
+    }
+
+    sessionStorage.setItem("lastOpenAppAttempt", Date.now().toString());
     // On mobile browsers, this will open the installed PWA
     // The browser handles the actual opening - we just navigate to the app URL
     globalThis.location.href = globalThis.location.origin;
