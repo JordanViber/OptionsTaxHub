@@ -22,6 +22,34 @@ jest.mock("../../lib/api", () => ({
   useUploadPortfolio: () => mockUseUploadPortfolio(),
 }));
 
+// Helper function to create default auth mock
+const createAuthMock = (user: any = null, loading: boolean = false, signOut?: any) => ({
+  user,
+  loading,
+  signOut: signOut || jest.fn(),
+});
+
+// Helper function to create default upload portfolio mock
+const createUploadMock = (overrides: any = {}) => ({
+  mutate: jest.fn(),
+  isPending: false,
+  error: null,
+  data: null,
+  ...overrides,
+});
+
+// Helper function to setup mocks
+const setupMocks = (auth: any = {}, upload: any = {}) => {
+  mockUseAuth.mockReturnValue(createAuthMock(undefined, undefined, undefined));
+  mockUseUploadPortfolio.mockReturnValue(createUploadMock());
+  if (Object.keys(auth).length) {
+    mockUseAuth.mockReturnValue(auth);
+  }
+  if (Object.keys(upload).length) {
+    mockUseUploadPortfolio.mockReturnValue(upload);
+  }
+};
+
 describe("Home page", () => {
   beforeEach(() => {
     mockPush.mockClear();
@@ -260,20 +288,10 @@ describe("Home page", () => {
 
   it("does not upload when no file is selected", () => {
     const mutate = jest.fn();
-    mockUseAuth.mockReturnValue({
-      user: {
-        email: "test@example.com",
-        user_metadata: { display_name: "Test User" },
-      },
-      loading: false,
-      signOut: jest.fn(),
-    });
-    mockUseUploadPortfolio.mockReturnValue({
-      mutate,
-      isPending: false,
-      error: null,
-      data: null,
-    });
+    setupMocks(
+      createAuthMock({ email: "test@example.com", user_metadata: { display_name: "Test User" } }, false, jest.fn()),
+      createUploadMock({ mutate })
+    );
 
     const { container } = render(<Home />);
     const fileInput = container.querySelector(
@@ -287,20 +305,10 @@ describe("Home page", () => {
 
   it("does not upload when file list is undefined", () => {
     const mutate = jest.fn();
-    mockUseAuth.mockReturnValue({
-      user: {
-        email: "test@example.com",
-        user_metadata: { display_name: "Test User" },
-      },
-      loading: false,
-      signOut: jest.fn(),
-    });
-    mockUseUploadPortfolio.mockReturnValue({
-      mutate,
-      isPending: false,
-      error: null,
-      data: null,
-    });
+    setupMocks(
+      createAuthMock({ email: "test@example.com", user_metadata: { display_name: "Test User" } }, false, jest.fn()),
+      createUploadMock({ mutate })
+    );
 
     const { container } = render(<Home />);
     const fileInput = container.querySelector(
@@ -314,20 +322,10 @@ describe("Home page", () => {
 
   it("does not upload when file list is null", () => {
     const mutate = jest.fn();
-    mockUseAuth.mockReturnValue({
-      user: {
-        email: "test@example.com",
-        user_metadata: { display_name: "Test User" },
-      },
-      loading: false,
-      signOut: jest.fn(),
-    });
-    mockUseUploadPortfolio.mockReturnValue({
-      mutate,
-      isPending: false,
-      error: null,
-      data: null,
-    });
+    setupMocks(
+      createAuthMock({ email: "test@example.com", user_metadata: { display_name: "Test User" } }, false, jest.fn()),
+      createUploadMock({ mutate })
+    );
 
     const { container } = render(<Home />);
     const fileInput = container.querySelector(
@@ -361,20 +359,10 @@ describe("Home page", () => {
   });
 
   it("renders error state when upload fails", () => {
-    mockUseAuth.mockReturnValue({
-      user: {
-        email: "test@example.com",
-        user_metadata: { display_name: "Test User" },
-      },
-      loading: false,
-      signOut: jest.fn(),
-    });
-    mockUseUploadPortfolio.mockReturnValue({
-      mutate: jest.fn(),
-      isPending: false,
-      error: new Error("Upload failed"),
-      data: null,
-    });
+    setupMocks(
+      createAuthMock({ email: "test@example.com", user_metadata: { display_name: "Test User" } }, false, jest.fn()),
+      createUploadMock({ error: new Error("Upload failed") })
+    );
 
     render(<Home />);
 
@@ -383,20 +371,10 @@ describe("Home page", () => {
   });
 
   it("renders generic error message when error is not an Error", () => {
-    mockUseAuth.mockReturnValue({
-      user: {
-        email: "test@example.com",
-        user_metadata: { display_name: "Test User" },
-      },
-      loading: false,
-      signOut: jest.fn(),
-    });
-    mockUseUploadPortfolio.mockReturnValue({
-      mutate: jest.fn(),
-      isPending: false,
-      error: "Upload failed",
-      data: null,
-    });
+    setupMocks(
+      createAuthMock({ email: "test@example.com", user_metadata: { display_name: "Test User" } }, false, jest.fn()),
+      createUploadMock({ error: "Upload failed" })
+    );
 
     render(<Home />);
 
@@ -404,23 +382,15 @@ describe("Home page", () => {
   });
 
   it("renders portfolio data table when upload succeeds", () => {
-    mockUseAuth.mockReturnValue({
-      user: {
-        email: "test@example.com",
-        user_metadata: { display_name: "Test User" },
-      },
-      loading: false,
-      signOut: jest.fn(),
-    });
-    mockUseUploadPortfolio.mockReturnValue({
-      mutate: jest.fn(),
-      isPending: false,
-      error: null,
-      data: [
-        { symbol: "AAPL", qty: 10, price: 150 },
-        { symbol: "MSFT", qty: 5, price: 310 },
-      ],
-    });
+    setupMocks(
+      createAuthMock({ email: "test@example.com", user_metadata: { display_name: "Test User" } }, false, jest.fn()),
+      createUploadMock({
+        data: [
+          { symbol: "AAPL", qty: 10, price: 150 },
+          { symbol: "MSFT", qty: 5, price: 310 },
+        ],
+      })
+    );
 
     render(<Home />);
 
@@ -434,20 +404,10 @@ describe("Home page", () => {
 
   it("signs out and redirects when menu action is clicked", async () => {
     const signOut = jest.fn(() => Promise.resolve());
-    mockUseAuth.mockReturnValue({
-      user: {
-        email: "test@example.com",
-        user_metadata: { display_name: "Test User" },
-      },
-      loading: false,
-      signOut,
-    });
-    mockUseUploadPortfolio.mockReturnValue({
-      mutate: jest.fn(),
-      isPending: false,
-      error: null,
-      data: null,
-    });
+    setupMocks(
+      createAuthMock({ email: "test@example.com", user_metadata: { display_name: "Test User" } }, false, signOut),
+      createUploadMock()
+    );
 
     render(<Home />);
 
@@ -466,19 +426,10 @@ describe("Home page", () => {
   });
 
   it("shows menu without email when user email is missing", async () => {
-    mockUseAuth.mockReturnValue({
-      user: {
-        user_metadata: { display_name: "No Email" },
-      },
-      loading: false,
-      signOut: jest.fn(),
-    });
-    mockUseUploadPortfolio.mockReturnValue({
-      mutate: jest.fn(),
-      isPending: false,
-      error: null,
-      data: null,
-    });
+    setupMocks(
+      createAuthMock({ user_metadata: { display_name: "No Email" } }, false, jest.fn()),
+      createUploadMock()
+    );
 
     render(<Home />);
 
@@ -493,20 +444,10 @@ describe("Home page", () => {
   });
 
   it("closes the error alert when close button is clicked", () => {
-    mockUseAuth.mockReturnValue({
-      user: {
-        email: "test@example.com",
-        user_metadata: { display_name: "Test User" },
-      },
-      loading: false,
-      signOut: jest.fn(),
-    });
-    mockUseUploadPortfolio.mockReturnValue({
-      mutate: jest.fn(),
-      isPending: false,
-      error: new Error("Upload failed"),
-      data: null,
-    });
+    setupMocks(
+      createAuthMock({ email: "test@example.com", user_metadata: { display_name: "Test User" } }, false, jest.fn()),
+      createUploadMock({ error: new Error("Upload failed") })
+    );
 
     render(<Home />);
 
@@ -515,20 +456,10 @@ describe("Home page", () => {
   });
 
   it("closes the menu on backdrop click", async () => {
-    mockUseAuth.mockReturnValue({
-      user: {
-        email: "test@example.com",
-        user_metadata: { display_name: "Test User" },
-      },
-      loading: false,
-      signOut: jest.fn(),
-    });
-    mockUseUploadPortfolio.mockReturnValue({
-      mutate: jest.fn(),
-      isPending: false,
-      error: null,
-      data: null,
-    });
+    setupMocks(
+      createAuthMock({ email: "test@example.com", user_metadata: { display_name: "Test User" } }, false, jest.fn()),
+      createUploadMock()
+    );
 
     render(<Home />);
 
