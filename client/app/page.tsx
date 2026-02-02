@@ -49,15 +49,8 @@ export default function Home() {
     data: portfolioData,
   } = useUploadPortfolio();
 
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      console.log("✅ File selected:", file.name);
-    }
-  };
-
   const handleUploadClick = () => {
-    fileInputRef.current?.click();
+    fileInputRef.current!.click();
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -103,7 +96,7 @@ export default function Home() {
     (user.user_metadata?.full_name as string | undefined);
   const displayName =
     displayNameFromProfile || fullName || user.email || "Account";
-  const avatarLetter = (displayName[0] || "A").toUpperCase();
+  const avatarLetter = displayName[0].toUpperCase();
 
   // Format portfolio data for table display
   const displayData = portfolioData || [];

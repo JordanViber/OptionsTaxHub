@@ -67,7 +67,7 @@ async def upload_csv(file: UploadFile = File(...)):
 @app.post("/push/subscribe")
 async def subscribe_to_push(subscription: PushSubscription):
     """Store push notification subscription"""
-    subscription_dict = subscription.dict()
+    subscription_dict = subscription.model_dump()
 
     # Check if subscription already exists
     for existing in push_subscriptions:
@@ -81,7 +81,7 @@ async def subscribe_to_push(subscription: PushSubscription):
 @app.post("/push/unsubscribe")
 async def unsubscribe_from_push(subscription: PushSubscription):
     """Remove push notification subscription"""
-    subscription_dict = subscription.dict()
+    subscription_dict = subscription.model_dump()
 
     # Find and remove subscription
     for i, existing in enumerate(push_subscriptions):
@@ -158,7 +158,10 @@ async def test_push_notification():
     )
     return await send_push_notification(notification)
 
-if __name__ == "__main__":
+def run():
     port = int(os.environ.get("PORT", 8080))
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+
+if __name__ == "__main__":
+    run()
