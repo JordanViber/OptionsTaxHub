@@ -15,7 +15,7 @@ Your CI pipeline now sends coverage reports to SonarCloud. To make it fail the b
 4. **Set up conditions** (recommended thresholds):
    ```
    ✅ New Issues > 0                     → FAIL
-   ✅ Code Coverage < 80%                → FAIL  
+   ✅ Code Coverage < 80%                → FAIL
    ✅ Duplications > 3%                  → FAIL
    ✅ Security Hotspots Reviewed < 100%  → FAIL
    ```
