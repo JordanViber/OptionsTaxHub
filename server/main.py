@@ -67,7 +67,7 @@ async def upload_csv(file: UploadFile = File(...)):
 @app.post("/push/subscribe")
 async def subscribe_to_push(subscription: PushSubscription):
     """Store push notification subscription"""
-    subscription_dict = subscription.dict()
+    subscription_dict = subscription.model_dump()
 
     # Check if subscription already exists
     for existing in push_subscriptions:
@@ -81,7 +81,7 @@ async def subscribe_to_push(subscription: PushSubscription):
 @app.post("/push/unsubscribe")
 async def unsubscribe_from_push(subscription: PushSubscription):
     """Remove push notification subscription"""
-    subscription_dict = subscription.dict()
+    subscription_dict = subscription.model_dump()
 
     # Find and remove subscription
     for i, existing in enumerate(push_subscriptions):
