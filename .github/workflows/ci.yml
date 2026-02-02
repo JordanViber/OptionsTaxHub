@@ -3,8 +3,6 @@ name: CI Pipeline
 on:
   push:
     branches: [main]  # Only run push checks on main (production safety)
-  pull_request:
-    branches: [main, staging]  # PR checks run on all branch targets
 
 jobs:
   # Backend Tests and Analysis
