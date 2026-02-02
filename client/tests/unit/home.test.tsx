@@ -23,7 +23,11 @@ jest.mock("../../lib/api", () => ({
 }));
 
 // Helper function to create default auth mock
-const createAuthMock = (user: any = null, loading: boolean = false, signOut?: any) => ({
+const createAuthMock = (
+  user: any = null,
+  loading: boolean = false,
+  signOut?: any,
+) => ({
   user,
   loading,
   signOut: signOut || jest.fn(),
@@ -289,8 +293,15 @@ describe("Home page", () => {
   it("does not upload when no file is selected", () => {
     const mutate = jest.fn();
     setupMocks(
-      createAuthMock({ email: "test@example.com", user_metadata: { display_name: "Test User" } }, false, jest.fn()),
-      createUploadMock({ mutate })
+      createAuthMock(
+        {
+          email: "test@example.com",
+          user_metadata: { display_name: "Test User" },
+        },
+        false,
+        jest.fn(),
+      ),
+      createUploadMock({ mutate }),
     );
 
     const { container } = render(<Home />);
@@ -306,8 +317,15 @@ describe("Home page", () => {
   it("does not upload when file list is undefined", () => {
     const mutate = jest.fn();
     setupMocks(
-      createAuthMock({ email: "test@example.com", user_metadata: { display_name: "Test User" } }, false, jest.fn()),
-      createUploadMock({ mutate })
+      createAuthMock(
+        {
+          email: "test@example.com",
+          user_metadata: { display_name: "Test User" },
+        },
+        false,
+        jest.fn(),
+      ),
+      createUploadMock({ mutate }),
     );
 
     const { container } = render(<Home />);
@@ -323,8 +341,15 @@ describe("Home page", () => {
   it("does not upload when file list is null", () => {
     const mutate = jest.fn();
     setupMocks(
-      createAuthMock({ email: "test@example.com", user_metadata: { display_name: "Test User" } }, false, jest.fn()),
-      createUploadMock({ mutate })
+      createAuthMock(
+        {
+          email: "test@example.com",
+          user_metadata: { display_name: "Test User" },
+        },
+        false,
+        jest.fn(),
+      ),
+      createUploadMock({ mutate }),
     );
 
     const { container } = render(<Home />);
@@ -360,8 +385,15 @@ describe("Home page", () => {
 
   it("renders error state when upload fails", () => {
     setupMocks(
-      createAuthMock({ email: "test@example.com", user_metadata: { display_name: "Test User" } }, false, jest.fn()),
-      createUploadMock({ error: new Error("Upload failed") })
+      createAuthMock(
+        {
+          email: "test@example.com",
+          user_metadata: { display_name: "Test User" },
+        },
+        false,
+        jest.fn(),
+      ),
+      createUploadMock({ error: new Error("Upload failed") }),
     );
 
     render(<Home />);
@@ -372,8 +404,15 @@ describe("Home page", () => {
 
   it("renders generic error message when error is not an Error", () => {
     setupMocks(
-      createAuthMock({ email: "test@example.com", user_metadata: { display_name: "Test User" } }, false, jest.fn()),
-      createUploadMock({ error: "Upload failed" })
+      createAuthMock(
+        {
+          email: "test@example.com",
+          user_metadata: { display_name: "Test User" },
+        },
+        false,
+        jest.fn(),
+      ),
+      createUploadMock({ error: "Upload failed" }),
     );
 
     render(<Home />);
@@ -383,13 +422,20 @@ describe("Home page", () => {
 
   it("renders portfolio data table when upload succeeds", () => {
     setupMocks(
-      createAuthMock({ email: "test@example.com", user_metadata: { display_name: "Test User" } }, false, jest.fn()),
+      createAuthMock(
+        {
+          email: "test@example.com",
+          user_metadata: { display_name: "Test User" },
+        },
+        false,
+        jest.fn(),
+      ),
       createUploadMock({
         data: [
           { symbol: "AAPL", qty: 10, price: 150 },
           { symbol: "MSFT", qty: 5, price: 310 },
         ],
-      })
+      }),
     );
 
     render(<Home />);
@@ -405,8 +451,15 @@ describe("Home page", () => {
   it("signs out and redirects when menu action is clicked", async () => {
     const signOut = jest.fn(() => Promise.resolve());
     setupMocks(
-      createAuthMock({ email: "test@example.com", user_metadata: { display_name: "Test User" } }, false, signOut),
-      createUploadMock()
+      createAuthMock(
+        {
+          email: "test@example.com",
+          user_metadata: { display_name: "Test User" },
+        },
+        false,
+        signOut,
+      ),
+      createUploadMock(),
     );
 
     render(<Home />);
@@ -427,8 +480,12 @@ describe("Home page", () => {
 
   it("shows menu without email when user email is missing", async () => {
     setupMocks(
-      createAuthMock({ user_metadata: { display_name: "No Email" } }, false, jest.fn()),
-      createUploadMock()
+      createAuthMock(
+        { user_metadata: { display_name: "No Email" } },
+        false,
+        jest.fn(),
+      ),
+      createUploadMock(),
     );
 
     render(<Home />);
@@ -445,8 +502,15 @@ describe("Home page", () => {
 
   it("closes the error alert when close button is clicked", () => {
     setupMocks(
-      createAuthMock({ email: "test@example.com", user_metadata: { display_name: "Test User" } }, false, jest.fn()),
-      createUploadMock({ error: new Error("Upload failed") })
+      createAuthMock(
+        {
+          email: "test@example.com",
+          user_metadata: { display_name: "Test User" },
+        },
+        false,
+        jest.fn(),
+      ),
+      createUploadMock({ error: new Error("Upload failed") }),
     );
 
     render(<Home />);
@@ -457,8 +521,15 @@ describe("Home page", () => {
 
   it("closes the menu on backdrop click", async () => {
     setupMocks(
-      createAuthMock({ email: "test@example.com", user_metadata: { display_name: "Test User" } }, false, jest.fn()),
-      createUploadMock()
+      createAuthMock(
+        {
+          email: "test@example.com",
+          user_metadata: { display_name: "Test User" },
+        },
+        false,
+        jest.fn(),
+      ),
+      createUploadMock(),
     );
 
     render(<Home />);
