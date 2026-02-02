@@ -12,6 +12,10 @@ env/
 .coverage
 htmlcov/
 
+# Jest coverage
+coverage/
+client/coverage/
+
 # Dependencies
 node_modules/
 __pycache__/

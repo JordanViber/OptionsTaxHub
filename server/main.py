@@ -158,7 +158,10 @@ async def test_push_notification():
     )
     return await send_push_notification(notification)
 
-if __name__ == "__main__":
+def run():
     port = int(os.environ.get("PORT", 8080))
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+
+if __name__ == "__main__":
+    run()

@@ -73,13 +73,14 @@ async function fetchPortfolioHistory(): Promise<PortfolioData[]> {
  * Usage:
  * ```
  * const { data, isLoading, error } = usePortfolioHistory();
+ * const { data, isLoading, error } = usePortfolioHistory(true);
  * ```
  */
-export function usePortfolioHistory() {
+export function usePortfolioHistory(enabled = false) {
   return useQuery({
     queryKey: ["portfolio-history"],
     queryFn: fetchPortfolioHistory,
-    enabled: false, // Disable auto-fetch until endpoint exists
+    enabled, // Disable auto-fetch until endpoint exists
   });
 }
 
