@@ -123,7 +123,7 @@ export function AuthProvider({ children }: Readonly<{ children: ReactNode }>) {
 
 export function useAuth() {
   const context = useContext(AuthContext);
-  if (!context) {
+  if (context === null) {
     throw new Error("useAuth must be used within AuthProvider");
   }
   return context;
