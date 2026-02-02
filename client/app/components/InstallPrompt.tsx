@@ -14,11 +14,22 @@ export default function InstallPrompt() {
     useState<BeforeInstallPromptEvent | null>(null);
   const [showPrompt, setShowPrompt] = useState(false);
   const [appState, setAppState] = useState<AppState>("not-installable");
+  const [isMobile, setIsMobile] = useState(false);
 
   useEffect(() => {
+    // Detect if device is mobile
+    const isMobileDevice = () => {
+      return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+        globalThis.navigator.userAgent,
+      );
+    };
+    setIsMobile(isMobileDevice());
+
     // Check if running in standalone mode (already installed and opened)
-    if (globalThis.matchMedia("(display-mode: standalone)").matches ||
-        (globalThis.navigator as any).standalone === true) {
+    if (
+      globalThis.matchMedia("(display-mode: standalone)").matches ||
+      (globalThis.navigator as any).standalone === true
+    ) {
       setAppState("standalone");
       return;
     }
@@ -82,25 +93,85 @@ export default function InstallPrompt() {
     setShowPrompt(false);
   };
 
-  const handleOpenApp = () => {
-    // Try to open the installed PWA
-    const appUrl = globalThis.location.origin;
-    globalThis.location.href = appUrl;
-  };
-
   const handleDismiss = () => {
     setShowPrompt(false);
     // Show again after 3 days
     localStorage.setItem("installPromptDismissed", Date.now().toString());
   };
 
-  // Don't show anything if in standalone mode or not ready
-  if (appState === "standalone" || !showPrompt) {
+  const handleDismissInstalled = () => {
+    setShowPrompt(false);
+    // Don't show this message again for 7 days since app is already installed
+    localStorage.setItem("installedMessageDismissed", Date.now().toString());
+  };
+
+  const handleOpenApp = () => {
+    // On mobile browsers, this will open the installed PWA
+    // The browser handles the actual opening - we just navigate to the app URL
+    globalThis.location.href = globalThis.location.origin;
+  };
+
+  // Don't show anything if in standalone mode
+  if (appState === "standalone") {
     return null;
   }
 
-  // Show "Open App" button if already installed
+  // Check if installed message was dismissed recently
   if (appState === "installed") {
+    const dismissed = localStorage.getItem("installedMessageDismissed");
+    if (dismissed) {
+      const dismissedTime = parseInt(dismissed);
+      const sevenDays = 7 * 24 * 60 * 60 * 1000;
+      if (Date.now() - dismissedTime < sevenDays) {
+        return null;
+      }
+    }
+  }
+
+  // Don't show if not ready
+  if (!showPrompt) {
+    return null;
+  }
+
+  // Show reminder if already installed
+  if (appState === "installed") {
+    // On mobile, show "Open App" button that will switch to the installed PWA
+    if (isMobile) {
+      return (
+        <div className="fixed bottom-4 left-4 right-4 md:left-auto md:right-4 md:max-w-sm bg-white dark:bg-gray-800 rounded-lg shadow-2xl border border-gray-200 dark:border-gray-700 p-4 z-50 animate-slide-up">
+          <div className="flex items-start gap-3">
+            <div className="flex-shrink-0 w-12 h-12 bg-gradient-to-br from-green-500 to-green-700 rounded-lg flex items-center justify-center text-white text-2xl font-bold">
+              ✓
+            </div>
+            <div className="flex-1">
+              <h3 className="font-semibold text-gray-900 dark:text-white mb-1">
+                App Already Installed
+              </h3>
+              <p className="text-sm text-gray-600 dark:text-gray-300 mb-3">
+                Open OptionsTaxHub from your home screen for the best
+                experience.
+              </p>
+              <div className="flex gap-2">
+                <button
+                  onClick={handleOpenApp}
+                  className="flex-1 bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+                >
+                  Open App
+                </button>
+                <button
+                  onClick={handleDismissInstalled}
+                  className="px-4 py-2 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg text-sm font-medium transition-colors"
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // On desktop, just show a simple dismissible message (don't try to open app)
     return (
       <div className="fixed bottom-4 left-4 right-4 md:left-auto md:right-4 md:max-w-sm bg-white dark:bg-gray-800 rounded-lg shadow-2xl border border-gray-200 dark:border-gray-700 p-4 z-50 animate-slide-up">
         <div className="flex items-start gap-3">
@@ -112,22 +183,15 @@ export default function InstallPrompt() {
               App Already Installed
             </h3>
             <p className="text-sm text-gray-600 dark:text-gray-300 mb-3">
-              Open OptionsTaxHub from your home screen for the best experience.
+              Launch OptionsTaxHub from your applications menu or start menu for
+              the best experience.
             </p>
-            <div className="flex gap-2">
-              <button
-                onClick={handleOpenApp}
-                className="flex-1 bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
-              >
-                Open App
-              </button>
-              <button
-                onClick={handleDismiss}
-                className="px-4 py-2 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg text-sm font-medium transition-colors"
-              >
-                Dismiss
-              </button>
-            </div>
+            <button
+              onClick={handleDismissInstalled}
+              className="w-full bg-gray-500 hover:bg-gray-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+            >
+              Got it
+            </button>
           </div>
         </div>
       </div>
