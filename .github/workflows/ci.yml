@@ -94,7 +94,7 @@ jobs:
       - name: Install dependencies
         run: |
           cd client
-          npm ci --force
+          npm install --legacy-peer-deps --no-save
 
       - name: Lint with ESLint
         continue-on-error: true
@@ -165,7 +165,7 @@ jobs:
       - name: Install frontend dependencies
         run: |
           cd client
-          npm ci --force
+          npm install --legacy-peer-deps --no-save
           npx playwright install --with-deps
 
       - name: Start backend server
