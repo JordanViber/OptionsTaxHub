@@ -8,7 +8,7 @@ import {
   ReactNode,
 } from "react";
 import { User } from "@supabase/supabase-js";
-import { supabase } from "@/lib/supabase";
+import { getSupabaseClient } from "@/lib/supabase";
 
 interface AuthContextType {
   user: User | null;
@@ -38,6 +38,7 @@ export function AuthProvider({ children }: Readonly<{ children: ReactNode }>) {
     // Check current session on mount
     const checkSession = async () => {
       try {
+        const supabase = getSupabaseClient();
         const {
           data: { session },
         } = await supabase.auth.getSession();
@@ -52,12 +53,18 @@ export function AuthProvider({ children }: Readonly<{ children: ReactNode }>) {
     checkSession();
 
     // Listen for auth changes
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((event, session) => {
-      setUser(session?.user || null);
-      setLoading(false);
-    });
+    let subscription = { unsubscribe: () => {} } as { unsubscribe: () => void };
+    try {
+      const supabase = getSupabaseClient();
+      ({
+        data: { subscription },
+      } = supabase.auth.onAuthStateChange((event, session) => {
+        setUser(session?.user || null);
+        setLoading(false);
+      }));
+    } catch (error) {
+      console.error("Error subscribing to auth changes:", error);
+    }
 
     return () => {
       subscription?.unsubscribe();
@@ -65,7 +72,7 @@ export function AuthProvider({ children }: Readonly<{ children: ReactNode }>) {
   }, []);
 
   const signIn = async (email: string, password: string) => {
-    const { error } = await supabase.auth.signInWithPassword({
+    const { error } = await getSupabaseClient().auth.signInWithPassword({
       email,
       password,
     });
@@ -105,12 +112,12 @@ export function AuthProvider({ children }: Readonly<{ children: ReactNode }>) {
             options: { data: metadata },
           };
 
-    const { error } = await supabase.auth.signUp(signUpPayload);
+    const { error } = await getSupabaseClient().auth.signUp(signUpPayload);
     if (error) throw error;
   };
 
   const signOut = async () => {
-    const { error } = await supabase.auth.signOut();
+    const { error } = await getSupabaseClient().auth.signOut();
     if (error) throw error;
   };
 
