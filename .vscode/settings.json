@@ -48,6 +48,16 @@
   "terminal.integrated.defaultProfile.osx": "zsh",
   "terminal.integrated.defaultProfile.linux": "bash",
   "cSpell.words": [
+    "aquasecurity",
+    "Dsonar",
+    "optionstaxhub",
+    "pytest",
+    "PYTHONPATH",
+    "sarif",
+    "setuptools",
+    "sonarcloud",
+    "sonarqube",
+    "sonarsource",
     "SUPABASE",
     "uvicorn"
   ],
