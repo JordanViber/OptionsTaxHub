@@ -82,7 +82,6 @@ jobs:
           args: >
             -Dsonar.projectKey=JordanViber_OptionsTaxHub
             -Dsonar.organization=jordanviber
-            -Dsonar.python.coverage.reportPaths=coverage.xml
 
   # Frontend Tests and Analysis
   frontend-tests:
@@ -152,9 +151,6 @@ jobs:
           args: >
             -Dsonar.projectKey=JordanViber_OptionsTaxHub
             -Dsonar.organization=jordanviber
-            -Dsonar.sources=app
-            -Dsonar.tests=tests
-            -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
 
   # SonarCloud Quality Gate Check
   quality-gate:
