@@ -84,8 +84,15 @@ function PushComponent({
 }
 
 describe("api hooks", () => {
+  let originalFetch: typeof globalThis.fetch;
+
   beforeEach(() => {
     jest.resetAllMocks();
+    originalFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
   });
 
   it("uploads portfolio successfully", async () => {
