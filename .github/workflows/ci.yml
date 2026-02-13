@@ -80,6 +80,8 @@ jobs:
         with:
           projectBaseDir: server
           args: >
+            -Dsonar.projectKey=JordanViber_OptionsTaxHub
+            -Dsonar.organization=jordanviber
             -Dsonar.sources=.
             -Dsonar.tests=tests
             -Dsonar.python.coverage.reportPaths=coverage.xml
