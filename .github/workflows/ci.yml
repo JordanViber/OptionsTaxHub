@@ -2,7 +2,7 @@ name: CI Pipeline
 
 on:
   push:
-    branches: [main]  # Only run push checks on main (production safety)
+    branches: [main, staging]  # Run on both main and staging branches
 
 jobs:
   # Backend Tests and Analysis
