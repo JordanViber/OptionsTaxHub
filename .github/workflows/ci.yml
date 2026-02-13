@@ -152,6 +152,8 @@ jobs:
         with:
           projectBaseDir: client
           args: >
+            -Dsonar.projectKey=JordanViber_OptionsTaxHub
+            -Dsonar.organization=jordanviber
             -Dsonar.sources=app
             -Dsonar.tests=tests
             -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
