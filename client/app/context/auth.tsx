@@ -5,10 +5,11 @@ import {
   useContext,
   useEffect,
   useState,
+  useMemo,
   ReactNode,
 } from "react";
 import { User } from "@supabase/supabase-js";
-import { supabase } from "@/lib/supabase";
+import { getSupabaseClient } from "@/lib/supabase";
 
 interface AuthContextType {
   user: User | null;
@@ -38,12 +39,11 @@ export function AuthProvider({ children }: Readonly<{ children: ReactNode }>) {
     // Check current session on mount
     const checkSession = async () => {
       try {
+        const supabase = getSupabaseClient();
         const {
           data: { session },
         } = await supabase.auth.getSession();
         setUser(session?.user || null);
-      } catch (error) {
-        console.error("Error checking session:", error);
       } finally {
         setLoading(false);
       }
@@ -52,12 +52,14 @@ export function AuthProvider({ children }: Readonly<{ children: ReactNode }>) {
     checkSession();
 
     // Listen for auth changes
-    const {
+    let subscription = { unsubscribe: () => {} } as { unsubscribe: () => void };
+    const supabase = getSupabaseClient();
+    ({
       data: { subscription },
     } = supabase.auth.onAuthStateChange((event, session) => {
       setUser(session?.user || null);
       setLoading(false);
-    });
+    }));
 
     return () => {
       subscription?.unsubscribe();
@@ -65,7 +67,7 @@ export function AuthProvider({ children }: Readonly<{ children: ReactNode }>) {
   }, []);
 
   const signIn = async (email: string, password: string) => {
-    const { error } = await supabase.auth.signInWithPassword({
+    const { error } = await getSupabaseClient().auth.signInWithPassword({
       email,
       password,
     });
@@ -105,20 +107,21 @@ export function AuthProvider({ children }: Readonly<{ children: ReactNode }>) {
             options: { data: metadata },
           };
 
-    const { error } = await supabase.auth.signUp(signUpPayload);
+    const { error } = await getSupabaseClient().auth.signUp(signUpPayload);
     if (error) throw error;
   };
 
   const signOut = async () => {
-    const { error } = await supabase.auth.signOut();
+    const { error } = await getSupabaseClient().auth.signOut();
     if (error) throw error;
   };
 
-  return (
-    <AuthContext.Provider value={{ user, loading, signIn, signUp, signOut }}>
-      {children}
-    </AuthContext.Provider>
+  const value = useMemo(
+    () => ({ user, loading, signIn, signUp, signOut }),
+    [user, loading],
   );
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth() {

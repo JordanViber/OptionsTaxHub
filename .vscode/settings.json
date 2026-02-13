@@ -9,7 +9,8 @@
     "editor.formatOnSave": true,
     "editor.codeActionsOnSave": {
       "source.organizeImports": "explicit"
-    }
+    },
+    "editor.tabSize": 4
   },
 
   "[javascript]": {
@@ -43,15 +44,25 @@
   "editor.rulers": [80, 120],
   "editor.tabSize": 2,
 
-  "[python]": {
-    "editor.tabSize": 4
-  },
-
   "terminal.integrated.defaultProfile.windows": "PowerShell",
   "terminal.integrated.defaultProfile.osx": "zsh",
   "terminal.integrated.defaultProfile.linux": "bash",
   "cSpell.words": [
+    "aquasecurity",
+    "Dsonar",
+    "optionstaxhub",
+    "pytest",
+    "PYTHONPATH",
+    "sarif",
+    "setuptools",
+    "sonarcloud",
+    "sonarqube",
+    "sonarsource",
     "SUPABASE",
     "uvicorn"
-  ]
+  ],
+  "sonarlint.connectedMode.project": {
+    "connectionId": "jordanviber",
+    "projectKey": "JordanViber_OptionsTaxHub"
+  }
 }

@@ -1,4 +1,6 @@
 import os
+import logging
+from typing import Annotated
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,6 +10,10 @@ import json
 from typing import List, Dict, Any
 from pywebpush import webpush, WebPushException
 from pydantic import BaseModel
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Load environment variables from .env.local or .env
 load_dotenv(".env.local")
@@ -24,7 +30,8 @@ VAPID_PUBLIC_KEY = os.environ.get("VAPID_PUBLIC_KEY")
 VAPID_CLAIM_EMAIL = os.environ.get("VAPID_CLAIM_EMAIL", "admin@optionstaxhub.com")
 
 # In-memory storage for push subscriptions
-# TODO: Move to database in production
+# NOTE: This is temporary storage for development/MVP. Production implementation
+# will use database storage (see GitHub issue or backlog for migration task)
 push_subscriptions: List[Dict[str, Any]] = []
 
 # Pydantic models
@@ -55,7 +62,7 @@ async def health():
     return {"status": "ok"}
 
 @app.post("/upload-csv")
-async def upload_csv(file: UploadFile = File(...)):
+async def upload_csv(file: Annotated[UploadFile, File()]):
     # MVP: Read uploaded CSV in-memory, parse with pandas, return first 5 rows as JSON
     # This supports the portfolio rebalancer MVP by allowing users to upload CSV exports (e.g., from Robinhood)
     # for initial parsing and tax-loss harvesting suggestions (to be added later)
@@ -75,7 +82,7 @@ async def subscribe_to_push(subscription: PushSubscription):
             return {"message": "Subscription already exists", "count": len(push_subscriptions)}
 
     push_subscriptions.append(subscription_dict)
-    print(f"✅ New push subscription added. Total subscriptions: {len(push_subscriptions)}")
+    logger.info(f"New push subscription added. Total subscriptions: {len(push_subscriptions)}")
     return {"message": "Subscription stored", "count": len(push_subscriptions)}
 
 @app.post("/push/unsubscribe")
@@ -87,7 +94,7 @@ async def unsubscribe_from_push(subscription: PushSubscription):
     for i, existing in enumerate(push_subscriptions):
         if existing.get("endpoint") == subscription_dict["endpoint"]:
             push_subscriptions.pop(i)
-            print(f"❌ Push subscription removed. Total subscriptions: {len(push_subscriptions)}")
+            logger.info(f"Push subscription removed. Total subscriptions: {len(push_subscriptions)}")
             return {"message": "Subscription removed", "count": len(push_subscriptions)}
 
     return {"message": "Subscription not found", "count": len(push_subscriptions)}
@@ -132,14 +139,14 @@ async def send_push_notification(notification: PushNotification):
                 }
             )
             sent_count += 1
-            print(f"📤 Push notification sent: {notification.title}")
+            logger.info(f"Push notification sent: {notification.title}")
         except WebPushException as e:
             failed_count += 1
-            print(f"❌ Push notification failed: {e}")
+            logger.error(f"Push notification failed: {e}")
             # If subscription is gone (410 Gone), remove it
             if e.response and e.response.status_code == 410:
                 push_subscriptions.remove(subscription_info)
-                print(f"🗑️  Removed expired subscription")
+                logger.info("Removed expired subscription")
 
     return {
         "message": f"Notification sent to {sent_count} subscribers",
@@ -160,8 +167,9 @@ async def test_push_notification():
 
 def run():
     port = int(os.environ.get("PORT", 8080))
+    host = os.environ.get("HOST", "127.0.0.1")  # Use 127.0.0.1 by default for security
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+    uvicorn.run("main:app", host=host, port=port, reload=True)
 
 if __name__ == "__main__":
     run()

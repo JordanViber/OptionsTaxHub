@@ -43,12 +43,6 @@ async function uploadPortfolioCsv(file: File): Promise<PortfolioData[]> {
 export function useUploadPortfolio() {
   return useMutation({
     mutationFn: uploadPortfolioCsv,
-    onError: (error) => {
-      console.error("Portfolio upload error:", error);
-    },
-    onSuccess: (data) => {
-      console.log("Portfolio uploaded successfully:", data);
-    },
   });
 }
 
@@ -130,11 +124,5 @@ async function subscribeToPushNotifications(
 export function usePushNotificationSubscription() {
   return useMutation({
     mutationFn: subscribeToPushNotifications,
-    onError: (error) => {
-      console.error("Push subscription error:", error);
-    },
-    onSuccess: (data) => {
-      console.log("Push subscription successful:", data);
-    },
   });
 }

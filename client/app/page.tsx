@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   AppBar,
@@ -33,8 +33,10 @@ import {
 } from "@mui/icons-material";
 import InstallPrompt from "./components/InstallPrompt";
 import ServiceWorkerRegistration from "./components/ServiceWorkerRegistration";
-import { useUploadPortfolio, type PortfolioData } from "@/lib/api";
+import { useUploadPortfolio } from "@/lib/api";
 import { useAuth } from "@/app/context/auth";
+
+export const dynamic = "force-dynamic";
 
 export default function Home() {
   const router = useRouter();
@@ -50,13 +52,12 @@ export default function Home() {
   } = useUploadPortfolio();
 
   const handleUploadClick = () => {
-    fileInputRef.current!.click();
+    fileInputRef.current?.click();
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      console.log("✅ Upload button clicked! File:", file.name);
       uploadPortfolio(file);
     }
   };
@@ -67,8 +68,14 @@ export default function Home() {
     router.push("/auth/signin");
   };
 
+  useEffect(() => {
+    if (!authLoading && !user) {
+      router.push("/auth/signin");
+    }
+  }, [authLoading, user, router]);
+
   // Redirect to sign in if not authenticated
-  if (authLoading) {
+  if (authLoading || !user) {
     return (
       <Box
         sx={{
@@ -81,11 +88,6 @@ export default function Home() {
         <CircularProgress />
       </Box>
     );
-  }
-
-  if (!user) {
-    router.push("/auth/signin");
-    return null;
   }
 
   const firstName = user.user_metadata?.first_name as string | null;
@@ -277,23 +279,32 @@ export default function Home() {
                       </TableRow>
                     </TableHead>
                     <TableBody>
-                      {displayData.map((row, idx) => (
-                        <TableRow
-                          key={idx}
-                          sx={{
-                            "&:hover": { backgroundColor: "action.hover" },
-                            "&:last-child td": { borderBottom: 0 },
-                          }}
-                        >
-                          {columns.map((col) => (
-                            <TableCell key={col} sx={{ fontSize: "0.875rem" }}>
-                              {typeof row[col] === "number"
-                                ? parseFloat(String(row[col])).toFixed(2)
-                                : String(row[col])}
-                            </TableCell>
-                          ))}
-                        </TableRow>
-                      ))}
+                      {displayData.map((row) => {
+                        // Use a combination of values to create a unique key
+                        const rowKey = Object.values(row).join("-");
+                        return (
+                          <TableRow
+                            key={rowKey}
+                            sx={{
+                              "&:hover": { backgroundColor: "action.hover" },
+                              "&:last-child td": { borderBottom: 0 },
+                            }}
+                          >
+                            {columns.map((col) => (
+                              <TableCell
+                                key={col}
+                                sx={{ fontSize: "0.875rem" }}
+                              >
+                                {typeof row[col] === "number"
+                                  ? Number.parseFloat(String(row[col])).toFixed(
+                                      2,
+                                    )
+                                  : String(row[col])}
+                              </TableCell>
+                            ))}
+                          </TableRow>
+                        );
+                      })}
                     </TableBody>
                   </Table>
                 </TableContainer>

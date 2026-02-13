@@ -6,6 +6,7 @@ import CssBaseline from "@mui/material/CssBaseline";
 import { queryClient } from "@/lib/queryClient";
 import { theme } from "@/lib/theme";
 import { AuthProvider } from "@/app/context/auth";
+import InstallPrompt from "@/app/components/InstallPrompt";
 
 /**
  * Client-side layout wrapper
@@ -21,7 +22,10 @@ export default function RootLayoutClient({
     <QueryClientProvider client={queryClient}>
       <ThemeProvider theme={theme}>
         <CssBaseline />
-        <AuthProvider>{children}</AuthProvider>
+        <AuthProvider>
+          {children}
+          <InstallPrompt />
+        </AuthProvider>
       </ThemeProvider>
     </QueryClientProvider>
   );

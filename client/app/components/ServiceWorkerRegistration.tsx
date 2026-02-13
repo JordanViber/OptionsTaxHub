@@ -8,18 +8,13 @@ export default function ServiceWorkerRegistration() {
       navigator.serviceWorker
         .register("/sw.js")
         .then((registration) => {
-          console.log(
-            "Service Worker registered with scope:",
-            registration.scope,
-          );
-
           // Check for updates periodically
           setInterval(() => {
             registration.update();
           }, 60000); // Check every minute
         })
-        .catch((error) => {
-          console.error("Service Worker registration failed:", error);
+        .catch(() => {
+          // Service Worker registration failed silently
         });
     }
   }, []);

@@ -17,7 +17,7 @@ Object.defineProperty(window, "matchMedia", {
 
 // Mock Supabase
 jest.mock("@/lib/supabase", () => ({
-  supabase: {
+  getSupabaseClient: () => ({
     auth: {
       getSession: jest.fn(() =>
         Promise.resolve({
@@ -48,5 +48,5 @@ jest.mock("@/lib/supabase", () => ({
         data: { subscription: { unsubscribe: jest.fn() } },
       })),
     },
-  },
+  }),
 }));
