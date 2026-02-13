@@ -29,7 +29,7 @@ const createWrapper = () => {
   };
 };
 
-const getUploadStatus = (data: unknown, error: unknown) => {
+const getStatus = (data: unknown, error: unknown) => {
   if (data) return "success";
   if (error) return "error";
   return "idle";
@@ -46,7 +46,7 @@ function UploadComponent({ file }: Readonly<{ file: File }>) {
   return (
     <div>
       <button onClick={() => mutate(file)}>Upload</button>
-      <span>{getUploadStatus(data, error)}</span>
+      <span>{getStatus(data, error)}</span>
     </div>
   );
 }
@@ -78,7 +78,7 @@ function PushComponent({
   return (
     <div>
       <button onClick={() => mutate(subscription)}>Subscribe</button>
-      <span>{getUploadStatus(data, error)}</span>
+      <span>{getStatus(data, error)}</span>
     </div>
   );
 }
