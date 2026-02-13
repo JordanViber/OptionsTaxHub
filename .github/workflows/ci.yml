@@ -283,7 +283,7 @@ jobs:
           output: 'trivy-results.sarif'
 
       - name: Upload Trivy results to GitHub Security
-        uses: github/codeql-action/upload-sarif@48ab28a6f5dbc2a99bf1e0131198dd94eb9c371b  # v3
+        uses: github/codeql-action/upload-sarif@4355270be187e1b672a7a1c7c7bae5afdc1ab94a  # v3.28.0
         if: always()
         continue-on-error: true
         with:
