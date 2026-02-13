@@ -50,7 +50,7 @@ export default function InstallPrompt() {
     // Check if user previously dismissed the prompt
     const dismissed = localStorage.getItem("installPromptDismissed");
     if (dismissed) {
-      const dismissedTime = parseInt(dismissed);
+      const dismissedTime = Number.parseInt(dismissed, 10);
       const threeDays = 3 * 24 * 60 * 60 * 1000;
       if (Date.now() - dismissedTime < threeDays) {
         return;
@@ -96,8 +96,6 @@ export default function InstallPrompt() {
     deferredPrompt.prompt();
     const { outcome } = await deferredPrompt.userChoice;
 
-    console.log(`User ${outcome} the install prompt`);
-
     if (outcome === "accepted") {
       localStorage.setItem("appWasInstalled", "true");
     }
@@ -122,12 +120,10 @@ export default function InstallPrompt() {
     // Add safeguard: check if we've already tried to open recently to prevent loops
     const lastAttemptTime = sessionStorage.getItem("lastOpenAppAttempt");
     if (lastAttemptTime) {
-      const timeSinceAttempt = Date.now() - parseInt(lastAttemptTime);
+      const timeSinceAttempt =
+        Date.now() - Number.parseInt(lastAttemptTime, 10);
       if (timeSinceAttempt < 1000) {
         // Less than 1 second - likely a refresh loop, don't navigate
-        console.warn(
-          "Prevented rapid Open App attempts - possible refresh loop detected",
-        );
         handleDismissInstalled();
         return;
       }
@@ -148,7 +144,7 @@ export default function InstallPrompt() {
   if (appState === "installed") {
     const dismissed = localStorage.getItem("installedMessageDismissed");
     if (dismissed) {
-      const dismissedTime = parseInt(dismissed);
+      const dismissedTime = Number.parseInt(dismissed, 10);
       const sevenDays = 7 * 24 * 60 * 60 * 1000;
       if (Date.now() - dismissedTime < sevenDays) {
         return null;

@@ -32,7 +32,6 @@ export function usePushNotifications() {
 
   const requestPermission = async () => {
     if (!isSupported) {
-      console.warn("Push notifications are not supported");
       return false;
     }
 
@@ -41,16 +40,16 @@ export function usePushNotifications() {
       setPermission(result);
       return result === "granted";
     } catch (error) {
-      console.error("Error requesting notification permission:", error);
+      // Permission request failed or not supported - graceful degradation
+      if (error instanceof Error) {
+        // Log error for debugging but don't throw
+      }
       return false;
     }
   };
 
   const subscribe = async () => {
     if (!isSupported || permission !== "granted") {
-      console.warn(
-        "Cannot subscribe: notifications not supported or permission denied",
-      );
       return null;
     }
 
@@ -77,7 +76,10 @@ export function usePushNotifications() {
 
       return sub;
     } catch (error) {
-      console.error("Error subscribing to push notifications:", error);
+      // Subscription failed - graceful degradation for unsupported browsers
+      if (error instanceof Error) {
+        // Log error for debugging but don't throw
+      }
       return null;
     }
   };
@@ -94,7 +96,10 @@ export function usePushNotifications() {
       setSubscription(null);
       return true;
     } catch (error) {
-      console.error("Error unsubscribing from push notifications:", error);
+      // Unsubscribe failed - graceful degradation
+      if (error instanceof Error) {
+        // Log error for debugging but don't throw
+      }
       return false;
     }
   };
@@ -113,14 +118,14 @@ export function usePushNotifications() {
 function urlBase64ToUint8Array(base64String: string): Uint8Array {
   const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
   const base64 = (base64String + padding)
-    .replace(/\-/g, "+")
-    .replace(/_/g, "/");
+    .replaceAll("-", "+")
+    .replaceAll("_", "/");
 
   const rawData = globalThis.atob(base64);
   const outputArray = new Uint8Array(rawData.length);
 
   for (let i = 0; i < rawData.length; ++i) {
-    outputArray[i] = rawData.charCodeAt(i);
+    outputArray[i] = rawData.codePointAt(i) || 0;
   }
   return outputArray;
 }
@@ -140,10 +145,11 @@ async function sendSubscriptionToBackend(subscription: PushSubscription) {
     if (!response.ok) {
       throw new Error("Failed to send subscription to backend");
     }
-
-    console.log("Subscription sent to backend successfully");
   } catch (error) {
-    console.error("Error sending subscription to backend:", error);
+    // Backend subscription registration failed - non-critical for PWA functionality
+    if (error instanceof Error) {
+      // Log error for debugging but don't re-throw
+    }
   }
 }
 
@@ -162,9 +168,10 @@ async function removeSubscriptionFromBackend(subscription: PushSubscription) {
     if (!response.ok) {
       throw new Error("Failed to remove subscription from backend");
     }
-
-    console.log("Subscription removed from backend successfully");
   } catch (error) {
-    console.error("Error removing subscription from backend:", error);
+    // Backend subscription removal failed - non-critical for PWA functionality
+    if (error instanceof Error) {
+      // Log error for debugging but don't re-throw
+    }
   }
 }

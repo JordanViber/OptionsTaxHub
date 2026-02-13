@@ -5,6 +5,7 @@ import {
   useContext,
   useEffect,
   useState,
+  useMemo,
   ReactNode,
 } from "react";
 import { User } from "@supabase/supabase-js";
@@ -43,8 +44,6 @@ export function AuthProvider({ children }: Readonly<{ children: ReactNode }>) {
           data: { session },
         } = await supabase.auth.getSession();
         setUser(session?.user || null);
-      } catch (error) {
-        console.error("Error checking session:", error);
       } finally {
         setLoading(false);
       }
@@ -54,17 +53,13 @@ export function AuthProvider({ children }: Readonly<{ children: ReactNode }>) {
 
     // Listen for auth changes
     let subscription = { unsubscribe: () => {} } as { unsubscribe: () => void };
-    try {
-      const supabase = getSupabaseClient();
-      ({
-        data: { subscription },
-      } = supabase.auth.onAuthStateChange((event, session) => {
-        setUser(session?.user || null);
-        setLoading(false);
-      }));
-    } catch (error) {
-      console.error("Error subscribing to auth changes:", error);
-    }
+    const supabase = getSupabaseClient();
+    ({
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event, session) => {
+      setUser(session?.user || null);
+      setLoading(false);
+    }));
 
     return () => {
       subscription?.unsubscribe();
@@ -121,11 +116,12 @@ export function AuthProvider({ children }: Readonly<{ children: ReactNode }>) {
     if (error) throw error;
   };
 
-  return (
-    <AuthContext.Provider value={{ user, loading, signIn, signUp, signOut }}>
-      {children}
-    </AuthContext.Provider>
+  const value = useMemo(
+    () => ({ user, loading, signIn, signUp, signOut }),
+    [user, loading],
   );
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth() {

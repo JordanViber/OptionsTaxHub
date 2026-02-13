@@ -12,32 +12,30 @@ const STATIC_ASSETS = [
 
 // Install event - cache static assets
 self.addEventListener("install", (event) => {
-  console.log("[Service Worker] Installing...");
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
-      console.log("[Service Worker] Caching static assets");
-      return cache.addAll(STATIC_ASSETS.filter((url) => !url.includes(".png"))); // Skip icons for now
+      return cache.addAll(
+        Array.from(STATIC_ASSETS).filter((url) => !url.includes(".png")),
+      ); // Skip icons for now
     }),
   );
-  self.skipWaiting();
+  globalThis.skipWaiting();
 });
 
 // Activate event - clean up old caches
 self.addEventListener("activate", (event) => {
-  console.log("[Service Worker] Activating...");
   event.waitUntil(
     caches.keys().then((cacheNames) => {
       return Promise.all(
-        cacheNames.map((cacheName) => {
+        Array.from(cacheNames).map((cacheName) => {
           if (cacheName !== CACHE_NAME) {
-            console.log("[Service Worker] Deleting old cache:", cacheName);
             return caches.delete(cacheName);
           }
         }),
       );
     }),
   );
-  self.clients.claim();
+  globalThis.clients.claim();
 });
 
 // Fetch event - network first, fallback to cache
@@ -78,8 +76,6 @@ self.addEventListener("fetch", (event) => {
 
 // Push notification event
 self.addEventListener("push", (event) => {
-  console.log("[Service Worker] Push received:", event);
-
   let notificationData = {
     title: "OptionsTaxHub",
     body: "You have a new notification",
@@ -99,13 +95,18 @@ self.addEventListener("push", (event) => {
         tag: data.tag || notificationData.tag,
         data: data.data || {},
       };
-    } catch (e) {
-      notificationData.body = event.data.text();
+    } catch {
+      // JSON parsing failed - attempt to use text content as fallback
+      if (event.data && typeof event.data.text === "function") {
+        notificationData.body = event.data.text();
+      } else {
+        notificationData.body = "New notification";
+      }
     }
   }
 
   event.waitUntil(
-    self.registration.showNotification(notificationData.title, {
+    globalThis.registration.showNotification(notificationData.title, {
       body: notificationData.body,
       icon: notificationData.icon,
       badge: notificationData.badge,
@@ -117,7 +118,6 @@ self.addEventListener("push", (event) => {
 
 // Notification click event
 self.addEventListener("notificationclick", (event) => {
-  console.log("[Service Worker] Notification clicked:", event);
   event.notification.close();
 
   // Open the app or focus existing window
@@ -126,8 +126,11 @@ self.addEventListener("notificationclick", (event) => {
       .matchAll({ type: "window", includeUncontrolled: true })
       .then((clientList) => {
         // Check if there's already a window open
-        for (const client of clientList) {
-          if (client.url === self.registration.scope && "focus" in client) {
+        for (const client of Array.from(clientList)) {
+          if (
+            client.url === globalThis.registration.scope &&
+            "focus" in client
+          ) {
             return client.focus();
           }
         }
