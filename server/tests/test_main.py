@@ -181,7 +181,7 @@ def test_run_invokes_uvicorn(monkeypatch):
     main.run()
 
     assert captured["args"] == ("main:app",)
-    assert captured["kwargs"]["host"] == "0.0.0.0"
+    assert captured["kwargs"]["host"] == "127.0.0.1"
     assert captured["kwargs"]["port"] == 9090
     assert captured["kwargs"]["reload"] is True
 
