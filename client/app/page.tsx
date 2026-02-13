@@ -280,7 +280,7 @@ export default function Home() {
                     </TableHead>
                     <TableBody>
                       {displayData.map((row, index) => {
-                        const rowKey = row.id || JSON.stringify(row);
+                        const rowKey = row.id || index;
                         return (
                           <TableRow
                             key={rowKey}
