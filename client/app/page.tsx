@@ -279,9 +279,8 @@ export default function Home() {
                       </TableRow>
                     </TableHead>
                     <TableBody>
-                      {displayData.map((row) => {
-                        // Use a combination of values to create a unique key
-                        const rowKey = Object.values(row).join("-");
+                      {displayData.map((row, index) => {
+                        const rowKey = row.id || JSON.stringify(row);
                         return (
                           <TableRow
                             key={rowKey}
