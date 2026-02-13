@@ -57,6 +57,7 @@ describe("ServiceWorkerRegistration", () => {
     });
 
     // Service worker registration fails gracefully without console errors
+    expect(register).toHaveBeenCalled();
     expect(consoleErrorSpy).not.toHaveBeenCalled();
     expect(consoleWarnSpy).not.toHaveBeenCalled();
 
