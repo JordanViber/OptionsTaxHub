@@ -160,6 +160,7 @@ jobs:
   quality-gate:
     name: SonarCloud Quality Gate
     runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
     needs: [backend-tests, frontend-tests]
 
     steps:
@@ -178,7 +179,7 @@ jobs:
     name: E2E Tests (Playwright)
     runs-on: ubuntu-latest
     if: github.event_name == 'push' || github.event_name == 'pull_request'
-    needs: [quality-gate]
+    needs: [backend-tests, frontend-tests]
 
     steps:
       - uses: actions/checkout@a5ac7e51b41094c92402da3b24376905380afc29  # v6
