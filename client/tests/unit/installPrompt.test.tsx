@@ -102,4 +102,42 @@ describe("InstallPrompt", () => {
       expect.any(String),
     );
   });
+
+  it("shows installed message when app was installed", async () => {
+    localStorage.setItem("appWasInstalled", "true");
+
+    render(<InstallPrompt />);
+
+    act(() => {
+      jest.advanceTimersByTime(3000);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("App Already Installed")).toBeInTheDocument();
+    });
+  });
+
+  it("dismisses installed message and stores timestamp", async () => {
+    const setItemSpy = jest.spyOn(Storage.prototype, "setItem");
+
+    localStorage.setItem("appWasInstalled", "true");
+
+    render(<InstallPrompt />);
+
+    act(() => {
+      jest.advanceTimersByTime(3000);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("App Already Installed")).toBeInTheDocument();
+    });
+
+    const dismissButtons = screen.getAllByText(/Got it|Dismiss/);
+    fireEvent.click(dismissButtons[0]);
+
+    expect(setItemSpy).toHaveBeenCalledWith(
+      "installedMessageDismissed",
+      expect.any(String),
+    );
+  });
 });

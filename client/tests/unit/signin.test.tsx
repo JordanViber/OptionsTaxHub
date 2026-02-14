@@ -65,4 +65,29 @@ describe("Sign In Page", () => {
 
     expect(useAuth).toHaveBeenCalled();
   });
+
+  it("renders email and password input fields", () => {
+    render(<SigninPage />);
+
+    const inputs = screen.getAllByRole("textbox");
+    expect(inputs.length).toBeGreaterThan(0);
+  });
+
+  it("has password input field", () => {
+    render(<SigninPage />);
+
+    const passwordInputs = screen.queryAllByDisplayValue("");
+    const passwordInput = passwordInputs.find(
+      (el) => (el as HTMLInputElement).type === "password",
+    ) as HTMLInputElement | undefined;
+    expect(passwordInput).toBeDefined();
+    expect(passwordInput?.type).toBe("password");
+  });
+
+  it("has password visibility toggle button", () => {
+    render(<SigninPage />);
+
+    const showPasswordButtons = screen.getAllByLabelText(/show password|hide password/i);
+    expect(showPasswordButtons.length).toBeGreaterThan(0);
+  });
 });

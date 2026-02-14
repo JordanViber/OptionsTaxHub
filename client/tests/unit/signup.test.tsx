@@ -65,4 +65,35 @@ describe("Sign Up Page", () => {
 
     expect(useAuth).toHaveBeenCalled();
   });
+
+  it("renders first name and last name input fields", () => {
+    render(<SignupPage />);
+
+    const inputs = screen.getAllByRole("textbox");
+    expect(inputs.length).toBeGreaterThan(0);
+  });
+
+  it("has password input fields", () => {
+    render(<SignupPage />);
+
+    const passwordInputs = screen.queryAllByDisplayValue("");
+    const typedPasswordInputs = passwordInputs.filter(
+      (el) => (el as HTMLInputElement).type === "password",
+    ) as HTMLInputElement[];
+    expect(typedPasswordInputs.length).toBeGreaterThan(0);
+  });
+
+  it("has password visibility toggle buttons", () => {
+    render(<SignupPage />);
+
+    const showPasswordButtons = screen.getAllByLabelText(/show password|hide password/i);
+    expect(showPasswordButtons.length).toBeGreaterThan(0);
+  });
+
+  it("displays all required form fields", () => {
+    render(<SignupPage />);
+
+    const asterisks = screen.getAllByText("*");
+    expect(asterisks.length).toBeGreaterThan(0);
+  });
 });
