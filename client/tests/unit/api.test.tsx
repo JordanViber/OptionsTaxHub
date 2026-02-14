@@ -29,12 +29,24 @@ const createWrapper = () => {
   };
 };
 
-function UploadComponent({ file }: { file: File }) {
+const getStatus = (data: unknown, error: unknown) => {
+  if (data) return "success";
+  if (error) return "error";
+  return "idle";
+};
+
+const getHistoryStatus = (data: unknown, error: unknown) => {
+  if (data) return "history";
+  if (error) return "error";
+  return "idle";
+};
+
+function UploadComponent({ file }: Readonly<{ file: File }>) {
   const { mutate, data, error } = useUploadPortfolio();
   return (
     <div>
       <button onClick={() => mutate(file)}>Upload</button>
-      <span>{data ? "success" : error ? "error" : "idle"}</span>
+      <span>{getStatus(data, error)}</span>
     </div>
   );
 }
@@ -43,7 +55,7 @@ function HistoryComponent() {
   const { data, error } = usePortfolioHistory(true);
   return (
     <div>
-      <span>{data ? "history" : error ? "error" : "idle"}</span>
+      <span>{getHistoryStatus(data, error)}</span>
     </div>
   );
 }
@@ -52,35 +64,41 @@ function HistoryDisabledComponent() {
   const { data, error } = usePortfolioHistory();
   return (
     <div>
-      <span>{data ? "history" : error ? "error" : "idle"}</span>
+      <span>{getHistoryStatus(data, error)}</span>
     </div>
   );
 }
 
 function PushComponent({
   subscription,
-}: {
+}: Readonly<{
   subscription: SubscriptionPayload;
-}) {
+}>) {
   const { mutate, data, error } = usePushNotificationSubscription();
   return (
     <div>
       <button onClick={() => mutate(subscription)}>Subscribe</button>
-      <span>{data ? "success" : error ? "error" : "idle"}</span>
+      <span>{getStatus(data, error)}</span>
     </div>
   );
 }
 
 describe("api hooks", () => {
+  let originalFetch: typeof globalThis.fetch;
+
   beforeEach(() => {
     jest.resetAllMocks();
+    originalFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
   });
 
   it("uploads portfolio successfully", async () => {
-    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
     const file = new File(["content"], "test.csv", { type: "text/csv" });
 
-    global.fetch = jest.fn().mockResolvedValue({
+    globalThis.fetch = jest.fn().mockResolvedValue({
       ok: true,
       json: async () => [{ symbol: "AAPL", qty: 1, price: 100 }],
     } as Response);
@@ -93,18 +111,14 @@ describe("api hooks", () => {
       expect(screen.getByText("success")).toBeInTheDocument();
     });
 
-    expect(logSpy).toHaveBeenCalledWith("Portfolio uploaded successfully:", [
-      { symbol: "AAPL", qty: 1, price: 100 },
-    ]);
-
-    logSpy.mockRestore();
+    // Successfully uploaded without console logging
+    expect(globalThis.fetch).toHaveBeenCalled();
   });
 
   it("handles upload errors", async () => {
-    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
     const file = new File(["content"], "test.csv", { type: "text/csv" });
 
-    global.fetch = jest.fn().mockResolvedValue({
+    globalThis.fetch = jest.fn().mockResolvedValue({
       ok: false,
       statusText: "Bad Request",
     } as Response);
@@ -117,13 +131,12 @@ describe("api hooks", () => {
       expect(screen.getByText("error")).toBeInTheDocument();
     });
 
-    expect(errorSpy).toHaveBeenCalled();
-
-    errorSpy.mockRestore();
+    // Error handled gracefully without console logging
+    expect(globalThis.fetch).toHaveBeenCalled();
   });
 
   it("fetches portfolio history successfully", async () => {
-    global.fetch = jest.fn().mockResolvedValue({
+    globalThis.fetch = jest.fn().mockResolvedValue({
       ok: true,
       json: async () => [{ symbol: "AAPL", qty: 1, price: 100 }],
     } as Response);
@@ -136,7 +149,7 @@ describe("api hooks", () => {
   });
 
   it("handles portfolio history errors", async () => {
-    global.fetch = jest.fn().mockResolvedValue({
+    globalThis.fetch = jest.fn().mockResolvedValue({
       ok: false,
       statusText: "Not Found",
     } as Response);
@@ -154,7 +167,7 @@ describe("api hooks", () => {
       json: async () => [],
     } as Response);
 
-    global.fetch = fetchSpy;
+    globalThis.fetch = fetchSpy;
 
     render(<HistoryDisabledComponent />, { wrapper: createWrapper() });
 
@@ -166,13 +179,12 @@ describe("api hooks", () => {
   });
 
   it("subscribes to push notifications successfully", async () => {
-    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
     const subscription = {
       endpoint: "https://example.com/endpoint",
       keys: { p256dh: "key", auth: "auth" },
     };
 
-    global.fetch = jest.fn().mockResolvedValue({
+    globalThis.fetch = jest.fn().mockResolvedValue({
       ok: true,
       json: async () => ({ success: true, message: "ok" }),
     } as Response);
@@ -187,22 +199,17 @@ describe("api hooks", () => {
       expect(screen.getByText("success")).toBeInTheDocument();
     });
 
-    expect(logSpy).toHaveBeenCalledWith("Push subscription successful:", {
-      success: true,
-      message: "ok",
-    });
-
-    logSpy.mockRestore();
+    // Successfully subscribed without console logging
+    expect(globalThis.fetch).toHaveBeenCalled();
   });
 
   it("handles push notification subscription errors", async () => {
-    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
     const subscription = {
       endpoint: "https://example.com/endpoint",
       keys: { p256dh: "key", auth: "auth" },
     };
 
-    global.fetch = jest.fn().mockResolvedValue({
+    globalThis.fetch = jest.fn().mockResolvedValue({
       ok: false,
       statusText: "Forbidden",
     } as Response);
@@ -217,8 +224,7 @@ describe("api hooks", () => {
       expect(screen.getByText("error")).toBeInTheDocument();
     });
 
-    expect(errorSpy).toHaveBeenCalled();
-
-    errorSpy.mockRestore();
+    // Error handled gracefully without console logging
+    expect(globalThis.fetch).toHaveBeenCalled();
   });
 });

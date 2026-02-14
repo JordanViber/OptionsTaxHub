@@ -40,9 +40,10 @@ describe("ServiceWorkerRegistration", () => {
     expect(update).toHaveBeenCalled();
   });
 
-  it("logs error when registration fails", async () => {
-    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+  it("handles registration failure silently", async () => {
     const register = jest.fn().mockRejectedValue(new Error("fail"));
+    const consoleErrorSpy = jest.spyOn(console, "error").mockImplementation();
+    const consoleWarnSpy = jest.spyOn(console, "warn").mockImplementation();
 
     Object.defineProperty(navigator, "serviceWorker", {
       value: { register },
@@ -55,9 +56,13 @@ describe("ServiceWorkerRegistration", () => {
       expect(register).toHaveBeenCalledWith("/sw.js");
     });
 
-    expect(errorSpy).toHaveBeenCalled();
+    // Service worker registration fails gracefully without console errors
+    expect(register).toHaveBeenCalled();
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+    expect(consoleWarnSpy).not.toHaveBeenCalled();
 
-    errorSpy.mockRestore();
+    consoleErrorSpy.mockRestore();
+    consoleWarnSpy.mockRestore();
   });
 
   it("does nothing when serviceWorker is unavailable", () => {

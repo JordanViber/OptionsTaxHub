@@ -2,7 +2,7 @@ name: CI Pipeline
 
 on:
   push:
-    branches: [main]  # Only run push checks on main (production safety)
+    branches: [main, staging]  # Run on both main and staging branches
 
 jobs:
   # Backend Tests and Analysis
@@ -73,6 +73,7 @@ jobs:
           verbose: true
 
       - name: SonarCloud Scan (Backend)
+        if: github.ref == 'refs/heads/main'
         uses: SonarSource/sonarcloud-github-action@eb211723266fe8e83102bac7361f0a05c3ac1d1b  # master
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -80,8 +81,8 @@ jobs:
         with:
           projectBaseDir: server
           args: >
-            -Dsonar.sources=.
-            -Dsonar.tests=tests
+            -Dsonar.projectKey=JordanViber_OptionsTaxHub
+            -Dsonar.organization=jordanviber
             -Dsonar.python.coverage.reportPaths=coverage.xml
 
   # Frontend Tests and Analysis
@@ -143,6 +144,7 @@ jobs:
           verbose: true
 
       - name: SonarCloud Scan (Frontend)
+        if: github.ref == 'refs/heads/main'
         uses: SonarSource/sonarcloud-github-action@eb211723266fe8e83102bac7361f0a05c3ac1d1b  # master
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -150,8 +152,8 @@ jobs:
         with:
           projectBaseDir: client
           args: >
-            -Dsonar.sources=app
-            -Dsonar.tests=tests
+            -Dsonar.projectKey=JordanViber_OptionsTaxHub
+            -Dsonar.organization=jordanviber
             -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
 
   # SonarCloud Quality Gate Check
@@ -279,7 +281,7 @@ jobs:
           output: 'trivy-results.sarif'
 
       - name: Upload Trivy results to GitHub Security
-        uses: github/codeql-action/upload-sarif@48ab28a6f5dbc2a99bf1e0131198dd94eb9c371b  # v3
+        uses: github/codeql-action/upload-sarif@4355270be187e1b672a7a1c7c7bae5afdc1ab94a  # v3.28.0
         if: always()
         continue-on-error: true
         with:

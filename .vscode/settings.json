@@ -3,6 +3,9 @@
   "python.terminal.activateEnvironment": true,
   "python.analysis.typeCheckingMode": "basic",
   "python.formatting.provider": "none",
+  "python.analysis.extraPaths": [
+    "${workspaceFolder}/server"
+  ],
 
   "[python]": {
     "editor.defaultFormatter": "ms-python.python",
@@ -50,6 +53,7 @@
   "cSpell.words": [
     "aquasecurity",
     "Dsonar",
+    "jordanviber",
     "optionstaxhub",
     "pytest",
     "PYTHONPATH",
@@ -59,7 +63,8 @@
     "sonarqube",
     "sonarsource",
     "SUPABASE",
-    "uvicorn"
+    "uvicorn",
+    "webpush"
   ],
   "sonarlint.connectedMode.project": {
     "connectionId": "jordanviber",

@@ -19,7 +19,9 @@ module.exports = {
   },
   collectCoverageFrom: [
     "app/**/*.{ts,tsx}",
+    "lib/**/*.{ts,tsx}",
     "!app/**/*.d.ts",
+    "!lib/**/*.d.ts",
     "!app/**/layout.tsx",
   ],
   coverageReporters: ["text", "lcov", "html", "json"],
