@@ -1,5 +1,12 @@
 import "@testing-library/jest-dom";
 
+// Polyfill TextEncoder/TextDecoder for jsdom (needed by MUI DataGrid)
+if (typeof globalThis.TextEncoder === "undefined") {
+  const { TextEncoder, TextDecoder } = require("util");
+  globalThis.TextEncoder = TextEncoder;
+  globalThis.TextDecoder = TextDecoder;
+}
+
 // Mock window.matchMedia
 Object.defineProperty(window, "matchMedia", {
   writable: true,

@@ -47,6 +47,11 @@ export default function InstallPrompt() {
       return;
     }
 
+    // Only show the prompt once per browser session
+    if (sessionStorage.getItem("installPromptShownThisSession")) {
+      return;
+    }
+
     // Check if user previously dismissed the prompt
     const dismissed = localStorage.getItem("installPromptDismissed");
     if (dismissed) {
@@ -61,7 +66,10 @@ export default function InstallPrompt() {
     const wasInstalled = localStorage.getItem("appWasInstalled");
     if (wasInstalled === "true") {
       setAppState("installed");
-      setTimeout(() => setShowPrompt(true), 3000);
+      setTimeout(() => {
+        setShowPrompt(true);
+        sessionStorage.setItem("installPromptShownThisSession", "true");
+      }, 3000);
       return;
     }
 
@@ -71,7 +79,10 @@ export default function InstallPrompt() {
       setDeferredPrompt(e as BeforeInstallPromptEvent);
       setAppState("installable");
       // Show prompt after 10 seconds to not be annoying
-      setTimeout(() => setShowPrompt(true), 10000);
+      setTimeout(() => {
+        setShowPrompt(true);
+        sessionStorage.setItem("installPromptShownThisSession", "true");
+      }, 10000);
     };
 
     // Listen for app installed event

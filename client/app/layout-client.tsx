@@ -15,9 +15,9 @@ import InstallPrompt from "@/app/components/InstallPrompt";
  */
 export default function RootLayoutClient({
   children,
-}: {
+}: Readonly<{
   children: React.ReactNode;
-}) {
+}>) {
   return (
     <QueryClientProvider client={queryClient}>
       <ThemeProvider theme={theme}>

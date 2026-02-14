@@ -1,9 +1,17 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
+import type {
+  PortfolioAnalysis,
+  TaxProfile,
+  TaxBracketsSummary,
+  PricesResponse,
+  FilingStatus,
+  AnalysisHistoryItem,
+} from "@/lib/types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 
 /**
- * API response type for CSV upload
+ * API response type for legacy CSV upload
  * Backend returns parsed CSV data (first 5 rows)
  */
 export interface PortfolioData {
@@ -11,10 +19,7 @@ export interface PortfolioData {
 }
 
 /**
- * Upload CSV file to backend for parsing
- *
- * @param file - CSV file to upload
- * @returns Promise resolving to array of portfolio data
+ * Legacy: Upload CSV file to backend for parsing (first 5 rows)
  */
 async function uploadPortfolioCsv(file: File): Promise<PortfolioData[]> {
   const formData = new FormData();
@@ -33,12 +38,7 @@ async function uploadPortfolioCsv(file: File): Promise<PortfolioData[]> {
 }
 
 /**
- * React Query mutation hook for CSV upload
- *
- * Usage:
- * ```
- * const { mutate, isPending, error, data } = useUploadPortfolio();
- * ```
+ * Legacy React Query mutation hook for CSV upload
  */
 export function useUploadPortfolio() {
   return useMutation({
@@ -46,13 +46,139 @@ export function useUploadPortfolio() {
   });
 }
 
+// --- Portfolio Analysis ---
+
+interface AnalyzePortfolioParams {
+  file: File;
+  filingStatus?: FilingStatus;
+  estimatedIncome?: number;
+  taxYear?: number;
+  userId?: string;
+}
+
 /**
- * Fetch portfolio history (placeholder for future backend implementation)
+ * Upload CSV and get full portfolio analysis with tax-loss harvesting suggestions.
  *
- * @returns Promise resolving to array of historical portfolio data
+ * Calls POST /api/portfolio/analyze with the CSV file and tax profile params.
+ * Returns positions, harvesting suggestions, wash-sale flags, and summary.
  */
-async function fetchPortfolioHistory(): Promise<PortfolioData[]> {
-  const response = await fetch(`${API_URL}/portfolio-history`);
+async function analyzePortfolio(
+  params: AnalyzePortfolioParams,
+): Promise<PortfolioAnalysis> {
+  const formData = new FormData();
+  formData.append("file", params.file);
+
+  const queryParams = new URLSearchParams();
+  if (params.filingStatus)
+    queryParams.set("filing_status", params.filingStatus);
+  if (params.estimatedIncome)
+    queryParams.set("estimated_income", params.estimatedIncome.toString());
+  if (params.taxYear) queryParams.set("tax_year", params.taxYear.toString());
+  if (params.userId) queryParams.set("user_id", params.userId);
+
+  const url = `${API_URL}/api/portfolio/analyze?${queryParams.toString()}`;
+
+  const response = await fetch(url, {
+    method: "POST",
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => null);
+    const message =
+      errorData?.detail?.message ||
+      errorData?.detail ||
+      `Analysis failed: ${response.statusText}`;
+    throw new Error(message);
+  }
+
+  return response.json();
+}
+
+/**
+ * React Query mutation hook for full portfolio analysis.
+ *
+ * Usage:
+ * ```tsx
+ * const { mutate, isPending, data, error } = useAnalyzePortfolio();
+ * mutate({ file, filingStatus: "single", estimatedIncome: 85000, taxYear: 2025 });
+ * ```
+ */
+export function useAnalyzePortfolio() {
+  return useMutation({
+    mutationFn: analyzePortfolio,
+  });
+}
+
+// --- Live Prices ---
+
+/**
+ * Fetch current prices for given symbols via yfinance.
+ */
+async function fetchPrices(symbols: string[]): Promise<PricesResponse> {
+  const response = await fetch(
+    `${API_URL}/api/prices?symbols=${symbols.join(",")}`,
+  );
+
+  if (!response.ok) {
+    throw new Error(`Price fetch failed: ${response.statusText}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * React Query hook for fetching live prices.
+ *
+ * Usage:
+ * ```tsx
+ * const { data } = useFetchPrices(["AAPL", "MSFT"], true);
+ * ```
+ */
+export function useFetchPrices(symbols: string[], enabled = false) {
+  return useQuery({
+    queryKey: ["prices", symbols],
+    queryFn: () => fetchPrices(symbols),
+    enabled: enabled && symbols.length > 0,
+    staleTime: 5 * 60 * 1000, // 5 minutes — matches backend cache TTL
+  });
+}
+
+// --- Tax Profile ---
+
+/**
+ * Save user's tax profile settings.
+ */
+async function saveTaxProfile(
+  profile: TaxProfile,
+): Promise<{ message: string; profile: TaxProfile }> {
+  const response = await fetch(`${API_URL}/api/tax-profile`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(profile),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Save failed: ${response.statusText}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * React Query mutation hook for saving tax profile.
+ */
+export function useSaveTaxProfile() {
+  return useMutation({
+    mutationFn: saveTaxProfile,
+  });
+}
+
+/**
+ * Fetch user's tax profile.
+ */
+async function fetchTaxProfile(userId: string): Promise<TaxProfile> {
+  const response = await fetch(`${API_URL}/api/tax-profile/${userId}`);
 
   if (!response.ok) {
     throw new Error(`Fetch failed: ${response.statusText}`);
@@ -62,67 +188,92 @@ async function fetchPortfolioHistory(): Promise<PortfolioData[]> {
 }
 
 /**
- * React Query query hook for fetching portfolio history
- *
- * Usage:
- * ```
- * const { data, isLoading, error } = usePortfolioHistory();
- * const { data, isLoading, error } = usePortfolioHistory(true);
- * ```
+ * React Query hook for loading tax profile.
  */
-export function usePortfolioHistory(enabled = false) {
+export function useTaxProfile(userId: string | undefined) {
   return useQuery({
-    queryKey: ["portfolio-history"],
-    queryFn: fetchPortfolioHistory,
-    enabled, // Disable auto-fetch until endpoint exists
-  });
-}
-
-/**
- * Push notification subscription data
- */
-export interface PushSubscriptionData {
-  endpoint: string;
-  keys: {
-    p256dh: string;
-    auth: string;
-  };
-}
-
-/**
- * Subscribe to push notifications
- *
- * @param subscription - Push subscription object from browser
- * @returns Promise resolving to subscription confirmation
- */
-async function subscribeToPushNotifications(
-  subscription: PushSubscriptionData,
-): Promise<{ success: boolean; message: string }> {
-  const response = await fetch(`${API_URL}/subscribe-push`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
+    queryKey: ["tax-profile", userId],
+    queryFn: () => {
+      if (!userId) throw new Error("userId is required");
+      return fetchTaxProfile(userId);
     },
-    body: JSON.stringify(subscription),
+    enabled: !!userId,
   });
+}
+
+// --- Tax Brackets ---
+
+/**
+ * Fetch tax brackets for given parameters.
+ */
+async function fetchTaxBrackets(
+  year: number,
+  filingStatus: FilingStatus,
+  income: number,
+): Promise<TaxBracketsSummary> {
+  const params = new URLSearchParams({
+    year: year.toString(),
+    filing_status: filingStatus,
+    income: income.toString(),
+  });
+
+  const response = await fetch(`${API_URL}/api/tax-brackets?${params}`);
 
   if (!response.ok) {
-    throw new Error(`Push subscription failed: ${response.statusText}`);
+    throw new Error(`Fetch failed: ${response.statusText}`);
   }
 
   return response.json();
 }
 
 /**
- * React Query mutation hook for push notification subscription
- *
- * Usage:
- * ```
- * const { mutate, isPending } = usePushNotificationSubscription();
- * ```
+ * React Query hook for tax brackets.
  */
-export function usePushNotificationSubscription() {
-  return useMutation({
-    mutationFn: subscribeToPushNotifications,
+export function useTaxBrackets(
+  year: number,
+  filingStatus: FilingStatus,
+  income: number,
+  enabled = false,
+) {
+  return useQuery({
+    queryKey: ["tax-brackets", year, filingStatus, income],
+    queryFn: () => fetchTaxBrackets(year, filingStatus, income),
+    enabled,
+    staleTime: Infinity, // Tax brackets don't change during a session
+  });
+}
+
+// --- Portfolio History ---
+
+/**
+ * Fetch past portfolio analyses for a user from Supabase.
+ */
+async function fetchPortfolioHistory(
+  userId: string,
+): Promise<AnalysisHistoryItem[]> {
+  const response = await fetch(`${API_URL}/api/portfolio/history/${userId}`);
+
+  if (!response.ok) {
+    throw new Error(`Fetch failed: ${response.statusText}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * React Query hook for portfolio analysis history.
+ *
+ * Fetches past uploads for the given user. Refetches automatically
+ * when the query is invalidated (e.g., after a new upload).
+ */
+export function usePortfolioHistory(userId: string | undefined) {
+  return useQuery({
+    queryKey: ["portfolio-history", userId],
+    queryFn: () => {
+      if (!userId) throw new Error("userId is required");
+      return fetchPortfolioHistory(userId);
+    },
+    enabled: !!userId,
+    staleTime: 30 * 1000, // 30 seconds
   });
 }

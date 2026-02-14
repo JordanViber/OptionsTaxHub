@@ -52,7 +52,13 @@
   "terminal.integrated.defaultProfile.linux": "bash",
   "cSpell.words": [
     "aquasecurity",
+    "dotenv",
+    "DRIV",
     "Dsonar",
+    "fastapi",
+    "genai",
+    "httpx",
+    "IBUY",
     "jordanviber",
     "optionstaxhub",
     "pytest",

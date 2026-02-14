@@ -12,30 +12,42 @@ import {
   Button,
   CircularProgress,
   Alert,
+  Drawer,
+  List,
+  ListItem,
+  ListItemButton,
+  ListItemText,
   Stack,
   Typography,
-  Paper,
-  Table,
-  TableBody,
-  TableCell,
-  TableContainer,
-  TableHead,
-  TableRow,
   Menu,
   MenuItem,
   Avatar,
+  Tabs,
+  Tab,
+  LinearProgress,
+  Divider,
 } from "@mui/material";
 import {
   CloudUpload as CloudUploadIcon,
-  CheckCircle as CheckCircleIcon,
   Error as ErrorIcon,
   Logout as LogoutIcon,
+  Settings as SettingsIcon,
+  Dashboard as DashboardIcon,
+  History as HistoryIcon,
 } from "@mui/icons-material";
-import InstallPrompt from "./components/InstallPrompt";
 import ServiceWorkerRegistration from "./components/ServiceWorkerRegistration";
-import { useUploadPortfolio } from "@/lib/api";
+import TaxDisclaimer from "./components/TaxDisclaimer";
+import PortfolioSummaryCards from "./components/PortfolioSummaryCards";
+import PositionsTable from "./components/PositionsTable";
+import HarvestingSuggestions from "./components/HarvestingSuggestions";
+import WashSaleWarning from "./components/WashSaleWarning";
+import {
+  useAnalyzePortfolio,
+  useTaxProfile,
+  usePortfolioHistory,
+} from "@/lib/api";
 import { useAuth } from "@/app/context/auth";
-
+import { useQueryClient } from "@tanstack/react-query";
 export const dynamic = "force-dynamic";
 
 export default function Home() {
@@ -43,13 +55,23 @@ export default function Home() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { user, loading: authLoading, signOut } = useAuth();
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
+  const [activeTab, setActiveTab] = useState(0);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const queryClient = useQueryClient();
 
+  // Load the user's tax profile for analyze params
+  const { data: taxProfile } = useTaxProfile(user?.id);
+
+  // Load past upload history
+  const { data: history } = usePortfolioHistory(user?.id);
+
+  // Full portfolio analysis mutation
   const {
-    mutate: uploadPortfolio,
+    mutate: analyzePortfolio,
     isPending,
     error,
-    data: portfolioData,
-  } = useUploadPortfolio();
+    data: analysis,
+  } = useAnalyzePortfolio();
 
   const handleUploadClick = () => {
     fileInputRef.current?.click();
@@ -58,7 +80,25 @@ export default function Home() {
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      uploadPortfolio(file);
+      analyzePortfolio(
+        {
+          file,
+          filingStatus: taxProfile?.filing_status || "single",
+          estimatedIncome: taxProfile?.estimated_annual_income || 75000,
+          taxYear: taxProfile?.tax_year || 2025,
+          userId: user?.id,
+        },
+        {
+          onSuccess: () => {
+            // Refresh history sidebar after successful analysis
+            queryClient.invalidateQueries({
+              queryKey: ["portfolio-history", user?.id],
+            });
+          },
+        },
+      );
+      // Reset file input so the same file can be re-uploaded
+      e.target.value = "";
     }
   };
 
@@ -74,7 +114,6 @@ export default function Home() {
     }
   }, [authLoading, user, router]);
 
-  // Redirect to sign in if not authenticated
   if (authLoading || !user) {
     return (
       <Box
@@ -100,18 +139,16 @@ export default function Home() {
     displayNameFromProfile || fullName || user.email || "Account";
   const avatarLetter = displayName[0].toUpperCase();
 
-  // Format portfolio data for table display
-  const displayData = portfolioData || [];
-  const columns = displayData.length > 0 ? Object.keys(displayData[0]) : [];
+  const hasResults = !!analysis;
 
   return (
     <>
       <ServiceWorkerRegistration />
-      <InstallPrompt />
 
       {/* Header AppBar */}
-      <AppBar position="static" sx={{ mb: 4 }}>
+      <AppBar position="static">
         <Toolbar>
+          <DashboardIcon sx={{ mr: 1 }} />
           <Typography
             variant="h6"
             component="div"
@@ -119,9 +156,22 @@ export default function Home() {
           >
             OptionsTaxHub
           </Typography>
-          <Typography variant="body2" sx={{ opacity: 0.9, mr: 2 }}>
-            Tax-Optimized Options Trading
-          </Typography>
+          <Button
+            color="inherit"
+            startIcon={<HistoryIcon />}
+            onClick={() => setHistoryOpen(true)}
+            sx={{ textTransform: "none", mr: 1 }}
+          >
+            History
+          </Button>
+          <Button
+            color="inherit"
+            startIcon={<SettingsIcon />}
+            onClick={() => router.push("/settings")}
+            sx={{ textTransform: "none", mr: 1 }}
+          >
+            Settings
+          </Button>
           <Button
             color="inherit"
             onClick={(e) => setMenuAnchor(e.currentTarget)}
@@ -151,39 +201,125 @@ export default function Home() {
         </Toolbar>
       </AppBar>
 
+      {/* History Drawer */}
+      <Drawer
+        anchor="left"
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+      >
+        <Box sx={{ width: 300, pt: 2 }}>
+          <Typography
+            variant="h6"
+            sx={{
+              px: 2,
+              pb: 1,
+              fontWeight: 700,
+              display: "flex",
+              alignItems: "center",
+              gap: 1,
+            }}
+          >
+            <HistoryIcon /> Upload History
+          </Typography>
+          <Divider />
+          {!history || history.length === 0 ? (
+            <Typography
+              variant="body2"
+              color="text.secondary"
+              sx={{ p: 2, textAlign: "center" }}
+            >
+              No past uploads yet. Upload a CSV to get started.
+            </Typography>
+          ) : (
+            <List
+              dense
+              sx={{ overflow: "auto", maxHeight: "calc(100vh - 80px)" }}
+            >
+              {history.map((item) => (
+                <ListItem key={item.id} disablePadding>
+                  <ListItemButton onClick={() => setHistoryOpen(false)}>
+                    <ListItemText
+                      primary={item.filename}
+                      secondary={
+                        <>
+                          {new Date(item.uploaded_at).toLocaleDateString(
+                            "en-US",
+                            {
+                              month: "short",
+                              day: "numeric",
+                              year: "numeric",
+                              hour: "numeric",
+                              minute: "2-digit",
+                            },
+                          )}
+                          {" · "}
+                          {item.positions_count} positions
+                          {" · "}
+                          {new Intl.NumberFormat("en-US", {
+                            style: "currency",
+                            currency: "USD",
+                            maximumFractionDigits: 0,
+                          }).format(item.total_market_value)}
+                        </>
+                      }
+                    />
+                  </ListItemButton>
+                </ListItem>
+              ))}
+            </List>
+          )}
+        </Box>
+      </Drawer>
+
+      {/* Loading bar */}
+      {isPending && <LinearProgress />}
+
       {/* Main Content */}
-      <Container maxWidth="lg" sx={{ py: 4 }}>
-        <Box sx={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <Container maxWidth="lg" sx={{ py: 3 }}>
+        <Stack spacing={3}>
           {/* Upload Section */}
           <Card>
             <CardContent>
-              <Stack spacing={3}>
+              <Stack spacing={2}>
                 <Box>
-                  <Typography variant="h5" sx={{ mb: 1, fontWeight: 600 }}>
-                    Upload Portfolio
+                  <Typography variant="h5" sx={{ mb: 0.5, fontWeight: 600 }}>
+                    Portfolio Analysis
                   </Typography>
-                  <Typography variant="body2" color="textSecondary">
-                    Upload your portfolio CSV file to analyze tax-loss
-                    harvesting opportunities
+                  <Typography variant="body2" color="text.secondary">
+                    Upload your Robinhood CSV export to analyze tax-loss
+                    harvesting opportunities. Your{" "}
+                    <Button
+                      size="small"
+                      onClick={() => router.push("/settings")}
+                      sx={{ textTransform: "none", p: 0, minWidth: "auto" }}
+                    >
+                      tax profile
+                    </Button>{" "}
+                    is used to calculate savings.
                   </Typography>
                 </Box>
 
-                {/* File Input Area */}
+                {/* Upload area */}
                 <Box
                   sx={{
                     border: "2px dashed",
-                    borderColor: "primary.main",
+                    borderColor: isPending ? "grey.400" : "primary.main",
                     borderRadius: 2,
                     p: 3,
                     textAlign: "center",
-                    cursor: "pointer",
+                    cursor: isPending ? "default" : "pointer",
                     transition: "all 0.2s",
-                    "&:hover": {
-                      backgroundColor: "action.hover",
-                      borderColor: "primary.dark",
-                    },
+                    opacity: isPending ? 0.6 : 1,
+                    "&:hover": isPending
+                      ? {}
+                      : {
+                          backgroundColor: "action.hover",
+                          borderColor: "primary.dark",
+                        },
                   }}
-                  onClick={handleUploadClick}
+                  onClick={isPending ? undefined : handleUploadClick}
+                  role={isPending ? undefined : "button"}
+                  tabIndex={isPending ? undefined : 0}
                 >
                   <input
                     ref={fileInputRef}
@@ -193,53 +329,26 @@ export default function Home() {
                     style={{ display: "none" }}
                   />
                   <CloudUploadIcon
-                    sx={{
-                      fontSize: 48,
-                      color: "primary.main",
-                      mb: 1,
-                    }}
+                    sx={{ fontSize: 40, color: "primary.main", mb: 0.5 }}
                   />
                   <Typography variant="body1" sx={{ fontWeight: 500 }}>
-                    Click to upload or drag and drop
+                    {isPending
+                      ? "Analyzing portfolio..."
+                      : "Click to upload CSV"}
                   </Typography>
-                  <Typography variant="caption" color="textSecondary">
-                    CSV format only
+                  <Typography variant="caption" color="text.secondary">
+                    Robinhood transaction export or simplified portfolio CSV
                   </Typography>
                 </Box>
-
-                {/* Upload Button */}
-                <Button
-                  variant="contained"
-                  size="large"
-                  onClick={handleUploadClick}
-                  disabled={isPending}
-                  endIcon={
-                    isPending ? (
-                      <CircularProgress size={20} />
-                    ) : (
-                      <CloudUploadIcon />
-                    )
-                  }
-                  sx={{ py: 1.5 }}
-                >
-                  {isPending ? "Uploading..." : "Upload CSV"}
-                </Button>
               </Stack>
             </CardContent>
           </Card>
 
           {/* Error Alert */}
           {error && (
-            <Alert
-              severity="error"
-              icon={<ErrorIcon />}
-              sx={{ mb: 2 }}
-              onClose={() => {
-                // Error will persist in React Query cache, but can be dismissed from UI
-              }}
-            >
+            <Alert severity="error" icon={<ErrorIcon />}>
               <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                Upload Failed
+                Analysis Failed
               </Typography>
               <Typography variant="caption">
                 {error instanceof Error ? error.message : "An error occurred"}
@@ -247,78 +356,60 @@ export default function Home() {
             </Alert>
           )}
 
-          {/* Results Section */}
-          {displayData.length > 0 && (
-            <Card>
-              <CardContent>
-                <Box
-                  sx={{ mb: 3, display: "flex", alignItems: "center", gap: 1 }}
-                >
-                  <CheckCircleIcon sx={{ color: "success.main" }} />
-                  <Typography variant="h5" sx={{ fontWeight: 600 }}>
-                    Portfolio Data (First 5 Rows)
-                  </Typography>
-                </Box>
-
-                <TableContainer component={Paper} variant="outlined">
-                  <Table>
-                    <TableHead>
-                      <TableRow sx={{ backgroundColor: "#f5f5f5" }}>
-                        {columns.map((col) => (
-                          <TableCell
-                            key={col}
-                            sx={{
-                              fontWeight: 700,
-                              color: "primary.main",
-                              fontSize: "0.875rem",
-                            }}
-                          >
-                            {col}
-                          </TableCell>
-                        ))}
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
-                      {displayData.map((row, index) => {
-                        const rowKey = row.id || index;
-                        return (
-                          <TableRow
-                            key={rowKey}
-                            sx={{
-                              "&:hover": { backgroundColor: "action.hover" },
-                              "&:last-child td": { borderBottom: 0 },
-                            }}
-                          >
-                            {columns.map((col) => (
-                              <TableCell
-                                key={col}
-                                sx={{ fontSize: "0.875rem" }}
-                              >
-                                {typeof row[col] === "number"
-                                  ? Number.parseFloat(String(row[col])).toFixed(
-                                      2,
-                                    )
-                                  : String(row[col])}
-                              </TableCell>
-                            ))}
-                          </TableRow>
-                        );
-                      })}
-                    </TableBody>
-                  </Table>
-                </TableContainer>
-
-                <Typography
-                  variant="caption"
-                  color="textSecondary"
-                  sx={{ mt: 2, display: "block" }}
-                >
-                  Showing portfolio summary - full analysis features coming soon
+          {/* Warnings */}
+          {analysis?.warnings && analysis.warnings.length > 0 && (
+            <Alert severity="warning">
+              {analysis.warnings.map((w: string) => (
+                <Typography key={w} variant="body2">
+                  {w}
                 </Typography>
-              </CardContent>
-            </Card>
+              ))}
+            </Alert>
           )}
-        </Box>
+
+          {/* Results */}
+          {hasResults && (
+            <>
+              {/* Summary Cards */}
+              <PortfolioSummaryCards summary={analysis.summary} />
+
+              {/* Wash-Sale Warnings */}
+              {analysis.wash_sale_flags.length > 0 && (
+                <WashSaleWarning flags={analysis.wash_sale_flags} />
+              )}
+
+              {/* Tabbed view: Positions | Suggestions */}
+              <Card>
+                <Tabs
+                  value={activeTab}
+                  onChange={(_, v) => setActiveTab(v)}
+                  sx={{ borderBottom: 1, borderColor: "divider", px: 2 }}
+                >
+                  <Tab
+                    label={`Positions (${analysis.positions.length})`}
+                    id="tab-positions"
+                  />
+                  <Tab
+                    label={`Suggestions (${analysis.suggestions.length})`}
+                    id="tab-suggestions"
+                  />
+                </Tabs>
+
+                <CardContent>
+                  {activeTab === 0 && (
+                    <PositionsTable positions={analysis.positions} />
+                  )}
+                  {activeTab === 1 && (
+                    <HarvestingSuggestions suggestions={analysis.suggestions} />
+                  )}
+                </CardContent>
+              </Card>
+
+              {/* Disclaimer */}
+              <TaxDisclaimer />
+            </>
+          )}
+        </Stack>
       </Container>
     </>
   );
