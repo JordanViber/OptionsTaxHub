@@ -196,7 +196,7 @@ jobs:
           cache-dependency-path: client/package-lock.json
 
       - name: Set up Python
-        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a20  # v5
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
