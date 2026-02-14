@@ -167,7 +167,7 @@ async def test_push_notification():
 
 def run():
     port = int(os.environ.get("PORT", 8080))
-    host = os.environ.get("HOST", "127.0.0.1")  # Use 127.0.0.1 by default for security
+    host = os.environ.get("HOST", "0.0.0.0")  # Bind to all interfaces for Render and other platforms
     import uvicorn
     uvicorn.run("main:app", host=host, port=port, reload=True)
 
