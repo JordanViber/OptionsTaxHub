@@ -43,7 +43,7 @@ export function AuthProvider({ children }: Readonly<{ children: ReactNode }>) {
         const {
           data: { session },
         } = await supabase.auth.getSession();
-        setUser(session?.user || null);
+        setUser(session?.user ?? null);
       } finally {
         setLoading(false);
       }
@@ -52,17 +52,16 @@ export function AuthProvider({ children }: Readonly<{ children: ReactNode }>) {
     checkSession();
 
     // Listen for auth changes
-    let subscription = { unsubscribe: () => {} } as { unsubscribe: () => void };
     const supabase = getSupabaseClient();
-    ({
+    const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((event, session) => {
-      setUser(session?.user || null);
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
       setLoading(false);
-    }));
+    });
 
     return () => {
-      subscription?.unsubscribe();
+      subscription.unsubscribe();
     };
   }, []);
 

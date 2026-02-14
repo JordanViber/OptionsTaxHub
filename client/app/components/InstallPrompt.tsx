@@ -257,6 +257,4 @@ export default function InstallPrompt() {
       </div>
     );
   }
-
-  return null;
 }
