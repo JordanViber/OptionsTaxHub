@@ -154,6 +154,10 @@ jobs:
           args: >
             -Dsonar.projectKey=JordanViber_OptionsTaxHub
             -Dsonar.organization=jordanviber
+            -Dsonar.sources=app,lib,public
+            -Dsonar.tests=tests
+            -Dsonar.exclusions=**/node_modules/**,**/.next/**,**/dist/**,**/build/**,**/coverage/**,**/tests/**,**/*.test.{js,ts,tsx},**/*.spec.{js,ts,tsx},**/jest.config.js,**/jest.setup.ts,**/postcss.config.js,**/next.config.js,**/playwright.config.ts,**/app/**layout*.tsx
+            -Dsonar.coverage.exclusions=**/tests/**,**/*.test.{js,ts,tsx},**/*.spec.{js,ts,tsx},**/jest.config.js,**/jest.setup.ts,**/postcss.config.js,**/next.config.js,**/playwright.config.ts,**/lib/queryClient.ts,**/lib/theme.ts,**/public/sw.js,**/app/hooks/usePushNotifications.ts
             -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
 
   # SonarCloud Quality Gate Check
@@ -192,7 +196,7 @@ jobs:
           cache-dependency-path: client/package-lock.json
 
       - name: Set up Python
-        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a20  # v5
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
