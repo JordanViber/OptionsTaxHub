@@ -2,6 +2,10 @@
 const CACHE_NAME = "optionstaxhub-v1";
 const API_URL = "http://localhost:8080";
 
+// Track recently shown notifications to prevent duplicates
+const shownNotifications = new Map();
+const NOTIFICATION_DEDUP_WINDOW = 5000; // 5 seconds
+
 // Assets to cache on install
 const STATIC_ASSETS = [
   "/",
@@ -81,7 +85,7 @@ self.addEventListener("push", (event) => {
     body: "You have a new notification",
     icon: "/icons/icon-192x192.png",
     badge: "/icons/icon-192x192.png",
-    tag: "default",
+    tag: `notification-${Date.now()}`, // Unique tag to prevent duplicates
   };
 
   if (event.data) {
@@ -101,6 +105,28 @@ self.addEventListener("push", (event) => {
         notificationData.body = event.data.text();
       } else {
         notificationData.body = "New notification";
+      }
+    }
+  }
+
+  // Create a key for deduplication
+  const notificationKey = `${notificationData.title}|${notificationData.body}`;
+  const lastShownTime = shownNotifications.get(notificationKey);
+  const now = Date.now();
+
+  // Skip if same notification was shown recently (within dedup window)
+  if (lastShownTime && now - lastShownTime < NOTIFICATION_DEDUP_WINDOW) {
+    return;
+  }
+
+  // Record this notification as shown
+  shownNotifications.set(notificationKey, now);
+
+  // Clean up old entries periodically
+  if (shownNotifications.size > 100) {
+    for (const [key, timestamp] of shownNotifications.entries()) {
+      if (now - timestamp > NOTIFICATION_DEDUP_WINDOW) {
+        shownNotifications.delete(key);
       }
     }
   }
