@@ -73,6 +73,7 @@ jobs:
           verbose: true
 
       - name: SonarCloud Scan (Backend)
+        if: github.ref == 'refs/heads/main'
         uses: SonarSource/sonarcloud-github-action@eb211723266fe8e83102bac7361f0a05c3ac1d1b  # master
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -143,6 +144,7 @@ jobs:
           verbose: true
 
       - name: SonarCloud Scan (Frontend)
+        if: github.ref == 'refs/heads/main'
         uses: SonarSource/sonarcloud-github-action@eb211723266fe8e83102bac7361f0a05c3ac1d1b  # master
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
