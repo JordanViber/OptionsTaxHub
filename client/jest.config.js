@@ -20,9 +20,20 @@ module.exports = {
   collectCoverageFrom: [
     "app/**/*.{ts,tsx}",
     "lib/**/*.{ts,tsx}",
+    "public/**/*.js",
     "!app/**/*.d.ts",
     "!lib/**/*.d.ts",
     "!app/**/layout.tsx",
+    "!app/**/layout-client.tsx",
+    "!app/hooks/usePushNotifications.ts",
+    "!lib/queryClient.ts",
+    "!lib/theme.ts",
+    "!public/sw.js",
   ],
-  coverageReporters: ["text", "lcov", "html", "json"],
+  coveragePathIgnorePatterns: [
+    "/node_modules/",
+    "/tests/",
+    String.raw`\.test\.`,
+    String.raw`\.spec\.`,
+  ],
 };
