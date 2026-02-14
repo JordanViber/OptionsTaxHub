@@ -160,38 +160,14 @@ jobs:
             -Dsonar.coverage.exclusions=**/tests/**,**/*.test.{js,ts,tsx},**/*.spec.{js,ts,tsx},**/jest.config.js,**/jest.setup.ts,**/postcss.config.js,**/next.config.js,**/playwright.config.ts,**/lib/queryClient.ts,**/lib/theme.ts,**/public/sw.js,**/app/hooks/usePushNotifications.ts
             -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
 
-      - name: Upload SonarCloud report task (Frontend)
+      - name: Wait for Quality Gate (Frontend)
         if: github.ref == 'refs/heads/main'
-        uses: actions/upload-artifact@v4.1.8
-        with:
-          name: sonar-report-task
-          path: client/.scannerwork/report-task.txt
-
-  # SonarCloud Quality Gate Check
-  quality-gate:
-    name: SonarCloud Quality Gate
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
-    needs: [backend-tests, frontend-tests]
-
-    steps:
-      - uses: actions/checkout@a5ac7e51b41094c92402da3b24376905380afc29  # v6
-        with:
-          fetch-depth: 0
-
-      - name: Download SonarCloud report task
-        uses: actions/download-artifact@v4.1.8
-        with:
-          name: sonar-report-task
-          path: .scannerwork
-
-      - name: Wait for Quality Gate
         uses: sonarsource/sonarqube-quality-gate-action@d304d050d930b02a896b0f85935344f023928496  # master
         timeout-minutes: 5
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
-          scanMetadataReportFile: .scannerwork/report-task.txt
+          scanMetadataReportFile: client/.scannerwork/report-task.txt
 
   # E2E Tests
   e2e-tests:
