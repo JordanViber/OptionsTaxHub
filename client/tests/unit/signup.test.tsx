@@ -14,6 +14,39 @@ jest.mock("../../app/context/auth", () => ({
 const mockPush = jest.fn();
 const mockSignUp = jest.fn();
 
+const getInput = (container: HTMLElement, selector: string) => {
+  const element = container.querySelector(selector);
+  if (!(element instanceof HTMLInputElement)) {
+    throw new TypeError(`Expected input for selector: ${selector}`);
+  }
+  return element;
+};
+
+const getInputs = (container: HTMLElement, selector: string) => {
+  const elements = Array.from(container.querySelectorAll(selector));
+  if (elements.length === 0) {
+    throw new TypeError(
+      `Expected at least one input for selector: ${selector}`,
+    );
+  }
+  const inputs = elements.filter(
+    (element): element is HTMLInputElement =>
+      element instanceof HTMLInputElement,
+  );
+  if (inputs.length !== elements.length) {
+    throw new TypeError(`Expected only inputs for selector: ${selector}`);
+  }
+  return inputs;
+};
+
+const getForm = (container: HTMLElement) => {
+  const element = container.querySelector("form");
+  if (!(element instanceof HTMLFormElement)) {
+    throw new TypeError("Expected form element");
+  }
+  return element;
+};
+
 // Helper to fill out the signup form with default valid values
 function fillForm(
   container: HTMLElement,
@@ -43,14 +76,12 @@ function fillForm(
 
   // Use type="email" selector because getByLabelText(/Email/i) matches both
   // the MUI Select (provider type showing "Email") AND the email TextField
-  const emailInput = container.querySelector(
-    'input[type="email"]',
-  ) as HTMLInputElement;
+  const emailInput = getInput(container, 'input[type="email"]');
   fireEvent.change(emailInput, {
     target: { value: values.email },
   });
 
-  const passwordInputs = container.querySelectorAll('input[type="password"]');
+  const passwordInputs = getInputs(container, 'input[type="password"]');
   fireEvent.change(passwordInputs[0], {
     target: { value: values.password },
   });
@@ -126,7 +157,7 @@ describe("Sign Up Page", () => {
     const { container } = render(<SignupPage />);
     fillForm(container);
 
-    const form = container.querySelector("form") as HTMLFormElement;
+    const form = getForm(container);
     fireEvent.submit(form);
 
     await waitFor(() => {
@@ -153,7 +184,7 @@ describe("Sign Up Page", () => {
     const { container } = render(<SignupPage />);
     fillForm(container, { confirmPassword: "different" });
 
-    const form = container.querySelector("form") as HTMLFormElement;
+    const form = getForm(container);
     fireEvent.submit(form);
 
     await waitFor(() => {
@@ -167,7 +198,7 @@ describe("Sign Up Page", () => {
     const { container } = render(<SignupPage />);
     fillForm(container, { password: "12345", confirmPassword: "12345" });
 
-    const form = container.querySelector("form") as HTMLFormElement;
+    const form = getForm(container);
     fireEvent.submit(form);
 
     await waitFor(() => {
@@ -190,7 +221,7 @@ describe("Sign Up Page", () => {
 
     fillForm(container);
 
-    const form = container.querySelector("form") as HTMLFormElement;
+    const form = getForm(container);
     fireEvent.submit(form);
 
     await waitFor(() => {
@@ -206,7 +237,7 @@ describe("Sign Up Page", () => {
     const { container } = render(<SignupPage />);
     fillForm(container, { email: "" });
 
-    const form = container.querySelector("form") as HTMLFormElement;
+    const form = getForm(container);
     fireEvent.submit(form);
 
     await waitFor(() => {
@@ -224,7 +255,7 @@ describe("Sign Up Page", () => {
     const { container } = render(<SignupPage />);
     fillForm(container);
 
-    const form = container.querySelector("form") as HTMLFormElement;
+    const form = getForm(container);
     fireEvent.submit(form);
 
     await waitFor(() => {
@@ -240,7 +271,7 @@ describe("Sign Up Page", () => {
     const { container } = render(<SignupPage />);
     fillForm(container);
 
-    const form = container.querySelector("form") as HTMLFormElement;
+    const form = getForm(container);
     fireEvent.submit(form);
 
     await waitFor(() => {
@@ -262,14 +293,17 @@ describe("Sign Up Page", () => {
     const { container } = render(<SignupPage />);
     fillForm(container);
 
-    const form = container.querySelector("form") as HTMLFormElement;
+    const form = getForm(container);
     fireEvent.submit(form);
 
     await waitFor(() => {
       expect(screen.getByRole("progressbar")).toBeInTheDocument();
     });
 
-    resolveSignUp!();
+    if (!resolveSignUp) {
+      throw new Error("resolveSignUp was not set");
+    }
+    resolveSignUp();
 
     await waitFor(() => {
       expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
@@ -284,7 +318,7 @@ describe("Sign Up Page", () => {
       target: { value: "CustomName" },
     });
 
-    const form = container.querySelector("form") as HTMLFormElement;
+    const form = getForm(container);
     fireEvent.submit(form);
 
     await waitFor(() => {
@@ -302,7 +336,7 @@ describe("Sign Up Page", () => {
     const { container } = render(<SignupPage />);
 
     // Both password fields start as type="password"
-    const passwordInputs = container.querySelectorAll('input[type="password"]');
+    const passwordInputs = getInputs(container, 'input[type="password"]');
     expect(passwordInputs.length).toBe(2);
 
     // The second toggle button controls confirm password
@@ -331,9 +365,7 @@ describe("Sign Up Page", () => {
     expect(screen.getByText("Required for phone sign-up")).toBeInTheDocument();
 
     // Type into the phone field to exercise the onChange handler
-    const phoneInput = container.querySelector(
-      'input[type="tel"]',
-    ) as HTMLInputElement;
+    const phoneInput = getInput(container, 'input[type="tel"]');
     fireEvent.change(phoneInput, { target: { value: "+15551234567" } });
     expect(phoneInput.value).toBe("+15551234567");
   });

@@ -14,6 +14,22 @@ jest.mock("../../app/context/auth", () => ({
 const mockPush = jest.fn();
 const mockSignIn = jest.fn();
 
+const getInput = (container: HTMLElement, selector: string) => {
+  const element = container.querySelector(selector);
+  if (!(element instanceof HTMLInputElement)) {
+    throw new TypeError(`Expected input for selector: ${selector}`);
+  }
+  return element;
+};
+
+const getForm = (container: HTMLElement) => {
+  const element = container.querySelector("form");
+  if (!(element instanceof HTMLFormElement)) {
+    throw new TypeError("Expected form element");
+  }
+  return element;
+};
+
 describe("Sign In Page", () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -47,7 +63,7 @@ describe("Sign In Page", () => {
 
   it("renders password input field", () => {
     const { container } = render(<SigninPage />);
-    const passwordInput = container.querySelector('input[type="password"]');
+    const passwordInput = getInput(container, 'input[type="password"]');
     expect(passwordInput).toBeInTheDocument();
   });
 
@@ -68,9 +84,7 @@ describe("Sign In Page", () => {
   it("toggles password visibility", () => {
     const { container } = render(<SigninPage />);
 
-    const passwordInput = container.querySelector(
-      'input[type="password"]',
-    ) as HTMLInputElement;
+    const passwordInput = getInput(container, 'input[type="password"]');
     expect(passwordInput.type).toBe("password");
 
     const toggleButton = screen.getByLabelText(/Show password/i);
@@ -88,14 +102,12 @@ describe("Sign In Page", () => {
     const { container } = render(<SigninPage />);
 
     const emailInput = screen.getByLabelText(/Email/i);
-    const passwordInput = container.querySelector(
-      'input[type="password"]',
-    ) as HTMLInputElement;
+    const passwordInput = getInput(container, 'input[type="password"]');
 
     fireEvent.change(emailInput, { target: { value: "test@example.com" } });
     fireEvent.change(passwordInput, { target: { value: "password123" } });
 
-    const form = container.querySelector("form") as HTMLFormElement;
+    const form = getForm(container);
     fireEvent.submit(form);
 
     await waitFor(() => {
@@ -116,14 +128,12 @@ describe("Sign In Page", () => {
     const { container } = render(<SigninPage />);
 
     const emailInput = screen.getByLabelText(/Email/i);
-    const passwordInput = container.querySelector(
-      'input[type="password"]',
-    ) as HTMLInputElement;
+    const passwordInput = getInput(container, 'input[type="password"]');
 
     fireEvent.change(emailInput, { target: { value: "bad@example.com" } });
     fireEvent.change(passwordInput, { target: { value: "wrong" } });
 
-    const form = container.querySelector("form") as HTMLFormElement;
+    const form = getForm(container);
     fireEvent.submit(form);
 
     await waitFor(() => {
@@ -140,14 +150,12 @@ describe("Sign In Page", () => {
     const { container } = render(<SigninPage />);
 
     const emailInput = screen.getByLabelText(/Email/i);
-    const passwordInput = container.querySelector(
-      'input[type="password"]',
-    ) as HTMLInputElement;
+    const passwordInput = getInput(container, 'input[type="password"]');
 
     fireEvent.change(emailInput, { target: { value: "bad@example.com" } });
     fireEvent.change(passwordInput, { target: { value: "wrong" } });
 
-    const form = container.querySelector("form") as HTMLFormElement;
+    const form = getForm(container);
     fireEvent.submit(form);
 
     await waitFor(() => {
@@ -170,14 +178,12 @@ describe("Sign In Page", () => {
     const { container } = render(<SigninPage />);
 
     const emailInput = screen.getByLabelText(/Email/i);
-    const passwordInput = container.querySelector(
-      'input[type="password"]',
-    ) as HTMLInputElement;
+    const passwordInput = getInput(container, 'input[type="password"]');
 
     fireEvent.change(emailInput, { target: { value: "test@example.com" } });
     fireEvent.change(passwordInput, { target: { value: "password123" } });
 
-    const form = container.querySelector("form") as HTMLFormElement;
+    const form = getForm(container);
     fireEvent.submit(form);
 
     // During loading, the button text should change to a spinner
@@ -186,7 +192,10 @@ describe("Sign In Page", () => {
     });
 
     // Resolve the pending promise to clean up
-    resolveSignIn!();
+    if (!resolveSignIn) {
+      throw new Error("resolveSignIn was not set");
+    }
+    resolveSignIn();
 
     await waitFor(() => {
       expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();

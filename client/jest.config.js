@@ -33,7 +33,7 @@ module.exports = {
   coveragePathIgnorePatterns: [
     "/node_modules/",
     "/tests/",
-    "\\.test\\.",
-    "\\.spec\\.",
+    String.raw`\.test\.`,
+    String.raw`\.spec\.`,
   ],
 };

@@ -5,6 +5,14 @@ const mockPush = jest.fn();
 const mockUseAuth = jest.fn();
 const mockUseUploadPortfolio = jest.fn();
 
+const getFileInput = (container: HTMLElement) => {
+  const element = container.querySelector('input[type="file"]');
+  if (!(element instanceof HTMLInputElement)) {
+    throw new TypeError("Expected file input element");
+  }
+  return element;
+};
+
 jest.mock("next/navigation", () => ({
   useRouter: () => ({
     push: mockPush,
@@ -44,7 +52,7 @@ const createUploadMock = (overrides: any = {}) => ({
 
 // Helper function to setup mocks
 const setupMocks = (auth: any = {}, upload: any = {}) => {
-  mockUseAuth.mockReturnValue(createAuthMock(undefined, undefined, undefined));
+  mockUseAuth.mockReturnValue(createAuthMock());
   mockUseUploadPortfolio.mockReturnValue(createUploadMock());
   if (Object.keys(auth).length) {
     mockUseAuth.mockReturnValue(auth);
@@ -250,10 +258,7 @@ describe("Home page", () => {
 
     const { container } = render(<Home />);
     const uploadButton = screen.getByRole("button", { name: /upload csv/i });
-    const fileInput = container.querySelector('input[type="file"]');
-
-    expect(fileInput).toBeTruthy();
-    if (!fileInput) return;
+    const fileInput = getFileInput(container);
 
     const clickSpy = jest.spyOn(fileInput, "click");
 
@@ -280,9 +285,7 @@ describe("Home page", () => {
     });
 
     const { container } = render(<Home />);
-    const fileInput = container.querySelector(
-      'input[type="file"]',
-    ) as HTMLInputElement;
+    const fileInput = getFileInput(container);
 
     const file = new File(["content"], "test.csv", { type: "text/csv" });
     fireEvent.change(fileInput, { target: { files: [file] } });
@@ -305,9 +308,7 @@ describe("Home page", () => {
     );
 
     const { container } = render(<Home />);
-    const fileInput = container.querySelector(
-      'input[type="file"]',
-    ) as HTMLInputElement;
+    const fileInput = getFileInput(container);
 
     fireEvent.change(fileInput, { target: { files: [] } });
 
@@ -329,9 +330,7 @@ describe("Home page", () => {
     );
 
     const { container } = render(<Home />);
-    const fileInput = container.querySelector(
-      'input[type="file"]',
-    ) as HTMLInputElement;
+    const fileInput = getFileInput(container);
 
     fireEvent.change(fileInput, { target: {} });
 
@@ -353,9 +352,7 @@ describe("Home page", () => {
     );
 
     const { container } = render(<Home />);
-    const fileInput = container.querySelector(
-      'input[type="file"]',
-    ) as HTMLInputElement;
+    const fileInput = getFileInput(container);
 
     fireEvent.change(fileInput, { target: { files: null } });
 
