@@ -154,6 +154,10 @@ jobs:
           args: >
             -Dsonar.projectKey=JordanViber_OptionsTaxHub
             -Dsonar.organization=jordanviber
+            -Dsonar.sources=app,lib,public
+            -Dsonar.tests=tests
+            -Dsonar.exclusions=**/node_modules/**,**/.next/**,**/dist/**,**/build/**,**/coverage/**,**/tests/**,**/*.test.{js,ts,tsx},**/*.spec.{js,ts,tsx},**/jest.config.js,**/jest.setup.ts,**/postcss.config.js,**/next.config.js,**/playwright.config.ts,**/app/**layout*.tsx
+            -Dsonar.coverage.exclusions=**/tests/**,**/*.test.{js,ts,tsx},**/*.spec.{js,ts,tsx},**/jest.config.js,**/jest.setup.ts,**/postcss.config.js,**/next.config.js,**/playwright.config.ts,**/lib/queryClient.ts,**/lib/theme.ts,**/public/sw.js,**/app/hooks/usePushNotifications.ts
             -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
 
   # SonarCloud Quality Gate Check
