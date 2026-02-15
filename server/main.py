@@ -32,6 +32,7 @@ from db import (
     get_analysis_history,
     get_analysis_by_id,
     delete_analyses_without_result,
+    delete_analysis_by_id,
     save_tax_profile as db_save_tax_profile,
     get_tax_profile as db_get_tax_profile,
 )
@@ -267,6 +268,22 @@ async def cleanup_orphan_history(user_id: str):
     """
     deleted = delete_analyses_without_result(user_id)
     return {"deleted": deleted}
+
+
+@app.delete("/api/portfolio/analysis/{analysis_id}")
+async def delete_portfolio_analysis(
+    analysis_id: str,
+    user_id: str = Query(..., description="Owner user ID for access control"),
+):
+    """
+    Delete a single portfolio analysis by ID.
+
+    Enforces ownership via user_id query param.
+    """
+    deleted = delete_analysis_by_id(analysis_id, user_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+    return {"deleted": True}
 
 
 @app.get("/api/prices")

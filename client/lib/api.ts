@@ -317,3 +317,20 @@ export async function cleanupOrphanHistory(userId: string): Promise<void> {
     method: "DELETE",
   });
 }
+
+/**
+ * Delete a single portfolio analysis by ID.
+ *
+ * Returns true if deletion succeeded.
+ */
+export async function deleteAnalysis(
+  analysisId: string,
+  userId: string,
+): Promise<boolean> {
+  const params = new URLSearchParams({ user_id: userId });
+  const response = await fetch(
+    `${API_URL}/api/portfolio/analysis/${analysisId}?${params}`,
+    { method: "DELETE" },
+  );
+  return response.ok;
+}

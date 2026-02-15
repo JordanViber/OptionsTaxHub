@@ -179,6 +179,31 @@ def delete_analyses_without_result(user_id: str) -> int:
         return 0
 
 
+def delete_analysis_by_id(analysis_id: str, user_id: str) -> bool:
+    """
+    Delete a single portfolio analysis by ID.
+
+    Filters by user_id to enforce ownership so that users can only
+    delete their own records. Returns True if a row was deleted.
+    """
+    client = get_supabase()
+    if client is None:
+        return False
+
+    try:
+        result = (
+            client.table("portfolio_analyses")
+            .delete()
+            .eq("id", analysis_id)
+            .eq("user_id", user_id)
+            .execute()
+        )
+        return bool(result.data)
+    except Exception as e:
+        logger.error(f"Failed to delete analysis {analysis_id}: {e}")
+        return False
+
+
 # ---------- Tax Profiles ----------
 
 

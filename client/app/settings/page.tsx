@@ -102,7 +102,7 @@ export default function SettingsPage() {
   return (
     <>
       <AppBar position="static" sx={{ mb: 4 }}>
-        <Toolbar>
+        <Toolbar sx={{ px: { xs: 1, sm: 2 } }}>
           <Button
             color="inherit"
             startIcon={<BackIcon />}
@@ -114,7 +114,12 @@ export default function SettingsPage() {
           <Typography
             variant="h6"
             component="div"
-            sx={{ flexGrow: 1, fontWeight: 700 }}
+            sx={{
+              flexGrow: 1,
+              fontWeight: 700,
+              fontSize: { xs: "1rem", sm: "1.25rem" },
+              whiteSpace: "nowrap",
+            }}
           >
             Tax Profile Settings
           </Typography>

@@ -26,6 +26,12 @@ import {
   Tab,
   LinearProgress,
   Divider,
+  IconButton,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogContentText,
+  DialogActions,
 } from "@mui/material";
 import {
   CloudUpload as CloudUploadIcon,
@@ -35,6 +41,7 @@ import {
   Dashboard as DashboardIcon,
   History as HistoryIcon,
   Favorite as HeartIcon,
+  Close as CloseIcon,
 } from "@mui/icons-material";
 import ServiceWorkerRegistration from "./components/ServiceWorkerRegistration";
 import TaxDisclaimer from "./components/TaxDisclaimer";
@@ -49,6 +56,7 @@ import {
   usePortfolioHistory,
   fetchAnalysisById,
   cleanupOrphanHistory,
+  deleteAnalysis,
 } from "@/lib/api";
 import { useAuth } from "@/app/context/auth";
 import { useQueryClient } from "@tanstack/react-query";
@@ -66,6 +74,10 @@ export default function Home() {
   const [loadedAnalysis, setLoadedAnalysis] =
     useState<PortfolioAnalysis | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<{
+    id: string;
+    filename: string;
+  } | null>(null);
   const queryClient = useQueryClient();
 
   // Load the user's tax profile for analyze params
@@ -183,6 +195,23 @@ export default function Home() {
     }
   };
 
+  /**
+   * Delete a history item after user confirms via dialog.
+   */
+  const handleDeleteConfirm = async () => {
+    if (!user?.id || !deleteTarget) return;
+    try {
+      await deleteAnalysis(deleteTarget.id, user.id);
+      queryClient.invalidateQueries({
+        queryKey: ["portfolio-history", user.id],
+      });
+    } catch (err) {
+      console.error("Failed to delete analysis:", err);
+    } finally {
+      setDeleteTarget(null);
+    }
+  };
+
   useEffect(() => {
     if (!authLoading && !user) {
       router.push("/auth/signin");
@@ -223,48 +252,90 @@ export default function Home() {
 
       {/* Header AppBar */}
       <AppBar position="static">
-        <Toolbar>
-          <DashboardIcon sx={{ mr: 1 }} />
+        <Toolbar sx={{ px: { xs: 1, sm: 2 }, gap: { xs: 0.25, sm: 0.5 } }}>
+          <DashboardIcon sx={{ mr: 0.5 }} />
           <Typography
             variant="h6"
             component="div"
-            sx={{ flexGrow: 1, fontWeight: 700 }}
+            sx={{
+              flexGrow: 1,
+              fontWeight: 700,
+              fontSize: { xs: "1rem", sm: "1.25rem" },
+              whiteSpace: "nowrap",
+            }}
           >
             OptionsTaxHub
           </Typography>
+
+          {/* Tip — icon-only on mobile */}
+          <IconButton
+            color="inherit"
+            onClick={() => setTipJarOpen(true)}
+            aria-label="Tip"
+            sx={{ display: { xs: "inline-flex", sm: "none" } }}
+          >
+            <HeartIcon sx={{ color: "#ff6b6b" }} />
+          </IconButton>
           <Button
             color="inherit"
             startIcon={<HeartIcon sx={{ color: "#ff6b6b" }} />}
             onClick={() => setTipJarOpen(true)}
-            sx={{ textTransform: "none", mr: 1 }}
+            sx={{ textTransform: "none", mr: 0.5, display: { xs: "none", sm: "inline-flex" } }}
           >
             Tip
           </Button>
+
+          {/* History — icon-only on mobile */}
+          <IconButton
+            color="inherit"
+            onClick={() => setHistoryOpen(true)}
+            aria-label="History"
+            sx={{ display: { xs: "inline-flex", sm: "none" } }}
+          >
+            <HistoryIcon />
+          </IconButton>
           <Button
             color="inherit"
             startIcon={<HistoryIcon />}
             onClick={() => setHistoryOpen(true)}
-            sx={{ textTransform: "none", mr: 1 }}
+            sx={{ textTransform: "none", mr: 0.5, display: { xs: "none", sm: "inline-flex" } }}
           >
             History
           </Button>
+
+          {/* Settings — icon-only on mobile */}
+          <IconButton
+            color="inherit"
+            onClick={() => router.push("/settings")}
+            aria-label="Settings"
+            sx={{ display: { xs: "inline-flex", sm: "none" } }}
+          >
+            <SettingsIcon />
+          </IconButton>
           <Button
             color="inherit"
             startIcon={<SettingsIcon />}
             onClick={() => router.push("/settings")}
-            sx={{ textTransform: "none", mr: 1 }}
+            sx={{ textTransform: "none", mr: 0.5, display: { xs: "none", sm: "inline-flex" } }}
           >
             Settings
           </Button>
+
+          {/* Avatar — name hidden on mobile */}
           <Button
             color="inherit"
             onClick={(e) => setMenuAnchor(e.currentTarget)}
-            sx={{ textTransform: "none" }}
+            sx={{ textTransform: "none", minWidth: "auto", px: { xs: 0.5, sm: 1 } }}
           >
-            <Avatar sx={{ mr: 1, width: 32, height: 32 }}>
+            <Avatar sx={{ width: 32, height: 32 }}>
               {avatarLetter}
             </Avatar>
-            {displayName}
+            <Typography
+              component="span"
+              sx={{ ml: 1, display: { xs: "none", sm: "inline" } }}
+            >
+              {displayName}
+            </Typography>
           </Button>
           <Menu
             anchorEl={menuAnchor}
@@ -323,10 +394,34 @@ export default function Home() {
               sx={{ overflow: "auto", maxHeight: "calc(100vh - 80px)" }}
             >
               {history.map((item) => (
-                <ListItem key={item.id} disablePadding>
+                <ListItem
+                  key={item.id}
+                  disablePadding
+                  secondaryAction={
+                    <IconButton
+                      edge="end"
+                      size="small"
+                      aria-label="delete"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setDeleteTarget({
+                          id: item.id,
+                          filename: item.filename,
+                        });
+                      }}
+                      sx={{
+                        opacity: 0.5,
+                        "&:hover": { opacity: 1, color: "error.main" },
+                      }}
+                    >
+                      <CloseIcon fontSize="small" />
+                    </IconButton>
+                  }
+                >
                   <ListItemButton
                     onClick={() => handleHistoryItemClick(item.id)}
                     disabled={historyLoading}
+                    sx={{ pr: 5 }}
                   >
                     <ListItemText
                       primary={item.filename}
@@ -360,6 +455,27 @@ export default function Home() {
           )}
         </Box>
       </Drawer>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog
+        open={!!deleteTarget}
+        onClose={() => setDeleteTarget(null)}
+      >
+        <DialogTitle>Delete Analysis</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            Are you sure you want to delete the analysis for{" "}
+            <strong>{deleteTarget?.filename}</strong>? This action cannot be
+            undone.
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDeleteTarget(null)}>Cancel</Button>
+          <Button onClick={handleDeleteConfirm} color="error" variant="contained">
+            Delete
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       {/* Loading bar */}
       {(isPending || historyLoading) && <LinearProgress />}
