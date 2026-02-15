@@ -18,7 +18,7 @@ export default function TipSuccessPage() {
       setCountdown((prev) => {
         if (prev <= 1) {
           clearInterval(timer);
-          router.push("/");
+          router.push("/dashboard");
           return 0;
         }
         return prev - 1;
@@ -80,7 +80,7 @@ export default function TipSuccessPage() {
             variant="contained"
             size="large"
             startIcon={<HomeIcon />}
-            onClick={() => router.push("/")}
+            onClick={() => router.push("/dashboard")}
             sx={{
               mt: 2,
               py: 1.5,

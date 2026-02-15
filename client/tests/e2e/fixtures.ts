@@ -6,7 +6,7 @@
  */
 
 import { expect, type Page } from "@playwright/test";
-import path from "path";
+import path from "node:path";
 
 // ── Mock data ──────────────────────────────────────────────────────
 
@@ -38,7 +38,7 @@ export const MOCK_ANALYSIS = {
       quantity: 50,
       avg_cost_basis: 182.5,
       total_cost_basis: 9125,
-      current_price: 170.0,
+      current_price: 170,
       market_value: 8500,
       unrealized_pnl: -625,
       unrealized_pnl_pct: -6.85,
@@ -52,9 +52,9 @@ export const MOCK_ANALYSIS = {
     {
       symbol: "MSFT",
       quantity: 30,
-      avg_cost_basis: 405.0,
+      avg_cost_basis: 405,
       total_cost_basis: 12150,
-      current_price: 420.0,
+      current_price: 420,
       market_value: 12600,
       unrealized_pnl: 450,
       unrealized_pnl_pct: 3.7,
@@ -72,7 +72,7 @@ export const MOCK_ANALYSIS = {
       symbol: "AAPL",
       action: "Sell",
       quantity: 50,
-      current_price: 170.0,
+      current_price: 170,
       cost_basis_per_share: 182.5,
       estimated_loss: -625,
       tax_savings_estimate: 137.5,
@@ -98,7 +98,7 @@ export const MOCK_ANALYSIS = {
       repurchase_date: "2025-03-15",
       repurchase_quantity: 10,
       disallowed_loss: 125,
-      adjusted_cost_basis: 195.0,
+      adjusted_cost_basis: 195,
       explanation:
         "Sold 10 shares at a loss on 3/1 and repurchased 10 shares on 3/15 (14 days later).",
     },
@@ -294,8 +294,8 @@ export async function injectMockSession(page: Page) {
 export async function goToAuthenticatedHome(page: Page) {
   await setupMockAuth(page);
   await injectMockSession(page);
-  await page.goto("/");
-  await expect(page.getByText("OptionsTaxHub")).toBeVisible({ timeout: 10000 });
+  await page.goto("/dashboard");
+  await expect(page.getByText("Portfolio Analysis")).toBeVisible({ timeout: 10000 });
 }
 
 /**

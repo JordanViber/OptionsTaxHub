@@ -12,8 +12,8 @@ test("appbar with title is visible on home", async ({ page }) => {
   // Navigate to home
   await page.goto("/");
 
-  // Check for AppBar title
-  await expect(page.getByText("OptionsTaxHub")).toBeVisible();
+  // Check for AppBar title (use .first() — landing page has multiple occurrences)
+  await expect(page.getByText("OptionsTaxHub").first()).toBeVisible();
 });
 
 test("redirects unauthenticated users appropriately", async ({ page }) => {

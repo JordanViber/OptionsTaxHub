@@ -281,7 +281,9 @@ export function usePortfolioHistory(userId: string | undefined) {
       return fetchPortfolioHistory(userId);
     },
     enabled: !!userId,
-    staleTime: 30 * 1000, // 30 seconds
+    staleTime: 0, // Always refetch when invalidated
+    refetchOnMount: "always", // Refetch every time component mounts
+    refetchOnWindowFocus: false, // Don't refetch on window focus
   });
 }
 

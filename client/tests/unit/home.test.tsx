@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import Home from "../../app/page";
+import Home from "../../app/dashboard/page";
 
 const mockPush = jest.fn();
 const mockUseAuth = jest.fn();
@@ -122,12 +122,12 @@ describe("Home page", () => {
     expect(screen.getByRole("progressbar")).toBeInTheDocument();
   });
 
-  it("redirects to sign-in when unauthenticated", () => {
+  it("redirects to landing page when unauthenticated", () => {
     setupMocks(createAuthMock(null, false));
 
     renderWithClient(<Home />);
 
-    expect(mockPush).toHaveBeenCalledWith("/auth/signin");
+    expect(mockPush).toHaveBeenCalledWith("/");
   });
 
   it("uses display_name when available", () => {
@@ -418,7 +418,7 @@ describe("Home page", () => {
 
     await waitFor(() => {
       expect(signOut).toHaveBeenCalled();
-      expect(mockPush).toHaveBeenCalledWith("/auth/signin");
+      expect(mockPush).toHaveBeenCalledWith("/");
     });
   });
 

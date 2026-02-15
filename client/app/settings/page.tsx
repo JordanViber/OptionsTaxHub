@@ -61,7 +61,7 @@ export default function SettingsPage() {
   // Redirect if not authenticated
   useEffect(() => {
     if (!authLoading && !user) {
-      router.push("/auth/signin");
+      router.push("/");
     }
   }, [authLoading, user, router]);
 
@@ -78,7 +78,7 @@ export default function SettingsPage() {
         onSuccess: () => {
           setShowSuccess(true);
           // Navigate back to dashboard after brief success message
-          setTimeout(() => router.push("/"), 1500);
+          setTimeout(() => router.push("/dashboard"), 1500);
         },
       },
     );
@@ -106,7 +106,7 @@ export default function SettingsPage() {
           <Button
             color="inherit"
             startIcon={<BackIcon />}
-            onClick={() => router.push("/")}
+            onClick={() => router.push("/dashboard")}
             sx={{ mr: 2, textTransform: "none" }}
           >
             Dashboard

@@ -49,7 +49,7 @@ export default function WashSaleWarning({
       <Card variant="outlined" sx={{ backgroundColor: "transparent" }}>
         <CardContent sx={{ py: 1, "&:last-child": { pb: 1 } }}>
           {flags.map((flag, idx) => (
-            <Box key={`${flag.symbol}-${flag.sale_date}`}>
+            <Box key={`${flag.symbol}-${flag.sale_date}-${idx}`}>
               {idx > 0 && <Divider sx={{ my: 1 }} />}
               <Typography variant="body2" sx={{ fontWeight: 500 }}>
                 {flag.symbol}: ${flag.disallowed_loss.toLocaleString()} loss

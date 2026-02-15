@@ -70,11 +70,11 @@ test.describe("Dashboard UI Fixes", () => {
       { timeout: 5000 },
     );
 
-    // Should navigate back to home after ~1.5s
+    // Should navigate back to dashboard after ~1.5s
     await expect(page.getByText("Portfolio Analysis")).toBeVisible({
       timeout: 5000,
     });
-    expect(page.url()).toMatch(/\/$/);
+    expect(page.url()).toMatch(/\/dashboard/);
   });
 
   // --- Fix 3: Position table tooltips ---

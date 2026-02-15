@@ -1,628 +1,416 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   AppBar,
   Toolbar,
   Container,
   Box,
-  Card,
-  CardContent,
   Button,
-  CircularProgress,
-  Alert,
-  Drawer,
-  List,
-  ListItem,
-  ListItemButton,
-  ListItemText,
   Stack,
   Typography,
-  Menu,
-  MenuItem,
-  Avatar,
-  Tabs,
-  Tab,
-  LinearProgress,
-  Divider,
-  IconButton,
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogContentText,
-  DialogActions,
+  Card,
+  CardContent,
+  Grid,
+  Chip,
 } from "@mui/material";
 import {
-  CloudUpload as CloudUploadIcon,
-  Error as ErrorIcon,
-  Logout as LogoutIcon,
-  Settings as SettingsIcon,
   Dashboard as DashboardIcon,
-  History as HistoryIcon,
-  Favorite as HeartIcon,
-  Close as CloseIcon,
+  TrendingDown as HarvestIcon,
+  Warning as WashSaleIcon,
+  CloudUpload as UploadIcon,
+  Security as SecurityIcon,
+  Speed as SpeedIcon,
+  AccountBalanceWallet as WalletIcon,
 } from "@mui/icons-material";
-import ServiceWorkerRegistration from "./components/ServiceWorkerRegistration";
-import TaxDisclaimer from "./components/TaxDisclaimer";
-import PortfolioSummaryCards from "./components/PortfolioSummaryCards";
-import PositionsTable from "./components/PositionsTable";
-import HarvestingSuggestions from "./components/HarvestingSuggestions";
-import WashSaleWarning from "./components/WashSaleWarning";
-import TipJar from "./components/TipJar";
-import {
-  useAnalyzePortfolio,
-  useTaxProfile,
-  usePortfolioHistory,
-  fetchAnalysisById,
-  cleanupOrphanHistory,
-  deleteAnalysis,
-} from "@/lib/api";
 import { useAuth } from "@/app/context/auth";
-import { useQueryClient } from "@tanstack/react-query";
-import type { PortfolioAnalysis } from "@/lib/types";
-export const dynamic = "force-dynamic";
 
-export default function Home() {
+export default function LandingPage() {
   const router = useRouter();
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const { user, loading: authLoading, signOut } = useAuth();
-  const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
-  const [activeTab, setActiveTab] = useState(0);
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const [tipJarOpen, setTipJarOpen] = useState(false);
-  const [loadedAnalysis, setLoadedAnalysis] =
-    useState<PortfolioAnalysis | null>(null);
-  const [historyLoading, setHistoryLoading] = useState(false);
-  const [deleteTarget, setDeleteTarget] = useState<{
-    id: string;
-    filename: string;
-  } | null>(null);
-  const queryClient = useQueryClient();
+  const { user, loading } = useAuth();
+  const [mounted, setMounted] = useState(false);
 
-  // Load the user's tax profile for analyze params
-  const { data: taxProfile } = useTaxProfile(user?.id);
-
-  // Load past upload history
-  const { data: history } = usePortfolioHistory(user?.id);
-
-  // Full portfolio analysis mutation
-  const {
-    mutate: analyzePortfolio,
-    isPending,
-    error,
-    data: analysis,
-  } = useAnalyzePortfolio();
-
-  // --- State persistence: restore analysis from sessionStorage on mount ---
   useEffect(() => {
-    try {
-      const saved = sessionStorage.getItem("optionstaxhub-analysis");
-      if (saved) {
-        setLoadedAnalysis(JSON.parse(saved) as PortfolioAnalysis);
-      }
-    } catch {
-      // Corrupted data — ignore
-    }
+    setMounted(true);
   }, []);
 
-  // --- State persistence: save displayedAnalysis whenever it changes ---
-  const displayedAnalysis = loadedAnalysis || analysis;
+  // If already authenticated, redirect to dashboard
   useEffect(() => {
-    if (displayedAnalysis) {
-      try {
-        sessionStorage.setItem(
-          "optionstaxhub-analysis",
-          JSON.stringify(displayedAnalysis),
-        );
-      } catch {
-        // Storage full — ignore
-      }
+    if (!loading && user) {
+      router.push("/dashboard");
     }
-  }, [displayedAnalysis]);
+  }, [loading, user, router]);
 
-  // --- One-time cleanup: delete orphan history entries without stored result ---
-  useEffect(() => {
-    if (user?.id) {
-      cleanupOrphanHistory(user.id)
-        .then(() => {
-          queryClient.invalidateQueries({
-            queryKey: ["portfolio-history", user.id],
-          });
-        })
-        .catch(() => {});
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.id]);
+  // Prevent hydration mismatch
+  if (!mounted) return null;
 
-  const handleUploadClick = () => {
-    fileInputRef.current?.click();
-  };
+  // Show nothing while checking auth (brief flash prevention)
+  if (loading) return null;
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      // Clear any previously loaded history analysis + cached state
-      setLoadedAnalysis(null);
-      sessionStorage.removeItem("optionstaxhub-analysis");
-      analyzePortfolio(
-        {
-          file,
-          filingStatus: taxProfile?.filing_status || "single",
-          estimatedIncome: taxProfile?.estimated_annual_income || 75000,
-          taxYear: taxProfile?.tax_year || 2025,
-          userId: user?.id,
-        },
-        {
-          onSuccess: () => {
-            // Refresh history sidebar after successful analysis
-            queryClient.invalidateQueries({
-              queryKey: ["portfolio-history", user?.id],
-            });
-          },
-        },
-      );
-      // Reset file input so the same file can be re-uploaded
-      e.target.value = "";
-    }
-  };
+  // If user is authenticated, show nothing while redirecting
+  if (user) return null;
 
-  const handleSignOut = async () => {
-    sessionStorage.removeItem("optionstaxhub-analysis");
-    await signOut();
-    setMenuAnchor(null);
-    router.push("/auth/signin");
-  };
-
-  /**
-   * Load a past analysis from history and display it.
-   */
-  const handleHistoryItemClick = async (itemId: string) => {
-    if (!user?.id) return;
-    setHistoryLoading(true);
-    try {
-      const record = await fetchAnalysisById(itemId, user.id);
-      if (record?.result) {
-        setLoadedAnalysis(record.result);
-        setActiveTab(0);
-      }
-    } catch (err) {
-      // Silently fail — old items may not have full result stored
-      console.error("Failed to load analysis:", err);
-    } finally {
-      setHistoryLoading(false);
-      setHistoryOpen(false);
-    }
-  };
-
-  /**
-   * Delete a history item after user confirms via dialog.
-   */
-  const handleDeleteConfirm = async () => {
-    if (!user?.id || !deleteTarget) return;
-    try {
-      await deleteAnalysis(deleteTarget.id, user.id);
-      queryClient.invalidateQueries({
-        queryKey: ["portfolio-history", user.id],
-      });
-    } catch (err) {
-      console.error("Failed to delete analysis:", err);
-    } finally {
-      setDeleteTarget(null);
-    }
-  };
-
-  useEffect(() => {
-    if (!authLoading && !user) {
-      router.push("/auth/signin");
-    }
-  }, [authLoading, user, router]);
-
-  if (authLoading || !user) {
-    return (
-      <Box
-        sx={{
-          display: "flex",
-          justifyContent: "center",
-          alignItems: "center",
-          height: "100vh",
-        }}
-      >
-        <CircularProgress />
-      </Box>
-    );
-  }
-
-  const firstName = user.user_metadata?.first_name as string | null;
-  const lastName = user.user_metadata?.last_name as string | null;
-  const fullName = [firstName, lastName].filter(Boolean).join(" ");
-  const displayNameFromProfile =
-    (user.user_metadata?.display_name as string | null) ||
-    (user.user_metadata?.full_name as string | null);
-  const displayName =
-    displayNameFromProfile || fullName || user.email || "Account";
-  const avatarLetter = displayName[0].toUpperCase();
-
-  // displayedAnalysis is computed above (near sessionStorage effects)
-  const hasResults = !!displayedAnalysis;
+  const features = [
+    {
+      icon: <UploadIcon sx={{ fontSize: 40, color: "primary.main" }} />,
+      title: "CSV Upload & Analysis",
+      description:
+        "Upload your Robinhood transaction exports and get instant portfolio analysis with detailed position breakdowns.",
+    },
+    {
+      icon: <HarvestIcon sx={{ fontSize: 40, color: "success.main" }} />,
+      title: "Tax-Loss Harvesting",
+      description:
+        "Identify positions with unrealized losses and get smart suggestions to harvest tax savings before year-end.",
+    },
+    {
+      icon: <WashSaleIcon sx={{ fontSize: 40, color: "warning.main" }} />,
+      title: "Wash-Sale Detection",
+      description:
+        "Automatically flag potential wash-sale rule violations so you can avoid costly IRS penalties.",
+    },
+    {
+      icon: <WalletIcon sx={{ fontSize: 40, color: "info.main" }} />,
+      title: "Tax Savings Estimates",
+      description:
+        "See estimated federal and state tax savings based on your filing status, income bracket, and tax year.",
+    },
+    {
+      icon: <SpeedIcon sx={{ fontSize: 40, color: "secondary.main" }} />,
+      title: "Instant Results",
+      description:
+        "Get portfolio analysis in seconds. No waiting, no complex setup — just upload and go.",
+    },
+    {
+      icon: <SecurityIcon sx={{ fontSize: 40, color: "error.main" }} />,
+      title: "Privacy First",
+      description:
+        "Your data is processed securely and never stored permanently. CSVs are analyzed in-memory only.",
+    },
+  ];
 
   return (
-    <>
-      <ServiceWorkerRegistration />
-
-      {/* Header AppBar */}
-      <AppBar position="static">
-        <Toolbar sx={{ px: { xs: 1, sm: 2 }, gap: { xs: 0.25, sm: 0.5 } }}>
-          <DashboardIcon sx={{ mr: 0.5 }} />
+    <Box sx={{ minHeight: "100vh", bgcolor: "background.default" }}>
+      {/* Navigation */}
+      <AppBar position="static" elevation={0}>
+        <Toolbar sx={{ px: { xs: 2, sm: 3 } }}>
+          <DashboardIcon sx={{ mr: 1 }} />
           <Typography
             variant="h6"
             component="div"
-            sx={{
-              flexGrow: 1,
-              fontWeight: 700,
-              fontSize: { xs: "1rem", sm: "1.25rem" },
-              whiteSpace: "nowrap",
-            }}
+            sx={{ flexGrow: 1, fontWeight: 700 }}
           >
             OptionsTaxHub
           </Typography>
-
-          {/* Tip — icon-only on mobile */}
-          <IconButton
-            color="inherit"
-            onClick={() => setTipJarOpen(true)}
-            aria-label="Tip"
-            sx={{ display: { xs: "inline-flex", sm: "none" } }}
-          >
-            <HeartIcon sx={{ color: "#ff6b6b" }} />
-          </IconButton>
           <Button
             color="inherit"
-            startIcon={<HeartIcon sx={{ color: "#ff6b6b" }} />}
-            onClick={() => setTipJarOpen(true)}
-            sx={{ textTransform: "none", mr: 0.5, display: { xs: "none", sm: "inline-flex" } }}
+            onClick={() => router.push("/auth/signin")}
+            sx={{ textTransform: "none", mr: 1 }}
           >
-            Tip
+            Sign In
           </Button>
-
-          {/* History — icon-only on mobile */}
-          <IconButton
-            color="inherit"
-            onClick={() => setHistoryOpen(true)}
-            aria-label="History"
-            sx={{ display: { xs: "inline-flex", sm: "none" } }}
-          >
-            <HistoryIcon />
-          </IconButton>
           <Button
-            color="inherit"
-            startIcon={<HistoryIcon />}
-            onClick={() => setHistoryOpen(true)}
-            sx={{ textTransform: "none", mr: 0.5, display: { xs: "none", sm: "inline-flex" } }}
+            variant="contained"
+            color="secondary"
+            onClick={() => router.push("/auth/signup")}
+            sx={{ textTransform: "none", fontWeight: 600 }}
           >
-            History
+            Get Started
           </Button>
-
-          {/* Settings — icon-only on mobile */}
-          <IconButton
-            color="inherit"
-            onClick={() => router.push("/settings")}
-            aria-label="Settings"
-            sx={{ display: { xs: "inline-flex", sm: "none" } }}
-          >
-            <SettingsIcon />
-          </IconButton>
-          <Button
-            color="inherit"
-            startIcon={<SettingsIcon />}
-            onClick={() => router.push("/settings")}
-            sx={{ textTransform: "none", mr: 0.5, display: { xs: "none", sm: "inline-flex" } }}
-          >
-            Settings
-          </Button>
-
-          {/* Avatar — name hidden on mobile */}
-          <Button
-            color="inherit"
-            onClick={(e) => setMenuAnchor(e.currentTarget)}
-            sx={{ textTransform: "none", minWidth: "auto", px: { xs: 0.5, sm: 1 } }}
-          >
-            <Avatar sx={{ width: 32, height: 32 }}>
-              {avatarLetter}
-            </Avatar>
-            <Typography
-              component="span"
-              sx={{ ml: 1, display: { xs: "none", sm: "inline" } }}
-            >
-              {displayName}
-            </Typography>
-          </Button>
-          <Menu
-            anchorEl={menuAnchor}
-            open={Boolean(menuAnchor)}
-            onClose={() => setMenuAnchor(null)}
-          >
-            <MenuItem disabled>
-              <Typography variant="body2">
-                {displayName}
-                {user.email ? ` (${user.email})` : ""}
-              </Typography>
-            </MenuItem>
-            <MenuItem onClick={handleSignOut}>
-              <LogoutIcon sx={{ mr: 1 }} />
-              Sign Out
-            </MenuItem>
-          </Menu>
         </Toolbar>
       </AppBar>
 
-      {/* Tip Jar Dialog */}
-      <TipJar open={tipJarOpen} onClose={() => setTipJarOpen(false)} />
-
-      {/* History Drawer */}
-      <Drawer
-        anchor="left"
-        open={historyOpen}
-        onClose={() => setHistoryOpen(false)}
+      {/* Hero Section */}
+      <Box
+        sx={{
+          background: "linear-gradient(135deg, #1565c0 0%, #0d47a1 100%)",
+          color: "white",
+          py: { xs: 8, md: 12 },
+          px: 2,
+          textAlign: "center",
+        }}
       >
-        <Box sx={{ width: 300, pt: 2 }}>
+        <Container maxWidth="md">
+          <Chip
+            label="Free to use — No credit card required"
+            sx={{
+              mb: 3,
+              bgcolor: "rgba(255,255,255,0.15)",
+              color: "white",
+              fontWeight: 600,
+              fontSize: "0.85rem",
+            }}
+          />
+          <Typography
+            variant="h2"
+            sx={{
+              fontWeight: 800,
+              mb: 2,
+              fontSize: { xs: "2rem", sm: "2.75rem", md: "3.5rem" },
+              lineHeight: 1.2,
+            }}
+          >
+            Smart Tax Optimization
+            <br />
+            for Options Traders
+          </Typography>
           <Typography
             variant="h6"
             sx={{
-              px: 2,
-              pb: 1,
-              fontWeight: 700,
-              display: "flex",
-              alignItems: "center",
-              gap: 1,
+              mb: 4,
+              opacity: 0.9,
+              maxWidth: 600,
+              mx: "auto",
+              fontWeight: 400,
+              fontSize: { xs: "1rem", sm: "1.15rem" },
+              lineHeight: 1.6,
             }}
           >
-            <HistoryIcon /> Upload History
+            Upload your portfolio, identify tax-loss harvesting opportunities,
+            detect wash-sale violations, and estimate your savings — all in
+            seconds.
           </Typography>
-          <Divider />
-          {!history || history.length === 0 ? (
-            <Typography
-              variant="body2"
-              color="text.secondary"
-              sx={{ p: 2, textAlign: "center" }}
+          <Stack
+            direction={{ xs: "column", sm: "row" }}
+            spacing={2}
+            justifyContent="center"
+          >
+            <Button
+              variant="contained"
+              size="large"
+              onClick={() => router.push("/auth/signup")}
+              sx={{
+                py: 1.5,
+                px: 4,
+                fontSize: "1.1rem",
+                fontWeight: 700,
+                textTransform: "none",
+                bgcolor: "white",
+                color: "primary.dark",
+                "&:hover": { bgcolor: "grey.100" },
+              }}
             >
-              No past uploads yet. Upload a CSV to get started.
-            </Typography>
-          ) : (
-            <List
-              dense
-              sx={{ overflow: "auto", maxHeight: "calc(100vh - 80px)" }}
+              Create Free Account
+            </Button>
+            <Button
+              variant="outlined"
+              size="large"
+              onClick={() => router.push("/auth/signin")}
+              sx={{
+                py: 1.5,
+                px: 4,
+                fontSize: "1.1rem",
+                fontWeight: 700,
+                textTransform: "none",
+                borderColor: "rgba(255,255,255,0.5)",
+                color: "white",
+                "&:hover": {
+                  borderColor: "white",
+                  bgcolor: "rgba(255,255,255,0.1)",
+                },
+              }}
             >
-              {history.map((item) => (
-                <ListItem
-                  key={item.id}
-                  disablePadding
-                  secondaryAction={
-                    <IconButton
-                      edge="end"
-                      size="small"
-                      aria-label="delete"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setDeleteTarget({
-                          id: item.id,
-                          filename: item.filename,
-                        });
-                      }}
-                      sx={{
-                        opacity: 0.5,
-                        "&:hover": { opacity: 1, color: "error.main" },
-                      }}
-                    >
-                      <CloseIcon fontSize="small" />
-                    </IconButton>
-                  }
-                >
-                  <ListItemButton
-                    onClick={() => handleHistoryItemClick(item.id)}
-                    disabled={historyLoading}
-                    sx={{ pr: 5 }}
+              Sign In
+            </Button>
+          </Stack>
+        </Container>
+      </Box>
+
+      {/* Features Grid */}
+      <Container maxWidth="lg" sx={{ py: { xs: 6, md: 10 } }}>
+        <Typography
+          variant="h4"
+          sx={{
+            textAlign: "center",
+            fontWeight: 700,
+            mb: 1,
+            fontSize: { xs: "1.5rem", md: "2rem" },
+          }}
+        >
+          Everything You Need for Tax-Smart Trading
+        </Typography>
+        <Typography
+          variant="body1"
+          color="text.secondary"
+          sx={{ textAlign: "center", mb: 6, maxWidth: 600, mx: "auto" }}
+        >
+          Built for DIY retail investors who want to maximize after-tax returns
+          without the complexity.
+        </Typography>
+        <Grid container spacing={3}>
+          {features.map((feature) => (
+            <Grid size={{ xs: 12, sm: 6, md: 4 }} key={feature.title}>
+              <Card
+                sx={{
+                  height: "100%",
+                  transition: "transform 0.2s, box-shadow 0.2s",
+                  "&:hover": {
+                    transform: "translateY(-4px)",
+                    boxShadow: 6,
+                  },
+                }}
+              >
+                <CardContent sx={{ p: 3 }}>
+                  <Box sx={{ mb: 2 }}>{feature.icon}</Box>
+                  <Typography
+                    variant="h6"
+                    sx={{ fontWeight: 700, mb: 1, fontSize: "1.1rem" }}
                   >
-                    <ListItemText
-                      primary={item.filename}
-                      secondary={
-                        <>
-                          {new Date(item.uploaded_at).toLocaleDateString(
-                            "en-US",
-                            {
-                              month: "short",
-                              day: "numeric",
-                              year: "numeric",
-                              hour: "numeric",
-                              minute: "2-digit",
-                            },
-                          )}
-                          {" · "}
-                          {item.positions_count} positions
-                          {" · "}
-                          {new Intl.NumberFormat("en-US", {
-                            style: "currency",
-                            currency: "USD",
-                            maximumFractionDigits: 0,
-                          }).format(item.total_market_value)}
-                        </>
-                      }
-                    />
-                  </ListItemButton>
-                </ListItem>
-              ))}
-            </List>
-          )}
-        </Box>
-      </Drawer>
-
-      {/* Delete Confirmation Dialog */}
-      <Dialog
-        open={!!deleteTarget}
-        onClose={() => setDeleteTarget(null)}
-      >
-        <DialogTitle>Delete Analysis</DialogTitle>
-        <DialogContent>
-          <DialogContentText>
-            Are you sure you want to delete the analysis for{" "}
-            <strong>{deleteTarget?.filename}</strong>? This action cannot be
-            undone.
-          </DialogContentText>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setDeleteTarget(null)}>Cancel</Button>
-          <Button onClick={handleDeleteConfirm} color="error" variant="contained">
-            Delete
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      {/* Loading bar */}
-      {(isPending || historyLoading) && <LinearProgress />}
-
-      {/* Main Content */}
-      <Container maxWidth="lg" sx={{ py: 3 }}>
-        <Stack spacing={3}>
-          {/* Upload Section */}
-          <Card>
-            <CardContent>
-              <Stack spacing={2}>
-                <Box>
-                  <Typography variant="h5" sx={{ mb: 0.5, fontWeight: 600 }}>
-                    Portfolio Analysis
+                    {feature.title}
                   </Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    Upload your Robinhood CSV export to analyze tax-loss
-                    harvesting opportunities. Your{" "}
-                    <Button
-                      size="small"
-                      onClick={() => router.push("/settings")}
-                      sx={{ textTransform: "none", p: 0, minWidth: "auto" }}
-                    >
-                      tax profile
-                    </Button>{" "}
-                    is used to calculate savings.
+                  <Typography
+                    variant="body2"
+                    color="text.secondary"
+                    sx={{ lineHeight: 1.6 }}
+                  >
+                    {feature.description}
                   </Typography>
-                </Box>
+                </CardContent>
+              </Card>
+            </Grid>
+          ))}
+        </Grid>
+      </Container>
 
-                {/* Upload area */}
+      {/* How It Works */}
+      <Box sx={{ bgcolor: "grey.50", py: { xs: 6, md: 10 }, px: 2 }}>
+        <Container maxWidth="md">
+          <Typography
+            variant="h4"
+            sx={{
+              textAlign: "center",
+              fontWeight: 700,
+              mb: 6,
+              fontSize: { xs: "1.5rem", md: "2rem" },
+            }}
+          >
+            How It Works
+          </Typography>
+          <Stack spacing={4}>
+            {[
+              {
+                step: "1",
+                title: "Create your free account",
+                desc: "Sign up in seconds with just an email and password.",
+              },
+              {
+                step: "2",
+                title: "Upload your CSV export",
+                desc: "Export your transaction history from Robinhood (or use our simplified format) and upload the CSV.",
+              },
+              {
+                step: "3",
+                title: "Get instant tax insights",
+                desc: "See your portfolio breakdown, harvesting suggestions, wash-sale warnings, and estimated tax savings immediately.",
+              },
+            ].map((item) => (
+              <Stack
+                key={item.step}
+                direction="row"
+                spacing={3}
+                alignItems="flex-start"
+              >
                 <Box
                   sx={{
-                    border: "2px dashed",
-                    borderColor: isPending ? "grey.400" : "primary.main",
-                    borderRadius: 2,
-                    p: 3,
-                    textAlign: "center",
-                    cursor: isPending ? "default" : "pointer",
-                    transition: "all 0.2s",
-                    opacity: isPending ? 0.6 : 1,
-                    "& *": {
-                      cursor: "inherit",
-                    },
-                    "&:hover": isPending
-                      ? {}
-                      : {
-                          backgroundColor: "action.hover",
-                          borderColor: "primary.dark",
-                        },
+                    width: 48,
+                    height: 48,
+                    borderRadius: "50%",
+                    bgcolor: "primary.main",
+                    color: "white",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontWeight: 800,
+                    fontSize: "1.25rem",
+                    flexShrink: 0,
                   }}
-                  onClick={isPending ? undefined : handleUploadClick}
-                  role={isPending ? undefined : "button"}
-                  tabIndex={isPending ? undefined : 0}
                 >
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept=".csv"
-                    onChange={handleFileChange}
-                    style={{ display: "none" }}
-                  />
-                  <CloudUploadIcon
-                    sx={{ fontSize: 40, color: "primary.main", mb: 0.5 }}
-                  />
-                  <Typography variant="body1" sx={{ fontWeight: 500 }}>
-                    {isPending
-                      ? "Analyzing portfolio..."
-                      : "Click to upload CSV"}
+                  {item.step}
+                </Box>
+                <Box>
+                  <Typography variant="h6" sx={{ fontWeight: 700, mb: 0.5 }}>
+                    {item.title}
                   </Typography>
-                  <Typography variant="caption" color="text.secondary">
-                    Robinhood transaction export or simplified portfolio CSV
+                  <Typography variant="body1" color="text.secondary">
+                    {item.desc}
                   </Typography>
                 </Box>
               </Stack>
-            </CardContent>
-          </Card>
+            ))}
+          </Stack>
+        </Container>
+      </Box>
 
-          {/* Error Alert */}
-          {error && (
-            <Alert severity="error" icon={<ErrorIcon />}>
-              <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                Analysis Failed
-              </Typography>
-              <Typography variant="caption">
-                {error instanceof Error ? error.message : "An error occurred"}
-              </Typography>
-            </Alert>
-          )}
+      {/* CTA Section */}
+      <Box
+        sx={{
+          py: { xs: 6, md: 10 },
+          px: 2,
+          textAlign: "center",
+        }}
+      >
+        <Container maxWidth="sm">
+          <Typography
+            variant="h4"
+            sx={{
+              fontWeight: 700,
+              mb: 2,
+              fontSize: { xs: "1.5rem", md: "2rem" },
+            }}
+          >
+            Ready to Optimize Your Taxes?
+          </Typography>
+          <Typography
+            variant="body1"
+            color="text.secondary"
+            sx={{ mb: 4, lineHeight: 1.6 }}
+          >
+            Join OptionsTaxHub today and start identifying tax-loss harvesting
+            opportunities in your portfolio.
+          </Typography>
+          <Button
+            variant="contained"
+            size="large"
+            onClick={() => router.push("/auth/signup")}
+            sx={{
+              py: 1.5,
+              px: 5,
+              fontSize: "1.1rem",
+              fontWeight: 700,
+              textTransform: "none",
+            }}
+          >
+            Get Started — It&apos;s Free
+          </Button>
+        </Container>
+      </Box>
 
-          {/* Warnings */}
-          {displayedAnalysis?.warnings &&
-            displayedAnalysis.warnings.length > 0 && (
-              <Alert severity="warning">
-                {displayedAnalysis.warnings.map((w: string) => (
-                  <Typography key={w} variant="body2">
-                    {w}
-                  </Typography>
-                ))}
-              </Alert>
-            )}
-
-          {/* Results */}
-          {hasResults && (
-            <>
-              {/* Summary Cards */}
-              <PortfolioSummaryCards summary={displayedAnalysis.summary} />
-
-              {/* Wash-Sale Warnings */}
-              {displayedAnalysis.wash_sale_flags.length > 0 && (
-                <WashSaleWarning flags={displayedAnalysis.wash_sale_flags} />
-              )}
-
-              {/* Tabbed view: Positions | Suggestions */}
-              <Card>
-                <Tabs
-                  value={activeTab}
-                  onChange={(_, v) => setActiveTab(v)}
-                  sx={{ borderBottom: 1, borderColor: "divider", px: 2 }}
-                >
-                  <Tab
-                    label={`Positions (${displayedAnalysis.positions.length})`}
-                    id="tab-positions"
-                  />
-                  <Tab
-                    label={`Suggestions (${displayedAnalysis.suggestions.length})`}
-                    id="tab-suggestions"
-                  />
-                </Tabs>
-
-                <CardContent>
-                  {activeTab === 0 && (
-                    <PositionsTable positions={displayedAnalysis.positions} />
-                  )}
-                  {activeTab === 1 && (
-                    <HarvestingSuggestions
-                      suggestions={displayedAnalysis.suggestions}
-                    />
-                  )}
-                </CardContent>
-              </Card>
-
-              {/* Disclaimer */}
-              <TaxDisclaimer />
-            </>
-          )}
-        </Stack>
-      </Container>
-    </>
+      {/* Footer */}
+      <Box
+        sx={{
+          bgcolor: "grey.900",
+          color: "grey.400",
+          py: 4,
+          px: 2,
+          textAlign: "center",
+        }}
+      >
+        <Container maxWidth="md">
+          <Typography variant="body2" sx={{ mb: 1 }}>
+            &copy; {new Date().getFullYear()} OptionsTaxHub. All rights
+            reserved.
+          </Typography>
+          <Typography
+            variant="caption"
+            sx={{ display: "block", maxWidth: 500, mx: "auto", lineHeight: 1.5 }}
+          >
+            This tool is for educational and informational purposes only. It
+            does not constitute financial, tax, or legal advice. Consult a
+            qualified professional before making tax decisions.
+          </Typography>
+        </Container>
+      </Box>
+    </Box>
   );
 }

@@ -50,7 +50,7 @@ export default function TipCancelPage() {
             variant="contained"
             size="large"
             startIcon={<HomeIcon />}
-            onClick={() => router.push("/")}
+            onClick={() => router.push("/dashboard")}
             sx={{
               mt: 2,
               py: 1.5,

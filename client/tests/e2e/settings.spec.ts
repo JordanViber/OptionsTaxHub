@@ -78,11 +78,11 @@ test.describe("Settings Page", () => {
     // Click the Dashboard back button
     await page.getByRole("button", { name: "Dashboard" }).click();
 
-    // Should navigate to home
-    await expect(page.getByText("OptionsTaxHub")).toBeVisible({
+    // Should navigate to dashboard
+    await expect(page.getByText("Portfolio Analysis")).toBeVisible({
       timeout: 10000,
     });
-    expect(page.url()).toMatch(/\/$/);
+    expect(page.url()).toMatch(/\/dashboard/);
   });
 
   test("shows tax disclaimer banner", async ({ page }) => {

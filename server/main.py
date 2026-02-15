@@ -125,15 +125,22 @@ def _save_history_best_effort(
 ) -> None:
     """Save analysis to history (best-effort, non-blocking)."""
     try:
-        result_dict = result.model_dump() if hasattr(result, "model_dump") else dict(result)
-        save_analysis_history(
+        # Use mode="json" to convert date/datetime objects to ISO strings
+        # so the dict is JSON-serializable for the JSONB column.
+        result_dict = result.model_dump(mode="json") if hasattr(result, "model_dump") else dict(result)
+        summary_dict = summary.model_dump(mode="json") if hasattr(summary, "model_dump") else dict(summary)
+        saved = save_analysis_history(
             user_id=user_id,
             filename=filename,
-            summary=summary.model_dump() if hasattr(summary, "model_dump") else dict(summary),
+            summary=summary_dict,
             result_data=result_dict,
         )
+        if saved:
+            logger.info(f"History saved successfully: id={saved.get('id')}")
+        else:
+            logger.warning("save_analysis_history returned None — check Supabase connection")
     except Exception as e:
-        logger.warning(f"Failed to save analysis history: {e}")
+        logger.warning(f"Failed to save analysis history: {e}", exc_info=True)
 
 
 @app.post("/api/portfolio/analyze", response_model=PortfolioAnalysis)

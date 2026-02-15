@@ -376,3 +376,469 @@ def test_tip_checkout_stripe_error(monkeypatch):
     response = client.post("/api/tips/checkout", json={"tier": "lunch"})
     assert response.status_code == 502
     assert "checkout session" in response.json()["detail"].lower()
+
+
+# ---------- Portfolio Analysis Endpoint ----------
+
+
+def _make_csv(content: str = None):
+    """Helper to create a CSV upload payload."""
+    if content is None:
+        content = (
+            "symbol,quantity,cost_basis_per_share,total_cost_basis,purchase_date,current_price\n"
+            "AAPL,10,150.00,1500.00,2024-01-15,145.00\n"
+            "MSFT,5,300.00,1500.00,2024-06-01,310.00\n"
+        )
+    return {"file": ("test.csv", content, "text/csv")}
+
+
+def test_analyze_portfolio_success(monkeypatch):
+    """POST /api/portfolio/analyze returns full analysis for a valid CSV."""
+    from datetime import date
+    from models import TaxLot, Transaction, Position, PortfolioSummary, HarvestingSuggestion
+
+    lots = [
+        TaxLot(
+            symbol="AAPL", quantity=10, cost_basis_per_share=150.0,
+            total_cost_basis=1500.0, purchase_date=date(2024, 1, 15),
+            current_price=145.0,
+        ),
+    ]
+    positions = [
+        Position(
+            symbol="AAPL", quantity=10, avg_cost_basis=150.0,
+            total_cost_basis=1500.0, current_price=145.0, market_value=1450.0,
+            unrealized_pnl=-50.0, unrealized_pnl_pct=-3.33,
+        ),
+    ]
+    summary = PortfolioSummary(
+        total_market_value=1450.0, total_cost_basis=1500.0,
+        total_unrealized_pnl=-50.0, total_unrealized_pnl_pct=-3.33,
+        positions_count=1, lots_with_losses=1,
+    )
+
+    monkeypatch.setattr("main.parse_csv", lambda _: (lots, [], []))
+    monkeypatch.setattr("main.fetch_current_prices", lambda s, fb=None: ({"AAPL": 145.0}, []))
+    monkeypatch.setattr("main.compute_lot_metrics", lambda l: l)
+    monkeypatch.setattr("main.detect_wash_sales", lambda t: [])
+    monkeypatch.setattr("main.prepare_positions_for_ai", lambda l: [])
+    monkeypatch.setattr("main.generate_suggestions", lambda **kw: [])
+    monkeypatch.setattr("main.aggregate_positions", lambda l: positions)
+    monkeypatch.setattr("main.build_portfolio_summary", lambda p, s, w: summary)
+
+    response = client.post(
+        "/api/portfolio/analyze?filing_status=single&estimated_income=80000&tax_year=2025",
+        files=_make_csv(),
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["summary"]["total_market_value"] == 1450.0
+    assert data["summary"]["positions_count"] == 1
+    assert len(data["positions"]) == 1
+    assert data["positions"][0]["symbol"] == "AAPL"
+    assert "disclaimer" in data
+
+
+def test_analyze_portfolio_empty_csv(monkeypatch):
+    """POST /api/portfolio/analyze returns 400 if CSV has no parseable data."""
+    monkeypatch.setattr("main.parse_csv", lambda _: ([], [], ["No valid rows"]))
+
+    response = client.post("/api/portfolio/analyze", files=_make_csv("bad,csv\n"))
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "Could not parse" in detail["message"]
+    assert "No valid rows" in detail["errors"]
+
+
+def test_analyze_portfolio_invalid_filing_status(monkeypatch):
+    """POST /api/portfolio/analyze falls back to SINGLE for invalid filing status."""
+    from datetime import date
+    from models import TaxLot, Position, PortfolioSummary
+
+    lots = [
+        TaxLot(
+            symbol="TSLA", quantity=2, cost_basis_per_share=200.0,
+            total_cost_basis=400.0, purchase_date=date(2024, 3, 1),
+            current_price=210.0,
+        ),
+    ]
+    positions = [
+        Position(
+            symbol="TSLA", quantity=2, avg_cost_basis=200.0,
+            total_cost_basis=400.0, current_price=210.0, market_value=420.0,
+        ),
+    ]
+    summary = PortfolioSummary(positions_count=1)
+
+    monkeypatch.setattr("main.parse_csv", lambda _: (lots, [], []))
+    monkeypatch.setattr("main.fetch_current_prices", lambda s, fb=None: ({}, []))
+    monkeypatch.setattr("main.compute_lot_metrics", lambda l: l)
+    monkeypatch.setattr("main.detect_wash_sales", lambda t: [])
+    monkeypatch.setattr("main.prepare_positions_for_ai", lambda l: [])
+    monkeypatch.setattr("main.generate_suggestions", lambda **kw: [])
+    monkeypatch.setattr("main.aggregate_positions", lambda l: positions)
+    monkeypatch.setattr("main.build_portfolio_summary", lambda p, s, w: summary)
+
+    response = client.post(
+        "/api/portfolio/analyze?filing_status=INVALID_STATUS",
+        files=_make_csv(),
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["tax_profile"]["filing_status"] == "single"
+
+
+def test_analyze_portfolio_saves_history(monkeypatch):
+    """POST /api/portfolio/analyze saves to history when user_id is provided."""
+    from datetime import date
+    from models import TaxLot, Position, PortfolioSummary
+
+    lots = [
+        TaxLot(
+            symbol="NVDA", quantity=3, cost_basis_per_share=400.0,
+            total_cost_basis=1200.0, purchase_date=date(2024, 5, 1),
+            current_price=450.0,
+        ),
+    ]
+    positions = [
+        Position(
+            symbol="NVDA", quantity=3, avg_cost_basis=400.0,
+            total_cost_basis=1200.0, current_price=450.0, market_value=1350.0,
+        ),
+    ]
+    summary = PortfolioSummary(positions_count=1)
+
+    save_called = {"value": False}
+
+    def fake_save(**_kw):
+        save_called["value"] = True
+
+    monkeypatch.setattr("main.parse_csv", lambda _: (lots, [], []))
+    monkeypatch.setattr("main.fetch_current_prices", lambda s, fb=None: ({}, []))
+    monkeypatch.setattr("main.compute_lot_metrics", lambda l: l)
+    monkeypatch.setattr("main.detect_wash_sales", lambda t: [])
+    monkeypatch.setattr("main.prepare_positions_for_ai", lambda l: [])
+    monkeypatch.setattr("main.generate_suggestions", lambda **kw: [])
+    monkeypatch.setattr("main.aggregate_positions", lambda l: positions)
+    monkeypatch.setattr("main.build_portfolio_summary", lambda p, s, w: summary)
+    monkeypatch.setattr("main.save_analysis_history", fake_save)
+
+    response = client.post(
+        "/api/portfolio/analyze?user_id=test-user-123",
+        files=_make_csv(),
+    )
+
+    assert response.status_code == 200
+    assert save_called["value"] is True
+
+
+def test_analyze_portfolio_ai_failure_adds_warning(monkeypatch):
+    """AI failure should add a warning but not break the analysis."""
+    from datetime import date
+    from models import TaxLot, Position, PortfolioSummary
+
+    lots = [
+        TaxLot(
+            symbol="AMD", quantity=5, cost_basis_per_share=100.0,
+            total_cost_basis=500.0, purchase_date=date(2024, 2, 1),
+            current_price=95.0,
+        ),
+    ]
+    positions = [
+        Position(
+            symbol="AMD", quantity=5, avg_cost_basis=100.0,
+            total_cost_basis=500.0, current_price=95.0, market_value=475.0,
+        ),
+    ]
+    summary = PortfolioSummary(positions_count=1)
+
+    monkeypatch.setattr("main.parse_csv", lambda _: (lots, [], []))
+    monkeypatch.setattr("main.fetch_current_prices", lambda s, fb=None: ({}, []))
+    monkeypatch.setattr("main.compute_lot_metrics", lambda l: l)
+    monkeypatch.setattr("main.detect_wash_sales", lambda t: [])
+    monkeypatch.setattr("main.prepare_positions_for_ai", lambda l: [{"symbol": "AMD"}])
+
+    def fake_ai_fail(_positions):
+        raise Exception("AI service unavailable")
+
+    monkeypatch.setattr("main.get_ai_suggestions", fake_ai_fail)
+    monkeypatch.setattr("main.generate_suggestions", lambda **kw: [])
+    monkeypatch.setattr("main.aggregate_positions", lambda l: positions)
+    monkeypatch.setattr("main.build_portfolio_summary", lambda p, s, w: summary)
+
+    response = client.post("/api/portfolio/analyze", files=_make_csv())
+
+    assert response.status_code == 200
+    data = response.json()
+    assert any("AI-powered suggestions unavailable" in w for w in data["warnings"])
+
+
+def test_analyze_portfolio_with_wash_sales(monkeypatch):
+    """POST /api/portfolio/analyze detects and adjusts for wash sales."""
+    from datetime import date
+    from models import TaxLot, Transaction, TransCode, Position, PortfolioSummary, WashSaleFlag
+
+    lots = [
+        TaxLot(
+            symbol="AAPL", quantity=10, cost_basis_per_share=150.0,
+            total_cost_basis=1500.0, purchase_date=date(2024, 1, 15),
+            current_price=145.0,
+        ),
+    ]
+    transactions = [
+        Transaction(
+            activity_date=date(2024, 6, 1), instrument="AAPL",
+            trans_code=TransCode.SELL, quantity=10, price=140.0, amount=-1400.0,
+        ),
+        Transaction(
+            activity_date=date(2024, 6, 15), instrument="AAPL",
+            trans_code=TransCode.BUY, quantity=10, price=145.0, amount=1450.0,
+        ),
+    ]
+    wash_flags = [
+        WashSaleFlag(
+            symbol="AAPL", sale_date=date(2024, 6, 1), sale_quantity=10,
+            sale_loss=100.0, repurchase_date=date(2024, 6, 15),
+            repurchase_quantity=10, disallowed_loss=100.0,
+            adjusted_cost_basis=155.0, explanation="Repurchased within 30 days",
+        ),
+    ]
+    positions = [
+        Position(
+            symbol="AAPL", quantity=10, avg_cost_basis=155.0,
+            total_cost_basis=1550.0, current_price=145.0, market_value=1450.0,
+            wash_sale_risk=True,
+        ),
+    ]
+    summary = PortfolioSummary(positions_count=1, wash_sale_flags_count=1)
+
+    monkeypatch.setattr("main.parse_csv", lambda _: (lots, transactions, []))
+    monkeypatch.setattr("main.fetch_current_prices", lambda s, fb=None: ({"AAPL": 145.0}, []))
+    monkeypatch.setattr("main.compute_lot_metrics", lambda l: l)
+    monkeypatch.setattr("main.detect_wash_sales", lambda t: wash_flags)
+    monkeypatch.setattr("main.adjust_lots_for_wash_sales", lambda l, w: l)
+    monkeypatch.setattr("main.prepare_positions_for_ai", lambda l: [])
+    monkeypatch.setattr("main.generate_suggestions", lambda **kw: [])
+    monkeypatch.setattr("main.aggregate_positions", lambda l: positions)
+    monkeypatch.setattr("main.build_portfolio_summary", lambda p, s, w: summary)
+
+    response = client.post("/api/portfolio/analyze", files=_make_csv())
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["wash_sale_flags"]) == 1
+    assert data["wash_sale_flags"][0]["symbol"] == "AAPL"
+    assert data["summary"]["wash_sale_flags_count"] == 1
+
+
+# ---------- Portfolio History Endpoints ----------
+
+
+def test_get_portfolio_history(monkeypatch):
+    """GET /api/portfolio/history/{user_id} returns user's history."""
+    mock_history = [
+        {"id": "h1", "filename": "test1.csv", "uploaded_at": "2025-01-01T00:00:00"},
+        {"id": "h2", "filename": "test2.csv", "uploaded_at": "2025-01-02T00:00:00"},
+    ]
+
+    monkeypatch.setattr("main.get_analysis_history", lambda uid, limit: mock_history)
+
+    response = client.get("/api/portfolio/history/test-user-123")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 2
+    assert data[0]["id"] == "h1"
+
+
+def test_get_portfolio_history_empty(monkeypatch):
+    """GET /api/portfolio/history/{user_id} returns empty list for new user."""
+    monkeypatch.setattr("main.get_analysis_history", lambda uid, limit: [])
+
+    response = client.get("/api/portfolio/history/new-user")
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_get_portfolio_history_custom_limit(monkeypatch):
+    """GET /api/portfolio/history/{user_id}?limit=5 passes limit to DB."""
+    captured = {}
+
+    def fake_history(uid, limit):
+        captured["limit"] = limit
+        return []
+
+    monkeypatch.setattr("main.get_analysis_history", fake_history)
+
+    response = client.get("/api/portfolio/history/test-user?limit=5")
+    assert response.status_code == 200
+    assert captured["limit"] == 5
+
+
+def test_get_portfolio_history_invalid_limit():
+    """GET /api/portfolio/history with invalid limit returns 422."""
+    response = client.get("/api/portfolio/history/test-user?limit=0")
+    assert response.status_code == 422
+
+
+# ---------- Single Analysis Retrieval ----------
+
+
+def test_get_portfolio_analysis_found(monkeypatch):
+    """GET /api/portfolio/analysis/{id} returns the full analysis."""
+    mock_record = {
+        "id": "abc-123",
+        "user_id": "test-user",
+        "filename": "portfolio.csv",
+        "result": {"positions": [], "summary": {}},
+    }
+
+    monkeypatch.setattr("main.get_analysis_by_id", lambda aid, uid: mock_record)
+
+    response = client.get("/api/portfolio/analysis/abc-123?user_id=test-user")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["id"] == "abc-123"
+    assert "result" in data
+
+
+def test_get_portfolio_analysis_not_found(monkeypatch):
+    """GET /api/portfolio/analysis/{id} returns 404 when not found."""
+    monkeypatch.setattr("main.get_analysis_by_id", lambda aid, uid: None)
+
+    response = client.get("/api/portfolio/analysis/nonexistent?user_id=test-user")
+    assert response.status_code == 404
+    assert "not found" in response.json()["detail"].lower()
+
+
+def test_get_portfolio_analysis_requires_user_id():
+    """GET /api/portfolio/analysis/{id} without user_id returns 422."""
+    response = client.get("/api/portfolio/analysis/abc-123")
+    assert response.status_code == 422
+
+
+# ---------- Delete Analysis ----------
+
+
+def test_delete_analysis_success(monkeypatch):
+    """DELETE /api/portfolio/analysis/{id} returns success on deletion."""
+    monkeypatch.setattr("main.delete_analysis_by_id", lambda aid, uid: True)
+
+    response = client.delete("/api/portfolio/analysis/abc-123?user_id=test-user")
+    assert response.status_code == 200
+    assert response.json()["deleted"] is True
+
+
+def test_delete_analysis_not_found(monkeypatch):
+    """DELETE /api/portfolio/analysis/{id} returns 404 when not found."""
+    monkeypatch.setattr("main.delete_analysis_by_id", lambda aid, uid: False)
+
+    response = client.delete("/api/portfolio/analysis/nonexistent?user_id=test-user")
+    assert response.status_code == 404
+    assert "not found" in response.json()["detail"].lower()
+
+
+def test_delete_analysis_requires_user_id():
+    """DELETE /api/portfolio/analysis/{id} without user_id returns 422."""
+    response = client.delete("/api/portfolio/analysis/abc-123")
+    assert response.status_code == 422
+
+
+# ---------- Cleanup Orphan History ----------
+
+
+def test_cleanup_orphan_history(monkeypatch):
+    """DELETE /api/portfolio/history/{user_id}/cleanup deletes orphans."""
+    monkeypatch.setattr("main.delete_analyses_without_result", lambda uid: 3)
+
+    response = client.delete("/api/portfolio/history/test-user/cleanup")
+    assert response.status_code == 200
+    assert response.json()["deleted"] == 3
+
+
+def test_cleanup_orphan_history_none(monkeypatch):
+    """DELETE /api/portfolio/history/{user_id}/cleanup returns 0 when none found."""
+    monkeypatch.setattr("main.delete_analyses_without_result", lambda uid: 0)
+
+    response = client.delete("/api/portfolio/history/test-user/cleanup")
+    assert response.status_code == 200
+    assert response.json()["deleted"] == 0
+
+
+# ---------- Prices Endpoint ----------
+
+
+def test_get_prices_success(monkeypatch):
+    """GET /api/prices returns prices for given symbols."""
+    monkeypatch.setattr(
+        "main.fetch_current_prices",
+        lambda symbols, fb=None: ({"AAPL": 150.0, "MSFT": 300.0}, []),
+    )
+
+    response = client.get("/api/prices?symbols=AAPL,MSFT")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["prices"]["AAPL"] == 150.0
+    assert data["prices"]["MSFT"] == 300.0
+    assert data["warnings"] == []
+
+
+def test_get_prices_with_warnings(monkeypatch):
+    """GET /api/prices returns warnings for missing symbols."""
+    monkeypatch.setattr(
+        "main.fetch_current_prices",
+        lambda symbols, fb=None: ({"AAPL": 150.0}, ["FAKE: no data found"]),
+    )
+
+    response = client.get("/api/prices?symbols=AAPL,FAKE")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["warnings"]) == 1
+
+
+def test_get_prices_empty_symbols():
+    """GET /api/prices with empty symbols returns 400."""
+    response = client.get("/api/prices?symbols=")
+    assert response.status_code == 400
+    assert "No symbols" in response.json()["detail"]
+
+
+def test_get_prices_missing_param():
+    """GET /api/prices without symbols param returns 422."""
+    response = client.get("/api/prices")
+    assert response.status_code == 422
+
+
+# ---------- Tax Brackets Endpoint ----------
+
+
+def test_get_tax_brackets_defaults():
+    """GET /api/tax-brackets returns brackets with default params."""
+    response = client.get("/api/tax-brackets")
+    assert response.status_code == 200
+    data = response.json()
+    # Should return bracket data (structure depends on get_tax_brackets_summary)
+    assert data is not None
+
+
+def test_get_tax_brackets_custom_params():
+    """GET /api/tax-brackets with custom params returns brackets."""
+    response = client.get(
+        "/api/tax-brackets?year=2025&filing_status=married_filing_jointly&income=200000"
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data is not None
+
+
+def test_get_tax_brackets_invalid_filing_status():
+    """GET /api/tax-brackets with invalid filing status falls back to single."""
+    response = client.get("/api/tax-brackets?filing_status=INVALID")
+    assert response.status_code == 200
+
+
+def test_get_tax_brackets_invalid_year():
+    """GET /api/tax-brackets with year out of range returns 422."""
+    response = client.get("/api/tax-brackets?year=2020")
+    assert response.status_code == 422
