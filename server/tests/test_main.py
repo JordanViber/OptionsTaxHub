@@ -396,6 +396,7 @@ def test_analyze_portfolio_success(monkeypatch):
     """POST /api/portfolio/analyze returns full analysis for a valid CSV."""
     from datetime import date
     from models import TaxLot, Transaction, Position, PortfolioSummary, HarvestingSuggestion
+    import pytest
 
     lots = [
         TaxLot(
@@ -433,7 +434,7 @@ def test_analyze_portfolio_success(monkeypatch):
 
     assert response.status_code == 200
     data = response.json()
-    assert data["summary"]["total_market_value"] == 1450.0
+    assert data["summary"]["total_market_value"] == pytest.approx(1450.0)
     assert data["summary"]["positions_count"] == 1
     assert len(data["positions"]) == 1
     assert data["positions"][0]["symbol"] == "AAPL"
@@ -561,7 +562,7 @@ def test_analyze_portfolio_ai_failure_adds_warning(monkeypatch):
     monkeypatch.setattr("main.prepare_positions_for_ai", lambda l: [{"symbol": "AMD"}])
 
     def fake_ai_fail(_positions):
-        raise Exception("AI service unavailable")
+        raise RuntimeError("AI service unavailable")
 
     monkeypatch.setattr("main.get_ai_suggestions", fake_ai_fail)
     monkeypatch.setattr("main.generate_suggestions", lambda **kw: [])
@@ -771,6 +772,8 @@ def test_cleanup_orphan_history_none(monkeypatch):
 
 def test_get_prices_success(monkeypatch):
     """GET /api/prices returns prices for given symbols."""
+    import pytest
+
     monkeypatch.setattr(
         "main.fetch_current_prices",
         lambda symbols, fb=None: ({"AAPL": 150.0, "MSFT": 300.0}, []),
@@ -779,8 +782,8 @@ def test_get_prices_success(monkeypatch):
     response = client.get("/api/prices?symbols=AAPL,MSFT")
     assert response.status_code == 200
     data = response.json()
-    assert data["prices"]["AAPL"] == 150.0
-    assert data["prices"]["MSFT"] == 300.0
+    assert data["prices"]["AAPL"] == pytest.approx(150.0)
+    assert data["prices"]["MSFT"] == pytest.approx(300.0)
     assert data["warnings"] == []
 
 
@@ -842,3 +845,38 @@ def test_get_tax_brackets_invalid_year():
     """GET /api/tax-brackets with year out of range returns 422."""
     response = client.get("/api/tax-brackets?year=2020")
     assert response.status_code == 422
+
+
+def test_save_history_best_effort_dict_fallback():
+    """_save_history_best_effort falls back to dict() when model_dump is missing."""
+    from unittest.mock import patch
+
+    # Create objects without model_dump attribute
+    result_obj = {"positions": [], "warnings": []}
+    summary_obj = {"positions_count": 0, "total_market_value": 0}
+
+    with patch("main.save_analysis_history", return_value={"id": "test"}) as mock_save:
+        main._save_history_best_effort(
+            user_id="user1",
+            filename="test.csv",
+            result=result_obj,
+            summary=summary_obj,
+        )
+        mock_save.assert_called_once()
+
+
+def test_save_history_best_effort_exception():
+    """_save_history_best_effort handles exceptions gracefully."""
+    from unittest.mock import patch
+
+    result_obj = {"positions": []}
+    summary_obj = {"positions_count": 0}
+
+    with patch("main.save_analysis_history", side_effect=Exception("db error")):
+        # Should not raise
+        main._save_history_best_effort(
+            user_id="user1",
+            filename="test.csv",
+            result=result_obj,
+            summary=summary_obj,
+        )

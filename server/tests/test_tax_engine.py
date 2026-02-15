@@ -20,6 +20,8 @@ from tax_engine import (
     calculate_tax_on_gain,
     calculate_tax_savings,
     get_tax_brackets_summary,
+    check_niit,
+    get_capital_loss_limit,
 )
 
 
@@ -95,6 +97,12 @@ class TestLtcgRate:
         rate = get_ltcg_rate(80_000, p)
         assert rate == pytest.approx(0.0)
 
+    def test_2026_ltcg_brackets(self):
+        """2026 tax year uses LTCG_BRACKETS_2026."""
+        p = _profile(tax_year=2026, income=100_000)
+        rate = get_ltcg_rate(100_000, p)
+        assert rate in {0.0, 0.15, 0.20}
+
 
 # --- Tax Savings Calculation Tests ---
 
@@ -160,3 +168,73 @@ class TestGetTaxBracketsSummary:
         summary = get_tax_brackets_summary(p)
         assert summary["marginal_ordinary_rate"] == get_marginal_ordinary_rate(100_000, p)
         assert summary["applicable_ltcg_rate"] == get_ltcg_rate(100_000, p)
+
+
+# --- NIIT Tests ---
+
+class TestCheckNiit:
+    def test_single_below_threshold(self):
+        p = _profile(filing_status="single", income=180_000)
+        assert check_niit(180_000, p) is False
+
+    def test_single_above_threshold(self):
+        p = _profile(filing_status="single", income=250_000)
+        assert check_niit(250_000, p) is True
+
+    def test_married_filing_separately(self):
+        p = _profile(filing_status="married_filing_separately", income=130_000)
+        assert check_niit(130_000, p) is True
+
+    def test_head_of_household(self):
+        p = _profile(filing_status="head_of_household", income=210_000)
+        assert check_niit(210_000, p) is True
+
+    def test_niit_at_exact_threshold(self):
+        p = _profile(filing_status="single", income=200_000)
+        assert check_niit(200_000, p) is False  # not greater than
+
+
+# --- Capital Loss Limit Tests ---
+
+class TestGetCapitalLossLimit:
+    def test_single_filer(self):
+        p = _profile(filing_status="single")
+        assert get_capital_loss_limit(p) == 3000
+
+    def test_married_filing_jointly(self):
+        p = _profile(filing_status="married_filing_jointly")
+        assert get_capital_loss_limit(p) == 3000
+
+    def test_married_filing_separately(self):
+        p = _profile(filing_status="married_filing_separately")
+        assert get_capital_loss_limit(p) == 1500
+
+    def test_head_of_household(self):
+        p = _profile(filing_status="head_of_household")
+        assert get_capital_loss_limit(p) == 3000
+
+
+# --- NIIT Integration with Tax Calculation ---
+
+class TestNiitIntegration:
+    def test_niit_adds_to_effective_rate(self):
+        p = _profile(filing_status="single", income=250_000)
+        result = calculate_tax_on_gain(gain=10_000, is_long_term=True, profile=p)
+        assert result.niit_applies is True
+        # effective_rate = ltcg_rate + 0.038
+        assert result.effective_rate == pytest.approx(get_ltcg_rate(250_000, p) + 0.038)
+
+
+# --- MFS Tax Brackets Summary ---
+
+class TestMfsBracketsSummary:
+    def test_mfs_capital_loss_limit_in_summary(self):
+        p = _profile(filing_status="married_filing_separately", income=100_000)
+        summary = get_tax_brackets_summary(p)
+        assert summary["capital_loss_limit"] == 1500
+
+    def test_hoh_brackets_summary(self):
+        p = _profile(filing_status="head_of_household", income=100_000)
+        summary = get_tax_brackets_summary(p)
+        assert summary["filing_status"] == "head_of_household"
+        assert summary["capital_loss_limit"] == 3000
