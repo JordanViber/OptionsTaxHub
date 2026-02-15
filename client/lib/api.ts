@@ -1,4 +1,4 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   PortfolioAnalysis,
   TaxProfile,
@@ -167,10 +167,17 @@ async function saveTaxProfile(
 
 /**
  * React Query mutation hook for saving tax profile.
+ * Invalidates the tax-profile cache on success so subsequent reads get fresh data.
  */
 export function useSaveTaxProfile() {
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: saveTaxProfile,
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({
+        queryKey: ["tax-profile", variables.user_id],
+      });
+    },
   });
 }
 
@@ -275,5 +282,38 @@ export function usePortfolioHistory(userId: string | undefined) {
     },
     enabled: !!userId,
     staleTime: 30 * 1000, // 30 seconds
+  });
+}
+
+/**
+ * Fetch a single past portfolio analysis by ID, including the full result.
+ *
+ * Used when a user clicks a history item to reload that report.
+ */
+export async function fetchAnalysisById(
+  analysisId: string,
+  userId: string,
+): Promise<{ result: PortfolioAnalysis | null } & AnalysisHistoryItem> {
+  const params = new URLSearchParams({ user_id: userId });
+  const response = await fetch(
+    `${API_URL}/api/portfolio/analysis/${analysisId}?${params}`,
+  );
+
+  if (!response.ok) {
+    throw new Error(`Fetch failed: ${response.statusText}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Delete orphan history entries that have no stored result data.
+ *
+ * These are legacy rows created before the app started persisting
+ * full analysis results. Called once on mount to clean up.
+ */
+export async function cleanupOrphanHistory(userId: string): Promise<void> {
+  await fetch(`${API_URL}/api/portfolio/history/${userId}/cleanup`, {
+    method: "DELETE",
   });
 }

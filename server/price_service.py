@@ -42,7 +42,122 @@ def clear_cache() -> None:
     _price_cache.clear()
 
 
-async def fetch_current_prices(
+def _resolve_cached_prices(
+    symbols: list[str],
+) -> tuple[dict[str, float], list[str]]:
+    """Separate symbols into cached hits and cache misses."""
+    prices: dict[str, float] = {}
+    to_fetch: list[str] = []
+    for symbol in symbols:
+        cached = _get_cached_price(symbol.upper())
+        if cached is not None:
+            prices[symbol.upper()] = cached
+        else:
+            to_fetch.append(symbol.upper())
+    return prices, to_fetch
+
+
+def _extract_single_ticker_price(data, _symbol: str) -> Optional[float]:
+    """Extract closing price from yfinance data for a single-ticker download."""
+    if "Close" not in data.columns:
+        return None
+    close_series = data["Close"]
+    if close_series.empty:
+        return None
+    return round(float(close_series.iloc[-1]), 2)
+
+
+def _extract_multi_ticker_prices(
+    data, symbols: list[str],
+) -> dict[str, float]:
+    """Extract closing prices from yfinance data for a multi-ticker download."""
+    prices: dict[str, float] = {}
+    if "Close" not in data.columns.get_level_values(0):
+        return prices
+    close_data = data["Close"]
+    for symbol in symbols:
+        if symbol not in close_data.columns:
+            continue
+        series = close_data[symbol].dropna()
+        if series.empty:
+            continue
+        prices[symbol] = round(float(series.iloc[-1]), 2)
+    return prices
+
+
+def _download_yfinance_prices(
+    symbols_to_fetch: list[str],
+) -> tuple[dict[str, float], list[str]]:
+    """Download prices via yfinance with error handling. Returns (prices, warnings)."""
+    prices: dict[str, float] = {}
+    warnings: list[str] = []
+
+    try:
+        import yfinance as yf
+
+        data = yf.download(
+            tickers=symbols_to_fetch,
+            period="1d",
+            progress=False,
+            threads=True,
+        )
+
+        if data.empty:
+            warnings.append(
+                "yfinance returned no data. Using CSV-provided prices as fallback."
+            )
+            return prices, warnings
+
+        if len(symbols_to_fetch) == 1:
+            price = _extract_single_ticker_price(data, symbols_to_fetch[0])
+            if price is not None:
+                prices[symbols_to_fetch[0]] = price
+                _set_cached_price(symbols_to_fetch[0], price)
+        else:
+            fetched = _extract_multi_ticker_prices(data, symbols_to_fetch)
+            for sym, price in fetched.items():
+                prices[sym] = price
+                _set_cached_price(sym, price)
+
+    except ImportError:
+        warnings.append(
+            "yfinance is not installed. Run: pip install yfinance. "
+            "Using CSV-provided prices."
+        )
+    except Exception as e:
+        logger.error(f"yfinance error: {e}")
+        warnings.append(
+            f"Could not fetch live prices from Yahoo Finance: {str(e)}. "
+            f"Using CSV-provided prices as fallback."
+        )
+
+    return prices, warnings
+
+
+def _apply_fallback_prices(
+    symbols: list[str],
+    prices: dict[str, float],
+    fallback_prices: dict[str, float] | None,
+) -> list[str]:
+    """Fill missing prices from fallback dict. Returns list of warnings."""
+    warnings: list[str] = []
+    if fallback_prices:
+        for symbol in symbols:
+            upper = symbol.upper()
+            if upper not in prices and upper in fallback_prices:
+                prices[upper] = fallback_prices[upper]
+                warnings.append(
+                    f"Using CSV-provided price for {upper} "
+                    f"(live price unavailable)"
+                )
+
+    missing = [s.upper() for s in symbols if s.upper() not in prices]
+    if missing:
+        warnings.append(f"No prices available for: {', '.join(missing)}")
+    return warnings
+
+
+def fetch_current_prices(
     symbols: list[str],
     fallback_prices: dict[str, float] | None = None,
 ) -> tuple[dict[str, float], list[str]]:
@@ -62,93 +177,20 @@ async def fetch_current_prices(
     if not symbols:
         return {}, []
 
-    warnings: list[str] = []
-    prices: dict[str, float] = {}
-    symbols_to_fetch: list[str] = []
-
-    # Check cache first
-    for symbol in symbols:
-        cached = _get_cached_price(symbol.upper())
-        if cached is not None:
-            prices[symbol.upper()] = cached
-        else:
-            symbols_to_fetch.append(symbol.upper())
-
+    prices, symbols_to_fetch = _resolve_cached_prices(symbols)
     if not symbols_to_fetch:
-        return prices, warnings
+        return prices, []
 
-    # Fetch prices via yfinance
-    try:
-        import yfinance as yf
+    fetched, warnings = _download_yfinance_prices(symbols_to_fetch)
+    prices.update(fetched)
 
-        # Use yf.download() for batch efficiency
-        # Period "1d" gets the most recent trading day's data
-        data = yf.download(
-            tickers=symbols_to_fetch,
-            period="1d",
-            progress=False,
-            threads=True,
-        )
-
-        if data.empty:
-            warnings.append(
-                "yfinance returned no data. Using CSV-provided prices as fallback."
-            )
-        else:
-            # Extract closing prices
-            if len(symbols_to_fetch) == 1:
-                # Single ticker — data has simple columns
-                symbol = symbols_to_fetch[0]
-                if "Close" in data.columns:
-                    close_series = data["Close"]
-                    if not close_series.empty:
-                        price = float(close_series.iloc[-1])
-                        prices[symbol] = round(price, 2)
-                        _set_cached_price(symbol, prices[symbol])
-            else:
-                # Multiple tickers — data has MultiIndex columns
-                if "Close" in data.columns.get_level_values(0):
-                    close_data = data["Close"]
-                    for symbol in symbols_to_fetch:
-                        if symbol in close_data.columns:
-                            series = close_data[symbol].dropna()
-                            if not series.empty:
-                                price = float(series.iloc[-1])
-                                prices[symbol] = round(price, 2)
-                                _set_cached_price(symbol, prices[symbol])
-
-    except ImportError:
-        warnings.append(
-            "yfinance is not installed. Run: pip install yfinance. "
-            "Using CSV-provided prices."
-        )
-    except Exception as e:
-        logger.error(f"yfinance error: {e}")
-        warnings.append(
-            f"Could not fetch live prices from Yahoo Finance: {str(e)}. "
-            f"Using CSV-provided prices as fallback."
-        )
-
-    # Fill in any missing prices with fallback values
-    if fallback_prices:
-        for symbol in symbols:
-            symbol_upper = symbol.upper()
-            if symbol_upper not in prices and symbol_upper in fallback_prices:
-                prices[symbol_upper] = fallback_prices[symbol_upper]
-                warnings.append(
-                    f"Using CSV-provided price for {symbol_upper} "
-                    f"(live price unavailable)"
-                )
-
-    # Report symbols we couldn't get prices for
-    missing = [s.upper() for s in symbols if s.upper() not in prices]
-    if missing:
-        warnings.append(f"No prices available for: {', '.join(missing)}")
+    fallback_warnings = _apply_fallback_prices(symbols, prices, fallback_prices)
+    warnings.extend(fallback_warnings)
 
     return prices, warnings
 
 
-async def fetch_single_price(symbol: str) -> Optional[float]:
+def fetch_single_price(symbol: str) -> Optional[float]:
     """
     Fetch the current price for a single symbol.
 
@@ -158,5 +200,5 @@ async def fetch_single_price(symbol: str) -> Optional[float]:
     Returns:
         Current price or None if unavailable.
     """
-    prices, _ = await fetch_current_prices([symbol])
+    prices, _ = fetch_current_prices([symbol])
     return prices.get(symbol.upper())

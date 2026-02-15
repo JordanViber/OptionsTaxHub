@@ -30,6 +30,16 @@ class TransCode(str, Enum):
     BTO = "BTO"  # Buy to Open
     STC = "STC"  # Sell to Close
     OEXP = "OEXP"  # Option Expiration
+    OASGN = "OASGN"  # Option Assignment
+    OCA = "OCA"  # Option Corporate Action
+    # Corporate action / account activity codes
+    SPR = "SPR"  # Stock Split / Reverse Split
+    ROC = "ROC"  # Return of Capital
+    # Non-trading account activity (skipped during parsing)
+    ACH = "ACH"  # ACH Deposit / Withdrawal
+    RTP = "RTP"  # Instant Bank Transfer
+    FUTSWP = "FUTSWP"  # Futures / Event Contract Sweep
+    MINT = "MINT"  # Margin Interest
 
 
 class FilingStatus(str, Enum):

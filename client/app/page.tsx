@@ -34,6 +34,7 @@ import {
   Settings as SettingsIcon,
   Dashboard as DashboardIcon,
   History as HistoryIcon,
+  Favorite as HeartIcon,
 } from "@mui/icons-material";
 import ServiceWorkerRegistration from "./components/ServiceWorkerRegistration";
 import TaxDisclaimer from "./components/TaxDisclaimer";
@@ -41,13 +42,17 @@ import PortfolioSummaryCards from "./components/PortfolioSummaryCards";
 import PositionsTable from "./components/PositionsTable";
 import HarvestingSuggestions from "./components/HarvestingSuggestions";
 import WashSaleWarning from "./components/WashSaleWarning";
+import TipJar from "./components/TipJar";
 import {
   useAnalyzePortfolio,
   useTaxProfile,
   usePortfolioHistory,
+  fetchAnalysisById,
+  cleanupOrphanHistory,
 } from "@/lib/api";
 import { useAuth } from "@/app/context/auth";
 import { useQueryClient } from "@tanstack/react-query";
+import type { PortfolioAnalysis } from "@/lib/types";
 export const dynamic = "force-dynamic";
 
 export default function Home() {
@@ -57,6 +62,10 @@ export default function Home() {
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
   const [activeTab, setActiveTab] = useState(0);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [tipJarOpen, setTipJarOpen] = useState(false);
+  const [loadedAnalysis, setLoadedAnalysis] =
+    useState<PortfolioAnalysis | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const queryClient = useQueryClient();
 
   // Load the user's tax profile for analyze params
@@ -73,6 +82,47 @@ export default function Home() {
     data: analysis,
   } = useAnalyzePortfolio();
 
+  // --- State persistence: restore analysis from sessionStorage on mount ---
+  useEffect(() => {
+    try {
+      const saved = sessionStorage.getItem("optionstaxhub-analysis");
+      if (saved) {
+        setLoadedAnalysis(JSON.parse(saved) as PortfolioAnalysis);
+      }
+    } catch {
+      // Corrupted data — ignore
+    }
+  }, []);
+
+  // --- State persistence: save displayedAnalysis whenever it changes ---
+  const displayedAnalysis = loadedAnalysis || analysis;
+  useEffect(() => {
+    if (displayedAnalysis) {
+      try {
+        sessionStorage.setItem(
+          "optionstaxhub-analysis",
+          JSON.stringify(displayedAnalysis),
+        );
+      } catch {
+        // Storage full — ignore
+      }
+    }
+  }, [displayedAnalysis]);
+
+  // --- One-time cleanup: delete orphan history entries without stored result ---
+  useEffect(() => {
+    if (user?.id) {
+      cleanupOrphanHistory(user.id)
+        .then(() => {
+          queryClient.invalidateQueries({
+            queryKey: ["portfolio-history", user.id],
+          });
+        })
+        .catch(() => {});
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
+
   const handleUploadClick = () => {
     fileInputRef.current?.click();
   };
@@ -80,6 +130,9 @@ export default function Home() {
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
+      // Clear any previously loaded history analysis + cached state
+      setLoadedAnalysis(null);
+      sessionStorage.removeItem("optionstaxhub-analysis");
       analyzePortfolio(
         {
           file,
@@ -103,9 +156,31 @@ export default function Home() {
   };
 
   const handleSignOut = async () => {
+    sessionStorage.removeItem("optionstaxhub-analysis");
     await signOut();
     setMenuAnchor(null);
     router.push("/auth/signin");
+  };
+
+  /**
+   * Load a past analysis from history and display it.
+   */
+  const handleHistoryItemClick = async (itemId: string) => {
+    if (!user?.id) return;
+    setHistoryLoading(true);
+    try {
+      const record = await fetchAnalysisById(itemId, user.id);
+      if (record?.result) {
+        setLoadedAnalysis(record.result);
+        setActiveTab(0);
+      }
+    } catch (err) {
+      // Silently fail — old items may not have full result stored
+      console.error("Failed to load analysis:", err);
+    } finally {
+      setHistoryLoading(false);
+      setHistoryOpen(false);
+    }
   };
 
   useEffect(() => {
@@ -139,7 +214,8 @@ export default function Home() {
     displayNameFromProfile || fullName || user.email || "Account";
   const avatarLetter = displayName[0].toUpperCase();
 
-  const hasResults = !!analysis;
+  // displayedAnalysis is computed above (near sessionStorage effects)
+  const hasResults = !!displayedAnalysis;
 
   return (
     <>
@@ -156,6 +232,14 @@ export default function Home() {
           >
             OptionsTaxHub
           </Typography>
+          <Button
+            color="inherit"
+            startIcon={<HeartIcon sx={{ color: "#ff6b6b" }} />}
+            onClick={() => setTipJarOpen(true)}
+            sx={{ textTransform: "none", mr: 1 }}
+          >
+            Tip
+          </Button>
           <Button
             color="inherit"
             startIcon={<HistoryIcon />}
@@ -201,6 +285,9 @@ export default function Home() {
         </Toolbar>
       </AppBar>
 
+      {/* Tip Jar Dialog */}
+      <TipJar open={tipJarOpen} onClose={() => setTipJarOpen(false)} />
+
       {/* History Drawer */}
       <Drawer
         anchor="left"
@@ -237,7 +324,10 @@ export default function Home() {
             >
               {history.map((item) => (
                 <ListItem key={item.id} disablePadding>
-                  <ListItemButton onClick={() => setHistoryOpen(false)}>
+                  <ListItemButton
+                    onClick={() => handleHistoryItemClick(item.id)}
+                    disabled={historyLoading}
+                  >
                     <ListItemText
                       primary={item.filename}
                       secondary={
@@ -272,7 +362,7 @@ export default function Home() {
       </Drawer>
 
       {/* Loading bar */}
-      {isPending && <LinearProgress />}
+      {(isPending || historyLoading) && <LinearProgress />}
 
       {/* Main Content */}
       <Container maxWidth="lg" sx={{ py: 3 }}>
@@ -310,6 +400,9 @@ export default function Home() {
                     cursor: isPending ? "default" : "pointer",
                     transition: "all 0.2s",
                     opacity: isPending ? 0.6 : 1,
+                    "& *": {
+                      cursor: "inherit",
+                    },
                     "&:hover": isPending
                       ? {}
                       : {
@@ -357,25 +450,26 @@ export default function Home() {
           )}
 
           {/* Warnings */}
-          {analysis?.warnings && analysis.warnings.length > 0 && (
-            <Alert severity="warning">
-              {analysis.warnings.map((w: string) => (
-                <Typography key={w} variant="body2">
-                  {w}
-                </Typography>
-              ))}
-            </Alert>
-          )}
+          {displayedAnalysis?.warnings &&
+            displayedAnalysis.warnings.length > 0 && (
+              <Alert severity="warning">
+                {displayedAnalysis.warnings.map((w: string) => (
+                  <Typography key={w} variant="body2">
+                    {w}
+                  </Typography>
+                ))}
+              </Alert>
+            )}
 
           {/* Results */}
           {hasResults && (
             <>
               {/* Summary Cards */}
-              <PortfolioSummaryCards summary={analysis.summary} />
+              <PortfolioSummaryCards summary={displayedAnalysis.summary} />
 
               {/* Wash-Sale Warnings */}
-              {analysis.wash_sale_flags.length > 0 && (
-                <WashSaleWarning flags={analysis.wash_sale_flags} />
+              {displayedAnalysis.wash_sale_flags.length > 0 && (
+                <WashSaleWarning flags={displayedAnalysis.wash_sale_flags} />
               )}
 
               {/* Tabbed view: Positions | Suggestions */}
@@ -386,21 +480,23 @@ export default function Home() {
                   sx={{ borderBottom: 1, borderColor: "divider", px: 2 }}
                 >
                   <Tab
-                    label={`Positions (${analysis.positions.length})`}
+                    label={`Positions (${displayedAnalysis.positions.length})`}
                     id="tab-positions"
                   />
                   <Tab
-                    label={`Suggestions (${analysis.suggestions.length})`}
+                    label={`Suggestions (${displayedAnalysis.suggestions.length})`}
                     id="tab-suggestions"
                   />
                 </Tabs>
 
                 <CardContent>
                   {activeTab === 0 && (
-                    <PositionsTable positions={analysis.positions} />
+                    <PositionsTable positions={displayedAnalysis.positions} />
                   )}
                   {activeTab === 1 && (
-                    <HarvestingSuggestions suggestions={analysis.suggestions} />
+                    <HarvestingSuggestions
+                      suggestions={displayedAnalysis.suggestions}
+                    />
                   )}
                 </CardContent>
               </Card>

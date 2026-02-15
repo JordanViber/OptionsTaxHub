@@ -201,3 +201,178 @@ def test_main_entrypoint(monkeypatch):
     runpy.run_module("main", run_name="__main__")
 
     assert called["value"] is True
+
+
+# ---------- Tax Profile Endpoints ----------
+
+
+def test_save_tax_profile_requires_user_id():
+    """POST /api/tax-profile without user_id returns 400."""
+    profile = {
+        "filing_status": "single",
+        "estimated_annual_income": 100000,
+        "state": "CA",
+        "tax_year": 2025,
+    }
+    response = client.post("/api/tax-profile", json=profile)
+    assert response.status_code == 400
+    assert "user_id" in response.json()["detail"].lower()
+
+
+def test_save_tax_profile_returns_profile(monkeypatch):
+    """POST /api/tax-profile saves and returns profile data."""
+    # Mock db_save_tax_profile to avoid real Supabase call
+    def fake_save(**_kwargs):
+        return None  # Simulate Supabase unavailable — fallback path
+
+    monkeypatch.setattr(main, "db_save_tax_profile", fake_save)
+
+    profile = {
+        "user_id": "test-user-123",
+        "filing_status": "married_filing_jointly",
+        "estimated_annual_income": 150000,
+        "state": "NY",
+        "tax_year": 2025,
+    }
+    response = client.post("/api/tax-profile", json=profile)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["message"] == "Tax profile saved (not persisted)"
+    assert data["profile"]["user_id"] == "test-user-123"
+    assert data["profile"]["estimated_annual_income"] == 150000
+
+
+def test_save_tax_profile_persists_to_db(monkeypatch):
+    """POST /api/tax-profile returns persisted data when DB is available."""
+    saved_row = {
+        "user_id": "test-user-123",
+        "filing_status": "single",
+        "estimated_annual_income": 120000,
+        "state": "CA",
+        "tax_year": 2025,
+    }
+
+    def fake_save(**_kwargs):
+        return saved_row
+
+    monkeypatch.setattr(main, "db_save_tax_profile", fake_save)
+
+    profile = {
+        "user_id": "test-user-123",
+        "filing_status": "single",
+        "estimated_annual_income": 120000,
+        "state": "CA",
+        "tax_year": 2025,
+    }
+    response = client.post("/api/tax-profile", json=profile)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["message"] == "Tax profile saved"
+    assert data["profile"]["estimated_annual_income"] == 120000
+
+
+def test_get_tax_profile_returns_saved(monkeypatch):
+    """GET /api/tax-profile/{user_id} returns saved profile."""
+    saved_row = {
+        "user_id": "test-user-123",
+        "filing_status": "married_filing_jointly",
+        "estimated_annual_income": 200000,
+        "state": "TX",
+        "tax_year": 2025,
+    }
+
+    def fake_get(_user_id):
+        return saved_row
+
+    monkeypatch.setattr(main, "db_get_tax_profile", fake_get)
+
+    response = client.get("/api/tax-profile/test-user-123")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["estimated_annual_income"] == 200000
+    assert data["filing_status"] == "married_filing_jointly"
+
+
+def test_get_tax_profile_returns_default_when_not_found(monkeypatch):
+    """GET /api/tax-profile/{user_id} returns defaults if no saved profile."""
+    def fake_get(_user_id):
+        return None
+
+    monkeypatch.setattr(main, "db_get_tax_profile", fake_get)
+
+    response = client.get("/api/tax-profile/new-user-456")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["user_id"] == "new-user-456"
+    assert data["estimated_annual_income"] == 75000
+    assert data["filing_status"] == "single"
+
+
+# ---------- Tip / Donation Endpoints ----------
+
+
+def test_get_tip_tiers():
+    """GET /api/tips/tiers returns all available tip tiers."""
+    response = client.get("/api/tips/tiers")
+    assert response.status_code == 200
+    tiers = response.json()
+    assert len(tiers) == 3
+    ids = [t["id"] for t in tiers]
+    assert "coffee" in ids
+    assert "lunch" in ids
+    assert "generous" in ids
+    # Verify amounts in cents
+    coffee = next(t for t in tiers if t["id"] == "coffee")
+    assert coffee["amount"] == 300
+    assert coffee["label"] == "Coffee"
+
+
+def test_tip_checkout_invalid_tier():
+    """POST /api/tips/checkout with invalid tier returns 400."""
+    response = client.post("/api/tips/checkout", json={"tier": "diamond"})
+    assert response.status_code == 400
+    assert "Invalid tier" in response.json()["detail"]
+
+
+def test_tip_checkout_no_stripe_key(monkeypatch):
+    """POST /api/tips/checkout returns 503 when Stripe is not configured."""
+    monkeypatch.setattr(main, "STRIPE_SECRET_KEY", None)
+    response = client.post("/api/tips/checkout", json={"tier": "coffee"})
+    assert response.status_code == 503
+    assert "not configured" in response.json()["detail"]
+
+
+def test_tip_checkout_creates_session(monkeypatch):
+    """POST /api/tips/checkout creates Stripe session and returns URL."""
+    monkeypatch.setattr(main, "STRIPE_SECRET_KEY", "sk_test_fake")
+
+    class FakeSession:
+        url = "https://checkout.stripe.com/test_session"
+
+    import stripe as stripe_mod
+
+    def fake_create(**_kwargs):
+        return FakeSession()
+
+    monkeypatch.setattr(stripe_mod.checkout.Session, "create", fake_create)
+
+    response = client.post("/api/tips/checkout", json={"tier": "coffee"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["checkout_url"] == "https://checkout.stripe.com/test_session"
+
+
+def test_tip_checkout_stripe_error(monkeypatch):
+    """POST /api/tips/checkout returns 502 on Stripe errors."""
+    monkeypatch.setattr(main, "STRIPE_SECRET_KEY", "sk_test_fake")
+
+    import stripe as stripe_mod
+
+    def fake_create(**_kwargs):
+        raise stripe_mod.StripeError("Test error")
+
+    monkeypatch.setattr(stripe_mod.checkout.Session, "create", fake_create)
+
+    response = client.post("/api/tips/checkout", json={"tier": "lunch"})
+    assert response.status_code == 502
+    assert "checkout session" in response.json()["detail"].lower()

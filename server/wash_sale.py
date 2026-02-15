@@ -26,6 +26,80 @@ logger = logging.getLogger(__name__)
 WASH_SALE_WINDOW_DAYS = 30
 
 
+def _compute_sale_loss(
+    sell: Transaction,
+    buys_sorted: list[Transaction],
+    used_buy_quantities: dict[int, float],
+) -> float:
+    """Compute the realized loss for a sell transaction using FIFO cost basis."""
+    symbol_buys = [
+        (i, b)
+        for i, b in enumerate(buys_sorted)
+        if b.instrument == sell.instrument and b.activity_date <= sell.activity_date
+    ]
+    if not symbol_buys:
+        return 0.0
+
+    remaining_sell_qty = sell.quantity
+    total_cost_basis = 0.0
+
+    for buy_idx, buy in symbol_buys:
+        if remaining_sell_qty <= 0:
+            break
+        available = buy.quantity - used_buy_quantities.get(buy_idx, 0)
+        if available <= 0:
+            continue
+        matched = min(available, remaining_sell_qty)
+        total_cost_basis += matched * buy.price
+        remaining_sell_qty -= matched
+
+    sale_proceeds = sell.quantity * sell.price
+    return total_cost_basis - sale_proceeds
+
+
+def _find_qualifying_repurchases(
+    sell: Transaction,
+    buys_sorted: list[Transaction],
+) -> list[tuple[int, Transaction]]:
+    """Find repurchases within the 61-day wash-sale window around a sale."""
+    window_start = sell.activity_date - timedelta(days=WASH_SALE_WINDOW_DAYS)
+    window_end = sell.activity_date + timedelta(days=WASH_SALE_WINDOW_DAYS)
+
+    return [
+        (i, b)
+        for i, b in enumerate(buys_sorted)
+        if b.instrument == sell.instrument
+        and window_start <= b.activity_date <= window_end
+        and b.activity_date != sell.activity_date
+    ]
+
+
+def _build_wash_sale_explanation(
+    sell: Transaction,
+    repurchase_txn: Transaction,
+    loss: float,
+    disallowed_loss: float,
+) -> str:
+    """Build human-readable explanation with correct chronological language."""
+    if repurchase_txn.activity_date < sell.activity_date:
+        return (
+            f"Wash sale: Bought {repurchase_txn.quantity} {sell.instrument} on "
+            f"{repurchase_txn.activity_date.strftime('%m/%d/%Y')}, then sold "
+            f"{sell.quantity} shares at a loss of ${loss:,.2f} on "
+            f"{sell.activity_date.strftime('%m/%d/%Y')} (within 30 days of "
+            f"the purchase). ${disallowed_loss:,.2f} of the loss is disallowed "
+            f"and added to the cost basis of the replacement shares."
+        )
+    return (
+        f"Wash sale: Sold {sell.quantity} {sell.instrument} on "
+        f"{sell.activity_date.strftime('%m/%d/%Y')} at a loss of "
+        f"${loss:,.2f}, then repurchased {repurchase_txn.quantity} shares "
+        f"on {repurchase_txn.activity_date.strftime('%m/%d/%Y')} (within "
+        f"30 days of the sale). ${disallowed_loss:,.2f} of the loss is "
+        f"disallowed and added to the cost basis of the replacement shares."
+    )
+
+
 def detect_wash_sales(
     transactions: list[Transaction],
 ) -> list[WashSaleFlag]:
@@ -45,110 +119,42 @@ def detect_wash_sales(
     if not transactions:
         return []
 
-    # Separate buys and loss-sales
     buys = [
-        t
-        for t in transactions
+        t for t in transactions
         if t.trans_code in (TransCode.BUY, TransCode.BTO)
     ]
     sells = [
-        t
-        for t in transactions
+        t for t in transactions
         if t.trans_code in (TransCode.SELL, TransCode.STC)
     ]
 
-    # Sort both lists by date
     buys_sorted = sorted(buys, key=lambda t: t.activity_date)
     sells_sorted = sorted(sells, key=lambda t: t.activity_date)
 
     wash_sale_flags: list[WashSaleFlag] = []
-    # Track which buy quantities have been "used" for wash sales already
-    used_buy_quantities: dict[int, float] = {}  # buy index -> quantity already matched
+    used_buy_quantities: dict[int, float] = {}
 
     for sell in sells_sorted:
-        # We need to determine if this sell resulted in a loss.
-        # Since we're working with transaction records, we need to find the
-        # cost basis from the corresponding buy (FIFO approach).
-        # For wash-sale detection purposes, we use the sell amount vs. what was paid.
-
-        # Find corresponding buys for this symbol (FIFO) to determine cost basis
-        symbol_buys = [
-            (i, b)
-            for i, b in enumerate(buys_sorted)
-            if b.instrument == sell.instrument and b.activity_date <= sell.activity_date
-        ]
-
-        if not symbol_buys:
-            continue
-
-        # Calculate cost basis using FIFO for this sell
-        remaining_sell_qty = sell.quantity
-        total_cost_basis = 0.0
-
-        for buy_idx, buy in symbol_buys:
-            if remaining_sell_qty <= 0:
-                break
-
-            available = buy.quantity - used_buy_quantities.get(buy_idx, 0)
-            if available <= 0:
-                continue
-
-            matched = min(available, remaining_sell_qty)
-            total_cost_basis += matched * buy.price
-            remaining_sell_qty -= matched
-
-        # Calculate the loss
-        sale_proceeds = sell.quantity * sell.price
-        loss = total_cost_basis - sale_proceeds
-
+        loss = _compute_sale_loss(sell, buys_sorted, used_buy_quantities)
         if loss <= 0:
-            # No loss — no wash sale concern
             continue
 
-        # Check the 61-day window for repurchases of the same symbol
-        window_start = sell.activity_date - timedelta(days=WASH_SALE_WINDOW_DAYS)
-        window_end = sell.activity_date + timedelta(days=WASH_SALE_WINDOW_DAYS)
-
-        repurchases = [
-            (i, b)
-            for i, b in enumerate(buys_sorted)
-            if b.instrument == sell.instrument
-            and window_start <= b.activity_date <= window_end
-            and b.activity_date != sell.activity_date  # Don't match the original buy
-            # The repurchase must be a different transaction than what created the position sold
-            and b.activity_date >= sell.activity_date - timedelta(days=WASH_SALE_WINDOW_DAYS)
-        ]
-
-        # Filter to only repurchases that happen AFTER the sells of the same lot position
-        # (i.e., within the 30-day window before and after the sale)
-        qualifying_repurchases = []
-        for buy_idx, buy in repurchases:
-            # Exclude the original purchase that created the position being sold
-            # A repurchase must be a new buy that overlaps with the wash window
-            if buy.activity_date > sell.activity_date - timedelta(days=WASH_SALE_WINDOW_DAYS):
-                qualifying_repurchases.append((buy_idx, buy))
-
-        if not qualifying_repurchases:
+        qualifying = _find_qualifying_repurchases(sell, buys_sorted)
+        if not qualifying:
             continue
 
-        # Calculate disallowed loss based on repurchase quantities
-        total_repurchase_qty = sum(b.quantity for _, b in qualifying_repurchases)
-
+        total_repurchase_qty = sum(b.quantity for _, b in qualifying)
         if total_repurchase_qty >= sell.quantity:
-            # Full wash sale — entire loss is disallowed
             disallowed_loss = loss
         else:
-            # Partial wash sale — proportional loss is disallowed
             disallowed_loss = loss * (total_repurchase_qty / sell.quantity)
 
-        # Calculate adjusted cost basis for replacement shares
-        # The disallowed loss is added to the cost basis of the replacement shares
-        earliest_repurchase = min(qualifying_repurchases, key=lambda x: x[1].activity_date)
+        earliest_repurchase = min(qualifying, key=lambda x: x[1].activity_date)
         repurchase_txn = earliest_repurchase[1]
-        original_cost = repurchase_txn.price * min(
-            repurchase_txn.quantity, sell.quantity
-        )
+        original_cost = repurchase_txn.price * min(repurchase_txn.quantity, sell.quantity)
         adjusted_cost = original_cost + disallowed_loss
+
+        explanation = _build_wash_sale_explanation(sell, repurchase_txn, loss, disallowed_loss)
 
         wash_sale_flags.append(
             WashSaleFlag(
@@ -160,14 +166,7 @@ def detect_wash_sales(
                 repurchase_quantity=min(total_repurchase_qty, sell.quantity),
                 disallowed_loss=round(disallowed_loss, 2),
                 adjusted_cost_basis=round(adjusted_cost, 2),
-                explanation=(
-                    f"Wash sale: Sold {sell.quantity} {sell.instrument} on "
-                    f"{sell.activity_date.strftime('%m/%d/%Y')} at a loss of "
-                    f"${loss:,.2f}, then repurchased within 30 days on "
-                    f"{repurchase_txn.activity_date.strftime('%m/%d/%Y')}. "
-                    f"${disallowed_loss:,.2f} of the loss is disallowed and "
-                    f"added to the cost basis of the replacement shares."
-                ),
+                explanation=explanation,
             )
         )
 

@@ -55,6 +55,8 @@ jest.mock("../../lib/api", () => ({
   useAnalyzePortfolio: () => mockUseAnalyzePortfolio(),
   useTaxProfile: () => mockUseTaxProfile(),
   usePortfolioHistory: () => mockUsePortfolioHistory(),
+  fetchAnalysisById: jest.fn().mockResolvedValue(null),
+  cleanupOrphanHistory: jest.fn().mockResolvedValue(0),
 }));
 
 // Helper to create default auth mock
@@ -109,6 +111,7 @@ describe("Home page", () => {
     mockUseAnalyzePortfolio.mockReset();
     mockUseTaxProfile.mockReset();
     mockUsePortfolioHistory.mockReset();
+    sessionStorage.clear();
   });
 
   it("renders loading state when auth is loading", () => {
@@ -359,12 +362,15 @@ describe("Home page", () => {
     expect(screen.getByText("Suggestions (1)")).toBeInTheDocument();
   });
 
-  it("renders wash-sale warnings when present", () => {
+  it("renders wash-sale warnings when present", async () => {
     const mockAnalysis = {
-      positions: [],
+      positions: [{ symbol: "TSLA" }],
+      tax_lots: [],
       suggestions: [],
       wash_sale_flags: [{ symbol: "TSLA" }],
       summary: { total_market_value: 0 },
+      tax_profile: null,
+      disclaimer: "",
       warnings: [],
       errors: [],
     };
@@ -382,7 +388,9 @@ describe("Home page", () => {
 
     renderWithClient(<Home />);
 
-    expect(screen.getByTestId("wash-sale-warning")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByTestId("wash-sale-warning")).toBeInTheDocument();
+    });
   });
 
   it("signs out and redirects when menu action is clicked", async () => {

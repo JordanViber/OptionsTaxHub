@@ -2,7 +2,7 @@
 Supabase database client for OptionsTaxHub.
 
 Provides a singleton Supabase client and helper functions for
-portfolio analysis history storage.
+portfolio analysis history and tax profile storage.
 
 NOTE: Requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in .env.local.
 """
@@ -52,13 +52,17 @@ def get_supabase():
 # ---------- Portfolio History ----------
 
 
-async def save_analysis_history(
+def save_analysis_history(
     user_id: str,
     filename: str,
     summary: dict,
+    result_data: Optional[dict] = None,
 ) -> Optional[dict]:
     """
     Save a portfolio analysis summary to the portfolio_analyses table.
+
+    Also persists the full analysis result (positions, suggestions, etc.)
+    so that past reports can be re-loaded from the history sidebar.
 
     Returns the inserted row or None if Supabase is unavailable.
     """
@@ -67,13 +71,15 @@ async def save_analysis_history(
         return None
 
     try:
-        row = {
+        row: dict = {
             "user_id": user_id,
             "filename": filename,
             "summary": summary,
             "positions_count": summary.get("positions_count", 0),
             "total_market_value": summary.get("total_market_value", 0),
         }
+        if result_data is not None:
+            row["result"] = result_data
         result = client.table("portfolio_analyses").insert(row).execute()
         if result.data:
             return result.data[0]
@@ -83,12 +89,14 @@ async def save_analysis_history(
         return None
 
 
-async def get_analysis_history(
+def get_analysis_history(
     user_id: str,
     limit: int = 20,
 ) -> list[dict]:
     """
     Retrieve past portfolio analyses for a user, newest first.
+
+    Returns lightweight list (no full result) for the history sidebar.
     """
     client = get_supabase()
     if client is None:
@@ -107,3 +115,133 @@ async def get_analysis_history(
     except Exception as e:
         logger.error(f"Failed to fetch analysis history: {e}")
         return []
+
+
+def get_analysis_by_id(
+    analysis_id: str,
+    user_id: str,
+) -> Optional[dict]:
+    """
+    Retrieve a single portfolio analysis by ID, including the full result.
+
+    Filters by user_id to enforce ownership.
+    """
+    client = get_supabase()
+    if client is None:
+        return None
+
+    try:
+        result = (
+            client.table("portfolio_analyses")
+            .select("id, user_id, filename, uploaded_at, summary, positions_count, total_market_value, result")
+            .eq("id", analysis_id)
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        if result.data:
+            return result.data[0]
+        return None
+    except Exception as e:
+        logger.error(f"Failed to fetch analysis by id: {e}")
+        return None
+
+
+def delete_analyses_without_result(user_id: str) -> int:
+    """
+    Delete portfolio analyses that have no stored result data.
+
+    These are legacy entries created before we started persisting
+    the full analysis result alongside the summary.
+
+    Returns the number of rows deleted.
+    """
+    client = get_supabase()
+    if client is None:
+        return 0
+
+    try:
+        result = (
+            client.table("portfolio_analyses")
+            .delete()
+            .eq("user_id", user_id)
+            .is_("result", "null")
+            .execute()
+        )
+        deleted = len(result.data) if result.data else 0
+        if deleted:
+            logger.info(
+                f"Cleaned up {deleted} orphan analysis rows for user {user_id}"
+            )
+        return deleted
+    except Exception as e:
+        logger.error(f"Failed to delete orphan analyses: {e}")
+        return 0
+
+
+# ---------- Tax Profiles ----------
+
+
+def save_tax_profile(
+    user_id: str,
+    filing_status: str,
+    estimated_annual_income: float,
+    state: str,
+    tax_year: int,
+) -> Optional[dict]:
+    """
+    Upsert user's tax profile to the tax_profiles table.
+
+    Uses ON CONFLICT (user_id) to update if a profile already exists.
+    Returns the saved row or None if Supabase is unavailable.
+    """
+    client = get_supabase()
+    if client is None:
+        return None
+
+    try:
+        row = {
+            "user_id": user_id,
+            "filing_status": filing_status,
+            "estimated_annual_income": estimated_annual_income,
+            "state": state,
+            "tax_year": tax_year,
+            "updated_at": "now()",
+        }
+        result = (
+            client.table("tax_profiles")
+            .upsert(row, on_conflict="user_id")
+            .execute()
+        )
+        if result.data:
+            return result.data[0]
+        return None
+    except Exception as e:
+        logger.error(f"Failed to save tax profile: {e}")
+        return None
+
+
+def get_tax_profile(user_id: str) -> Optional[dict]:
+    """
+    Retrieve a user's saved tax profile.
+
+    Returns the profile dict or None if not found / Supabase unavailable.
+    """
+    client = get_supabase()
+    if client is None:
+        return None
+
+    try:
+        result = (
+            client.table("tax_profiles")
+            .select("user_id, filing_status, estimated_annual_income, state, tax_year, created_at, updated_at")
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        if result.data:
+            return result.data[0]
+        return None
+    except Exception as e:
+        logger.error(f"Failed to fetch tax profile: {e}")
+        return None

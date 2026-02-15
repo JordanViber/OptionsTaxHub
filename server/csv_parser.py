@@ -44,7 +44,54 @@ ROBINHOOD_COLUMNS = {
 SIMPLE_COLUMNS = {"symbol", "quantity", "purchase_price", "current_price"}
 
 # Options transaction codes
-OPTIONS_TRANS_CODES = {"STO", "BTC", "BTO", "STC", "OEXP"}
+OPTIONS_TRANS_CODES = {"STO", "BTC", "BTO", "STC", "OEXP", "OASGN", "OCA"}
+
+# Non-trading account activity codes (skipped during parsing)
+ACCOUNT_ACTIVITY_CODES = {"ACH", "RTP", "FUTSWP", "MINT", "ROC"}
+
+# Corporate action codes (tracked but don't create lots by themselves)
+CORPORATE_ACTION_CODES = {"SPR", "OCA"}
+
+
+def parse_robinhood_amount(value) -> float:
+    """
+    Parse a Robinhood numeric/currency field.
+
+    Handles: $7.70, ($732.00), ($2,440.10), empty strings, NaN.
+    Parenthesized values are treated as negative.
+    """
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return 0.0
+    s = str(value).strip()
+    if not s or s.lower() == "nan":
+        return 0.0
+    # Detect negative (parenthesized)
+    negative = s.startswith("(") and s.endswith(")")
+    # Strip $, commas, parentheses
+    s = s.replace("$", "").replace(",", "").replace("(", "").replace(")", "")
+    if not s:
+        return 0.0
+    result = float(s)
+    return -result if negative else result
+
+
+def parse_robinhood_quantity(value) -> float:
+    """
+    Parse a Robinhood Quantity field.
+
+    Handles: numeric strings, "400S" suffix (S = shares out in corporate actions),
+    empty strings, NaN.
+    """
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return 0.0
+    s = str(value).strip()
+    if not s or s.lower() == "nan":
+        return 0.0
+    # Strip trailing 'S' (used by Robinhood for share-out in splits/corporate actions)
+    s = s.rstrip("Ss")
+    if not s:
+        return 0.0
+    return abs(float(s))
 
 
 def detect_csv_format(df: pd.DataFrame) -> str:
@@ -107,12 +154,74 @@ def determine_asset_type(trans_code: str, description: str = "") -> AssetType:
     if trans_code in OPTIONS_TRANS_CODES:
         return AssetType.OPTION
 
-    # Check description for option indicators
+    # Check description for option indicators (Call/Put keywords)
     description_lower = description.lower() if description else ""
-    if any(kw in description_lower for kw in ["call", "put", "$", "strike"]):
+    if " call " in description_lower or " put " in description_lower:
         return AssetType.OPTION
 
     return AssetType.STOCK
+
+
+def _parse_robinhood_row(
+    row: pd.Series,
+    row_num: int,
+) -> tuple[Transaction | None, str | None]:
+    """
+    Parse a single Robinhood CSV row into a Transaction.
+
+    Returns (Transaction, None) on success, or (None, error_message) on failure.
+    Returns (None, None) if the row should be silently skipped.
+    """
+    # Parse dates
+    activity_date = parse_robinhood_date(row.get(COL_ACTIVITY_DATE, ""))
+    if not activity_date:
+        return None, f"Row {row_num}: Missing or invalid Activity Date"
+
+    process_date = parse_robinhood_date(row.get("Process Date", ""))
+    settle_date = parse_robinhood_date(row.get("Settle Date", ""))
+
+    # Parse instrument (ticker symbol)
+    instrument = str(row.get("Instrument", "")).strip().upper()
+    if not instrument or instrument == "NAN":
+        return None, None  # Silently skip account-level rows
+
+    # Parse transaction code
+    raw_trans_code = str(row.get(COL_TRANS_CODE, "")).strip()
+    try:
+        trans_code = TransCode(raw_trans_code)
+    except ValueError:
+        return None, f"Row {row_num}: Unknown Trans Code '{raw_trans_code}' for {instrument}"
+
+    # Skip non-trading account activity (ACH deposits, interest, etc.)
+    if raw_trans_code in ACCOUNT_ACTIVITY_CODES:
+        return None, None
+
+    # Parse description
+    description = str(row.get("Description", "")).strip()
+    if description == "nan":
+        description = ""
+
+    # Parse numeric fields (handle $, commas, parentheses, S suffix)
+    quantity = parse_robinhood_quantity(row.get("Quantity", 0))
+    price = abs(parse_robinhood_amount(row.get("Price", 0)))
+    amount = parse_robinhood_amount(row.get("Amount", 0))
+
+    # Determine asset type
+    asset_type = determine_asset_type(raw_trans_code, description)
+
+    txn = Transaction(
+        activity_date=activity_date,
+        process_date=process_date,
+        settle_date=settle_date,
+        instrument=instrument,
+        description=description,
+        trans_code=trans_code,
+        quantity=quantity,
+        price=price,
+        amount=amount,
+        asset_type=asset_type,
+    )
+    return txn, None
 
 
 def parse_robinhood_csv(df: pd.DataFrame) -> tuple[list[Transaction], list[str]]:
@@ -132,61 +241,13 @@ def parse_robinhood_csv(df: pd.DataFrame) -> tuple[list[Transaction], list[str]]
     df.columns = df.columns.str.strip()
 
     for raw_idx, row in df.iterrows():
-        row_num = int(raw_idx) + 1
+        row_num = int(raw_idx) + 1  # type: ignore[arg-type]
         try:
-            # Parse dates
-            activity_date = parse_robinhood_date(row.get(COL_ACTIVITY_DATE, ""))
-            if not activity_date:
-                errors.append(f"Row {row_num}: Missing or invalid Activity Date")
-                continue
-
-            process_date = parse_robinhood_date(row.get("Process Date", ""))
-            settle_date = parse_robinhood_date(row.get("Settle Date", ""))
-
-            # Parse instrument (ticker symbol)
-            instrument = str(row.get("Instrument", "")).strip().upper()
-            if not instrument or instrument == "NAN":
-                errors.append(f"Row {row_num}: Missing Instrument/symbol")
-                continue
-
-            # Parse transaction code
-            raw_trans_code = str(row.get(COL_TRANS_CODE, "")).strip()
-            try:
-                trans_code = TransCode(raw_trans_code)
-            except ValueError:
-                errors.append(
-                    f"Row {row_num}: Unknown Trans Code '{raw_trans_code}' for {instrument}"
-                )
-                continue
-
-            # Parse description
-            description = str(row.get("Description", "")).strip()
-            if description == "nan":
-                description = ""
-
-            # Parse numeric fields
-            quantity = abs(float(row.get("Quantity", 0)))
-            price = abs(float(row.get("Price", 0)))
-            amount = float(row.get("Amount", 0))
-
-            # Determine asset type
-            asset_type = determine_asset_type(raw_trans_code, description)
-
-            transactions.append(
-                Transaction(
-                    activity_date=activity_date,
-                    process_date=process_date,
-                    settle_date=settle_date,
-                    instrument=instrument,
-                    description=description,
-                    trans_code=trans_code,
-                    quantity=quantity,
-                    price=price,
-                    amount=amount,
-                    asset_type=asset_type,
-                )
-            )
-
+            txn, error = _parse_robinhood_row(row, row_num)
+            if error:
+                errors.append(error)
+            elif txn:
+                transactions.append(txn)
         except Exception as e:
             errors.append(f"Row {row_num}: Error parsing row — {str(e)}")
 
@@ -224,7 +285,7 @@ def parse_simple_csv(df: pd.DataFrame) -> tuple[list[TaxLot], list[str]]:
         )
 
     for raw_idx, row in df.iterrows():
-        row_num = int(raw_idx) + 1
+        row_num = int(raw_idx) + 1  # type: ignore[arg-type]
         try:
             symbol = str(row.get("symbol", "")).strip().upper()
             if not symbol or symbol == "NAN":
@@ -267,6 +328,81 @@ def parse_simple_csv(df: pd.DataFrame) -> tuple[list[TaxLot], list[str]]:
     return tax_lots, errors + warnings
 
 
+def _remove_lots_fifo(open_lots: dict[str, list[TaxLot]], symbol: str, quantity: float) -> None:
+    """Remove lots for a symbol in FIFO order (used by OEXP, OASGN, etc.)."""
+    if symbol not in open_lots:
+        return
+    lots_to_remove: list[TaxLot] = []
+    remaining = quantity
+    for lot in open_lots[symbol]:
+        if remaining <= 0:
+            break
+        if lot.quantity <= remaining:
+            remaining -= lot.quantity
+            lots_to_remove.append(lot)
+        else:
+            lot.quantity -= remaining
+            lot.total_cost_basis = lot.cost_basis_per_share * lot.quantity
+            remaining = 0
+    for lot in lots_to_remove:
+        open_lots[symbol].remove(lot)
+
+
+def _add_lot(
+    open_lots: dict[str, list[TaxLot]],
+    symbol: str,
+    txn: Transaction,
+    asset_type: AssetType | None = None,
+) -> None:
+    """Create and append a new tax lot for a purchase transaction."""
+    lot = TaxLot(
+        symbol=symbol,
+        quantity=txn.quantity,
+        cost_basis_per_share=txn.price,
+        total_cost_basis=txn.price * txn.quantity,
+        purchase_date=txn.activity_date,
+        asset_type=asset_type or txn.asset_type,
+    )
+    if symbol not in open_lots:
+        open_lots[symbol] = []
+    open_lots[symbol].append(lot)
+
+
+def _close_lots_fifo(
+    open_lots: dict[str, list[TaxLot]],
+    symbol: str,
+    txn: Transaction,
+    warnings: list[str],
+) -> None:
+    """Close lots in FIFO order for a sell transaction."""
+    remaining_to_sell = txn.quantity
+
+    if symbol not in open_lots or not open_lots[symbol]:
+        warnings.append(
+            f"Sell of {txn.quantity} {symbol} on {txn.activity_date} "
+            f"but no open lots found (short sale or prior history not in CSV)"
+        )
+        return
+
+    while remaining_to_sell > 0 and open_lots.get(symbol):
+        oldest_lot = open_lots[symbol][0]
+        if oldest_lot.quantity <= remaining_to_sell:
+            remaining_to_sell -= oldest_lot.quantity
+            open_lots[symbol].pop(0)
+        else:
+            oldest_lot.quantity -= remaining_to_sell
+            oldest_lot.total_cost_basis = (
+                oldest_lot.cost_basis_per_share * oldest_lot.quantity
+            )
+            remaining_to_sell = 0
+
+    if remaining_to_sell > 0:
+        warnings.append(
+            f"Sell of {symbol} on {txn.activity_date}: "
+            f"{remaining_to_sell} shares could not be matched to open lots"
+        )
+
+
 def transactions_to_tax_lots(transactions: list[Transaction]) -> tuple[list[TaxLot], list[str]]:
     """
     Aggregate Robinhood transactions into TaxLot positions using FIFO.
@@ -291,86 +427,23 @@ def transactions_to_tax_lots(transactions: list[Transaction]) -> tuple[list[TaxL
     for txn in sorted_txns:
         symbol = txn.instrument
 
-        if txn.trans_code == TransCode.BUY or txn.trans_code == TransCode.BTO:
-            # Create a new tax lot for this purchase
-            lot = TaxLot(
-                symbol=symbol,
-                quantity=txn.quantity,
-                cost_basis_per_share=txn.price,
-                total_cost_basis=txn.price * txn.quantity,
-                purchase_date=txn.activity_date,
-                asset_type=txn.asset_type,
-            )
-            if symbol not in open_lots:
-                open_lots[symbol] = []
-            open_lots[symbol].append(lot)
+        if txn.trans_code in (TransCode.BUY, TransCode.BTO):
+            _add_lot(open_lots, symbol, txn)
 
         elif txn.trans_code in (TransCode.SELL, TransCode.STC):
-            # Close lots in FIFO order
-            remaining_to_sell = txn.quantity
+            _close_lots_fifo(open_lots, symbol, txn, warnings)
 
-            if symbol not in open_lots or not open_lots[symbol]:
-                warnings.append(
-                    f"Sell of {txn.quantity} {symbol} on {txn.activity_date} "
-                    f"but no open lots found (short sale or prior history not in CSV)"
-                )
-                continue
-
-            while remaining_to_sell > 0 and open_lots.get(symbol):
-                oldest_lot = open_lots[symbol][0]
-
-                if oldest_lot.quantity <= remaining_to_sell:
-                    # Fully close this lot
-                    remaining_to_sell -= oldest_lot.quantity
-                    open_lots[symbol].pop(0)
-                else:
-                    # Partially close this lot
-                    oldest_lot.quantity -= remaining_to_sell
-                    oldest_lot.total_cost_basis = (
-                        oldest_lot.cost_basis_per_share * oldest_lot.quantity
-                    )
-                    remaining_to_sell = 0
-
-            if remaining_to_sell > 0:
-                warnings.append(
-                    f"Sell of {symbol} on {txn.activity_date}: "
-                    f"{remaining_to_sell} shares could not be matched to open lots"
-                )
-
-        elif txn.trans_code == TransCode.OEXP:
-            # Option expiration — remove the lot
-            if symbol in open_lots:
-                # Remove lots matching the expired option
-                lots_to_remove = []
-                remaining = txn.quantity
-                for lot in open_lots[symbol]:
-                    if remaining <= 0:
-                        break
-                    if lot.quantity <= remaining:
-                        remaining -= lot.quantity
-                        lots_to_remove.append(lot)
-                    else:
-                        lot.quantity -= remaining
-                        lot.total_cost_basis = lot.cost_basis_per_share * lot.quantity
-                        remaining = 0
-
-                for lot in lots_to_remove:
-                    open_lots[symbol].remove(lot)
+        elif txn.trans_code in (TransCode.OEXP, TransCode.OASGN):
+            # Option expiration or assignment — remove the lot
+            _remove_lots_fifo(open_lots, symbol, txn.quantity)
 
         elif txn.trans_code == TransCode.STO:
             # Sell to Open — creates a short option position
-            # Track as a negative lot for potential future close (BTC)
-            lot = TaxLot(
-                symbol=symbol,
-                quantity=txn.quantity,
-                cost_basis_per_share=txn.price,
-                total_cost_basis=txn.price * txn.quantity,
-                purchase_date=txn.activity_date,
-                asset_type=AssetType.OPTION,
-            )
-            if symbol not in open_lots:
-                open_lots[symbol] = []
-            open_lots[symbol].append(lot)
+            _add_lot(open_lots, symbol, txn, asset_type=AssetType.OPTION)
+
+        elif txn.trans_code in (TransCode.SPR, TransCode.OCA):
+            # Stock split / reverse split / corporate action — informational.
+            pass
 
     # Flatten all remaining open lots
     all_open_lots = []
@@ -394,7 +467,7 @@ def parse_csv(file_content: str) -> tuple[list[TaxLot], list[Transaction], list[
         For simplified CSVs, transactions list will be empty.
     """
     try:
-        df = pd.read_csv(io.StringIO(file_content))
+        df = pd.read_csv(io.StringIO(file_content), on_bad_lines="skip")
     except Exception as e:
         return [], [], [f"Failed to read CSV file: {str(e)}"]
 

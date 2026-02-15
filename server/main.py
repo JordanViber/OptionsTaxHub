@@ -27,7 +27,14 @@ from harvesting import (
 from wash_sale import detect_wash_sales, adjust_lots_for_wash_sales
 from price_service import fetch_current_prices
 from ai_advisor import get_ai_suggestions, prepare_positions_for_ai
-from db import save_analysis_history, get_analysis_history
+from db import (
+    save_analysis_history,
+    get_analysis_history,
+    get_analysis_by_id,
+    delete_analyses_without_result,
+    save_tax_profile as db_save_tax_profile,
+    get_tax_profile as db_get_tax_profile,
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -91,6 +98,43 @@ async def upload_csv(file: Annotated[UploadFile, File()]):
 # --- Portfolio Analysis Endpoints ---
 
 
+def _try_get_ai_suggestions(
+    tax_lots: list,
+    warnings: list[str],
+) -> dict | None:
+    """Attempt to get AI suggestions, appending a warning on failure."""
+    ai_positions = prepare_positions_for_ai(tax_lots)
+    if not ai_positions:
+        return None
+    try:
+        return get_ai_suggestions(ai_positions)
+    except Exception as e:
+        logger.error(f"AI advisor failed: {e}")
+        warnings.append(
+            "AI-powered suggestions unavailable. Using default replacement mappings."
+        )
+        return None
+
+
+def _save_history_best_effort(
+    user_id: str,
+    filename: str,
+    summary,
+    result: PortfolioAnalysis,
+) -> None:
+    """Save analysis to history (best-effort, non-blocking)."""
+    try:
+        result_dict = result.model_dump() if hasattr(result, "model_dump") else dict(result)
+        save_analysis_history(
+            user_id=user_id,
+            filename=filename,
+            summary=summary.model_dump() if hasattr(summary, "model_dump") else dict(summary),
+            result_data=result_dict,
+        )
+    except Exception as e:
+        logger.warning(f"Failed to save analysis history: {e}")
+
+
 @app.post("/api/portfolio/analyze", response_model=PortfolioAnalysis)
 async def analyze_portfolio(
     file: Annotated[UploadFile, File()],
@@ -110,9 +154,7 @@ async def analyze_portfolio(
     """
     # Read and parse CSV
     contents = await file.read()
-    file_content = contents.decode("utf-8")
-
-    tax_lots, transactions, parse_errors = parse_csv(file_content)
+    tax_lots, transactions, parse_errors = parse_csv(contents.decode("utf-8"))
 
     if not tax_lots and not transactions:
         raise HTTPException(
@@ -135,7 +177,6 @@ async def analyze_portfolio(
         tax_year=tax_year or 2025,
     )
 
-    # Collect warnings from all stages
     all_warnings = list(parse_errors)
 
     # Fetch live prices for all symbols
@@ -145,41 +186,23 @@ async def analyze_portfolio(
         for lot in tax_lots
         if lot.current_price is not None
     }
-
-    live_prices, price_warnings = await fetch_current_prices(
-        symbols=symbols,
-        fallback_prices=fallback_prices,
-    )
+    live_prices, price_warnings = fetch_current_prices(symbols, fallback_prices)
     all_warnings.extend(price_warnings)
 
-    # Update lots with live prices
     for lot in tax_lots:
         if lot.symbol in live_prices:
             lot.current_price = live_prices[lot.symbol]
 
-    # Compute P&L, holding periods, and long-term status
     tax_lots = compute_lot_metrics(tax_lots)
 
     # Detect wash sales from transaction history
-    wash_sale_flags = []
-    if transactions:
-        wash_sale_flags = detect_wash_sales(transactions)
-        if wash_sale_flags:
-            tax_lots = adjust_lots_for_wash_sales(tax_lots, wash_sale_flags)
+    wash_sale_flags = detect_wash_sales(transactions) if transactions else []
+    if wash_sale_flags:
+        tax_lots = adjust_lots_for_wash_sales(tax_lots, wash_sale_flags)
 
     # Get AI-powered suggestions
-    ai_positions = prepare_positions_for_ai(tax_lots)
-    ai_suggestions = None
-    if ai_positions:
-        try:
-            ai_suggestions = await get_ai_suggestions(ai_positions)
-        except Exception as e:
-            logger.error(f"AI advisor failed: {e}")
-            all_warnings.append(
-                "AI-powered suggestions unavailable. Using default replacement mappings."
-            )
+    ai_suggestions = _try_get_ai_suggestions(tax_lots, all_warnings)
 
-    # Generate harvesting suggestions
     suggestions = generate_suggestions(
         tax_lots=tax_lots,
         transactions=transactions,
@@ -187,10 +210,7 @@ async def analyze_portfolio(
         ai_suggestions=ai_suggestions,
     )
 
-    # Aggregate into positions
     positions = aggregate_positions(tax_lots)
-
-    # Build summary
     summary = build_portfolio_summary(positions, suggestions, wash_sale_flags)
 
     result = PortfolioAnalysis(
@@ -203,16 +223,8 @@ async def analyze_portfolio(
         warnings=all_warnings,
     )
 
-    # Save analysis summary to history (non-blocking, best-effort)
     if user_id:
-        try:
-            await save_analysis_history(
-                user_id=user_id,
-                filename=file.filename or "upload.csv",
-                summary=summary.model_dump() if hasattr(summary, "model_dump") else dict(summary),
-            )
-        except Exception as e:
-            logger.warning(f"Failed to save analysis history: {e}")
+        _save_history_best_effort(user_id, file.filename or "upload.csv", summary, result)
 
     return result
 
@@ -225,8 +237,36 @@ async def get_portfolio_history(user_id: str, limit: int = Query(default=20, ge=
     Returns summary metadata (filename, date, positions count, market value)
     without the full position data (which is processed in-memory only).
     """
-    history = await get_analysis_history(user_id, limit)
+    history = get_analysis_history(user_id, limit)
     return history
+
+
+@app.get("/api/portfolio/analysis/{analysis_id}")
+async def get_portfolio_analysis(
+    analysis_id: str,
+    user_id: str = Query(..., description="Owner user ID for access control"),
+):
+    """
+    Retrieve a single past portfolio analysis by ID, including the full result.
+
+    Used when a user clicks a history item to reload that report.
+    """
+    record = get_analysis_by_id(analysis_id, user_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+    return record
+
+
+@app.delete("/api/portfolio/history/{user_id}/cleanup")
+async def cleanup_orphan_history(user_id: str):
+    """
+    Delete portfolio analysis entries that have no stored result data.
+
+    These are legacy rows created before the app started persisting
+    the full analysis result. Returns the count of deleted rows.
+    """
+    deleted = delete_analyses_without_result(user_id)
+    return {"deleted": deleted}
 
 
 @app.get("/api/prices")
@@ -236,7 +276,7 @@ async def get_prices(symbols: str = Query(..., description="Comma-separated tick
     if not symbol_list:
         raise HTTPException(status_code=400, detail="No symbols provided")
 
-    prices, warnings = await fetch_current_prices(symbol_list)
+    prices, warnings = fetch_current_prices(symbol_list)
     return {"prices": prices, "warnings": warnings}
 
 
@@ -262,32 +302,116 @@ async def get_tax_brackets(
 
 
 @app.post("/api/tax-profile")
-async def save_tax_profile(profile: TaxProfile):
+async def save_tax_profile_endpoint(profile: TaxProfile):
     """
-    Save user's tax profile settings.
+    Save user's tax profile settings to Supabase.
 
-    TODO: Persist to Supabase when database tables are created.
-    Currently returns the profile as confirmation.
+    Upserts the profile so each user has exactly one row.
+    Falls back to echo-only if Supabase is unavailable.
     """
-    # For now, return the validated profile
-    # Supabase persistence will be added when the tax_profiles table is created
-    return {
-        "message": "Tax profile saved",
-        "profile": profile.model_dump(),
-    }
+    if not profile.user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
+
+    saved = db_save_tax_profile(
+        user_id=profile.user_id,
+        filing_status=profile.filing_status.value,
+        estimated_annual_income=profile.estimated_annual_income,
+        state=profile.state,
+        tax_year=profile.tax_year,
+    )
+
+    if saved:
+        return {"message": "Tax profile saved", "profile": saved}
+
+    # Fallback: return the validated profile even if DB is unavailable
+    return {"message": "Tax profile saved (not persisted)", "profile": profile.model_dump()}
 
 
 @app.get("/api/tax-profile/{user_id}")
-async def get_tax_profile(user_id: str):
+async def get_tax_profile_endpoint(user_id: str):
     """
-    Retrieve a user's saved tax profile.
+    Retrieve a user's saved tax profile from Supabase.
 
-    TODO: Fetch from Supabase when database tables are created.
-    Currently returns default profile.
+    Returns default profile if no saved profile exists.
     """
-    # Return default profile until Supabase table is created
+    saved = db_get_tax_profile(user_id)
+    if saved:
+        return saved
+
+    # No saved profile — return defaults
     default_profile = TaxProfile(user_id=user_id)
     return default_profile.model_dump()
+
+
+# --- Stripe Tip/Donation Endpoints ---
+
+import stripe
+
+STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY")
+
+# Tip tiers: price_id → metadata
+TIP_TIERS = {
+    "coffee": {
+        "price_id": "price_1T0mFVKjuEm9woaeLRWgYJBJ",
+        "amount": 300,
+        "label": "Coffee",
+    },
+    "lunch": {
+        "price_id": "price_1T0mFVKjuEm9woaeTqeB2FCD",
+        "amount": 1000,
+        "label": "Lunch",
+    },
+    "generous": {
+        "price_id": "price_1T0mFVKjuEm9woaemwHjU9ou",
+        "amount": 2500,
+        "label": "Generous",
+    },
+}
+
+
+class TipRequest(BaseModel):
+    tier: str  # "coffee", "lunch", or "generous"
+
+
+@app.get("/api/tips/tiers")
+async def get_tip_tiers():
+    """Return available tip tiers for the frontend."""
+    return [
+        {"id": k, "label": v["label"], "amount": v["amount"]}
+        for k, v in TIP_TIERS.items()
+    ]
+
+
+@app.post("/api/tips/checkout")
+async def create_tip_checkout(tip: TipRequest):
+    """
+    Create a Stripe Checkout Session for a one-time tip.
+
+    Returns the checkout URL to redirect the user to.
+    """
+    tier = TIP_TIERS.get(tip.tier)
+    if not tier:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid tier '{tip.tier}'. Choose: {', '.join(TIP_TIERS.keys())}",
+        )
+
+    if not STRIPE_SECRET_KEY:
+        raise HTTPException(status_code=503, detail="Stripe is not configured")
+
+    stripe.api_key = STRIPE_SECRET_KEY
+
+    try:
+        session = stripe.checkout.Session.create(
+            mode="payment",
+            line_items=[{"price": tier["price_id"], "quantity": 1}],
+            success_url=f"{FRONTEND_URL}/tips/success",
+            cancel_url=f"{FRONTEND_URL}/tips/cancel",
+        )
+        return {"checkout_url": session.url}
+    except stripe.StripeError as e:
+        logger.error(f"Stripe checkout error: {e}")
+        raise HTTPException(status_code=502, detail="Failed to create checkout session")
 
 @app.post("/push/subscribe")
 async def subscribe_to_push(subscription: PushSubscription):

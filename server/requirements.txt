@@ -11,3 +11,4 @@ yfinance>=0.2.0
 google-genai>=1.0.0
 scikit-learn
 supabase>=2.0.0
+stripe>=11.0.0

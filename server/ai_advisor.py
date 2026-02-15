@@ -90,7 +90,7 @@ Provide 2-3 replacement candidates per position. Ensure replacements are NOT sub
 identical to avoid wash-sale rule violations."""
 
 
-async def get_ai_suggestions(
+def get_ai_suggestions(
     positions_with_losses: list[dict],
 ) -> Optional[dict]:
     """

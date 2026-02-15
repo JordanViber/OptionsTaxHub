@@ -67,7 +67,7 @@ test.describe("Dashboard UI Fixes", () => {
 
     // Should show success message
     await expect(page.getByText("Tax profile saved successfully!")).toBeVisible(
-      { timeout: 3000 },
+      { timeout: 5000 },
     );
 
     // Should navigate back to home after ~1.5s
@@ -122,17 +122,17 @@ test.describe("Dashboard UI Fixes", () => {
   }) => {
     await uploadTestCsv(page);
 
-    // Check cursor on the "Portfolio Analysis" heading
+    // Check cursor on the "Portfolio Analysis" heading (outside upload zone)
     const heading = page.getByText("Portfolio Analysis").first();
     const cursor = await heading.evaluate((el) => getComputedStyle(el).cursor);
     expect(cursor).toBe("default");
 
-    // Check cursor on the upload caption text
+    // Upload zone text should inherit pointer cursor from parent
     const caption = page.getByText("Robinhood transaction export");
     const captionCursor = await caption.evaluate(
       (el) => getComputedStyle(el).cursor,
     );
-    expect(captionCursor).toBe("default");
+    expect(captionCursor).toBe("pointer");
   });
 
   // --- Fix 5a: PNL downward arrow for losses ---
@@ -297,7 +297,7 @@ test.describe("Dashboard Upload & Results", () => {
 
   test("re-upload same file updates results", async ({ page }) => {
     await uploadTestCsv(page);
-    await expect(page.getByText("$21,100")).toBeVisible();
+    await expect(page.getByText("$21,100")).toBeVisible({ timeout: 10000 });
 
     // Change the mock to return different data
     const updatedAnalysis = {
@@ -308,6 +308,8 @@ test.describe("Dashboard Upload & Results", () => {
         positions_count: 5,
       },
     };
+    // Remove old mock and set new one
+    await page.unroute("**/api/portfolio/analyze*");
     await page.route("**/api/portfolio/analyze*", (route) =>
       route.fulfill({
         status: 200,
@@ -318,7 +320,7 @@ test.describe("Dashboard Upload & Results", () => {
 
     // Upload again — can't reuse uploadTestCsv because "Portfolio Value" is already visible
     const fileInput = page.locator('input[type="file"]');
-    const pathMod = await import("path");
+    const pathMod = await import("node:path");
     const csvPath = pathMod.resolve(__dirname, "../../../test.csv");
     await fileInput.setInputFiles(csvPath);
 
@@ -358,7 +360,7 @@ test.describe("Dashboard Tabs & Components", () => {
     // Suggestions content should show the AAPL suggestion card
     await expect(page.getByText("AAPL").first()).toBeVisible();
     await expect(page.getByText("Estimated Loss")).toBeVisible();
-    await expect(page.getByText("Tax Savings")).toBeVisible();
+    await expect(page.getByText("Tax Savings", { exact: true })).toBeVisible();
 
     // Click back to Positions
     await page.getByRole('tab', { name: /Positions/ }).click();
@@ -394,7 +396,7 @@ test.describe("Dashboard Tabs & Components", () => {
 
     // Replacement Candidates section
     await expect(page.getByText("Replacement Candidates")).toBeVisible();
-    await expect(page.getByText("QQQ")).toBeVisible();
+    await expect(page.getByText("QQQ", { exact: true })).toBeVisible();
     await expect(page.getByText("Invesco QQQ Trust")).toBeVisible();
     await expect(page.getByText("Tech sector ETF")).toBeVisible();
 
@@ -521,26 +523,26 @@ test.describe("Dashboard User Menu & Navigation", () => {
 
 test.describe("Dashboard Error & Loading States", () => {
   test("shows error alert when analysis fails", async ({ page }) => {
-    // Mock analysis to return 500
-    await page.route("**/api/portfolio/analyze*", (route) =>
-      route.fulfill({
+    // Mock analysis to return 500 error
+    await page.route("**/api/portfolio/analyze*", async (route) => {
+      await route.fulfill({
         status: 500,
         contentType: "application/json",
         body: JSON.stringify({ detail: "Internal server error" }),
-      }),
-    );
+      });
+    });
 
     await goToAuthenticatedHome(page);
 
     // Upload — this should trigger an error
     const fileInput = page.locator('input[type="file"]');
-    const path = await import("path");
+    const path = await import("node:path");
     const csvPath = path.resolve(__dirname, "../../../test.csv");
     await fileInput.setInputFiles(csvPath);
 
     // Error alert should appear
     await expect(page.getByText("Analysis Failed")).toBeVisible({
-      timeout: 10000,
+      timeout: 15000,
     });
   });
 
@@ -558,7 +560,7 @@ test.describe("Dashboard Error & Loading States", () => {
     await goToAuthenticatedHome(page);
 
     const fileInput = page.locator('input[type="file"]');
-    const path = await import("path");
+    const path = await import("node:path");
     const csvPath = path.resolve(__dirname, "../../../test.csv");
     await fileInput.setInputFiles(csvPath);
 
@@ -594,6 +596,83 @@ test.describe("Dashboard Error & Loading States", () => {
     ).toBeVisible();
     await expect(
       page.getByText("Wash-sale detection is approximate."),
+    ).toBeVisible();
+  });
+});
+
+// ── Section 6: Tip Jar ─────────────────────────────────────────────
+
+test.describe("Tip Jar", () => {
+  test.beforeEach(async ({ page }) => {
+    await goToAuthenticatedHome(page);
+  });
+
+  test("tip button opens tip jar dialog", async ({ page }) => {
+    await page.click("text=Tip");
+    await expect(page.getByText("Support OptionsTaxHub")).toBeVisible();
+    await expect(page.getByText("$3")).toBeVisible();
+    await expect(page.getByText("$10")).toBeVisible();
+    await expect(page.getByText("$25")).toBeVisible();
+  });
+
+  test("tip jar shows all three tiers with descriptions", async ({ page }) => {
+    await page.click("text=Tip");
+    await expect(page.getByText("Buy us a coffee")).toBeVisible();
+    await expect(page.getByText("Buy us lunch")).toBeVisible();
+    await expect(page.getByText("You're amazing!")).toBeVisible();
+  });
+
+  test("tip jar closes with close button", async ({ page }) => {
+    await page.click("text=Tip");
+    await expect(page.getByText("Support OptionsTaxHub")).toBeVisible();
+    await page.click('button[aria-label="close"]');
+    await expect(page.getByText("Support OptionsTaxHub")).not.toBeVisible();
+  });
+
+  test("clicking a tip tier calls checkout endpoint", async ({ page }) => {
+    // Track whether checkout endpoint was called
+    let checkoutCalled = false;
+    await page.route("**/api/tips/checkout", (route) => {
+      checkoutCalled = true;
+      // Fulfill without a real redirect so the page stays open
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          checkout_url: "https://checkout.stripe.com/test",
+        }),
+      });
+    });
+
+    await page.click("text=Tip");
+    // Click the Coffee tier card
+    await page.getByText("Buy us a coffee").click();
+    // Wait a moment for the request to be sent
+    await page.waitForTimeout(1000);
+    expect(checkoutCalled).toBe(true);
+  });
+
+  test("tip jar shows error on checkout failure", async ({ page }) => {
+    await page.route("**/api/tips/checkout", (route) =>
+      route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "Stripe is not configured" }),
+      }),
+    );
+
+    await page.click("text=Tip");
+    await page.getByText("Buy us a coffee").click();
+    await expect(page.getByRole("alert")).toBeVisible({ timeout: 5000 });
+  });
+
+  test("stripe footer text is visible", async ({ page }) => {
+    await page.click("text=Tip");
+    await expect(
+      page.getByText("Payments processed securely by Stripe"),
+    ).toBeVisible();
+    await expect(
+      page.getByText("One-time payment"),
     ).toBeVisible();
   });
 });

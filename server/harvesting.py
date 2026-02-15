@@ -29,7 +29,7 @@ from models import (
     TaxProfile,
     Transaction,
 )
-from tax_engine import calculate_tax_savings
+from tax_engine import calculate_tax_savings, get_capital_loss_limit
 from wash_sale import check_prospective_wash_sale_risk, detect_wash_sales, adjust_lots_for_wash_sales
 
 logger = logging.getLogger(__name__)
@@ -182,6 +182,66 @@ def aggregate_positions(tax_lots: list[TaxLot]) -> list[Position]:
     return positions
 
 
+def _fifo_cost_basis_for_sell(
+    sell: Transaction,
+    buys: list[Transaction],
+    buy_remaining: dict[int, float],
+) -> float:
+    """Match a sell against earlier buys (FIFO) and return cost basis consumed."""
+    remaining_qty = sell.quantity
+    cost_basis = 0.0
+
+    for i, buy in enumerate(buys):
+        if remaining_qty <= 0:
+            break
+        if buy.instrument != sell.instrument or buy_remaining[i] <= 0:
+            continue
+        if buy.activity_date > sell.activity_date:
+            continue
+
+        matched = min(remaining_qty, buy_remaining[i])
+        cost_basis += matched * buy.price
+        buy_remaining[i] -= matched
+        remaining_qty -= matched
+
+    return cost_basis
+
+
+def _compute_realized_gains(transactions: list[Transaction]) -> float:
+    """
+    Estimate total realized gains from sell transactions for the current tax year.
+
+    Uses FIFO matching of buys to sells to determine realized P&L.
+    Only counts net gains (losses are excluded since they're what we're harvesting).
+    """
+    if not transactions:
+        return 0.0
+
+    from models import TransCode
+
+    buys = sorted(
+        [t for t in transactions if t.trans_code in (TransCode.BUY, TransCode.BTO)],
+        key=lambda t: t.activity_date,
+    )
+    sells = sorted(
+        [t for t in transactions if t.trans_code in (TransCode.SELL, TransCode.STC)],
+        key=lambda t: t.activity_date,
+    )
+
+    buy_remaining: dict[int, float] = {i: b.quantity for i, b in enumerate(buys)}
+    realized_gains = 0.0
+
+    for sell in sells:
+        cost_basis = _fifo_cost_basis_for_sell(sell, buys, buy_remaining)
+        # sell.amount is negative for proceeds received (Robinhood convention)
+        proceeds = abs(sell.amount) if sell.amount < 0 else sell.quantity * sell.price
+        pnl = proceeds - cost_basis
+        if pnl > 0:
+            realized_gains += pnl
+
+    return round(realized_gains, 2)
+
+
 def generate_suggestions(
     tax_lots: list[TaxLot],
     transactions: list[Transaction],
@@ -189,17 +249,23 @@ def generate_suggestions(
     ai_suggestions: dict | None = None,
 ) -> list[HarvestingSuggestion]:
     """
-    Generate tax-loss harvesting suggestions for positions with unrealized losses.
+    Generate smart tax-loss harvesting suggestions.
+
+    Intelligence features:
+    - Caps harvesting to offset realized gains + $3,000 IRS excess loss deduction,
+      so users don't over-harvest losses beyond what provides immediate tax benefit.
+    - Excludes positions with wash-sale risk (recent purchases within 30 days)
+      since selling would trigger IRS wash-sale rule and disallow the loss.
+    - Ranks by tax savings (highest first) and only recommends what's needed.
 
     Args:
         tax_lots: Computed tax lots with P&L and holding period.
-        transactions: All transactions (for wash-sale risk check).
+        transactions: All transactions (for wash-sale and realized gains).
         tax_profile: User's tax profile for savings calculation.
-        ai_suggestions: Optional AI-generated suggestions dict
-                        (from ai_advisor module).
+        ai_suggestions: Optional AI-generated suggestions dict.
 
     Returns:
-        List of HarvestingSuggestion objects, ranked by estimated tax savings.
+        List of HarvestingSuggestion objects, ranked by priority.
     """
     suggestions: list[HarvestingSuggestion] = []
 
@@ -212,49 +278,69 @@ def generate_suggestions(
     if not loss_lots:
         return suggestions
 
+    # Compute realized gains to determine optimal harvest target
+    realized_gains = _compute_realized_gains(transactions)
+    loss_limit = get_capital_loss_limit(tax_profile)
+    # Optimal harvest target: offset realized gains + deduct up to $3k from income
+    harvest_target = realized_gains + loss_limit
+
+    # Build candidates, separating wash-sale-risky ones
+    clean_candidates: list[HarvestingSuggestion] = []
+    risky_candidates: list[HarvestingSuggestion] = []
+
     for lot in loss_lots:
         loss_amount = abs(lot.unrealized_pnl)  # type: ignore[arg-type]
         is_lt = lot.is_long_term or False
 
-        # Calculate estimated tax savings
         tax_savings = calculate_tax_savings(
             loss=loss_amount,
             is_long_term=is_lt,
             profile=tax_profile,
         )
 
-        # Check prospective wash-sale risk
         wash_risk, wash_explanation = check_prospective_wash_sale_risk(
             symbol=lot.symbol,
             transactions=transactions,
         )
 
-        # Get replacement candidates
         replacements = _get_replacements(lot.symbol, ai_suggestions)
         ai_explanation = _get_ai_explanation(lot.symbol, ai_suggestions)
         is_ai = ai_suggestions is not None and lot.symbol in (ai_suggestions or {})
 
-        suggestions.append(
-            HarvestingSuggestion(
-                symbol=lot.symbol,
-                action="SELL",
-                quantity=lot.quantity,
-                current_price=lot.current_price,
-                cost_basis_per_share=lot.cost_basis_per_share,
-                estimated_loss=round(loss_amount, 2),
-                tax_savings_estimate=round(tax_savings, 2),
-                holding_period_days=lot.holding_period_days or 0,
-                is_long_term=is_lt,
-                wash_sale_risk=wash_risk,
-                wash_sale_explanation=wash_explanation,
-                replacement_candidates=replacements,
-                ai_explanation=ai_explanation,
-                ai_generated=is_ai,
-            )
+        suggestion = HarvestingSuggestion(
+            symbol=lot.symbol,
+            action="SELL",
+            quantity=lot.quantity,
+            current_price=lot.current_price,
+            cost_basis_per_share=lot.cost_basis_per_share,
+            estimated_loss=round(loss_amount, 2),
+            tax_savings_estimate=round(tax_savings, 2),
+            holding_period_days=lot.holding_period_days or 0,
+            is_long_term=is_lt,
+            wash_sale_risk=wash_risk,
+            wash_sale_explanation=wash_explanation,
+            replacement_candidates=replacements,
+            ai_explanation=ai_explanation,
+            ai_generated=is_ai,
         )
 
-    # Sort by tax savings (highest first) and assign priority
-    suggestions.sort(key=lambda s: s.tax_savings_estimate, reverse=True)
+        if wash_risk:
+            risky_candidates.append(suggestion)
+        else:
+            clean_candidates.append(suggestion)
+
+    # Sort clean candidates by tax savings (highest first)
+    clean_candidates.sort(key=lambda s: s.tax_savings_estimate, reverse=True)
+
+    # Smart cap: only recommend enough to reach the harvest target
+    cumulative_loss = 0.0
+    for suggestion in clean_candidates:
+        cumulative_loss += suggestion.estimated_loss
+        suggestions.append(suggestion)
+        if cumulative_loss >= harvest_target > 0:
+            break
+
+    # Assign priority rankings
     for idx, suggestion in enumerate(suggestions):
         suggestion.priority = idx + 1
 

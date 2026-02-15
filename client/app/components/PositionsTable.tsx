@@ -32,15 +32,14 @@ function PnlCell({
   const color = value >= 0 ? "success.main" : "error.main";
   const sign = value >= 0 ? "+" : "";
   return (
-    <Box>
-      <Typography variant="body2" sx={{ color, fontWeight: 600 }}>
+    <Box sx={{ display: "flex", alignItems: "baseline", gap: 0.5 }}>
+      <Typography variant="body2" sx={{ color, fontWeight: 600, fontSize: "0.8rem" }}>
         {sign}
         {formatCurrency(value)}
       </Typography>
       {pct != null && (
-        <Typography variant="caption" sx={{ color }}>
-          {sign}
-          {pct.toFixed(1)}%
+        <Typography variant="caption" sx={{ color, fontSize: "0.7rem" }}>
+          ({sign}{pct.toFixed(1)}%)
         </Typography>
       )}
     </Box>
@@ -118,8 +117,8 @@ const columns: GridColDef<Position>[] = [
       if (days == null) return "—";
       const isLong = params.row.is_long_term;
       return (
-        <Box>
-          <Typography variant="body2">{days}d</Typography>
+        <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+          <Typography variant="body2" sx={{ fontSize: "0.8rem" }}>{days}d</Typography>
           <Tooltip
             title={
               isLong
@@ -199,10 +198,16 @@ export default function PositionsTable({
             sortModel: [{ field: "unrealized_pnl", sort: "asc" }],
           },
         }}
+        rowHeight={42}
+        columnHeaderHeight={40}
         pageSizeOptions={[10, 25, 50]}
         disableRowSelectionOnClick
         autoHeight
         sx={{
+          fontSize: "0.8rem",
+          "& .MuiDataGrid-cell": {
+            py: 0.5,
+          },
           "& .MuiDataGrid-row": {
             "&:hover": { backgroundColor: "action.hover" },
           },

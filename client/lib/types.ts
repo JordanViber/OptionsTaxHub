@@ -168,6 +168,7 @@ export interface AnalysisHistoryItem {
   summary: PortfolioSummary;
   positions_count: number;
   total_market_value: number;
+  result?: PortfolioAnalysis | null;
 }
 
 // --- Filing Status Display Labels ---

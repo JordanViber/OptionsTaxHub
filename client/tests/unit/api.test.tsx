@@ -47,7 +47,7 @@ function UploadComponent({ file }: Readonly<{ file: File }>) {
 }
 
 function HistoryComponent() {
-  const { data, error } = usePortfolioHistory(true);
+  const { data, error } = usePortfolioHistory("test-user-id");
   return (
     <div>
       <span>{getHistoryStatus(data, error)}</span>
@@ -56,7 +56,7 @@ function HistoryComponent() {
 }
 
 function HistoryDisabledComponent() {
-  const { data, error } = usePortfolioHistory();
+  const { data, error } = usePortfolioHistory(undefined);
   return (
     <div>
       <span>{getHistoryStatus(data, error)}</span>
