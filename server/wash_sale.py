@@ -167,15 +167,15 @@ def detect_wash_sales(
 
         # Allocate disallowed loss across qualifying repurchases chronologically
         remaining_disallowed = disallowed_loss
-        remaining_qty = min(total_repurchase_qty, sell.quantity)
+        remaining_replacement_qty = min(total_repurchase_qty, sell.quantity)
         
         for repurchase_idx, repurchase_txn in qualifying_sorted:
-            if remaining_qty <= 0 or remaining_disallowed <= 0:
+            if remaining_replacement_qty <= 0 or remaining_disallowed <= 0:
                 break
                 
-            # Allocate proportionally based on this repurchase's share of total replacement qty
-            repurchase_qty = min(repurchase_txn.quantity, remaining_qty)
-            allocated_loss = disallowed_loss * (repurchase_qty / min(total_repurchase_qty, sell.quantity))
+            # Allocate to this repurchase based on its quantity relative to remaining replacement quantity
+            repurchase_qty = min(repurchase_txn.quantity, remaining_replacement_qty)
+            allocated_loss = remaining_disallowed * (repurchase_qty / remaining_replacement_qty)
             
             original_cost = repurchase_txn.price * repurchase_qty
             adjusted_cost = original_cost + allocated_loss
@@ -196,7 +196,7 @@ def detect_wash_sales(
                 )
             )
             
-            remaining_qty -= repurchase_qty
+            remaining_replacement_qty -= repurchase_qty
             remaining_disallowed -= allocated_loss
 
     return wash_sale_flags

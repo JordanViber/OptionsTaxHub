@@ -147,8 +147,8 @@ def _save_history_best_effort(
 async def analyze_portfolio(
     file: Annotated[UploadFile, File()],
     filing_status: Optional[str] = Query(default="single"),
-    estimated_income: Optional[float] = Query(default=None, ge=0, description="Estimated annual income (must be >= 0)"),
-    tax_year: Optional[int] = Query(default=None, ge=2024, le=2026, description="Tax year (2024-2026)"),
+    estimated_income: Optional[float] = Query(default=None, description="Estimated annual income"),
+    tax_year: Optional[int] = Query(default=None, description="Tax year (2024-2026)"),
     user_id: Optional[str] = Query(default=None),
 ):
     """
@@ -173,11 +173,17 @@ async def analyze_portfolio(
             },
         )
 
-    # Build tax profile from query params
+    # Build tax profile from query params with validation
     try:
         fs = FilingStatus(filing_status)
     except ValueError:
         fs = FilingStatus.SINGLE
+
+    # Validate and set defaults
+    if estimated_income is not None and estimated_income < 0:
+        raise HTTPException(status_code=400, detail="Estimated income must be >= 0")
+    if tax_year is not None and (tax_year < 2024 or tax_year > 2026):
+        raise HTTPException(status_code=400, detail="Tax year must be between 2024 and 2026")
 
     tax_profile = TaxProfile(
         filing_status=fs,
