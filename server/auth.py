@@ -13,7 +13,8 @@ from typing import Optional
 from functools import lru_cache
 
 from fastapi import HTTPException, Security
-from fastapi.security import HTTPBearer, HTTPAuthCredentials
+from fastapi.security import HTTPBearer
+from fastapi.security.http import HTTPAuthorizationCredentials
 from jwt import decode, PyJWTError
 import requests
 
@@ -75,7 +76,7 @@ def verify_jwt_token(token: str) -> dict:
 
 
 def get_current_user(
-    credentials: Optional[HTTPAuthCredentials] = Security(security),
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(security),
 ) -> str:
     """
     Extract and verify user_id from JWT token in Authorization header.

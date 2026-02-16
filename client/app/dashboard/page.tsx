@@ -171,7 +171,7 @@ export default function DashboardPage() {
     sessionStorage.removeItem("optionstaxhub-analysis");
     await signOut();
     setMenuAnchor(null);
-    router.push("/");
+    router.push("/auth/signin");
   };
 
   /**
@@ -214,7 +214,7 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (!authLoading && !user) {
-      router.push("/");
+      router.push("/auth/signin");
     }
   }, [authLoading, user, router]);
 

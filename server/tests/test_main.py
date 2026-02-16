@@ -1,7 +1,16 @@
 from fastapi.testclient import TestClient
 
 import main
+from auth import get_current_user
 
+
+# Mock authentication: return test user ID for all authenticated endpoints
+def mock_get_current_user() -> str:
+    return "test-user-123"
+
+
+# Override the authentication dependency
+main.app.dependency_overrides[get_current_user] = mock_get_current_user
 
 client = TestClient(main.app)
 
@@ -206,17 +215,20 @@ def test_main_entrypoint(monkeypatch):
 # ---------- Tax Profile Endpoints ----------
 
 
-def test_save_tax_profile_requires_user_id():
-    """POST /api/tax-profile without user_id returns 400."""
+def test_save_tax_profile_requires_matching_user():
+    """POST /api/tax-profile with mismatched user_id returns 403."""
+    # Authenticated user is "test-user-123" from our mock
+    # Try to save profile for a different user
     profile = {
+        "user_id": "different-user",  # This doesn't match authenticated user
         "filing_status": "single",
         "estimated_annual_income": 100000,
         "state": "CA",
         "tax_year": 2025,
     }
     response = client.post("/api/tax-profile", json=profile)
-    assert response.status_code == 400
-    assert "user_id" in response.json()["detail"].lower()
+    assert response.status_code == 403
+    assert "Cannot save tax profile for another user" in response.json()["detail"]
 
 
 def test_save_tax_profile_returns_profile(monkeypatch):
@@ -228,7 +240,6 @@ def test_save_tax_profile_returns_profile(monkeypatch):
     monkeypatch.setattr(main, "db_save_tax_profile", fake_save)
 
     profile = {
-        "user_id": "test-user-123",
         "filing_status": "married_filing_jointly",
         "estimated_annual_income": 150000,
         "state": "NY",
@@ -238,7 +249,6 @@ def test_save_tax_profile_returns_profile(monkeypatch):
     assert response.status_code == 200
     data = response.json()
     assert data["message"] == "Tax profile saved (not persisted)"
-    assert data["profile"]["user_id"] == "test-user-123"
     assert data["profile"]["estimated_annual_income"] == 150000
 
 
@@ -258,7 +268,6 @@ def test_save_tax_profile_persists_to_db(monkeypatch):
     monkeypatch.setattr(main, "db_save_tax_profile", fake_save)
 
     profile = {
-        "user_id": "test-user-123",
         "filing_status": "single",
         "estimated_annual_income": 120000,
         "state": "CA",
@@ -272,7 +281,7 @@ def test_save_tax_profile_persists_to_db(monkeypatch):
 
 
 def test_get_tax_profile_returns_saved(monkeypatch):
-    """GET /api/tax-profile/{user_id} returns saved profile."""
+    """GET /api/tax-profile returns authenticated user's saved profile."""
     saved_row = {
         "user_id": "test-user-123",
         "filing_status": "married_filing_jointly",
@@ -286,7 +295,7 @@ def test_get_tax_profile_returns_saved(monkeypatch):
 
     monkeypatch.setattr(main, "db_get_tax_profile", fake_get)
 
-    response = client.get("/api/tax-profile/test-user-123")
+    response = client.get("/api/tax-profile")
     assert response.status_code == 200
     data = response.json()
     assert data["estimated_annual_income"] == 200000
@@ -294,16 +303,16 @@ def test_get_tax_profile_returns_saved(monkeypatch):
 
 
 def test_get_tax_profile_returns_default_when_not_found(monkeypatch):
-    """GET /api/tax-profile/{user_id} returns defaults if no saved profile."""
+    """GET /api/tax-profile returns defaults if no saved profile."""
     def fake_get(_user_id):
         return None
 
     monkeypatch.setattr(main, "db_get_tax_profile", fake_get)
 
-    response = client.get("/api/tax-profile/new-user-456")
+    response = client.get("/api/tax-profile")
     assert response.status_code == 200
     data = response.json()
-    assert data["user_id"] == "new-user-456"
+    assert data["user_id"] == "test-user-123"  # From mock JWT
     assert data["estimated_annual_income"] == 75000
     assert data["filing_status"] == "single"
 
@@ -690,38 +699,14 @@ def test_analyze_portfolio_with_wash_sales(monkeypatch):
     assert data["summary"]["wash_sale_flags_count"] == 1
 
 
-def test_analyze_portfolio_invalid_user_id():
-    """POST /api/portfolio/analyze rejects invalid user_id format."""
-    # Test SQL injection attempt
-    response = client.post(
-        "/api/portfolio/analyze?user_id='; DROP TABLE users; --",
-        files=_make_csv(),
-    )
-    assert response.status_code == 400
-    assert "Invalid user_id format" in response.json()["detail"]
 
-    # Test XSS attempt
-    response = client.post(
-        "/api/portfolio/analyze?user_id=<script>alert('xss')</script>",
-        files=_make_csv(),
-    )
-    assert response.status_code == 400
-    assert "Invalid user_id format" in response.json()["detail"]
-
-    # Test too long user_id
-    response = client.post(
-        "/api/portfolio/analyze?user_id=" + "a" * 65,
-        files=_make_csv(),
-    )
-    assert response.status_code == 400
-    assert "Invalid user_id format" in response.json()["detail"]
 
 
 # ---------- Portfolio History Endpoints ----------
 
 
 def test_get_portfolio_history(monkeypatch):
-    """GET /api/portfolio/history/{user_id} returns user's history."""
+    """GET /api/portfolio/history returns authenticated user's history."""
     mock_history = [
         {"id": "h1", "filename": "test1.csv", "uploaded_at": "2025-01-01T00:00:00"},
         {"id": "h2", "filename": "test2.csv", "uploaded_at": "2025-01-02T00:00:00"},
@@ -729,7 +714,7 @@ def test_get_portfolio_history(monkeypatch):
 
     monkeypatch.setattr("main.get_analysis_history", lambda uid, limit: mock_history)
 
-    response = client.get("/api/portfolio/history/test-user-123")
+    response = client.get("/api/portfolio/history")
     assert response.status_code == 200
     data = response.json()
     assert len(data) == 2
@@ -737,16 +722,16 @@ def test_get_portfolio_history(monkeypatch):
 
 
 def test_get_portfolio_history_empty(monkeypatch):
-    """GET /api/portfolio/history/{user_id} returns empty list for new user."""
+    """GET /api/portfolio/history returns empty list for new user."""
     monkeypatch.setattr("main.get_analysis_history", lambda uid, limit: [])
 
-    response = client.get("/api/portfolio/history/new-user")
+    response = client.get("/api/portfolio/history")
     assert response.status_code == 200
     assert response.json() == []
 
 
 def test_get_portfolio_history_custom_limit(monkeypatch):
-    """GET /api/portfolio/history/{user_id}?limit=5 passes limit to DB."""
+    """GET /api/portfolio/history?limit=5 passes limit to DB."""
     captured = {}
 
     def fake_history(uid, limit):
@@ -755,14 +740,14 @@ def test_get_portfolio_history_custom_limit(monkeypatch):
 
     monkeypatch.setattr("main.get_analysis_history", fake_history)
 
-    response = client.get("/api/portfolio/history/test-user?limit=5")
+    response = client.get("/api/portfolio/history?limit=5")
     assert response.status_code == 200
     assert captured["limit"] == 5
 
 
 def test_get_portfolio_history_invalid_limit():
     """GET /api/portfolio/history with invalid limit returns 422."""
-    response = client.get("/api/portfolio/history/test-user?limit=0")
+    response = client.get("/api/portfolio/history?limit=0")
     assert response.status_code == 422
 
 
@@ -773,14 +758,14 @@ def test_get_portfolio_analysis_found(monkeypatch):
     """GET /api/portfolio/analysis/{id} returns the full analysis."""
     mock_record = {
         "id": "abc-123",
-        "user_id": "test-user",
+        "user_id": "test-user-123",  # Must match authenticated user
         "filename": "portfolio.csv",
         "result": {"positions": [], "summary": {}},
     }
 
     monkeypatch.setattr("main.get_analysis_by_id", lambda aid, uid: mock_record)
 
-    response = client.get("/api/portfolio/analysis/abc-123?user_id=test-user")
+    response = client.get("/api/portfolio/analysis/abc-123")
     assert response.status_code == 200
     data = response.json()
     assert data["id"] == "abc-123"
@@ -791,15 +776,12 @@ def test_get_portfolio_analysis_not_found(monkeypatch):
     """GET /api/portfolio/analysis/{id} returns 404 when not found."""
     monkeypatch.setattr("main.get_analysis_by_id", lambda aid, uid: None)
 
-    response = client.get("/api/portfolio/analysis/nonexistent?user_id=test-user")
+    response = client.get("/api/portfolio/analysis/nonexistent")
     assert response.status_code == 404
     assert "not found" in response.json()["detail"].lower()
 
 
-def test_get_portfolio_analysis_requires_user_id():
-    """GET /api/portfolio/analysis/{id} without user_id returns 422."""
-    response = client.get("/api/portfolio/analysis/abc-123")
-    assert response.status_code == 422
+
 
 
 # ---------- Delete Analysis ----------
@@ -809,7 +791,7 @@ def test_delete_analysis_success(monkeypatch):
     """DELETE /api/portfolio/analysis/{id} returns success on deletion."""
     monkeypatch.setattr("main.delete_analysis_by_id", lambda aid, uid: True)
 
-    response = client.delete("/api/portfolio/analysis/abc-123?user_id=test-user")
+    response = client.delete("/api/portfolio/analysis/abc-123")
     assert response.status_code == 200
     assert response.json()["deleted"] is True
 
@@ -818,34 +800,31 @@ def test_delete_analysis_not_found(monkeypatch):
     """DELETE /api/portfolio/analysis/{id} returns 404 when not found."""
     monkeypatch.setattr("main.delete_analysis_by_id", lambda aid, uid: False)
 
-    response = client.delete("/api/portfolio/analysis/nonexistent?user_id=test-user")
+    response = client.delete("/api/portfolio/analysis/nonexistent")
     assert response.status_code == 404
     assert "not found" in response.json()["detail"].lower()
 
 
-def test_delete_analysis_requires_user_id():
-    """DELETE /api/portfolio/analysis/{id} without user_id returns 422."""
-    response = client.delete("/api/portfolio/analysis/abc-123")
-    assert response.status_code == 422
+
 
 
 # ---------- Cleanup Orphan History ----------
 
 
 def test_cleanup_orphan_history(monkeypatch):
-    """DELETE /api/portfolio/history/{user_id}/cleanup deletes orphans."""
+    """DELETE /api/portfolio/history/cleanup deletes orphans."""
     monkeypatch.setattr("main.delete_analyses_without_result", lambda uid: 3)
 
-    response = client.delete("/api/portfolio/history/test-user/cleanup")
+    response = client.delete("/api/portfolio/history/cleanup")
     assert response.status_code == 200
     assert response.json()["deleted"] == 3
 
 
 def test_cleanup_orphan_history_none(monkeypatch):
-    """DELETE /api/portfolio/history/{user_id}/cleanup returns 0 when none found."""
+    """DELETE /api/portfolio/history/cleanup returns 0 when none found."""
     monkeypatch.setattr("main.delete_analyses_without_result", lambda uid: 0)
 
-    response = client.delete("/api/portfolio/history/test-user/cleanup")
+    response = client.delete("/api/portfolio/history/cleanup")
     assert response.status_code == 200
     assert response.json()["deleted"] == 0
 

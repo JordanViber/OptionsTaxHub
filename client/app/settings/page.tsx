@@ -65,7 +65,7 @@ export default function SettingsPage() {
   // Redirect if not authenticated
   useEffect(() => {
     if (!authLoading && !user) {
-      router.push("/");
+      router.push("/auth/signin");
     }
   }, [authLoading, user, router]);
 
@@ -238,8 +238,8 @@ export default function SettingsPage() {
                             Enable AI-Powered Suggestions
                           </Typography>
                           <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
-                            When enabled, anonymized portfolio data (symbols, quantities, cost basis, and P&L) 
-                            will be sent to Google Gemini AI to generate personalized replacement security recommendations. 
+                            When enabled, anonymized portfolio data (symbols, quantities, cost basis, and P&L)
+                            will be sent to Google Gemini AI to generate personalized replacement security recommendations.
                             No personal or account information is shared.
                           </Typography>
                         </Box>
