@@ -634,6 +634,33 @@ def test_analyze_portfolio_with_wash_sales(monkeypatch):
     assert data["summary"]["wash_sale_flags_count"] == 1
 
 
+def test_analyze_portfolio_invalid_user_id():
+    """POST /api/portfolio/analyze rejects invalid user_id format."""
+    # Test SQL injection attempt
+    response = client.post(
+        "/api/portfolio/analyze?user_id='; DROP TABLE users; --",
+        files=_make_csv(),
+    )
+    assert response.status_code == 400
+    assert "Invalid user_id format" in response.json()["detail"]
+    
+    # Test XSS attempt
+    response = client.post(
+        "/api/portfolio/analyze?user_id=<script>alert('xss')</script>",
+        files=_make_csv(),
+    )
+    assert response.status_code == 400
+    assert "Invalid user_id format" in response.json()["detail"]
+    
+    # Test too long user_id
+    response = client.post(
+        "/api/portfolio/analyze?user_id=" + "a" * 65,
+        files=_make_csv(),
+    )
+    assert response.status_code == 400
+    assert "Invalid user_id format" in response.json()["detail"]
+
+
 # ---------- Portfolio History Endpoints ----------
 
 

@@ -1,5 +1,6 @@
 import os
 import logging
+import re
 from typing import Annotated, Optional
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, UploadFile, Query, HTTPException
@@ -83,6 +84,27 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+def validate_user_id(user_id: Optional[str]) -> None:
+    """
+    Validate user_id format to prevent injection attacks.
+    
+    Accepts UUID format (with or without hyphens) or alphanumeric strings up to 64 chars.
+    Raises HTTPException if invalid.
+    """
+    if user_id is None:
+        return
+    
+    # Allow UUID format (8-4-4-4-12 hex digits with optional hyphens)
+    uuid_pattern = r'^[a-f0-9]{8}-?[a-f0-9]{4}-?[a-f0-9]{4}-?[a-f0-9]{4}-?[a-f0-9]{12}$'
+    # Allow alphanumeric with underscores/hyphens, max 64 chars
+    safe_pattern = r'^[a-zA-Z0-9_-]{1,64}$'
+    
+    if not (re.match(uuid_pattern, user_id, re.IGNORECASE) or re.match(safe_pattern, user_id)):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid user_id format. Must be UUID or alphanumeric string (max 64 chars)."
+        )
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
@@ -160,6 +182,9 @@ async def analyze_portfolio(
 
     DISCLAIMER: For educational/simulation purposes only — not financial or tax advice.
     """
+    # Validate user_id format if provided
+    validate_user_id(user_id)
+    
     # Read and parse CSV
     contents = await file.read()
     tax_lots, transactions, parse_errors = parse_csv(contents.decode("utf-8"))
