@@ -228,7 +228,7 @@ async def analyze_portfolio(
     # Check if user has AI suggestions enabled in their saved profile
     ai_enabled = False
     if user_id:
-        saved_profile = get_tax_profile(user_id)
+        saved_profile = db_get_tax_profile(user_id)
         if saved_profile:
             ai_enabled = saved_profile.get("ai_suggestions_enabled", False)
 
