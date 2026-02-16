@@ -188,8 +188,9 @@ test.describe("Dashboard UI Fixes", () => {
   test("history drawer shows empty state when no uploads exist", async ({
     page,
   }) => {
-    // Override history route with empty array
-    await page.route("**/api/portfolio/history/**", (route) =>
+    // Unroute existing history mock and override with empty array
+    await page.unroute("**/api/portfolio/history*");
+    await page.route("**/api/portfolio/history*", (route) =>
       route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -227,8 +228,9 @@ test.describe("Dashboard UI Fixes", () => {
       ...MOCK_HISTORY,
     ];
 
-    // After upload, the history refetch should return updated list
-    await page.route("**/api/portfolio/history/**", (route) => {
+    // Unroute the existing history mock and set up updated one
+    await page.unroute("**/api/portfolio/history*");
+    await page.route("**/api/portfolio/history*", (route) => {
       return route.fulfill({
         status: 200,
         contentType: "application/json",

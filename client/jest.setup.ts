@@ -22,25 +22,26 @@ Object.defineProperty(globalThis, "matchMedia", {
   })),
 });
 
-// Mock Supabase
+// Mock Supabase with proper session structure
+const mockSession = {
+  access_token: "mock-jwt-token",
+  token_type: "bearer",
+  expires_in: 3600,
+  refresh_token: "mock-refresh-token",
+  user: {
+    id: "test-user-id",
+    email: "test@example.com",
+    user_metadata: {},
+  },
+};
+
 jest.mock("@/lib/supabase", () => ({
-  getSupabaseClient: () => ({
+  getSupabaseClient: jest.fn(() => ({
     auth: {
       getSession: jest.fn(() =>
         Promise.resolve({
-          data: {
-            session: {
-              user: {
-                id: "test-user-id",
-                email: "test@example.com",
-                user_metadata: {
-                  first_name: "Test",
-                  last_name: "User",
-                  display_name: "Test User",
-                },
-              },
-            },
-          },
+          data: { session: mockSession },
+          error: null,
         }),
       ),
       signInWithPassword: jest.fn(() => Promise.resolve({ error: null })),
@@ -55,5 +56,10 @@ jest.mock("@/lib/supabase", () => ({
         data: { subscription: { unsubscribe: jest.fn() } },
       })),
     },
-  }),
+  })),
+  getSession: jest.fn(() => Promise.resolve(mockSession)),
+  signIn: jest.fn(() => Promise.resolve({ user: { id: "test-id" } })),
+  signUp: jest.fn(() => Promise.resolve({ user: { id: "test-id" } })),
+  signOut: jest.fn(() => Promise.resolve()),
+  getCurrentUser: jest.fn(() => Promise.resolve({ id: "test-user-id" })),
 }));

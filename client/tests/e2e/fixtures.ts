@@ -211,7 +211,7 @@ export async function setupMockAuth(page: Page) {
     }),
   );
 
-  await page.route("**/api/tax-profile/**", (route) => {
+  await page.route("**/api/tax-profile*", (route) => {
     if (route.request().method() === "GET") {
       return route.fulfill({
         status: 200,
@@ -232,7 +232,7 @@ export async function setupMockAuth(page: Page) {
     return route.continue();
   });
 
-  await page.route("**/api/portfolio/history/**", (route) =>
+  await page.route("**/api/portfolio/history*", (route) =>
     route.fulfill({
       status: 200,
       contentType: "application/json",
