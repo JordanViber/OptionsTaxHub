@@ -75,6 +75,7 @@ export interface TaxProfile {
   estimated_annual_income: number;
   state: string;
   tax_year: number;
+  ai_suggestions_enabled?: boolean;
   created_at?: string;
   updated_at?: string;
 }

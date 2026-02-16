@@ -3,8 +3,39 @@ const CACHE_NAME = "optionstaxhub-v1";
 const API_URL = "http://localhost:8080";
 
 // Track recently shown notifications to prevent duplicates
+// Using a simple LRU-like implementation with time-based expiration
 const shownNotifications = new Map();
 const NOTIFICATION_DEDUP_WINDOW = 5000; // 5 seconds
+const MAX_NOTIFICATION_ENTRIES = 50; // Maximum entries before LRU eviction kicks in
+const CLEANUP_INTERVAL = 10000; // Clean up every 10 seconds
+
+// Periodic cleanup to prevent memory leaks
+setInterval(() => {
+  const now = Date.now();
+  let cleanedCount = 0;
+  
+  for (const [key, timestamp] of shownNotifications.entries()) {
+    if (now - timestamp > NOTIFICATION_DEDUP_WINDOW) {
+      shownNotifications.delete(key);
+      cleanedCount++;
+    }
+  }
+  
+  // If still too large after expiration cleanup, remove oldest entries (LRU)
+  if (shownNotifications.size > MAX_NOTIFICATION_ENTRIES) {
+    const entries = Array.from(shownNotifications.entries())
+      .sort((a, b) => a[1] - b[1]); // Sort by timestamp (oldest first)
+    const toRemove = entries.slice(0, shownNotifications.size - MAX_NOTIFICATION_ENTRIES);
+    for (const [key] of toRemove) {
+      shownNotifications.delete(key);
+      cleanedCount++;
+    }
+  }
+  
+  if (cleanedCount > 0) {
+    console.log(`[SW] Cleaned ${cleanedCount} expired notification entries. Current size: ${shownNotifications.size}`);
+  }
+}, CLEANUP_INTERVAL);
 
 // Assets to cache on install
 const STATIC_ASSETS = [
@@ -121,15 +152,6 @@ self.addEventListener("push", (event) => {
 
   // Record this notification as shown
   shownNotifications.set(notificationKey, now);
-
-  // Clean up old entries periodically
-  if (shownNotifications.size > 100) {
-    for (const [key, timestamp] of shownNotifications.entries()) {
-      if (now - timestamp > NOTIFICATION_DEDUP_WINDOW) {
-        shownNotifications.delete(key);
-      }
-    }
-  }
 
   event.waitUntil(
     globalThis.registration.showNotification(notificationData.title, {
