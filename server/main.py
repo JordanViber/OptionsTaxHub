@@ -2,7 +2,7 @@ import os
 import logging
 from typing import Annotated, Optional
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, UploadFile, Query, HTTPException
+from fastapi import FastAPI, File, UploadFile, Query, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
 import io
@@ -11,6 +11,7 @@ from typing import List, Dict, Any
 from pywebpush import webpush, WebPushException
 from pydantic import BaseModel
 
+from auth import get_current_user, enforce_ownership
 from models import (
     FilingStatus,
     PortfolioAnalysis,
@@ -54,6 +55,9 @@ API_KEY_SECRET = os.environ.get("API_KEY_SECRET")
 VAPID_PRIVATE_KEY = os.environ.get("VAPID_PRIVATE_KEY")
 VAPID_PUBLIC_KEY = os.environ.get("VAPID_PUBLIC_KEY")
 VAPID_CLAIM_EMAIL = os.environ.get("VAPID_CLAIM_EMAIL", "admin@optionstaxhub.com")
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
+SUPABASE_JWT_SECRET = os.environ.get("SUPABASE_JWT_SECRET", "")
 
 # In-memory storage for push subscriptions
 # NOTE: This is temporary storage for development/MVP. Production implementation
@@ -149,7 +153,7 @@ async def analyze_portfolio(
     filing_status: Optional[str] = Query(default="single"),
     estimated_income: Optional[float] = Query(default=75000.0),
     tax_year: Optional[int] = Query(default=2025),
-    user_id: Optional[str] = Query(default=None),
+    user_id: str = Depends(get_current_user),
 ):
     """
     Full portfolio analysis with tax-loss harvesting suggestions.
@@ -157,6 +161,9 @@ async def analyze_portfolio(
     Accepts a CSV file (Robinhood transaction history or simplified format),
     fetches live prices, runs tax engine, detects wash sales, and generates
     AI-powered harvesting suggestions.
+
+    **Authentication Required**: Must provide valid Supabase JWT token in Authorization header.
+    User ID is automatically extracted from the token.
 
     DISCLAIMER: For educational/simulation purposes only — not financial or tax advice.
     """
@@ -231,19 +238,24 @@ async def analyze_portfolio(
         warnings=all_warnings,
     )
 
-    if user_id:
-        _save_history_best_effort(user_id, file.filename or "upload.csv", summary, result)
+    # Save analysis to history for authenticated user
+    _save_history_best_effort(user_id, file.filename or "upload.csv", summary, result)
 
     return result
 
 
-@app.get("/api/portfolio/history/{user_id}")
-async def get_portfolio_history(user_id: str, limit: int = Query(default=20, ge=1, le=100)):
+@app.get("/api/portfolio/history")
+async def get_portfolio_history(
+    user_id: str = Depends(get_current_user),
+    limit: int = Query(default=20, ge=1, le=100),
+):
     """
-    Retrieve a user's past portfolio analyses, newest first.
+    Retrieve authenticated user's past portfolio analyses, newest first.
 
     Returns summary metadata (filename, date, positions count, market value)
     without the full position data (which is processed in-memory only).
+    
+    **Authentication Required**: Must provide valid Supabase JWT token.
     """
     history = get_analysis_history(user_id, limit)
     return history
@@ -252,26 +264,33 @@ async def get_portfolio_history(user_id: str, limit: int = Query(default=20, ge=
 @app.get("/api/portfolio/analysis/{analysis_id}")
 async def get_portfolio_analysis(
     analysis_id: str,
-    user_id: str = Query(..., description="Owner user ID for access control"),
+    user_id: str = Depends(get_current_user),
 ):
     """
     Retrieve a single past portfolio analysis by ID, including the full result.
 
     Used when a user clicks a history item to reload that report.
+    
+    **Authentication Required**: Must provide valid Supabase JWT token.
+    **Authorization**: User can only access their own analyses.
     """
     record = get_analysis_by_id(analysis_id, user_id)
     if not record:
         raise HTTPException(status_code=404, detail="Analysis not found")
+    # Enforce ownership
+    enforce_ownership(user_id, record.get("user_id", ""))
     return record
 
 
-@app.delete("/api/portfolio/history/{user_id}/cleanup")
-async def cleanup_orphan_history(user_id: str):
+@app.delete("/api/portfolio/history/cleanup")
+async def cleanup_orphan_history(user_id: str = Depends(get_current_user)):
     """
     Delete portfolio analysis entries that have no stored result data.
 
     These are legacy rows created before the app started persisting
     the full analysis result. Returns the count of deleted rows.
+    
+    **Authentication Required**: Must provide valid Supabase JWT token.
     """
     deleted = delete_analyses_without_result(user_id)
     return {"deleted": deleted}
@@ -280,12 +299,13 @@ async def cleanup_orphan_history(user_id: str):
 @app.delete("/api/portfolio/analysis/{analysis_id}")
 async def delete_portfolio_analysis(
     analysis_id: str,
-    user_id: str = Query(..., description="Owner user ID for access control"),
+    user_id: str = Depends(get_current_user),
 ):
     """
     Delete a single portfolio analysis by ID.
 
-    Enforces ownership via user_id query param.
+    **Authentication Required**: Must provide valid Supabase JWT token.
+    **Authorization**: User can only delete their own analyses.
     """
     deleted = delete_analysis_by_id(analysis_id, user_id)
     if not deleted:
@@ -326,18 +346,28 @@ async def get_tax_brackets(
 
 
 @app.post("/api/tax-profile")
-async def save_tax_profile_endpoint(profile: TaxProfile):
+async def save_tax_profile_endpoint(
+    profile: TaxProfile,
+    user_id: str = Depends(get_current_user),
+):
     """
-    Save user's tax profile settings to Supabase.
+    Save authenticated user's tax profile settings to Supabase.
 
     Upserts the profile so each user has exactly one row.
     Falls back to echo-only if Supabase is unavailable.
+    
+    **Authentication Required**: Must provide valid Supabase JWT token.
+    **Authorization**: User can only save their own tax profile.
     """
-    if not profile.user_id:
-        raise HTTPException(status_code=400, detail="user_id is required")
+    # Enforce ownership: ensure authenticated user matches the profile owner
+    if profile.user_id and profile.user_id != user_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Cannot save tax profile for another user"
+        )
 
     saved = db_save_tax_profile(
-        user_id=profile.user_id,
+        user_id=user_id,
         filing_status=profile.filing_status.value,
         estimated_annual_income=profile.estimated_annual_income,
         state=profile.state,
@@ -351,12 +381,14 @@ async def save_tax_profile_endpoint(profile: TaxProfile):
     return {"message": "Tax profile saved (not persisted)", "profile": profile.model_dump()}
 
 
-@app.get("/api/tax-profile/{user_id}")
-async def get_tax_profile_endpoint(user_id: str):
+@app.get("/api/tax-profile")
+async def get_tax_profile_endpoint(user_id: str = Depends(get_current_user)):
     """
-    Retrieve a user's saved tax profile from Supabase.
+    Retrieve authenticated user's saved tax profile from Supabase.
 
     Returns default profile if no saved profile exists.
+    
+    **Authentication Required**: Must provide valid Supabase JWT token.
     """
     saved = db_get_tax_profile(user_id)
     if saved:

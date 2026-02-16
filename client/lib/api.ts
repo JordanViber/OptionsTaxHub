@@ -7,8 +7,28 @@ import type {
   FilingStatus,
   AnalysisHistoryItem,
 } from "@/lib/types";
+import { getSession } from "./supabase";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+
+/**
+ * Get JWT token from Supabase session and add to request headers
+ */
+async function getAuthHeaders(): Promise<HeadersInit> {
+  try {
+    const session = await getSession();
+    if (!session?.access_token) {
+      throw new Error("No access token found");
+    }
+    return {
+      "Authorization": `Bearer ${session.access_token}`,
+      "Content-Type": "application/json",
+    };
+  } catch (error) {
+    console.error("Failed to get auth headers:", error);
+    throw new Error("Authentication required. Please sign in.");
+  }
+}
 
 /**
  * API response type for legacy CSV upload
@@ -53,13 +73,12 @@ interface AnalyzePortfolioParams {
   filingStatus?: FilingStatus;
   estimatedIncome?: number;
   taxYear?: number;
-  userId?: string;
 }
 
 /**
  * Upload CSV and get full portfolio analysis with tax-loss harvesting suggestions.
  *
- * Calls POST /api/portfolio/analyze with the CSV file and tax profile params.
+ * Requires authentication. Calls POST /api/portfolio/analyze with JWT token.
  * Returns positions, harvesting suggestions, wash-sale flags, and summary.
  */
 async function analyzePortfolio(
@@ -74,13 +93,17 @@ async function analyzePortfolio(
   if (params.estimatedIncome)
     queryParams.set("estimated_income", params.estimatedIncome.toString());
   if (params.taxYear) queryParams.set("tax_year", params.taxYear.toString());
-  if (params.userId) queryParams.set("user_id", params.userId);
 
   const url = `${API_URL}/api/portfolio/analyze?${queryParams.toString()}`;
+  const headers = await getAuthHeaders();
+  
+  // Don't set Content-Type for FormData (browser will set it with boundary)
+  const headersForForm: HeadersInit = { Authorization: headers["Authorization"] };
 
   const response = await fetch(url, {
     method: "POST",
     body: formData,
+    headers: headersForForm,
   });
 
   if (!response.ok) {
@@ -147,14 +170,17 @@ export function useFetchPrices(symbols: string[], enabled = false) {
 // --- Tax Profile ---
 
 /**
- * Save user's tax profile settings.
+ * Save authenticated user's tax profile settings.
+ * 
+ * Requires JWT authentication.
  */
 async function saveTaxProfile(
   profile: TaxProfile,
 ): Promise<{ message: string; profile: TaxProfile }> {
+  const headers = await getAuthHeaders();
   const response = await fetch(`${API_URL}/api/tax-profile`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify(profile),
   });
 
@@ -182,10 +208,15 @@ export function useSaveTaxProfile() {
 }
 
 /**
- * Fetch user's tax profile.
+ * Fetch authenticated user's tax profile.
+ * 
+ * Requires JWT authentication.
  */
-async function fetchTaxProfile(userId: string): Promise<TaxProfile> {
-  const response = await fetch(`${API_URL}/api/tax-profile/${userId}`);
+async function fetchTaxProfile(): Promise<TaxProfile> {
+  const headers = await getAuthHeaders();
+  const response = await fetch(`${API_URL}/api/tax-profile`, {
+    headers,
+  });
 
   if (!response.ok) {
     throw new Error(`Fetch failed: ${response.statusText}`);
@@ -195,16 +226,12 @@ async function fetchTaxProfile(userId: string): Promise<TaxProfile> {
 }
 
 /**
- * React Query hook for loading tax profile.
+ * React Query hook for authenticated user's tax profile.
  */
-export function useTaxProfile(userId: string | undefined) {
+export function useTaxProfile() {
   return useQuery({
-    queryKey: ["tax-profile", userId],
-    queryFn: () => {
-      if (!userId) throw new Error("userId is required");
-      return fetchTaxProfile(userId);
-    },
-    enabled: !!userId,
+    queryKey: ["tax-profile"],
+    queryFn: fetchTaxProfile,
   });
 }
 
@@ -253,12 +280,15 @@ export function useTaxBrackets(
 // --- Portfolio History ---
 
 /**
- * Fetch past portfolio analyses for a user from Supabase.
+ * Fetch authenticated user's past portfolio analyses from Supabase.
+ * 
+ * Requires JWT authentication.
  */
-async function fetchPortfolioHistory(
-  userId: string,
-): Promise<AnalysisHistoryItem[]> {
-  const response = await fetch(`${API_URL}/api/portfolio/history/${userId}`);
+async function fetchPortfolioHistory(): Promise<AnalysisHistoryItem[]> {
+  const headers = await getAuthHeaders();
+  const response = await fetch(`${API_URL}/api/portfolio/history`, {
+    headers,
+  });
 
   if (!response.ok) {
     throw new Error(`Fetch failed: ${response.statusText}`);
@@ -268,19 +298,14 @@ async function fetchPortfolioHistory(
 }
 
 /**
- * React Query hook for portfolio analysis history.
+ * React Query hook for authenticated user's portfolio analysis history.
  *
- * Fetches past uploads for the given user. Refetches automatically
- * when the query is invalidated (e.g., after a new upload).
+ * Fetches past uploads automatically. Refetches when invalidated (e.g., after upload).
  */
-export function usePortfolioHistory(userId: string | undefined) {
+export function usePortfolioHistory() {
   return useQuery({
-    queryKey: ["portfolio-history", userId],
-    queryFn: () => {
-      if (!userId) throw new Error("userId is required");
-      return fetchPortfolioHistory(userId);
-    },
-    enabled: !!userId,
+    queryKey: ["portfolio-history"],
+    queryFn: fetchPortfolioHistory,
     staleTime: 0, // Always refetch when invalidated
     refetchOnMount: "always", // Refetch every time component mounts
     refetchOnWindowFocus: false, // Don't refetch on window focus
@@ -291,14 +316,15 @@ export function usePortfolioHistory(userId: string | undefined) {
  * Fetch a single past portfolio analysis by ID, including the full result.
  *
  * Used when a user clicks a history item to reload that report.
+ * Requires JWT authentication.
  */
 export async function fetchAnalysisById(
   analysisId: string,
-  userId: string,
 ): Promise<{ result: PortfolioAnalysis | null } & AnalysisHistoryItem> {
-  const params = new URLSearchParams({ user_id: userId });
+  const headers = await getAuthHeaders();
   const response = await fetch(
-    `${API_URL}/api/portfolio/analysis/${analysisId}?${params}`,
+    `${API_URL}/api/portfolio/analysis/${analysisId}`,
+    { headers },
   );
 
   if (!response.ok) {
@@ -313,10 +339,14 @@ export async function fetchAnalysisById(
  *
  * These are legacy rows created before the app started persisting
  * full analysis results. Called once on mount to clean up.
+ * 
+ * Requires JWT authentication.
  */
-export async function cleanupOrphanHistory(userId: string): Promise<void> {
-  await fetch(`${API_URL}/api/portfolio/history/${userId}/cleanup`, {
+export async function cleanupOrphanHistory(): Promise<void> {
+  const headers = await getAuthHeaders();
+  await fetch(`${API_URL}/api/portfolio/history/cleanup`, {
     method: "DELETE",
+    headers,
   });
 }
 
@@ -324,15 +354,18 @@ export async function cleanupOrphanHistory(userId: string): Promise<void> {
  * Delete a single portfolio analysis by ID.
  *
  * Returns true if deletion succeeded.
+ * Requires JWT authentication.
  */
 export async function deleteAnalysis(
   analysisId: string,
-  userId: string,
 ): Promise<boolean> {
-  const params = new URLSearchParams({ user_id: userId });
+  const headers = await getAuthHeaders();
   const response = await fetch(
-    `${API_URL}/api/portfolio/analysis/${analysisId}?${params}`,
-    { method: "DELETE" },
+    `${API_URL}/api/portfolio/analysis/${analysisId}`,
+    { 
+      method: "DELETE",
+      headers,
+    },
   );
   return response.ok;
 }
