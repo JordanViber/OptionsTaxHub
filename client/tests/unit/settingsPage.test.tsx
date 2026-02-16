@@ -62,7 +62,7 @@ describe("SettingsPage", () => {
 
     renderWithClient(<SettingsPage />);
 
-    expect(mockPush).toHaveBeenCalledWith("/");
+    expect(mockPush).toHaveBeenCalledWith("/auth/signin");
   });
 
   it("renders settings form for authenticated user", () => {
