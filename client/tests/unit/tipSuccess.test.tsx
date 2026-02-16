@@ -1,5 +1,4 @@
-import { render, screen, act } from "@testing-library/react";
-import { fireEvent } from "@testing-library/react";
+import { render, screen, act, fireEvent } from "@testing-library/react";
 
 const mockPush = jest.fn();
 

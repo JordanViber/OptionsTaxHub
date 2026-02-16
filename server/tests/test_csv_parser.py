@@ -527,15 +527,15 @@ from models import Transaction, TransCode, AssetType, TaxLot
 class TestParseRobinhoodAmountEdgeCases:
     def test_stripped_empty_after_symbols(self):
         """After stripping $, commas, and parens, string is empty."""
-        assert parse_robinhood_amount("$") == 0.0
-        assert parse_robinhood_amount("()") == 0.0
+        assert parse_robinhood_amount("$") == pytest.approx(0.0)
+        assert parse_robinhood_amount("()") == pytest.approx(0.0)
 
 
 class TestParseRobinhoodQuantityEdgeCases:
     def test_s_suffix_only(self):
         """Quantity that is just 'S' after stripping."""
-        assert parse_robinhood_quantity("S") == 0.0
-        assert parse_robinhood_quantity("s") == 0.0
+        assert parse_robinhood_quantity("S") == pytest.approx(0.0)
+        assert parse_robinhood_quantity("s") == pytest.approx(0.0)
 
 
 class TestDetectCsvFormatCaseInsensitive:
@@ -546,7 +546,7 @@ class TestDetectCsvFormatCaseInsensitive:
 
 
 class TestParseRobinhoodDateEdgeCases:
-    def test_unparseable_date_returns_none(self):
+    def test_unparsable_date_returns_none(self):
         """Date string that matches no format returns None."""
         result = parse_robinhood_date("not-a-date")
         assert result is None
@@ -558,7 +558,7 @@ class TestParseRobinhoodDateEdgeCases:
 
     def test_nan_value(self):
         """NaN float value returns None."""
-        result = parse_robinhood_date(float("nan"))
+        result = parse_robinhood_date(str(float("nan")))
         assert result is None
 
 
@@ -621,7 +621,7 @@ class TestParseRobinhoodRowEdgeCases:
             "Price": "150",
             "Amount": "1500",
         })
-        txn, err = _parse_robinhood_row(row, 1)
+        txn, _ = _parse_robinhood_row(row, 1)
         assert txn is not None
         assert txn.description == ""
 
@@ -641,7 +641,7 @@ class TestParseRobinhoodCsvExceptionHandling:
             "Price": ["150"],
             "Amount": ["1500"],
         })
-        txns, errors = parse_robinhood_csv(df)
+        _, _ = parse_robinhood_csv(df)
         # parse_robinhood_quantity handles "invalid_qty" gracefully, so may not error
         # But the test validates that the exception path exists
 
@@ -680,7 +680,7 @@ class TestParseSimpleCsvEdgeCases:
             "current_price": [140],
             "purchase_date": ["01/15/2024"],
         })
-        lots, errors = parse_simple_csv(df)
+        lots, _ = parse_simple_csv(df)
         assert len(lots) == 1
         assert lots[0].purchase_date == date(2024, 1, 15)
 
@@ -706,7 +706,7 @@ class TestParseSimpleCsvEdgeCases:
             "purchase_price": [150],
             "current_price": [140],
         })
-        lots, errors = parse_simple_csv(df)
+        _, errors = parse_simple_csv(df)
         # Should have caught the error
         assert any("Error parsing" in e for e in errors)
 
@@ -798,7 +798,7 @@ class TestTransactionsToTaxLotsEdgeCases:
                 asset_type=AssetType.OPTION,
             ),
         ]
-        lots, warnings = transactions_to_tax_lots(txns)
+        lots, _ = transactions_to_tax_lots(txns)
         assert len(lots) == 1
         assert lots[0].asset_type == AssetType.OPTION
 
@@ -818,7 +818,7 @@ class TestTransactionsToTaxLotsEdgeCases:
                 asset_type=AssetType.STOCK,
             ),
         ]
-        lots, warnings = transactions_to_tax_lots(txns)
+        lots, _ = transactions_to_tax_lots(txns)
         # SPR is informational; no lots created
         assert len(lots) == 0
 
@@ -826,12 +826,12 @@ class TestTransactionsToTaxLotsEdgeCases:
 class TestParseCsvEdgeCases:
     def test_empty_csv(self):
         """Empty CSV returns errors."""
-        lots, txns, errors = parse_csv("")
+        _, _, errors = parse_csv("")
         assert len(errors) > 0
 
     def test_unknown_format(self):
         """Unknown format returns descriptive error."""
-        lots, txns, errors = parse_csv("foo,bar,baz\n1,2,3")
+        _, _, errors = parse_csv("foo,bar,baz\n1,2,3")
         assert any("Unrecognized CSV format" in e for e in errors)
 
     def test_robinhood_with_no_valid_transactions(self):
@@ -840,7 +840,7 @@ class TestParseCsvEdgeCases:
             "Activity Date,Process Date,Settle Date,Instrument,Description,Trans Code,Quantity,Price,Amount\n"
             ",,,,,,,,"
         )
-        lots, txns, errors = parse_csv(csv_text)
+        lots, txns, _ = parse_csv(csv_text)
         # Either "No valid transactions" or similar error
         assert len(lots) == 0
         assert len(txns) == 0

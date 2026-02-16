@@ -127,7 +127,7 @@ class TestComputeLotMetrics:
             current_price=10.0,
         )
         result = compute_lot_metrics([lot], reference_date=date(2025, 6, 1))
-        assert result[0].unrealized_pnl_pct == 0.0
+        assert result[0].unrealized_pnl_pct == pytest.approx(0.0)
 
     def test_defaults_to_today(self):
         lots = [_lot(purchase_date=date.today() - timedelta(days=10))]
@@ -222,7 +222,6 @@ class TestFifoCostBasisForSell:
         sell = _txn("AAPL", TransCode.SELL, date(2025, 3, 1), 7, 110.0)
         remaining = {0: 5.0, 1: 5.0}
         cost = _fifo_cost_basis_for_sell(sell, buys, remaining)
-        # 5 @ 100 + 2 @ 120 = 740
         assert cost == pytest.approx(740.0)
 
     def test_different_instrument_ignored(self):
@@ -244,7 +243,7 @@ class TestFifoCostBasisForSell:
 
 class TestComputeRealizedGains:
     def test_no_transactions(self):
-        assert _compute_realized_gains([]) == 0.0
+        assert _compute_realized_gains([]) == pytest.approx(0.0)
 
     def test_gain_only(self):
         txns = [
@@ -481,8 +480,8 @@ class TestBuildPortfolioSummary:
     def test_empty_portfolio(self):
         summary = build_portfolio_summary([], [], [])
         assert summary.positions_count == 0
-        assert summary.total_market_value == 0.0
-        assert summary.total_harvestable_losses == 0.0
+        assert summary.total_market_value == pytest.approx(0.0)
+        assert summary.total_harvestable_losses == pytest.approx(0.0)
 
     def test_with_wash_sale_flags(self):
         from models import WashSaleFlag

@@ -49,7 +49,7 @@ def _clear_price_cache():
 class TestCaching:
     def test_set_and_get_cached_price(self):
         _set_cached_price("AAPL", 150.0)
-        assert _get_cached_price("AAPL") == 150.0
+        assert _get_cached_price("AAPL") == pytest.approx(150.0)
 
     def test_get_returns_none_for_missing(self):
         assert _get_cached_price("ZZZZ") is None
@@ -96,7 +96,7 @@ class TestResolveCachedPrices:
 class TestExtractSingleTickerPrice:
     def test_valid_close(self):
         df = pd.DataFrame({"Close": [100.0, 105.0, 110.456]})
-        assert _extract_single_ticker_price(df, "AAPL") == 110.46
+        assert _extract_single_ticker_price(df, "AAPL") == pytest.approx(110.46)
 
     def test_no_close_column(self):
         df = pd.DataFrame({"Open": [100.0]})
@@ -120,8 +120,8 @@ class TestExtractMultiTickerPrices:
         df = pd.DataFrame(data, columns=idx)
 
         prices = _extract_multi_ticker_prices(df, ["AAPL", "MSFT"])
-        assert prices["AAPL"] == 151.0
-        assert prices["MSFT"] == 301.0
+        assert prices["AAPL"] == pytest.approx(151.0)
+        assert prices["MSFT"] == pytest.approx(301.0)
 
     def test_no_close_level(self):
         arrays = [["Open", "Open"], ["AAPL", "MSFT"]]
@@ -162,7 +162,7 @@ class TestDownloadYfinancePrices:
             import importlib
             importlib.reload(price_service)
             prices, warnings = price_service._download_yfinance_prices(["AAPL"])
-            assert prices.get("AAPL") == 155.55
+            assert prices.get("AAPL") == pytest.approx(155.55)
             assert len(warnings) == 0
 
     def test_multi_ticker_success(self):
@@ -179,9 +179,9 @@ class TestDownloadYfinancePrices:
         with patch.dict("sys.modules", {"yfinance": mock_yf}):
             import importlib
             importlib.reload(price_service)
-            prices, warnings = price_service._download_yfinance_prices(["AAPL", "MSFT"])
-            assert prices.get("AAPL") == 151.0
-            assert prices.get("MSFT") == 301.0
+            prices, _ = price_service._download_yfinance_prices(["AAPL", "MSFT"])
+            assert prices.get("AAPL") == pytest.approx(151.0)
+            assert prices.get("MSFT") == pytest.approx(301.0)
 
     def test_empty_data_returns_warning(self):
         """yfinance returning empty DataFrame produces a warning."""
@@ -225,8 +225,8 @@ class TestApplyFallbackPrices:
         prices: dict[str, float] = {"AAPL": 150.0}
         fallback = {"MSFT": 300.0, "TSLA": 200.0}
         warnings = _apply_fallback_prices(["AAPL", "MSFT", "TSLA"], prices, fallback)
-        assert prices["MSFT"] == 300.0
-        assert prices["TSLA"] == 200.0
+        assert prices["MSFT"] == pytest.approx(300.0)
+        assert prices["TSLA"] == pytest.approx(200.0)
         assert any("MSFT" in w for w in warnings)
         assert any("TSLA" in w for w in warnings)
 
@@ -249,7 +249,7 @@ class TestApplyFallbackPrices:
         prices: dict[str, float] = {}
         fallback = {"AAPL": 150.0}
         warnings = _apply_fallback_prices(["AAPL", "MSFT"], prices, fallback)
-        assert prices["AAPL"] == 150.0
+        assert prices["AAPL"] == pytest.approx(150.0)
         assert any("MSFT" in w for w in warnings)
 
 
@@ -265,7 +265,8 @@ class TestFetchCurrentPrices:
         _set_cached_price("AAPL", 150.0)
         _set_cached_price("MSFT", 300.0)
         prices, warnings = fetch_current_prices(["AAPL", "MSFT"])
-        assert prices == {"AAPL": 150.0, "MSFT": 300.0}
+        assert prices["AAPL"] == pytest.approx(150.0)
+        assert prices["MSFT"] == pytest.approx(300.0)
         assert warnings == []
 
     def test_uses_fallback_when_download_fails(self):
@@ -274,15 +275,15 @@ class TestFetchCurrentPrices:
                 ["AAPL"],
                 fallback_prices={"AAPL": 145.0},
             )
-            assert prices["AAPL"] == 145.0
+            assert prices["AAPL"] == pytest.approx(145.0)
             assert any("yfinance" in w for w in warnings)
 
     def test_merges_cached_and_fetched(self):
         _set_cached_price("AAPL", 150.0)
         with patch("price_service._download_yfinance_prices", return_value=({"MSFT": 310.0}, [])):
-            prices, warnings = fetch_current_prices(["AAPL", "MSFT"])
-            assert prices["AAPL"] == 150.0
-            assert prices["MSFT"] == 310.0
+            prices, _ = fetch_current_prices(["AAPL", "MSFT"])
+            assert prices["AAPL"] == pytest.approx(150.0)
+            assert prices["MSFT"] == pytest.approx(310.0)
 
 
 # --- fetch_single_price ---
@@ -290,7 +291,7 @@ class TestFetchCurrentPrices:
 class TestFetchSinglePrice:
     def test_returns_price(self):
         with patch("price_service.fetch_current_prices", return_value=({"AAPL": 155.0}, [])):
-            assert fetch_single_price("AAPL") == 155.0
+            assert fetch_single_price("AAPL") == pytest.approx(155.0)
 
     def test_returns_none_when_missing(self):
         with patch("price_service.fetch_current_prices", return_value=({}, ["not found"])):

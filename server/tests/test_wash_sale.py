@@ -150,13 +150,13 @@ class TestComputeSaleLoss:
     def test_no_buys_returns_zero(self):
         sell = self._make_txn("AAPL", TransCode.SELL, date(2025, 6, 1), 10, 100)
         loss = _compute_sale_loss(sell, [], {})
-        assert loss == 0.0
+        assert loss == pytest.approx(0.0)
 
     def test_no_matching_buys_returns_zero(self):
         sell = self._make_txn("AAPL", TransCode.SELL, date(2025, 6, 1), 10, 100)
         buy = self._make_txn("MSFT", TransCode.BUY, date(2025, 1, 1), 10, 150)
         loss = _compute_sale_loss(sell, [buy], {})
-        assert loss == 0.0
+        assert loss == pytest.approx(0.0)
 
 
 # --- _find_qualifying_repurchases edge cases ---
@@ -251,10 +251,9 @@ class TestAdjustLotsForWashSales:
         assert len(result) == 1
         lot = result[0]
         # wash_sale_disallowed should be 500
-        assert lot.wash_sale_disallowed == 500.0
+        assert lot.wash_sale_disallowed == pytest.approx(500.0)
         # cost_basis_per_share += 500/10 = 50 → 205
         assert lot.cost_basis_per_share == pytest.approx(205.0)
-        # total_cost_basis = 205 * 10 = 2050
         assert lot.total_cost_basis == pytest.approx(2050.0)
 
     def test_no_matching_lot_no_change(self):
@@ -281,7 +280,7 @@ class TestAdjustLotsForWashSales:
             ),
         ]
         result = adjust_lots_for_wash_sales(lots, flags)
-        assert result[0].cost_basis_per_share == 300.0
+        assert result[0].cost_basis_per_share == pytest.approx(300.0)
 
     def test_empty_flags(self):
         lots = [
@@ -294,7 +293,7 @@ class TestAdjustLotsForWashSales:
             ),
         ]
         result = adjust_lots_for_wash_sales(lots, [])
-        assert result[0].cost_basis_per_share == 150.0
+        assert result[0].cost_basis_per_share == pytest.approx(150.0)
 
     def test_zero_quantity_lot_no_division_error(self):
         lots = [
@@ -321,4 +320,4 @@ class TestAdjustLotsForWashSales:
         ]
         # Should not raise ZeroDivisionError
         result = adjust_lots_for_wash_sales(lots, flags)
-        assert result[0].wash_sale_disallowed == 500.0
+        assert result[0].wash_sale_disallowed == pytest.approx(500.0)

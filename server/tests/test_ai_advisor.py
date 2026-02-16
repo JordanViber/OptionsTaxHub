@@ -44,12 +44,12 @@ class TestBuildPrompt:
 # --- get_ai_suggestions ---
 
 class TestGetAiSuggestions:
-    def test_returns_none_when_no_api_key(self, monkeypatch):
+    def test_returns_none_when_no_api_key(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.delenv("GEMINI_API_KEY", raising=False)
         result = get_ai_suggestions([{"symbol": "AAPL", "unrealized_pnl": -500}])
         assert result is None
 
-    def test_returns_none_for_empty_positions(self, monkeypatch):
+    def test_returns_none_for_empty_positions(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("GEMINI_API_KEY", "test-key")
         result = get_ai_suggestions([])
         assert result is None
@@ -81,7 +81,7 @@ class TestGetAiSuggestions:
             importlib.reload(ai_mod)
             return ai_mod.get_ai_suggestions([{"symbol": "AAPL", "unrealized_pnl": -500}])
 
-    def test_success_with_suggestions_key(self, monkeypatch):
+    def test_success_with_suggestions_key(self, monkeypatch: pytest.MonkeyPatch):
         response_data = {
             "suggestions": {
                 "AAPL": {
@@ -99,12 +99,12 @@ class TestGetAiSuggestions:
         assert result is not None
         assert "AAPL" in result
 
-    def test_success_without_suggestions_key(self, monkeypatch):
+    def test_success_without_suggestions_key(self, monkeypatch: pytest.MonkeyPatch):
         response_data = {"AAPL": {"explanation": "harvest it"}}
         result = self._run_with_mock(monkeypatch, json.dumps(response_data))
         assert result is not None
 
-    def test_empty_response(self, monkeypatch):
+    def test_empty_response(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("GEMINI_API_KEY", "test-key")
         mock_response = MagicMock()
         mock_response.text = ""
@@ -124,7 +124,7 @@ class TestGetAiSuggestions:
             result = ai_mod.get_ai_suggestions([{"symbol": "AAPL", "unrealized_pnl": -500}])
             assert result is None
 
-    def test_none_response(self, monkeypatch):
+    def test_none_response(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("GEMINI_API_KEY", "test-key")
         mock_client = MagicMock()
         mock_client.models.generate_content.return_value = None
@@ -141,18 +141,18 @@ class TestGetAiSuggestions:
             result = ai_mod.get_ai_suggestions([{"symbol": "AAPL", "unrealized_pnl": -500}])
             assert result is None
 
-    def test_json_parse_error(self, monkeypatch):
+    def test_json_parse_error(self, monkeypatch: pytest.MonkeyPatch):
         result = self._run_with_mock(monkeypatch, "this is not valid json at all")
         assert result is None
 
-    def test_markdown_code_block_stripped(self, monkeypatch):
+    def test_markdown_code_block_stripped(self, monkeypatch: pytest.MonkeyPatch):
         response_data = {"suggestions": {"AAPL": {"explanation": "harvest"}}}
         wrapped = f"```json\n{json.dumps(response_data)}\n```"
         result = self._run_with_mock(monkeypatch, wrapped)
         assert result is not None
         assert "AAPL" in result
 
-    def test_generic_exception(self, monkeypatch):
+    def test_generic_exception(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("GEMINI_API_KEY", "test-key")
 
         mock_genai = MagicMock()
@@ -207,8 +207,7 @@ class TestPreparePositionsForAi:
         assert "MSFT" not in symbols
 
     def test_skips_none_pnl(self):
-        lot = self._make_lot(unrealized_pnl=None)
-        # Override unrealized_pnl to None
+        lot = self._make_lot(unrealized_pnl=-100.0)
         lot.unrealized_pnl = None
         result = prepare_positions_for_ai([lot])
         assert len(result) == 0
@@ -225,8 +224,8 @@ class TestPreparePositionsForAi:
         assert pos["symbol"] == "AAPL"
         assert pos["quantity"] == 50
         assert pos["unrealized_pnl"] == -500.0
-        assert pos["cost_basis_per_share"] == 150.0
-        assert pos["current_price"] == 140.0
+        assert pos["cost_basis_per_share"] == 150
+        assert pos["current_price"] == 140
         assert pos["holding_period_days"] == 180
         assert pos["is_long_term"] is False
 

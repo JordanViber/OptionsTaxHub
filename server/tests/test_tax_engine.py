@@ -221,7 +221,6 @@ class TestNiitIntegration:
         p = _profile(filing_status="single", income=250_000)
         result = calculate_tax_on_gain(gain=10_000, is_long_term=True, profile=p)
         assert result.niit_applies is True
-        # effective_rate = ltcg_rate + 0.038
         assert result.effective_rate == pytest.approx(get_ltcg_rate(250_000, p) + 0.038)
 
 

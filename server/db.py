@@ -82,7 +82,7 @@ def save_analysis_history(
             row["result"] = result_data
         result = client.table("portfolio_analyses").insert(row).execute()
         if result.data:
-            return result.data[0]
+            return dict(result.data[0])
         return None
     except Exception as e:
         logger.error(f"Failed to save analysis history: {e}")
@@ -111,7 +111,7 @@ def get_analysis_history(
             .limit(limit)
             .execute()
         )
-        return result.data or []
+        return [dict(row) for row in (result.data or [])]
     except Exception as e:
         logger.error(f"Failed to fetch analysis history: {e}")
         return []
@@ -140,7 +140,7 @@ def get_analysis_by_id(
             .execute()
         )
         if result.data:
-            return result.data[0]
+            return dict(result.data[0])
         return None
     except Exception as e:
         logger.error(f"Failed to fetch analysis by id: {e}")
@@ -239,7 +239,7 @@ def save_tax_profile(
             .execute()
         )
         if result.data:
-            return result.data[0]
+            return dict(result.data[0])
         return None
     except Exception as e:
         logger.error(f"Failed to save tax profile: {e}")
@@ -265,7 +265,7 @@ def get_tax_profile(user_id: str) -> Optional[dict]:
             .execute()
         )
         if result.data:
-            return result.data[0]
+            return dict(result.data[0])
         return None
     except Exception as e:
         logger.error(f"Failed to fetch tax profile: {e}")

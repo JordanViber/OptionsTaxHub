@@ -102,7 +102,7 @@ def _download_yfinance_prices(
             threads=True,
         )
 
-        if data.empty:
+        if data is None or data.empty:
             warnings.append(
                 "yfinance returned no data. Using CSV-provided prices as fallback."
             )
