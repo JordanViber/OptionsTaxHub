@@ -15,6 +15,14 @@ services:
         value: https://options-tax-hub-client-prod.onrender.com
       - key: API_KEY_SECRET
         generateValue: true
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
       - key: VAPID_PRIVATE_KEY
         sync: false
       - key: VAPID_PUBLIC_KEY
@@ -60,6 +68,14 @@ services:
         value: https://options-tax-hub-client-staging.onrender.com
       - key: API_KEY_SECRET
         generateValue: true
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
       - key: VAPID_PRIVATE_KEY
         sync: false
       - key: VAPID_PUBLIC_KEY
