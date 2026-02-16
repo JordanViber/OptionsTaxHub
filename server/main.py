@@ -1,6 +1,8 @@
 import os
 import logging
+import re
 from typing import Annotated, Optional
+from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, UploadFile, Query, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -46,8 +48,6 @@ logger = logging.getLogger(__name__)
 load_dotenv(".env.local")
 load_dotenv(".env")
 
-app = FastAPI()
-
 # Get environment variables
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -58,6 +58,28 @@ VAPID_CLAIM_EMAIL = os.environ.get("VAPID_CLAIM_EMAIL", "admin@optionstaxhub.com
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
 SUPABASE_JWT_SECRET = os.environ.get("SUPABASE_JWT_SECRET", "")
+STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifecycle manager for startup and shutdown events."""
+    # Startup
+    logger.info("Running startup validation...")
+
+    # Warn if Stripe is not configured (it's optional for MVP)
+    if not STRIPE_SECRET_KEY:
+        logger.warning(
+            "STRIPE_SECRET_KEY not set. Stripe tip/donation endpoints will return 503."
+        )
+    else:
+        logger.info("Stripe API key configured successfully.")
+
+    yield
+
+    # Shutdown (if needed in future)
+    logger.info("Shutting down...")
+
+app = FastAPI(lifespan=lifespan)
 
 # In-memory storage for push subscriptions
 # NOTE: This is temporary storage for development/MVP. Production implementation
@@ -86,6 +108,27 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+def validate_user_id(user_id: Optional[str]) -> None:
+    """
+    Validate user_id format to prevent injection attacks.
+
+    Accepts UUID format (with or without hyphens) or alphanumeric strings up to 64 chars.
+    Raises HTTPException if invalid.
+    """
+    if user_id is None:
+        return
+
+    # Allow UUID format (8-4-4-4-12 hex digits with optional hyphens)
+    uuid_pattern = r'^[a-f0-9]{8}-?[a-f0-9]{4}-?[a-f0-9]{4}-?[a-f0-9]{4}-?[a-f0-9]{12}$'
+    # Allow alphanumeric with underscores/hyphens, max 64 chars
+    safe_pattern = r'^[a-zA-Z0-9_-]{1,64}$'
+
+    if not (re.match(uuid_pattern, user_id, re.IGNORECASE) or re.match(safe_pattern, user_id)):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid user_id format. Must be UUID or alphanumeric string (max 64 chars)."
+        )
 
 @app.get("/health")
 async def health():
@@ -167,6 +210,9 @@ async def analyze_portfolio(
 
     DISCLAIMER: For educational/simulation purposes only — not financial or tax advice.
     """
+    # Validate user_id format if provided
+    validate_user_id(user_id)
+
     # Read and parse CSV
     contents = await file.read()
     tax_lots, transactions, parse_errors = parse_csv(contents.decode("utf-8"))
@@ -180,16 +226,24 @@ async def analyze_portfolio(
             },
         )
 
-    # Build tax profile from query params
+    # Build tax profile from query params, but check user's saved profile for AI consent
     try:
         fs = FilingStatus(filing_status)
     except ValueError:
         fs = FilingStatus.SINGLE
 
+    # Check if user has AI suggestions enabled in their saved profile
+    ai_enabled = False
+    if user_id:
+        saved_profile = db_get_tax_profile(user_id)
+        if saved_profile:
+            ai_enabled = saved_profile.get("ai_suggestions_enabled", False)
+
     tax_profile = TaxProfile(
         filing_status=fs,
         estimated_annual_income=estimated_income or 75000.0,
         tax_year=tax_year or 2025,
+        ai_suggestions_enabled=ai_enabled,
     )
 
     all_warnings = list(parse_errors)
@@ -215,8 +269,14 @@ async def analyze_portfolio(
     if wash_sale_flags:
         tax_lots = adjust_lots_for_wash_sales(tax_lots, wash_sale_flags)
 
-    # Get AI-powered suggestions
-    ai_suggestions = _try_get_ai_suggestions(tax_lots, all_warnings)
+    # Get AI-powered suggestions only if user has opted in
+    ai_suggestions = None
+    if ai_enabled:
+        ai_suggestions = _try_get_ai_suggestions(tax_lots, all_warnings)
+    else:
+        all_warnings.append(
+            "AI-powered suggestions are disabled. Enable them in Settings to get personalized replacement security recommendations."
+        )
 
     suggestions = generate_suggestions(
         tax_lots=tax_lots,
@@ -402,8 +462,6 @@ async def get_tax_profile_endpoint(user_id: str = Depends(get_current_user)):
 # --- Stripe Tip/Donation Endpoints ---
 
 import stripe
-
-STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY")
 
 # Tip tiers: price_id → metadata
 TIP_TIERS = {
