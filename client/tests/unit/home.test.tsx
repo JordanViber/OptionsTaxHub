@@ -127,7 +127,7 @@ describe("Home page", () => {
 
     renderWithClient(<Home />);
 
-    expect(mockPush).toHaveBeenCalledWith("/");
+    expect(mockPush).toHaveBeenCalledWith("/auth/signin");
   });
 
   it("uses display_name when available", () => {
@@ -418,7 +418,7 @@ describe("Home page", () => {
 
     await waitFor(() => {
       expect(signOut).toHaveBeenCalled();
-      expect(mockPush).toHaveBeenCalledWith("/");
+      expect(mockPush).toHaveBeenCalledWith("/auth/signin");
     });
   });
 
