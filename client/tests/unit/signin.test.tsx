@@ -118,7 +118,7 @@ describe("Sign In Page", () => {
     });
 
     await waitFor(() => {
-      expect(mockPush).toHaveBeenCalledWith("/");
+      expect(mockPush).toHaveBeenCalledWith("/dashboard");
     });
   });
 

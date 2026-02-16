@@ -1,9 +1,12 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import Home from "../../app/page";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import Home from "../../app/dashboard/page";
 
 const mockPush = jest.fn();
 const mockUseAuth = jest.fn();
-const mockUseUploadPortfolio = jest.fn();
+const mockUseAnalyzePortfolio = jest.fn();
+const mockUseTaxProfile = jest.fn();
+const mockUsePortfolioHistory = jest.fn();
 
 const getFileInput = (container: HTMLElement) => {
   const element = container.querySelector('input[type="file"]');
@@ -19,18 +22,44 @@ jest.mock("next/navigation", () => ({
   }),
 }));
 
-jest.mock("../../app/components/InstallPrompt", () => () => null);
 jest.mock("../../app/components/ServiceWorkerRegistration", () => () => null);
+jest.mock("../../app/components/TaxDisclaimer", () => () => (
+  <div data-testid="tax-disclaimer">Disclaimer</div>
+));
+jest.mock(
+  "../../app/components/PortfolioSummaryCards",
+  () =>
+    ({ summary }: any) => (
+      <div data-testid="summary-cards">{JSON.stringify(summary)}</div>
+    ),
+);
+jest.mock("../../app/components/PositionsTable", () => ({ positions }: any) => (
+  <div data-testid="positions-table">{positions.length} positions</div>
+));
+jest.mock(
+  "../../app/components/HarvestingSuggestions",
+  () =>
+    ({ suggestions }: any) => (
+      <div data-testid="suggestions">{suggestions.length} suggestions</div>
+    ),
+);
+jest.mock("../../app/components/WashSaleWarning", () => ({ flags }: any) => (
+  <div data-testid="wash-sale-warning">{flags.length} flags</div>
+));
 
 jest.mock("../../app/context/auth", () => ({
   useAuth: () => mockUseAuth(),
 }));
 
 jest.mock("../../lib/api", () => ({
-  useUploadPortfolio: () => mockUseUploadPortfolio(),
+  useAnalyzePortfolio: () => mockUseAnalyzePortfolio(),
+  useTaxProfile: () => mockUseTaxProfile(),
+  usePortfolioHistory: () => mockUsePortfolioHistory(),
+  fetchAnalysisById: jest.fn().mockResolvedValue(null),
+  cleanupOrphanHistory: jest.fn().mockResolvedValue(0),
 }));
 
-// Helper function to create default auth mock
+// Helper to create default auth mock
 const createAuthMock = (
   user: any = null,
   loading: boolean = false,
@@ -41,8 +70,8 @@ const createAuthMock = (
   signOut: signOut || jest.fn(),
 });
 
-// Helper function to create default upload portfolio mock
-const createUploadMock = (overrides: any = {}) => ({
+// Helper to create default analyze portfolio mock
+const createAnalyzeMock = (overrides: any = {}) => ({
   mutate: jest.fn(),
   isPending: false,
   error: null,
@@ -50,170 +79,128 @@ const createUploadMock = (overrides: any = {}) => ({
   ...overrides,
 });
 
-// Helper function to setup mocks
-const setupMocks = (auth: any = {}, upload: any = {}) => {
-  mockUseAuth.mockReturnValue(createAuthMock());
-  mockUseUploadPortfolio.mockReturnValue(createUploadMock());
-  if (Object.keys(auth).length) {
-    mockUseAuth.mockReturnValue(auth);
-  }
-  if (Object.keys(upload).length) {
-    mockUseUploadPortfolio.mockReturnValue(upload);
-  }
+// Helper to set up mocks with defaults
+const setupMocks = (auth: any = {}, analyze: any = {}) => {
+  mockUseAuth.mockReturnValue(
+    Object.keys(auth).length ? auth : createAuthMock(),
+  );
+  mockUseAnalyzePortfolio.mockReturnValue(
+    Object.keys(analyze).length ? analyze : createAnalyzeMock(),
+  );
+  mockUseTaxProfile.mockReturnValue({ data: null, isLoading: false });
+  mockUsePortfolioHistory.mockReturnValue({ data: [], isLoading: false });
 };
+
+// Wrapper with QueryClientProvider for rendering
+const createWrapper = () => {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  return ({ children }: { children: React.ReactNode }) => (
+    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+  );
+};
+
+const renderWithClient = (ui: React.ReactElement) =>
+  render(ui, { wrapper: createWrapper() });
 
 describe("Home page", () => {
   beforeEach(() => {
     mockPush.mockClear();
     mockUseAuth.mockReset();
-    mockUseUploadPortfolio.mockReset();
+    mockUseAnalyzePortfolio.mockReset();
+    mockUseTaxProfile.mockReset();
+    mockUsePortfolioHistory.mockReset();
+    sessionStorage.clear();
   });
 
   it("renders loading state when auth is loading", () => {
-    mockUseAuth.mockReturnValue({
-      user: null,
-      loading: true,
-      signOut: jest.fn(),
-    });
-    mockUseUploadPortfolio.mockReturnValue({
-      mutate: jest.fn(),
-      isPending: false,
-      error: null,
-      data: null,
-    });
+    setupMocks(createAuthMock(null, true));
 
-    render(<Home />);
+    renderWithClient(<Home />);
 
     expect(screen.getByRole("progressbar")).toBeInTheDocument();
   });
 
-  it("redirects to sign-in when unauthenticated", () => {
-    mockUseAuth.mockReturnValue({
-      user: null,
-      loading: false,
-      signOut: jest.fn(),
-    });
-    mockUseUploadPortfolio.mockReturnValue({
-      mutate: jest.fn(),
-      isPending: false,
-      error: null,
-      data: null,
-    });
+  it("redirects to landing page when unauthenticated", () => {
+    setupMocks(createAuthMock(null, false));
 
-    render(<Home />);
+    renderWithClient(<Home />);
 
-    expect(mockPush).toHaveBeenCalledWith("/auth/signin");
+    expect(mockPush).toHaveBeenCalledWith("/");
   });
 
   it("uses display_name when available", () => {
-    mockUseAuth.mockReturnValue({
-      user: {
-        email: "test@example.com",
-        user_metadata: {
-          display_name: "Display Name",
-          first_name: "First",
-          last_name: "Last",
+    setupMocks(
+      createAuthMock(
+        {
+          email: "test@example.com",
+          user_metadata: {
+            display_name: "Display Name",
+            first_name: "First",
+            last_name: "Last",
+          },
         },
-      },
-      loading: false,
-      signOut: jest.fn(),
-    });
-    mockUseUploadPortfolio.mockReturnValue({
-      mutate: jest.fn(),
-      isPending: false,
-      error: null,
-      data: null,
-    });
+        false,
+      ),
+    );
 
-    render(<Home />);
+    renderWithClient(<Home />);
 
     expect(screen.getByText("Display Name")).toBeInTheDocument();
   });
 
   it("falls back to full name when display_name is missing", () => {
-    mockUseAuth.mockReturnValue({
-      user: {
-        email: "test@example.com",
-        user_metadata: {
-          first_name: "First",
-          last_name: "Last",
+    setupMocks(
+      createAuthMock(
+        {
+          email: "test@example.com",
+          user_metadata: { first_name: "First", last_name: "Last" },
         },
-      },
-      loading: false,
-      signOut: jest.fn(),
-    });
-    mockUseUploadPortfolio.mockReturnValue({
-      mutate: jest.fn(),
-      isPending: false,
-      error: null,
-      data: null,
-    });
+        false,
+      ),
+    );
 
-    render(<Home />);
+    renderWithClient(<Home />);
 
     expect(screen.getByText("First Last")).toBeInTheDocument();
   });
 
   it("uses full_name when available in metadata", () => {
-    mockUseAuth.mockReturnValue({
-      user: {
-        email: "test@example.com",
-        user_metadata: {
-          full_name: "Full Name",
+    setupMocks(
+      createAuthMock(
+        {
+          email: "test@example.com",
+          user_metadata: { full_name: "Full Name" },
         },
-      },
-      loading: false,
-      signOut: jest.fn(),
-    });
-    mockUseUploadPortfolio.mockReturnValue({
-      mutate: jest.fn(),
-      isPending: false,
-      error: null,
-      data: null,
-    });
+        false,
+      ),
+    );
 
-    render(<Home />);
+    renderWithClient(<Home />);
 
     expect(screen.getByText("Full Name")).toBeInTheDocument();
   });
 
   it("falls back to email when profile names are missing", () => {
-    mockUseAuth.mockReturnValue({
-      user: {
-        email: "email-only@example.com",
-        user_metadata: {},
-      },
-      loading: false,
-      signOut: jest.fn(),
-    });
-    mockUseUploadPortfolio.mockReturnValue({
-      mutate: jest.fn(),
-      isPending: false,
-      error: null,
-      data: null,
-    });
+    setupMocks(
+      createAuthMock(
+        { email: "email-only@example.com", user_metadata: {} },
+        false,
+      ),
+    );
 
-    render(<Home />);
+    renderWithClient(<Home />);
 
     expect(screen.getByText("email-only@example.com")).toBeInTheDocument();
   });
 
   it("handles missing user metadata gracefully", () => {
-    mockUseAuth.mockReturnValue({
-      user: {
-        email: "metadata-missing@example.com",
-      },
-      loading: false,
-      signOut: jest.fn(),
-    });
-    mockUseUploadPortfolio.mockReturnValue({
-      mutate: jest.fn(),
-      isPending: false,
-      error: null,
-      data: null,
-    });
+    setupMocks(
+      createAuthMock({ email: "metadata-missing@example.com" }, false),
+    );
 
-    render(<Home />);
+    renderWithClient(<Home />);
 
     expect(
       screen.getByText("metadata-missing@example.com"),
@@ -221,76 +208,57 @@ describe("Home page", () => {
   });
 
   it("falls back to Account when email is missing", () => {
-    mockUseAuth.mockReturnValue({
-      user: {
-        user_metadata: {},
-      },
-      loading: false,
-      signOut: jest.fn(),
-    });
-    mockUseUploadPortfolio.mockReturnValue({
-      mutate: jest.fn(),
-      isPending: false,
-      error: null,
-      data: null,
-    });
+    setupMocks(createAuthMock({ user_metadata: {} }, false));
 
-    render(<Home />);
+    renderWithClient(<Home />);
 
     expect(screen.getByText("Account")).toBeInTheDocument();
   });
 
-  it("triggers file input click when upload button is pressed", () => {
-    mockUseAuth.mockReturnValue({
-      user: {
-        email: "test@example.com",
-        user_metadata: { display_name: "Test User" },
-      },
-      loading: false,
-      signOut: jest.fn(),
-    });
-    mockUseUploadPortfolio.mockReturnValue({
-      mutate: jest.fn(),
-      isPending: false,
-      error: null,
-      data: null,
-    });
+  it("triggers file input click when upload area is clicked", () => {
+    setupMocks(
+      createAuthMock(
+        {
+          email: "test@example.com",
+          user_metadata: { display_name: "Test User" },
+        },
+        false,
+      ),
+    );
 
-    const { container } = render(<Home />);
-    const uploadButton = screen.getByRole("button", { name: /upload csv/i });
+    const { container } = renderWithClient(<Home />);
     const fileInput = getFileInput(container);
-
     const clickSpy = jest.spyOn(fileInput, "click");
 
-    fireEvent.click(uploadButton);
+    // Click on the text in the upload area
+    fireEvent.click(screen.getByText("Click to upload CSV"));
 
     expect(clickSpy).toHaveBeenCalled();
   });
 
-  it("uploads file when file input changes", () => {
+  it("calls analyzePortfolio when file input changes", () => {
     const mutate = jest.fn();
-    mockUseAuth.mockReturnValue({
-      user: {
-        email: "test@example.com",
-        user_metadata: { display_name: "Test User" },
-      },
-      loading: false,
-      signOut: jest.fn(),
-    });
-    mockUseUploadPortfolio.mockReturnValue({
-      mutate,
-      isPending: false,
-      error: null,
-      data: null,
-    });
+    setupMocks(
+      createAuthMock(
+        {
+          email: "test@example.com",
+          user_metadata: { display_name: "Test User" },
+        },
+        false,
+      ),
+      createAnalyzeMock({ mutate }),
+    );
 
-    const { container } = render(<Home />);
+    const { container } = renderWithClient(<Home />);
     const fileInput = getFileInput(container);
 
     const file = new File(["content"], "test.csv", { type: "text/csv" });
     fireEvent.change(fileInput, { target: { files: [file] } });
 
-    expect(mutate).toHaveBeenCalledWith(file);
+    expect(mutate).toHaveBeenCalledWith(
+      expect.objectContaining({ file }),
+      expect.anything(),
+    );
   });
 
   it("does not upload when no file is selected", () => {
@@ -302,12 +270,11 @@ describe("Home page", () => {
           user_metadata: { display_name: "Test User" },
         },
         false,
-        jest.fn(),
       ),
-      createUploadMock({ mutate }),
+      createAnalyzeMock({ mutate }),
     );
 
-    const { container } = render(<Home />);
+    const { container } = renderWithClient(<Home />);
     const fileInput = getFileInput(container);
 
     fireEvent.change(fileInput, { target: { files: [] } });
@@ -315,8 +282,7 @@ describe("Home page", () => {
     expect(mutate).not.toHaveBeenCalled();
   });
 
-  it("does not upload when file list is undefined", () => {
-    const mutate = jest.fn();
+  it("shows analyzing state when mutation is pending", () => {
     setupMocks(
       createAuthMock(
         {
@@ -324,21 +290,16 @@ describe("Home page", () => {
           user_metadata: { display_name: "Test User" },
         },
         false,
-        jest.fn(),
       ),
-      createUploadMock({ mutate }),
+      createAnalyzeMock({ isPending: true }),
     );
 
-    const { container } = render(<Home />);
-    const fileInput = getFileInput(container);
+    renderWithClient(<Home />);
 
-    fireEvent.change(fileInput, { target: {} });
-
-    expect(mutate).not.toHaveBeenCalled();
+    expect(screen.getByText("Analyzing portfolio...")).toBeInTheDocument();
   });
 
-  it("does not upload when file list is null", () => {
-    const mutate = jest.fn();
+  it("renders error state when analysis fails", () => {
     setupMocks(
       createAuthMock(
         {
@@ -346,57 +307,14 @@ describe("Home page", () => {
           user_metadata: { display_name: "Test User" },
         },
         false,
-        jest.fn(),
       ),
-      createUploadMock({ mutate }),
+      createAnalyzeMock({ error: new Error("Analysis failed") }),
     );
 
-    const { container } = render(<Home />);
-    const fileInput = getFileInput(container);
+    renderWithClient(<Home />);
 
-    fireEvent.change(fileInput, { target: { files: null } });
-
-    expect(mutate).not.toHaveBeenCalled();
-  });
-
-  it("shows uploading state when mutation is pending", () => {
-    mockUseAuth.mockReturnValue({
-      user: {
-        email: "test@example.com",
-        user_metadata: { display_name: "Test User" },
-      },
-      loading: false,
-      signOut: jest.fn(),
-    });
-    mockUseUploadPortfolio.mockReturnValue({
-      mutate: jest.fn(),
-      isPending: true,
-      error: null,
-      data: null,
-    });
-
-    render(<Home />);
-
-    expect(screen.getByRole("button", { name: /uploading/i })).toBeDisabled();
-  });
-
-  it("renders error state when upload fails", () => {
-    setupMocks(
-      createAuthMock(
-        {
-          email: "test@example.com",
-          user_metadata: { display_name: "Test User" },
-        },
-        false,
-        jest.fn(),
-      ),
-      createUploadMock({ error: new Error("Upload failed") }),
-    );
-
-    render(<Home />);
-
-    expect(screen.getByText("Upload Failed")).toBeInTheDocument();
-    expect(screen.getByText("Upload failed")).toBeInTheDocument();
+    expect(screen.getByText("Analysis Failed")).toBeInTheDocument();
+    expect(screen.getByText("Analysis failed")).toBeInTheDocument();
   });
 
   it("renders generic error message when error is not an Error", () => {
@@ -407,17 +325,25 @@ describe("Home page", () => {
           user_metadata: { display_name: "Test User" },
         },
         false,
-        jest.fn(),
       ),
-      createUploadMock({ error: "Upload failed" }),
+      createAnalyzeMock({ error: "Something broke" }),
     );
 
-    render(<Home />);
+    renderWithClient(<Home />);
 
     expect(screen.getByText("An error occurred")).toBeInTheDocument();
   });
 
-  it("renders portfolio data table when upload succeeds", () => {
+  it("renders analysis results when data is available", () => {
+    const mockAnalysis = {
+      positions: [{ symbol: "AAPL" }],
+      suggestions: [{ symbol: "TSLA" }],
+      wash_sale_flags: [],
+      summary: { total_market_value: 1000 },
+      warnings: [],
+      errors: [],
+    };
+
     setupMocks(
       createAuthMock(
         {
@@ -425,24 +351,46 @@ describe("Home page", () => {
           user_metadata: { display_name: "Test User" },
         },
         false,
-        jest.fn(),
       ),
-      createUploadMock({
-        data: [
-          { symbol: "AAPL", qty: 10, price: 150 },
-          { symbol: "MSFT", qty: 5, price: 310 },
-        ],
-      }),
+      createAnalyzeMock({ data: mockAnalysis }),
     );
 
-    render(<Home />);
+    renderWithClient(<Home />);
 
-    expect(
-      screen.getByText("Portfolio Data (First 5 Rows)"),
-    ).toBeInTheDocument();
-    expect(screen.getByText("AAPL")).toBeInTheDocument();
-    expect(screen.getByText("MSFT")).toBeInTheDocument();
-    expect(screen.getByText("150.00")).toBeInTheDocument();
+    expect(screen.getByTestId("summary-cards")).toBeInTheDocument();
+    expect(screen.getByText("1 positions")).toBeInTheDocument();
+    expect(screen.getByText("Suggestions (1)")).toBeInTheDocument();
+  });
+
+  it("renders wash-sale warnings when present", async () => {
+    const mockAnalysis = {
+      positions: [{ symbol: "TSLA" }],
+      tax_lots: [],
+      suggestions: [],
+      wash_sale_flags: [{ symbol: "TSLA" }],
+      summary: { total_market_value: 0 },
+      tax_profile: null,
+      disclaimer: "",
+      warnings: [],
+      errors: [],
+    };
+
+    setupMocks(
+      createAuthMock(
+        {
+          email: "test@example.com",
+          user_metadata: { display_name: "Test User" },
+        },
+        false,
+      ),
+      createAnalyzeMock({ data: mockAnalysis }),
+    );
+
+    renderWithClient(<Home />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("wash-sale-warning")).toBeInTheDocument();
+    });
   });
 
   it("signs out and redirects when menu action is clicked", async () => {
@@ -456,10 +404,9 @@ describe("Home page", () => {
         false,
         signOut,
       ),
-      createUploadMock(),
     );
 
-    render(<Home />);
+    renderWithClient(<Home />);
 
     fireEvent.click(screen.getByText("Test User"));
 
@@ -471,33 +418,11 @@ describe("Home page", () => {
 
     await waitFor(() => {
       expect(signOut).toHaveBeenCalled();
-      expect(mockPush).toHaveBeenCalledWith("/auth/signin");
+      expect(mockPush).toHaveBeenCalledWith("/");
     });
   });
 
-  it("shows menu without email when user email is missing", async () => {
-    setupMocks(
-      createAuthMock(
-        { user_metadata: { display_name: "No Email" } },
-        false,
-        jest.fn(),
-      ),
-      createUploadMock(),
-    );
-
-    render(<Home />);
-
-    fireEvent.click(screen.getByText("No Email"));
-
-    await waitFor(() => {
-      expect(screen.getAllByText("No Email").length).toBeGreaterThan(1);
-    });
-
-    const menuLabel = screen.getAllByText("No Email")[1];
-    expect(menuLabel.textContent).toBe("No Email");
-  });
-
-  it("closes the error alert when close button is clicked", () => {
+  it("navigates to settings when Settings button is clicked", () => {
     setupMocks(
       createAuthMock(
         {
@@ -505,15 +430,14 @@ describe("Home page", () => {
           user_metadata: { display_name: "Test User" },
         },
         false,
-        jest.fn(),
       ),
-      createUploadMock({ error: new Error("Upload failed") }),
     );
 
-    render(<Home />);
+    renderWithClient(<Home />);
 
-    const closeButton = screen.getByLabelText("Close");
-    fireEvent.click(closeButton);
+    fireEvent.click(screen.getByText("Settings"));
+
+    expect(mockPush).toHaveBeenCalledWith("/settings");
   });
 
   it("closes the menu on backdrop click", async () => {
@@ -524,12 +448,10 @@ describe("Home page", () => {
           user_metadata: { display_name: "Test User" },
         },
         false,
-        jest.fn(),
       ),
-      createUploadMock(),
     );
 
-    render(<Home />);
+    renderWithClient(<Home />);
 
     fireEvent.click(screen.getByText("Test User"));
 

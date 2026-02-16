@@ -2,6 +2,37 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Prevent cursor shape changes on text hover (default cursor everywhere) */
+* {
+  cursor: default;
+}
+
+/* Restore appropriate cursors for interactive elements */
+a,
+button,
+[role="button"],
+label[for],
+select,
+.MuiButtonBase-root,
+.MuiSelect-select,
+.MuiMenuItem-root,
+.MuiTab-root,
+.MuiIconButton-root,
+.MuiChip-root,
+.MuiLink-root {
+  cursor: pointer;
+}
+
+input[type="text"],
+input[type="number"],
+input[type="email"],
+input[type="password"],
+input[type="search"],
+textarea,
+.MuiInputBase-input {
+  cursor: text;
+}
+
 @layer utilities {
   @keyframes slide-up {
     from {

@@ -2,6 +2,41 @@
 const CACHE_NAME = "optionstaxhub-v1";
 const API_URL = "http://localhost:8080";
 
+// Track recently shown notifications to prevent duplicates
+// Using a simple LRU-like implementation with time-based expiration
+const shownNotifications = new Map();
+const NOTIFICATION_DEDUP_WINDOW = 5000; // 5 seconds
+const MAX_NOTIFICATION_ENTRIES = 50; // Maximum entries before LRU eviction kicks in
+const CLEANUP_INTERVAL = 10000; // Clean up every 10 seconds
+
+// Periodic cleanup to prevent memory leaks
+setInterval(() => {
+  const now = Date.now();
+  let cleanedCount = 0;
+  
+  for (const [key, timestamp] of shownNotifications.entries()) {
+    if (now - timestamp > NOTIFICATION_DEDUP_WINDOW) {
+      shownNotifications.delete(key);
+      cleanedCount++;
+    }
+  }
+  
+  // If still too large after expiration cleanup, remove oldest entries (LRU)
+  if (shownNotifications.size > MAX_NOTIFICATION_ENTRIES) {
+    const entries = Array.from(shownNotifications.entries())
+      .sort((a, b) => a[1] - b[1]); // Sort by timestamp (oldest first)
+    const toRemove = entries.slice(0, shownNotifications.size - MAX_NOTIFICATION_ENTRIES);
+    for (const [key] of toRemove) {
+      shownNotifications.delete(key);
+      cleanedCount++;
+    }
+  }
+  
+  if (cleanedCount > 0) {
+    console.log(`[SW] Cleaned ${cleanedCount} expired notification entries. Current size: ${shownNotifications.size}`);
+  }
+}, CLEANUP_INTERVAL);
+
 // Assets to cache on install
 const STATIC_ASSETS = [
   "/",
@@ -61,8 +96,8 @@ self.addEventListener("fetch", (event) => {
         return cached;
       }
       return fetch(request).then((response) => {
-        // Cache successful responses
-        if (response && response.status === 200) {
+        // Only cache GET requests with successful responses
+        if (response && response.status === 200 && request.method === "GET") {
           const responseClone = response.clone();
           caches.open(CACHE_NAME).then((cache) => {
             cache.put(request, responseClone);
@@ -81,7 +116,7 @@ self.addEventListener("push", (event) => {
     body: "You have a new notification",
     icon: "/icons/icon-192x192.png",
     badge: "/icons/icon-192x192.png",
-    tag: "default",
+    tag: `notification-${Date.now()}`, // Unique tag to prevent duplicates
   };
 
   if (event.data) {
@@ -104,6 +139,19 @@ self.addEventListener("push", (event) => {
       }
     }
   }
+
+  // Create a key for deduplication
+  const notificationKey = `${notificationData.title}|${notificationData.body}`;
+  const lastShownTime = shownNotifications.get(notificationKey);
+  const now = Date.now();
+
+  // Skip if same notification was shown recently (within dedup window)
+  if (lastShownTime && now - lastShownTime < NOTIFICATION_DEDUP_WINDOW) {
+    return;
+  }
+
+  // Record this notification as shown
+  shownNotifications.set(notificationKey, now);
 
   event.waitUntil(
     globalThis.registration.showNotification(notificationData.title, {

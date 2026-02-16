@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -15,30 +15,23 @@ export default function InstallPrompt() {
   const [showPrompt, setShowPrompt] = useState(false);
   const [appState, setAppState] = useState<AppState>("not-installable");
   const [isMobile, setIsMobile] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     // Detect if device is mobile using multiple methods for reliability
     const isMobileDevice = () => {
-      // Check user agent
       const userAgent = globalThis.navigator.userAgent;
       const mobileRegex =
         /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i;
-
-      // Also check viewport width as additional check
       const isNarrowViewport = globalThis.window.innerWidth < 768;
-
-      // Check for touch capability (more reliable indicator of mobile)
       const hasTouch = globalThis.matchMedia(
         "(hover: none) and (pointer: coarse)",
       ).matches;
-
-      // Only consider it mobile if user agent matches AND (has touch or narrow viewport)
-      // This prevents false positives on desktop
       return mobileRegex.test(userAgent) && (hasTouch || isNarrowViewport);
     };
     setIsMobile(isMobileDevice());
 
-    // Check if running in standalone mode (already installed and opened)
+    // Check if running in standalone mode (already installed and opened as PWA)
     if (
       globalThis.matchMedia("(display-mode: standalone)").matches ||
       (globalThis.navigator as any).standalone === true
@@ -47,7 +40,12 @@ export default function InstallPrompt() {
       return;
     }
 
-    // Check if user previously dismissed the prompt
+    // ---- Guard: only show the prompt ONCE per browser session ----
+    if (sessionStorage.getItem("installPromptShown")) {
+      return;
+    }
+
+    // Check if user previously dismissed the install prompt (3-day cooldown)
     const dismissed = localStorage.getItem("installPromptDismissed");
     if (dismissed) {
       const dismissedTime = Number.parseInt(dismissed, 10);
@@ -57,21 +55,39 @@ export default function InstallPrompt() {
       }
     }
 
-    // Check if app was already installed (but browsing via browser)
+    // Check if the "already installed" message was dismissed (7-day cooldown)
+    const installedDismissed = localStorage.getItem("installedMessageDismissed");
+    if (installedDismissed) {
+      const dismissedTime = Number.parseInt(installedDismissed, 10);
+      const sevenDays = 7 * 24 * 60 * 60 * 1000;
+      if (Date.now() - dismissedTime < sevenDays) {
+        return;
+      }
+    }
+
+    // ---- Mark the flag IMMEDIATELY to prevent duplicate timeouts ----
+    // This prevents multiple prompts when the component re-mounts
+    // (React StrictMode, page navigation, etc.)
+    sessionStorage.setItem("installPromptShown", "true");
+
+    // Check if app was already installed (but user is browsing via browser)
     const wasInstalled = localStorage.getItem("appWasInstalled");
     if (wasInstalled === "true") {
       setAppState("installed");
-      setTimeout(() => setShowPrompt(true), 3000);
+      timerRef.current = setTimeout(() => {
+        setShowPrompt(true);
+      }, 3000);
       return;
     }
 
-    // Listen for beforeinstallprompt event
+    // Listen for beforeinstallprompt event (Chrome/Edge only — not fired on iOS)
     const handler = (e: Event) => {
       e.preventDefault();
       setDeferredPrompt(e as BeforeInstallPromptEvent);
       setAppState("installable");
-      // Show prompt after 10 seconds to not be annoying
-      setTimeout(() => setShowPrompt(true), 10000);
+      timerRef.current = setTimeout(() => {
+        setShowPrompt(true);
+      }, 10000);
     };
 
     // Listen for app installed event
@@ -87,6 +103,7 @@ export default function InstallPrompt() {
     return () => {
       globalThis.removeEventListener("beforeinstallprompt", handler);
       globalThis.removeEventListener("appinstalled", installedHandler);
+      if (timerRef.current) clearTimeout(timerRef.current);
     };
   }, []);
 

@@ -38,7 +38,7 @@ export default function SignInPage() {
 
     try {
       await signIn(email, password);
-      router.push("/");
+      router.push("/dashboard");
     } catch (err) {
       setError(
         err instanceof Error
@@ -88,20 +88,22 @@ export default function SignInPage() {
                 onChange={(e) => setPassword(e.target.value)}
                 disabled={loading}
                 required
-                InputProps={{
-                  endAdornment: (
-                    <InputAdornment position="end">
-                      <IconButton
-                        aria-label={
-                          showPassword ? "Hide password" : "Show password"
-                        }
-                        onClick={() => setShowPassword((prev) => !prev)}
-                        edge="end"
-                      >
-                        {showPassword ? <VisibilityOff /> : <Visibility />}
-                      </IconButton>
-                    </InputAdornment>
-                  ),
+                slotProps={{
+                  input: {
+                    endAdornment: (
+                      <InputAdornment position="end">
+                        <IconButton
+                          aria-label={
+                            showPassword ? "Hide password" : "Show password"
+                          }
+                          onClick={() => setShowPassword((prev) => !prev)}
+                          edge="end"
+                        >
+                          {showPassword ? <VisibilityOff /> : <Visibility />}
+                        </IconButton>
+                      </InputAdornment>
+                    ),
+                  },
                 }}
               />
               <Button
@@ -111,7 +113,14 @@ export default function SignInPage() {
                 disabled={loading}
                 sx={{ py: 1.5 }}
               >
-                {loading ? <CircularProgress size={24} /> : "Sign In"}
+                {loading ? (
+                  <Stack direction="row" spacing={1} alignItems="center">
+                    <CircularProgress size={20} color="inherit" />
+                    <span>Signing in…</span>
+                  </Stack>
+                ) : (
+                  "Sign In"
+                )}
               </Button>
             </Box>
 

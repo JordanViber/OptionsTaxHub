@@ -2,17 +2,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
 import {
+  useAnalyzePortfolio,
   usePortfolioHistory,
-  usePushNotificationSubscription,
   useUploadPortfolio,
 } from "../../lib/api";
 
 type WrapperProps = { children: React.ReactNode };
-
-interface SubscriptionPayload {
-  endpoint: string;
-  keys: { p256dh: string; auth: string };
-}
 
 const createWrapper = () => {
   const queryClient = new QueryClient({
@@ -52,7 +47,7 @@ function UploadComponent({ file }: Readonly<{ file: File }>) {
 }
 
 function HistoryComponent() {
-  const { data, error } = usePortfolioHistory(true);
+  const { data, error } = usePortfolioHistory("test-user-id");
   return (
     <div>
       <span>{getHistoryStatus(data, error)}</span>
@@ -61,7 +56,7 @@ function HistoryComponent() {
 }
 
 function HistoryDisabledComponent() {
-  const { data, error } = usePortfolioHistory();
+  const { data, error } = usePortfolioHistory(undefined);
   return (
     <div>
       <span>{getHistoryStatus(data, error)}</span>
@@ -69,15 +64,11 @@ function HistoryDisabledComponent() {
   );
 }
 
-function PushComponent({
-  subscription,
-}: Readonly<{
-  subscription: SubscriptionPayload;
-}>) {
-  const { mutate, data, error } = usePushNotificationSubscription();
+function AnalyzeComponent({ file }: Readonly<{ file: File }>) {
+  const { mutate, data, error } = useAnalyzePortfolio();
   return (
     <div>
-      <button onClick={() => mutate(subscription)}>Subscribe</button>
+      <button onClick={() => mutate({ file })}>Analyze</button>
       <span>{getStatus(data, error)}</span>
     </div>
   );
@@ -178,53 +169,46 @@ describe("api hooks", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("subscribes to push notifications successfully", async () => {
-    const subscription = {
-      endpoint: "https://example.com/endpoint",
-      keys: { p256dh: "key", auth: "auth" },
-    };
+  it("analyzes portfolio successfully", async () => {
+    const file = new File(["content"], "test.csv", { type: "text/csv" });
 
     globalThis.fetch = jest.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({ success: true, message: "ok" }),
+      json: async () => ({
+        positions: [{ symbol: "AAPL" }],
+        suggestions: [],
+        wash_sale_flags: [],
+        summary: {},
+      }),
     } as Response);
 
-    render(<PushComponent subscription={subscription} />, {
-      wrapper: createWrapper(),
-    });
+    render(<AnalyzeComponent file={file} />, { wrapper: createWrapper() });
 
-    fireEvent.click(screen.getByText("Subscribe"));
+    fireEvent.click(screen.getByText("Analyze"));
 
     await waitFor(() => {
       expect(screen.getByText("success")).toBeInTheDocument();
     });
 
-    // Successfully subscribed without console logging
     expect(globalThis.fetch).toHaveBeenCalled();
   });
 
-  it("handles push notification subscription errors", async () => {
-    const subscription = {
-      endpoint: "https://example.com/endpoint",
-      keys: { p256dh: "key", auth: "auth" },
-    };
+  it("handles analyze portfolio errors", async () => {
+    const file = new File(["content"], "test.csv", { type: "text/csv" });
 
     globalThis.fetch = jest.fn().mockResolvedValue({
       ok: false,
-      statusText: "Forbidden",
+      statusText: "Bad Request",
     } as Response);
 
-    render(<PushComponent subscription={subscription} />, {
-      wrapper: createWrapper(),
-    });
+    render(<AnalyzeComponent file={file} />, { wrapper: createWrapper() });
 
-    fireEvent.click(screen.getByText("Subscribe"));
+    fireEvent.click(screen.getByText("Analyze"));
 
     await waitFor(() => {
       expect(screen.getByText("error")).toBeInTheDocument();
     });
 
-    // Error handled gracefully without console logging
     expect(globalThis.fetch).toHaveBeenCalled();
   });
 });

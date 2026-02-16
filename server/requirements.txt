@@ -2,7 +2,14 @@ fastapi
 uvicorn
 python-multipart
 pandas
+numpy
 pytest
 httpx
 python-dotenv
 pywebpush
+PyJWT>=2.8.0
+yfinance>=0.2.0
+google-genai>=1.0.0
+scikit-learn>=1.5.0
+supabase>=2.0.0
+stripe>=11.0.0
