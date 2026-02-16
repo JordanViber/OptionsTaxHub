@@ -6,7 +6,7 @@ const API_URL = "http://localhost:8080";
 // Using a simple LRU-like implementation with time-based expiration
 const shownNotifications = new Map();
 const NOTIFICATION_DEDUP_WINDOW = 5000; // 5 seconds
-const MAX_NOTIFICATION_ENTRIES = 50; // Reduced from 100 for more aggressive cleanup
+const MAX_NOTIFICATION_ENTRIES = 50; // Maximum entries before LRU eviction kicks in
 const CLEANUP_INTERVAL = 10000; // Clean up every 10 seconds
 
 // Periodic cleanup to prevent memory leaks

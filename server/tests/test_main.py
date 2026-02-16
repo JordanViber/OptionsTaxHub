@@ -521,7 +521,7 @@ def test_analyze_portfolio_saves_history(monkeypatch):
     monkeypatch.setattr("main.compute_lot_metrics", lambda l: l)
     monkeypatch.setattr("main.detect_wash_sales", lambda t: [])
     monkeypatch.setattr("main.prepare_positions_for_ai", lambda l: [])
-    monkeypatch.setattr("main.db_get_tax_profile", lambda uid: None)
+    monkeypatch.setattr("main.db_get_tax_profile", lambda uid: None)  # No profile exists
     monkeypatch.setattr("main.generate_suggestions", lambda **kw: [])
     monkeypatch.setattr("main.aggregate_positions", lambda l: positions)
     monkeypatch.setattr("main.build_portfolio_summary", lambda p, s, w: summary)
@@ -534,6 +534,9 @@ def test_analyze_portfolio_saves_history(monkeypatch):
 
     assert response.status_code == 200
     assert save_called["value"] is True
+    # Verify AI is disabled by default when no profile exists
+    data = response.json()
+    assert data["tax_profile"]["ai_suggestions_enabled"] is False
 
 
 def test_analyze_portfolio_ai_failure_adds_warning(monkeypatch):
@@ -696,7 +699,7 @@ def test_analyze_portfolio_invalid_user_id():
     )
     assert response.status_code == 400
     assert "Invalid user_id format" in response.json()["detail"]
-    
+
     # Test XSS attempt
     response = client.post(
         "/api/portfolio/analyze?user_id=<script>alert('xss')</script>",
@@ -704,7 +707,7 @@ def test_analyze_portfolio_invalid_user_id():
     )
     assert response.status_code == 400
     assert "Invalid user_id format" in response.json()["detail"]
-    
+
     # Test too long user_id
     response = client.post(
         "/api/portfolio/analyze?user_id=" + "a" * 65,
