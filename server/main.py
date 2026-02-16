@@ -2,6 +2,7 @@ import os
 import logging
 import re
 from typing import Annotated, Optional
+from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, UploadFile, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -46,8 +47,6 @@ logger = logging.getLogger(__name__)
 load_dotenv(".env.local")
 load_dotenv(".env")
 
-app = FastAPI()
-
 # Get environment variables
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -55,6 +54,28 @@ API_KEY_SECRET = os.environ.get("API_KEY_SECRET")
 VAPID_PRIVATE_KEY = os.environ.get("VAPID_PRIVATE_KEY")
 VAPID_PUBLIC_KEY = os.environ.get("VAPID_PUBLIC_KEY")
 VAPID_CLAIM_EMAIL = os.environ.get("VAPID_CLAIM_EMAIL", "admin@optionstaxhub.com")
+STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifecycle manager for startup and shutdown events."""
+    # Startup
+    logger.info("Running startup validation...")
+    
+    # Warn if Stripe is not configured (it's optional for MVP)
+    if not STRIPE_SECRET_KEY:
+        logger.warning(
+            "STRIPE_SECRET_KEY not set. Stripe tip/donation endpoints will return 503."
+        )
+    else:
+        logger.info("Stripe API key configured successfully.")
+    
+    yield
+    
+    # Shutdown (if needed in future)
+    logger.info("Shutting down...")
+
+app = FastAPI(lifespan=lifespan)
 
 # In-memory storage for push subscriptions
 # NOTE: This is temporary storage for development/MVP. Production implementation
@@ -395,8 +416,6 @@ async def get_tax_profile_endpoint(user_id: str):
 # --- Stripe Tip/Donation Endpoints ---
 
 import stripe
-
-STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY")
 
 # Tip tiers: price_id → metadata
 TIP_TIERS = {
