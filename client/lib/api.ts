@@ -69,12 +69,13 @@ async function analyzePortfolio(
   formData.append("file", params.file);
 
   const queryParams = new URLSearchParams();
-  if (params.filingStatus)
+  if (params.filingStatus != null)
     queryParams.set("filing_status", params.filingStatus);
-  if (params.estimatedIncome)
+  if (params.estimatedIncome != null)
     queryParams.set("estimated_income", params.estimatedIncome.toString());
-  if (params.taxYear) queryParams.set("tax_year", params.taxYear.toString());
-  if (params.userId) queryParams.set("user_id", params.userId);
+  if (params.taxYear != null)
+    queryParams.set("tax_year", params.taxYear.toString());
+  if (params.userId != null) queryParams.set("user_id", params.userId);
 
   const url = `${API_URL}/api/portfolio/analyze?${queryParams.toString()}`;
 

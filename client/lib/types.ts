@@ -1,14 +1,18 @@
 /**
  * TypeScript type definitions for OptionsTaxHub portfolio analysis.
  *
- * These types mirror the backend Pydantic models to ensure type safety
- * across the full stack. Keep in sync with server/models.py.
+ * These types generally mirror the backend Pydantic models to ensure type safety
+ * across the full stack. Keep in sync with server/models.py, noting that some
+ * enums (e.g. certain transaction codes) are intentionally limited to the subset
+ * used by the UI.
  *
  * DISCLAIMER: For educational/simulation purposes only — not financial or tax advice.
  */
 
 // --- Enums ---
 
+// NOTE: This is a subset of the backend transaction codes, limited to those
+// currently used/understood by the UI. See server/models.py for the full set.
 export type TransCode = "Buy" | "Sell" | "STO" | "BTC" | "BTO" | "STC" | "OEXP";
 
 export type FilingStatus =

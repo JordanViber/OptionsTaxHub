@@ -30,38 +30,51 @@ def _compute_sale_loss(
     sell: Transaction,
     buys_sorted: list[Transaction],
     used_buy_quantities: dict[int, float],
-) -> float:
-    """Compute the realized loss for a sell transaction using FIFO cost basis."""
+) -> tuple[float, dict[int, float]]:
+    """
+    Compute the realized loss for a sell transaction using FIFO cost basis.
+    
+    Returns:
+        Tuple of (loss_amount, updated_used_buy_quantities)
+    """
     symbol_buys = [
         (i, b)
         for i, b in enumerate(buys_sorted)
         if b.instrument == sell.instrument and b.activity_date <= sell.activity_date
     ]
     if not symbol_buys:
-        return 0.0
+        return 0.0, used_buy_quantities
 
     remaining_sell_qty = sell.quantity
     total_cost_basis = 0.0
+    updated_used = used_buy_quantities.copy()
 
     for buy_idx, buy in symbol_buys:
         if remaining_sell_qty <= 0:
             break
-        available = buy.quantity - used_buy_quantities.get(buy_idx, 0)
+        available = buy.quantity - updated_used.get(buy_idx, 0)
         if available <= 0:
             continue
         matched = min(available, remaining_sell_qty)
         total_cost_basis += matched * buy.price
         remaining_sell_qty -= matched
+        # Track consumed quantities
+        updated_used[buy_idx] = updated_used.get(buy_idx, 0) + matched
 
     sale_proceeds = sell.quantity * sell.price
-    return total_cost_basis - sale_proceeds
+    return total_cost_basis - sale_proceeds, updated_used
 
 
 def _find_qualifying_repurchases(
     sell: Transaction,
     buys_sorted: list[Transaction],
 ) -> list[tuple[int, Transaction]]:
-    """Find repurchases within the 61-day wash-sale window around a sale."""
+    """
+    Find repurchases within the 61-day wash-sale window around a sale.
+    
+    The wash-sale window is 30 days before through 30 days after the sale,
+    and INCLUDES same-day purchases.
+    """
     window_start = sell.activity_date - timedelta(days=WASH_SALE_WINDOW_DAYS)
     window_end = sell.activity_date + timedelta(days=WASH_SALE_WINDOW_DAYS)
 
@@ -70,7 +83,6 @@ def _find_qualifying_repurchases(
         for i, b in enumerate(buys_sorted)
         if b.instrument == sell.instrument
         and window_start <= b.activity_date <= window_end
-        and b.activity_date != sell.activity_date
     ]
 
 
@@ -135,7 +147,7 @@ def detect_wash_sales(
     used_buy_quantities: dict[int, float] = {}
 
     for sell in sells_sorted:
-        loss = _compute_sale_loss(sell, buys_sorted, used_buy_quantities)
+        loss, used_buy_quantities = _compute_sale_loss(sell, buys_sorted, used_buy_quantities)
         if loss <= 0:
             continue
 
@@ -143,32 +155,49 @@ def detect_wash_sales(
         if not qualifying:
             continue
 
-        total_repurchase_qty = sum(b.quantity for _, b in qualifying)
+        # Sort qualifying repurchases chronologically
+        qualifying_sorted = sorted(qualifying, key=lambda x: x[1].activity_date)
+        total_repurchase_qty = sum(b.quantity for _, b in qualifying_sorted)
+        
+        # Calculate total disallowed loss based on replacement ratio
         if total_repurchase_qty >= sell.quantity:
             disallowed_loss = loss
         else:
             disallowed_loss = loss * (total_repurchase_qty / sell.quantity)
 
-        earliest_repurchase = min(qualifying, key=lambda x: x[1].activity_date)
-        repurchase_txn = earliest_repurchase[1]
-        original_cost = repurchase_txn.price * min(repurchase_txn.quantity, sell.quantity)
-        adjusted_cost = original_cost + disallowed_loss
+        # Allocate disallowed loss across qualifying repurchases chronologically
+        remaining_disallowed = disallowed_loss
+        remaining_qty = min(total_repurchase_qty, sell.quantity)
+        
+        for repurchase_idx, repurchase_txn in qualifying_sorted:
+            if remaining_qty <= 0 or remaining_disallowed <= 0:
+                break
+                
+            # Allocate proportionally based on this repurchase's share of total replacement qty
+            repurchase_qty = min(repurchase_txn.quantity, remaining_qty)
+            allocated_loss = disallowed_loss * (repurchase_qty / min(total_repurchase_qty, sell.quantity))
+            
+            original_cost = repurchase_txn.price * repurchase_qty
+            adjusted_cost = original_cost + allocated_loss
 
-        explanation = _build_wash_sale_explanation(sell, repurchase_txn, loss, disallowed_loss)
+            explanation = _build_wash_sale_explanation(sell, repurchase_txn, loss, allocated_loss)
 
-        wash_sale_flags.append(
-            WashSaleFlag(
-                symbol=sell.instrument,
-                sale_date=sell.activity_date,
-                sale_quantity=sell.quantity,
-                sale_loss=loss,
-                repurchase_date=repurchase_txn.activity_date,
-                repurchase_quantity=min(total_repurchase_qty, sell.quantity),
-                disallowed_loss=round(disallowed_loss, 2),
-                adjusted_cost_basis=round(adjusted_cost, 2),
-                explanation=explanation,
+            wash_sale_flags.append(
+                WashSaleFlag(
+                    symbol=sell.instrument,
+                    sale_date=sell.activity_date,
+                    sale_quantity=sell.quantity,
+                    sale_loss=loss,
+                    repurchase_date=repurchase_txn.activity_date,
+                    repurchase_quantity=repurchase_qty,
+                    disallowed_loss=round(allocated_loss, 2),
+                    adjusted_cost_basis=round(adjusted_cost, 2),
+                    explanation=explanation,
+                )
             )
-        )
+            
+            remaining_qty -= repurchase_qty
+            remaining_disallowed -= allocated_loss
 
     return wash_sale_flags
 

@@ -13,7 +13,7 @@
     "dev": "concurrently \"npm run dev:client\" \"npm run dev:server\"",
     "dev:client": "cd client && npm run dev",
     "dev:server": "cd server && npm run dev",
-    "stop": "taskkill /F /IM node.exe 2>nul & taskkill /F /IM uvicorn.exe 2>nul & echo Stopped",
+    "stop": "node -e \"process.exit(process.platform === 'win32' ? 0 : 1)\" && (taskkill /F /IM node.exe 2>nul & taskkill /F /IM uvicorn.exe 2>nul & echo Stopped) || (pkill -f 'node|uvicorn' 2>/dev/null && echo Stopped || echo No processes found)",
     "test": "npm run test:client && npm run test:server",
     "test:client": "cd client && npm test",
     "test:server": "cd server && npm test",

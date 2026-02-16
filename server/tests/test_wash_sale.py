@@ -149,13 +149,13 @@ class TestComputeSaleLoss:
 
     def test_no_buys_returns_zero(self):
         sell = self._make_txn("AAPL", TransCode.SELL, date(2025, 6, 1), 10, 100)
-        loss = _compute_sale_loss(sell, [], {})
+        loss, _ = _compute_sale_loss(sell, [], {})
         assert loss == pytest.approx(0.0)
 
     def test_no_matching_buys_returns_zero(self):
         sell = self._make_txn("AAPL", TransCode.SELL, date(2025, 6, 1), 10, 100)
         buy = self._make_txn("MSFT", TransCode.BUY, date(2025, 1, 1), 10, 150)
-        loss = _compute_sale_loss(sell, [buy], {})
+        loss, _ = _compute_sale_loss(sell, [buy], {})
         assert loss == pytest.approx(0.0)
 
 
@@ -182,11 +182,12 @@ class TestFindQualifyingRepurchases:
         result = _find_qualifying_repurchases(sell, [buy])
         assert len(result) == 0
 
-    def test_same_day_excluded(self):
+    def test_same_day_included(self):
+        """Same-day purchases should be included in wash-sale detection."""
         sell = self._make_txn("AAPL", TransCode.SELL, date(2025, 6, 1), 10, 100)
         buy = self._make_txn("AAPL", TransCode.BUY, date(2025, 6, 1), 10, 100)
         result = _find_qualifying_repurchases(sell, [buy])
-        assert len(result) == 0
+        assert len(result) == 1
 
 
 # --- Partial wash sale ---

@@ -147,8 +147,8 @@ def _save_history_best_effort(
 async def analyze_portfolio(
     file: Annotated[UploadFile, File()],
     filing_status: Optional[str] = Query(default="single"),
-    estimated_income: Optional[float] = Query(default=75000.0),
-    tax_year: Optional[int] = Query(default=2025),
+    estimated_income: Optional[float] = Query(default=None, ge=0, description="Estimated annual income (must be >= 0)"),
+    tax_year: Optional[int] = Query(default=None, ge=2024, le=2026, description="Tax year (2024-2026)"),
     user_id: Optional[str] = Query(default=None),
 ):
     """
@@ -181,8 +181,8 @@ async def analyze_portfolio(
 
     tax_profile = TaxProfile(
         filing_status=fs,
-        estimated_annual_income=estimated_income or 75000.0,
-        tax_year=tax_year or 2025,
+        estimated_annual_income=estimated_income if estimated_income is not None else 75000.0,
+        tax_year=tax_year if tax_year is not None else 2025,
     )
 
     all_warnings = list(parse_errors)
