@@ -244,6 +244,9 @@ async def get_portfolio_history(user_id: str, limit: int = Query(default=20, ge=
 
     Returns summary metadata (filename, date, positions count, market value)
     without the full position data (which is processed in-memory only).
+    
+    **Security Note**: This endpoint uses client-supplied user_id without JWT validation.
+    For production, implement proper authentication and derive user_id from verified tokens.
     """
     history = get_analysis_history(user_id, limit)
     return history
@@ -258,6 +261,9 @@ async def get_portfolio_analysis(
     Retrieve a single past portfolio analysis by ID, including the full result.
 
     Used when a user clicks a history item to reload that report.
+    
+    **Security Note**: This endpoint uses client-supplied user_id without JWT validation.
+    For production, implement proper authentication and derive user_id from verified tokens.
     """
     record = get_analysis_by_id(analysis_id, user_id)
     if not record:
@@ -272,6 +278,9 @@ async def cleanup_orphan_history(user_id: str):
 
     These are legacy rows created before the app started persisting
     the full analysis result. Returns the count of deleted rows.
+    
+    **Security Note**: This endpoint uses client-supplied user_id without JWT validation.
+    For production, implement proper authentication and derive user_id from verified tokens.
     """
     deleted = delete_analyses_without_result(user_id)
     return {"deleted": deleted}
@@ -286,6 +295,9 @@ async def delete_portfolio_analysis(
     Delete a single portfolio analysis by ID.
 
     Enforces ownership via user_id query param.
+    
+    **Security Note**: This endpoint uses client-supplied user_id without JWT validation.
+    For production, implement proper authentication and derive user_id from verified tokens.
     """
     deleted = delete_analysis_by_id(analysis_id, user_id)
     if not deleted:

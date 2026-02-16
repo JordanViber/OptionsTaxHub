@@ -139,6 +139,20 @@ OptionsTaxHub/
 - Simulation only, not real trading
 - Always consult a licensed financial advisor
 
+### Security Considerations
+
+**⚠️ Authentication & Authorization**: The current implementation uses client-supplied `user_id` parameters 
+for data access, which is suitable for development/demo purposes but **not production-ready**. 
+
+In a production environment, you should:
+- Implement proper authentication using JWT tokens (e.g., Supabase Auth)
+- Derive user identity from authenticated session tokens instead of query parameters
+- Enable Row Level Security (RLS) in Supabase to enforce access control at the database level
+- Never rely on client-supplied user IDs for authorization decisions
+
+The backend currently uses Supabase service role keys (which bypass RLS) for simplicity. 
+For production deployments, migrate to user-scoped tokens and enable RLS policies.
+
 ## 📝 Development Guidelines
 
 - Always use TypeScript in frontend with strict typing
