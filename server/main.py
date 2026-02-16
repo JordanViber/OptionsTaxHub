@@ -219,16 +219,24 @@ async def analyze_portfolio(
             },
         )
 
-    # Build tax profile from query params
+    # Build tax profile from query params, but check user's saved profile for AI consent
     try:
         fs = FilingStatus(filing_status)
     except ValueError:
         fs = FilingStatus.SINGLE
 
+    # Check if user has AI suggestions enabled in their saved profile
+    ai_enabled = False
+    if user_id:
+        saved_profile = get_tax_profile(user_id)
+        if saved_profile:
+            ai_enabled = saved_profile.get("ai_suggestions_enabled", False)
+
     tax_profile = TaxProfile(
         filing_status=fs,
         estimated_annual_income=estimated_income or 75000.0,
         tax_year=tax_year or 2025,
+        ai_suggestions_enabled=ai_enabled,
     )
 
     all_warnings = list(parse_errors)
@@ -254,8 +262,14 @@ async def analyze_portfolio(
     if wash_sale_flags:
         tax_lots = adjust_lots_for_wash_sales(tax_lots, wash_sale_flags)
 
-    # Get AI-powered suggestions
-    ai_suggestions = _try_get_ai_suggestions(tax_lots, all_warnings)
+    # Get AI-powered suggestions only if user has opted in
+    ai_suggestions = None
+    if ai_enabled:
+        ai_suggestions = _try_get_ai_suggestions(tax_lots, all_warnings)
+    else:
+        all_warnings.append(
+            "AI-powered suggestions are disabled. Enable them in Settings to get personalized replacement security recommendations."
+        )
 
     suggestions = generate_suggestions(
         tax_lots=tax_lots,
