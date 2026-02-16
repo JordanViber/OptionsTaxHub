@@ -32,7 +32,7 @@ security = HTTPBearer(auto_error=False)
 def get_jwt_secret() -> str:
     """
     Get JWT secret from environment.
-    
+
     In production, this should be cached and only retrieved once.
     The secret is used to verify JWT tokens signed by Supabase Auth.
     """
@@ -47,13 +47,13 @@ def get_jwt_secret() -> str:
 def verify_jwt_token(token: str) -> dict:
     """
     Verify JWT token and extract claims.
-    
+
     Args:
         token: JWT token from Authorization header
-        
+
     Returns:
         Decoded JWT claims including user_id (sub)
-        
+
     Raises:
         HTTPException: If token is invalid or expired
     """
@@ -74,18 +74,18 @@ def verify_jwt_token(token: str) -> dict:
         )
 
 
-async def get_current_user(
+def get_current_user(
     credentials: Optional[HTTPAuthCredentials] = Security(security),
 ) -> str:
     """
     Extract and verify user_id from JWT token in Authorization header.
-    
+
     Args:
         credentials: HTTP Bearer token from Authorization header
-        
+
     Returns:
         Authenticated user_id (UUID from Supabase Auth)
-        
+
     Raises:
         HTTPException: If no token provided or token is invalid
     """
@@ -94,10 +94,10 @@ async def get_current_user(
             status_code=401,
             detail="Authentication required",
         )
-    
+
     # Verify token and extract user_id (sub claim)
     payload = verify_jwt_token(credentials.credentials)
-    
+
     # Supabase stores user_id in the 'sub' (subject) claim
     user_id = payload.get("sub")
     if not user_id:
@@ -105,18 +105,18 @@ async def get_current_user(
             status_code=401,
             detail="Invalid token: user_id not found",
         )
-    
+
     return user_id
 
 
 def enforce_ownership(user_id: str, resource_owner_id: str) -> None:
     """
     Enforce that authenticated user owns the resource.
-    
+
     Args:
         user_id: Authenticated user's ID from JWT
         resource_owner_id: ID of the resource's owner
-        
+
     Raises:
         HTTPException: If user does not own the resource
     """

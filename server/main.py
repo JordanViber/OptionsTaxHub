@@ -254,7 +254,7 @@ async def get_portfolio_history(
 
     Returns summary metadata (filename, date, positions count, market value)
     without the full position data (which is processed in-memory only).
-    
+
     **Authentication Required**: Must provide valid Supabase JWT token.
     """
     history = get_analysis_history(user_id, limit)
@@ -270,7 +270,7 @@ async def get_portfolio_analysis(
     Retrieve a single past portfolio analysis by ID, including the full result.
 
     Used when a user clicks a history item to reload that report.
-    
+
     **Authentication Required**: Must provide valid Supabase JWT token.
     **Authorization**: User can only access their own analyses.
     """
@@ -289,7 +289,7 @@ async def cleanup_orphan_history(user_id: str = Depends(get_current_user)):
 
     These are legacy rows created before the app started persisting
     the full analysis result. Returns the count of deleted rows.
-    
+
     **Authentication Required**: Must provide valid Supabase JWT token.
     """
     deleted = delete_analyses_without_result(user_id)
@@ -355,7 +355,7 @@ async def save_tax_profile_endpoint(
 
     Upserts the profile so each user has exactly one row.
     Falls back to echo-only if Supabase is unavailable.
-    
+
     **Authentication Required**: Must provide valid Supabase JWT token.
     **Authorization**: User can only save their own tax profile.
     """
@@ -387,7 +387,7 @@ async def get_tax_profile_endpoint(user_id: str = Depends(get_current_user)):
     Retrieve authenticated user's saved tax profile from Supabase.
 
     Returns default profile if no saved profile exists.
-    
+
     **Authentication Required**: Must provide valid Supabase JWT token.
     """
     saved = db_get_tax_profile(user_id)

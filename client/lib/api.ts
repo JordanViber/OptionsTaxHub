@@ -96,7 +96,7 @@ async function analyzePortfolio(
 
   const url = `${API_URL}/api/portfolio/analyze?${queryParams.toString()}`;
   const headers = await getAuthHeaders();
-  
+
   // Don't set Content-Type for FormData (browser will set it with boundary)
   const headersForForm: HeadersInit = { Authorization: headers["Authorization"] };
 
@@ -171,7 +171,7 @@ export function useFetchPrices(symbols: string[], enabled = false) {
 
 /**
  * Save authenticated user's tax profile settings.
- * 
+ *
  * Requires JWT authentication.
  */
 async function saveTaxProfile(
@@ -209,7 +209,7 @@ export function useSaveTaxProfile() {
 
 /**
  * Fetch authenticated user's tax profile.
- * 
+ *
  * Requires JWT authentication.
  */
 async function fetchTaxProfile(): Promise<TaxProfile> {
@@ -281,7 +281,7 @@ export function useTaxBrackets(
 
 /**
  * Fetch authenticated user's past portfolio analyses from Supabase.
- * 
+ *
  * Requires JWT authentication.
  */
 async function fetchPortfolioHistory(): Promise<AnalysisHistoryItem[]> {
@@ -339,7 +339,7 @@ export async function fetchAnalysisById(
  *
  * These are legacy rows created before the app started persisting
  * full analysis results. Called once on mount to clean up.
- * 
+ *
  * Requires JWT authentication.
  */
 export async function cleanupOrphanHistory(): Promise<void> {
@@ -362,7 +362,7 @@ export async function deleteAnalysis(
   const headers = await getAuthHeaders();
   const response = await fetch(
     `${API_URL}/api/portfolio/analysis/${analysisId}`,
-    { 
+    {
       method: "DELETE",
       headers,
     },

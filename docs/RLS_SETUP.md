@@ -1,7 +1,7 @@
 """
 Row Level Security (RLS) Setup Guide for OptionsTaxHub
 
-This document provides instructions for enabling Row Level Security (RLS) 
+This document provides instructions for enabling Row Level Security (RLS)
 in Supabase to enforce database-level access control.
 
 ## Why RLS Matters
