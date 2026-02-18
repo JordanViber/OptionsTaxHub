@@ -86,6 +86,9 @@ describe("PositionsTable", () => {
           is_long_term: true,
           wash_sale_risk: false,
           asset_type: "stock",
+          total_cost_basis: 0,
+          earliest_purchase_date: "",
+          tax_lots: [],
         },
         {
           symbol: "GOOGL",
@@ -99,6 +102,9 @@ describe("PositionsTable", () => {
           is_long_term: true,
           wash_sale_risk: false,
           asset_type: "stock",
+          total_cost_basis: 0,
+          earliest_purchase_date: "",
+          tax_lots: [],
         },
       ];
 
@@ -121,6 +127,9 @@ describe("PositionsTable", () => {
         is_long_term: true,
         wash_sale_risk: false,
         asset_type: "stock",
+        total_cost_basis: 0,
+        earliest_purchase_date: "",
+        tax_lots: [],
       };
 
       render(<PositionsTable positions={[position]} />);
@@ -157,6 +166,9 @@ describe("PositionsTable", () => {
         is_long_term: false,
         wash_sale_risk: false,
         asset_type: "stock",
+        total_cost_basis: 0,
+        earliest_purchase_date: "",
+        tax_lots: [],
       };
 
       const { container } = render(<PositionsTable positions={[position]} />);
@@ -178,6 +190,9 @@ describe("PositionsTable", () => {
         is_long_term: true,
         wash_sale_risk: false,
         asset_type: "stock",
+        total_cost_basis: 0,
+        earliest_purchase_date: "",
+        tax_lots: [],
       };
 
       const { container } = render(<PositionsTable positions={[position]} />);
@@ -199,6 +214,9 @@ describe("PositionsTable", () => {
         is_long_term: false,
         wash_sale_risk: false,
         asset_type: "stock",
+        total_cost_basis: 0,
+        earliest_purchase_date: "",
+        tax_lots: [],
       };
 
       const { container } = render(<PositionsTable positions={[position]} />);
@@ -221,6 +239,9 @@ describe("PositionsTable", () => {
         is_long_term: false,
         wash_sale_risk: false,
         asset_type: "stock",
+        total_cost_basis: 0,
+        earliest_purchase_date: "",
+        tax_lots: [],
       };
 
       const { container } = render(<PositionsTable positions={[position]} />);
@@ -245,6 +266,9 @@ describe("PositionsTable", () => {
         is_long_term: true,
         wash_sale_risk: false,
         asset_type: "stock",
+        total_cost_basis: 0,
+        earliest_purchase_date: "",
+        tax_lots: [],
       };
 
       render(<PositionsTable positions={[position]} />);
@@ -265,6 +289,9 @@ describe("PositionsTable", () => {
         is_long_term: false,
         wash_sale_risk: false,
         asset_type: "stock",
+        total_cost_basis: 0,
+        earliest_purchase_date: "",
+        tax_lots: [],
       };
 
       render(<PositionsTable positions={[position]} />);
@@ -285,6 +312,9 @@ describe("PositionsTable", () => {
         is_long_term: true,
         wash_sale_risk: false,
         asset_type: "stock",
+        total_cost_basis: 0,
+        earliest_purchase_date: "",
+        tax_lots: [],
       };
 
       render(<PositionsTable positions={[position]} />);
@@ -307,6 +337,9 @@ describe("PositionsTable", () => {
         is_long_term: false,
         wash_sale_risk: true,
         asset_type: "stock",
+        total_cost_basis: 0,
+        earliest_purchase_date: "",
+        tax_lots: [],
       };
 
       render(<PositionsTable positions={[position]} />);
@@ -327,6 +360,9 @@ describe("PositionsTable", () => {
         is_long_term: true,
         wash_sale_risk: false,
         asset_type: "stock",
+        total_cost_basis: 0,
+        earliest_purchase_date: "",
+        tax_lots: [],
       };
 
       render(<PositionsTable positions={[position]} />);
@@ -349,6 +385,9 @@ describe("PositionsTable", () => {
         is_long_term: true,
         wash_sale_risk: false,
         asset_type: "stock",
+        total_cost_basis: 0,
+        earliest_purchase_date: "",
+        tax_lots: [],
       };
 
       render(<PositionsTable positions={[position]} />);
@@ -360,7 +399,7 @@ describe("PositionsTable", () => {
       const position: Position = {
         symbol: "AAPL_CALL",
         quantity: 10,
-        avg_cost_basis: 5.0,
+        avg_cost_basis: 5,
         current_price: 7.5,
         market_value: 750,
         unrealized_pnl: 250,
@@ -369,6 +408,9 @@ describe("PositionsTable", () => {
         is_long_term: false,
         wash_sale_risk: false,
         asset_type: "option",
+        total_cost_basis: 0,
+        earliest_purchase_date: "",
+        tax_lots: [],
       };
 
       render(<PositionsTable positions={[position]} />);
@@ -391,6 +433,9 @@ describe("PositionsTable", () => {
         is_long_term: true,
         wash_sale_risk: false,
         asset_type: "stock",
+        total_cost_basis: 0,
+        earliest_purchase_date: "",
+        tax_lots: [],
       };
 
       render(<PositionsTable positions={[position]} />);
@@ -412,6 +457,9 @@ describe("PositionsTable", () => {
         is_long_term: false,
         wash_sale_risk: false,
         asset_type: "stock",
+        total_cost_basis: 0,
+        earliest_purchase_date: "",
+        tax_lots: [],
       };
 
       render(<PositionsTable positions={[position]} />);
@@ -432,6 +480,9 @@ describe("PositionsTable", () => {
         is_long_term: true,
         wash_sale_risk: false,
         asset_type: "stock",
+        total_cost_basis: 0,
+        earliest_purchase_date: "",
+        tax_lots: [],
       };
 
       render(<PositionsTable positions={[position]} />);
@@ -453,6 +504,9 @@ describe("PositionsTable", () => {
         is_long_term: false,
         wash_sale_risk: false,
         asset_type: "stock",
+        total_cost_basis: 0,
+        earliest_purchase_date: "",
+        tax_lots: [],
       };
 
       render(<PositionsTable positions={[position]} />);
@@ -473,6 +527,9 @@ describe("PositionsTable", () => {
         is_long_term: false,
         wash_sale_risk: false,
         asset_type: "stock",
+        total_cost_basis: 0,
+        earliest_purchase_date: "",
+        tax_lots: [],
       };
 
       render(<PositionsTable positions={[position]} />);
@@ -493,6 +550,9 @@ describe("PositionsTable", () => {
         is_long_term: true,
         wash_sale_risk: false,
         asset_type: "stock",
+        total_cost_basis: 0,
+        earliest_purchase_date: "",
+        tax_lots: [],
       };
 
       render(<PositionsTable positions={[position]} />);
@@ -517,6 +577,9 @@ describe("PositionsTable", () => {
           is_long_term: true,
           wash_sale_risk: false,
           asset_type: "stock",
+          total_cost_basis: 0,
+          earliest_purchase_date: "",
+          tax_lots: [],
         },
         {
           symbol: "LOSER",
@@ -530,6 +593,9 @@ describe("PositionsTable", () => {
           is_long_term: false,
           wash_sale_risk: true,
           asset_type: "stock",
+          total_cost_basis: 0,
+          earliest_purchase_date: "",
+          tax_lots: [],
         },
         {
           symbol: "BREAKEVEN",
@@ -543,6 +609,9 @@ describe("PositionsTable", () => {
           is_long_term: true,
           wash_sale_risk: false,
           asset_type: "stock",
+          total_cost_basis: 0,
+          earliest_purchase_date: "",
+          tax_lots: [],
         },
       ];
 

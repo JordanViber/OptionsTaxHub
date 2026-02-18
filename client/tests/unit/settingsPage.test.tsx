@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -193,10 +193,8 @@ describe("SettingsPage", () => {
 
       await screen.findByLabelText("Filing Status");
 
-      const incomeInput = screen.getByLabelText(
-        "Estimated Annual Income",
-      ) as HTMLInputElement;
-      expect(incomeInput.value).toBe("150000");
+      const incomeInput = screen.getByLabelText("Estimated Annual Income");
+      expect((incomeInput as HTMLInputElement).value).toBe("150000");
 
       const taxYearSelect = screen.getByLabelText("Tax Year");
       expect(taxYearSelect).toBeInTheDocument();
@@ -224,10 +222,8 @@ describe("SettingsPage", () => {
 
       renderWithClient(<SettingsPage />);
 
-      const incomeInput = screen.getByLabelText(
-        "Estimated Annual Income",
-      ) as HTMLInputElement;
-      expect(incomeInput.value).toBe("75000"); // default
+      const incomeInput = screen.getByLabelText("Estimated Annual Income");
+      expect((incomeInput as HTMLInputElement).value).toBe("75000"); // default
     });
   });
 
@@ -298,10 +294,8 @@ describe("SettingsPage", () => {
 
       renderWithClient(<SettingsPage />);
 
-      const incomeInput = screen.getByLabelText(
-        "Estimated Annual Income",
-      ) as HTMLInputElement;
-      expect(incomeInput.value).toBe("75000");
+      const incomeInput = screen.getByLabelText("Estimated Annual Income");
+      expect((incomeInput as HTMLInputElement).value).toBe("75000");
     });
   });
 

@@ -1,17 +1,19 @@
 // Mock auth before imports
+const mockGetSession = jest.fn();
 jest.mock("../../lib/supabase", () => ({
-  getSession: jest.fn(() =>
-    Promise.resolve({
-      access_token: "mock-jwt-token",
-      user: { id: "test-user-id", email: "test@example.com" },
-    }),
-  ),
+  getSession: mockGetSession,
   getSupabaseClient: jest.fn(),
   signIn: jest.fn(),
   signUp: jest.fn(),
   signOut: jest.fn(),
   getCurrentUser: jest.fn(),
 }));
+
+// Set default behavior for getSession
+mockGetSession.mockResolvedValue({
+  access_token: "mock-jwt-token",
+  user: { id: "test-user-id", email: "test@example.com" },
+});
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
@@ -135,6 +137,11 @@ describe("api hooks", () => {
   beforeEach(() => {
     jest.resetAllMocks();
     originalFetch = globalThis.fetch;
+    // Re-setup getSession mock after reset
+    mockGetSession.mockResolvedValue({
+      access_token: "mock-jwt-token",
+      user: { id: "test-user-id", email: "test@example.com" },
+    });
   });
 
   afterEach(() => {
@@ -182,8 +189,7 @@ describe("api hooks", () => {
   });
 
   describe("useAnalyzePortfolio", () => {
-    it.skip("analyzes portfolio with file only", async () => {
-      // Skipped: requires complex mocking of getAuthHeaders
+    it("analyzes portfolio with file only", async () => {
       const file = new File(["content"], "test.csv", { type: "text/csv" });
 
       globalThis.fetch = jest.fn().mockResolvedValue({
@@ -205,10 +211,12 @@ describe("api hooks", () => {
       });
 
       expect(globalThis.fetch).toHaveBeenCalled();
+      const call = (globalThis.fetch as jest.Mock).mock.calls[0];
+      expect(call[0]).toContain("/api/portfolio/analyze");
+      expect(call[1].headers.Authorization).toBe("Bearer mock-jwt-token");
     });
 
-    it.skip("analyzes portfolio with optional parameters", async () => {
-      // Skipped: requires complex mocking of getAuthHeaders
+    it("analyzes portfolio with optional parameters", async () => {
       const file = new File(["content"], "test.csv", { type: "text/csv" });
 
       globalThis.fetch = jest.fn().mockResolvedValue({
@@ -277,7 +285,7 @@ describe("api hooks", () => {
     it("does not fetch when disabled", async () => {
       globalThis.fetch = jest.fn();
 
-      const { rerender } = render(
+      render(
         <div>
           {React.createElement(() => {
             const { data } = useFetchPrices(["AAPL"], false);
@@ -307,8 +315,7 @@ describe("api hooks", () => {
   });
 
   describe("useTaxProfile", () => {
-    it.skip("fetches tax profile successfully", async () => {
-      // Skipped: requires complex mocking of getAuthHeaders
+    it("fetches tax profile successfully", async () => {
       globalThis.fetch = jest.fn().mockResolvedValue({
         ok: true,
         json: async () => ({
@@ -324,7 +331,11 @@ describe("api hooks", () => {
 
       await waitFor(() => {
         expect(screen.getByText("success")).toBeInTheDocument();
+        expect(screen.getByText("test-user-123")).toBeInTheDocument();
       });
+
+      const call = (globalThis.fetch as jest.Mock).mock.calls[0];
+      expect(call[1].headers.Authorization).toBe("Bearer mock-jwt-token");
     });
 
     it("handles tax profile fetch errors", async () => {
@@ -432,6 +443,106 @@ describe("api hooks", () => {
       await waitFor(() => {
         expect(screen.getByText("error")).toBeInTheDocument();
       });
+    });
+
+    it("fetches portfolio history successfully", async () => {
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => [
+          {
+            id: "1",
+            filename: "portfolio.csv",
+            uploaded_at: "2025-01-01T00:00:00Z",
+            positions_count: 10,
+            total_market_value: 50000,
+          },
+        ],
+      } as Response);
+
+      render(<HistoryComponent />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.getByText("history")).toBeInTheDocument();
+      });
+
+      const call = (globalThis.fetch as jest.Mock).mock.calls[0];
+      expect(call[1].headers.Authorization).toBe("Bearer mock-jwt-token");
+    });
+  });
+
+  describe("standalone API functions", () => {
+    it("fetchAnalysisById returns analysis with result", async () => {
+      const mockAnalysis = {
+        id: "123",
+        filename: "test.csv",
+        uploaded_at: "2025-01-01T00:00:00Z",
+        positions_count: 5,
+        total_market_value: 10000,
+        result: {
+          positions: [],
+          suggestions: [],
+          wash_sale_flags: [],
+          summary: {},
+        },
+      };
+
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => mockAnalysis,
+      } as Response);
+
+      const result = await fetchAnalysisById("123");
+
+      expect(result.id).toBe("123");
+      expect(result.result).toBeDefined();
+      const call = (globalThis.fetch as jest.Mock).mock.calls[0];
+      expect(call[1].headers.Authorization).toBe("Bearer mock-jwt-token");
+    });
+
+    it("fetchAnalysisById throws on error", async () => {
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: false,
+        statusText: "Not Found",
+      } as Response);
+
+      await expect(fetchAnalysisById("456")).rejects.toThrow("Fetch failed");
+    });
+
+    it("deleteAnalysis returns true on success", async () => {
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+      } as Response);
+
+      const result = await deleteAnalysis("789");
+
+      expect(result).toBe(true);
+      const call = (globalThis.fetch as jest.Mock).mock.calls[0];
+      expect(call[0]).toContain("/api/portfolio/analysis/789");
+      expect(call[1].method).toBe("DELETE");
+      expect(call[1].headers.Authorization).toBe("Bearer mock-jwt-token");
+    });
+
+    it("deleteAnalysis returns false on failure", async () => {
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: false,
+      } as Response);
+
+      const result = await deleteAnalysis("999");
+
+      expect(result).toBe(false);
+    });
+
+    it("cleanupOrphanHistory calls DELETE endpoint", async () => {
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+      } as Response);
+
+      await cleanupOrphanHistory();
+
+      const call = (globalThis.fetch as jest.Mock).mock.calls[0];
+      expect(call[0]).toContain("/api/portfolio/history/cleanup");
+      expect(call[1].method).toBe("DELETE");
+      expect(call[1].headers.Authorization).toBe("Bearer mock-jwt-token");
     });
   });
 });
