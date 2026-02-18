@@ -48,7 +48,10 @@ describe("SettingsPage", () => {
   it("shows loading spinner when auth is loading", () => {
     mockUseAuth.mockReturnValue({ user: null, loading: true });
     mockUseTaxProfile.mockReturnValue({ data: null, isLoading: false });
-    mockUseSaveTaxProfile.mockReturnValue({ mutate: jest.fn(), isPending: false });
+    mockUseSaveTaxProfile.mockReturnValue({
+      mutate: jest.fn(),
+      isPending: false,
+    });
 
     renderWithClient(<SettingsPage />);
 
@@ -58,7 +61,10 @@ describe("SettingsPage", () => {
   it("redirects to signin when not authenticated", () => {
     mockUseAuth.mockReturnValue({ user: null, loading: false });
     mockUseTaxProfile.mockReturnValue({ data: null, isLoading: false });
-    mockUseSaveTaxProfile.mockReturnValue({ mutate: jest.fn(), isPending: false });
+    mockUseSaveTaxProfile.mockReturnValue({
+      mutate: jest.fn(),
+      isPending: false,
+    });
 
     renderWithClient(<SettingsPage />);
 
@@ -71,14 +77,19 @@ describe("SettingsPage", () => {
       loading: false,
     });
     mockUseTaxProfile.mockReturnValue({ data: null, isLoading: false });
-    mockUseSaveTaxProfile.mockReturnValue({ mutate: jest.fn(), isPending: false });
+    mockUseSaveTaxProfile.mockReturnValue({
+      mutate: jest.fn(),
+      isPending: false,
+    });
 
     renderWithClient(<SettingsPage />);
 
     expect(screen.getByText("Tax Profile Settings")).toBeInTheDocument();
     expect(screen.getByText("Your Tax Profile")).toBeInTheDocument();
     expect(screen.getByLabelText("Filing Status")).toBeInTheDocument();
-    expect(screen.getByLabelText("Estimated Annual Income")).toBeInTheDocument();
+    expect(
+      screen.getByLabelText("Estimated Annual Income"),
+    ).toBeInTheDocument();
     expect(screen.getByLabelText("State")).toBeInTheDocument();
     expect(screen.getByLabelText("Tax Year")).toBeInTheDocument();
   });
@@ -89,7 +100,10 @@ describe("SettingsPage", () => {
       loading: false,
     });
     mockUseTaxProfile.mockReturnValue({ data: null, isLoading: false });
-    mockUseSaveTaxProfile.mockReturnValue({ mutate: jest.fn(), isPending: false });
+    mockUseSaveTaxProfile.mockReturnValue({
+      mutate: jest.fn(),
+      isPending: false,
+    });
 
     renderWithClient(<SettingsPage />);
 
@@ -104,13 +118,14 @@ describe("SettingsPage", () => {
       loading: false,
     });
     mockUseTaxProfile.mockReturnValue({ data: null, isLoading: false });
-    mockUseSaveTaxProfile.mockReturnValue({ mutate: jest.fn(), isPending: true });
+    mockUseSaveTaxProfile.mockReturnValue({
+      mutate: jest.fn(),
+      isPending: true,
+    });
 
     renderWithClient(<SettingsPage />);
 
-    expect(
-      screen.getByRole("button", { name: /Saving/ }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Saving/ })).toBeInTheDocument();
   });
 
   it("renders tax disclaimer", () => {
@@ -119,7 +134,10 @@ describe("SettingsPage", () => {
       loading: false,
     });
     mockUseTaxProfile.mockReturnValue({ data: null, isLoading: false });
-    mockUseSaveTaxProfile.mockReturnValue({ mutate: jest.fn(), isPending: false });
+    mockUseSaveTaxProfile.mockReturnValue({
+      mutate: jest.fn(),
+      isPending: false,
+    });
 
     renderWithClient(<SettingsPage />);
 
@@ -132,7 +150,10 @@ describe("SettingsPage", () => {
       loading: false,
     });
     mockUseTaxProfile.mockReturnValue({ data: null, isLoading: false });
-    mockUseSaveTaxProfile.mockReturnValue({ mutate: jest.fn(), isPending: false });
+    mockUseSaveTaxProfile.mockReturnValue({
+      mutate: jest.fn(),
+      isPending: false,
+    });
 
     renderWithClient(<SettingsPage />);
 
@@ -147,7 +168,10 @@ describe("SettingsPage", () => {
       loading: false,
     });
     mockUseTaxProfile.mockReturnValue({ data: null, isLoading: true });
-    mockUseSaveTaxProfile.mockReturnValue({ mutate: jest.fn(), isPending: false });
+    mockUseSaveTaxProfile.mockReturnValue({
+      mutate: jest.fn(),
+      isPending: false,
+    });
 
     renderWithClient(<SettingsPage />);
 

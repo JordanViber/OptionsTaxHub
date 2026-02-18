@@ -190,6 +190,26 @@ def _save_history_best_effort(
         logger.warning(f"Failed to save analysis history: {e}", exc_info=True)
 
 
+
+
+
+def _process_ai_suggestions(
+    tax_lots: List[Dict[str, Any]],
+    all_warnings: List[str],
+) -> tuple[Dict[str, Any] | None, List[str]]:
+    """
+    Get AI-powered suggestions for tax-loss harvesting.
+
+    Returns (ai_suggestions, updated_warnings) tuple.
+    """
+    ai_suggestions: Dict[str, Any] | None = None
+    warnings: List[str] = all_warnings[:]  # Copy to avoid mutation
+
+    ai_suggestions = _try_get_ai_suggestions(tax_lots, warnings)
+
+    return ai_suggestions, warnings
+
+
 @app.post("/api/portfolio/analyze", response_model=PortfolioAnalysis)
 async def analyze_portfolio(
     file: Annotated[UploadFile, File()],
@@ -232,18 +252,11 @@ async def analyze_portfolio(
     except ValueError:
         fs = FilingStatus.SINGLE
 
-    # Check if user has AI suggestions enabled in their saved profile
-    ai_enabled = False
-    if user_id:
-        saved_profile = db_get_tax_profile(user_id)
-        if saved_profile:
-            ai_enabled = saved_profile.get("ai_suggestions_enabled", False)
-
     tax_profile = TaxProfile(
         filing_status=fs,
         estimated_annual_income=estimated_income or 75000.0,
         tax_year=tax_year or 2025,
-        ai_suggestions_enabled=ai_enabled,
+        ai_suggestions_enabled=True,
     )
 
     all_warnings = list(parse_errors)
@@ -269,14 +282,8 @@ async def analyze_portfolio(
     if wash_sale_flags:
         tax_lots = adjust_lots_for_wash_sales(tax_lots, wash_sale_flags)
 
-    # Get AI-powered suggestions only if user has opted in
-    ai_suggestions = None
-    if ai_enabled:
-        ai_suggestions = _try_get_ai_suggestions(tax_lots, all_warnings)
-    else:
-        all_warnings.append(
-            "AI-powered suggestions are disabled. Enable them in Settings to get personalized replacement security recommendations."
-        )
+    # Get AI-powered suggestions
+    ai_suggestions, all_warnings = _process_ai_suggestions(tax_lots, all_warnings)
 
     suggestions = generate_suggestions(
         tax_lots=tax_lots,
@@ -432,6 +439,7 @@ async def save_tax_profile_endpoint(
         estimated_annual_income=profile.estimated_annual_income,
         state=profile.state,
         tax_year=profile.tax_year,
+        ai_suggestions_enabled=profile.ai_suggestions_enabled,
     )
 
     if saved:
