@@ -1,7 +1,7 @@
 from fastapi.testclient import TestClient
 
 import main
-from auth import get_current_user
+from auth import get_current_user, get_current_user_with_token
 
 
 # Mock authentication: return test user ID for all authenticated endpoints
@@ -9,8 +9,14 @@ def mock_get_current_user() -> str:
     return "test-user-123"
 
 
-# Override the authentication dependency
+# Mock authentication with token: return both user ID and a dummy token
+def mock_get_current_user_with_token() -> tuple[str, str]:
+    return "test-user-123", "test-token-123"
+
+
+# Override the authentication dependencies
 main.app.dependency_overrides[get_current_user] = mock_get_current_user
+main.app.dependency_overrides[get_current_user_with_token] = mock_get_current_user_with_token
 
 client = TestClient(main.app)
 
@@ -663,7 +669,10 @@ def test_get_portfolio_history(monkeypatch):
         {"id": "h2", "filename": "test2.csv", "uploaded_at": "2025-01-02T00:00:00"},
     ]
 
-    monkeypatch.setattr("main.get_analysis_history", lambda uid, limit: mock_history)
+    # Mock get_supabase_with_token to return a dummy client object
+    mock_client = object()  # Placeholder; the function will use it to call get_analysis_history
+    monkeypatch.setattr("main.get_supabase_with_token", lambda token: mock_client)
+    monkeypatch.setattr("main.get_analysis_history", lambda uid, limit, client=None: mock_history)
 
     response = client.get("/api/portfolio/history")
     assert response.status_code == 200
@@ -674,7 +683,9 @@ def test_get_portfolio_history(monkeypatch):
 
 def test_get_portfolio_history_empty(monkeypatch):
     """GET /api/portfolio/history returns empty list for new user."""
-    monkeypatch.setattr("main.get_analysis_history", lambda uid, limit: [])
+    mock_client = object()
+    monkeypatch.setattr("main.get_supabase_with_token", lambda token: mock_client)
+    monkeypatch.setattr("main.get_analysis_history", lambda uid, limit, client=None: [])
 
     response = client.get("/api/portfolio/history")
     assert response.status_code == 200
@@ -685,10 +696,12 @@ def test_get_portfolio_history_custom_limit(monkeypatch):
     """GET /api/portfolio/history?limit=5 passes limit to DB."""
     captured = {}
 
-    def fake_history(uid, limit):
+    def fake_history(uid, limit, client=None):
         captured["limit"] = limit
         return []
 
+    mock_client = object()
+    monkeypatch.setattr("main.get_supabase_with_token", lambda token: mock_client)
     monkeypatch.setattr("main.get_analysis_history", fake_history)
 
     response = client.get("/api/portfolio/history?limit=5")
@@ -714,7 +727,9 @@ def test_get_portfolio_analysis_found(monkeypatch):
         "result": {"positions": [], "summary": {}},
     }
 
-    monkeypatch.setattr("main.get_analysis_by_id", lambda aid, uid: mock_record)
+    mock_client = object()
+    monkeypatch.setattr("main.get_supabase_with_token", lambda token: mock_client)
+    monkeypatch.setattr("main.get_analysis_by_id", lambda aid, uid, client=None: mock_record)
 
     response = client.get("/api/portfolio/analysis/abc-123")
     assert response.status_code == 200
@@ -725,7 +740,9 @@ def test_get_portfolio_analysis_found(monkeypatch):
 
 def test_get_portfolio_analysis_not_found(monkeypatch):
     """GET /api/portfolio/analysis/{id} returns 404 when not found."""
-    monkeypatch.setattr("main.get_analysis_by_id", lambda aid, uid: None)
+    mock_client = object()
+    monkeypatch.setattr("main.get_supabase_with_token", lambda token: mock_client)
+    monkeypatch.setattr("main.get_analysis_by_id", lambda aid, uid, client=None: None)
 
     response = client.get("/api/portfolio/analysis/nonexistent")
     assert response.status_code == 404

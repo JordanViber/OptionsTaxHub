@@ -110,6 +110,44 @@ def get_current_user(
     return user_id
 
 
+def get_current_user_with_token(
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(security),
+) -> tuple[str, str]:
+    """
+    Extract and verify user_id and JWT token from Authorization header.
+
+    Used when an endpoint needs both the user_id and the raw token
+    (e.g., to create an authenticated Supabase client for RLS enforcement).
+
+    Args:
+        credentials: HTTP Bearer token from Authorization header
+
+    Returns:
+        Tuple of (user_id, token) for creating authenticated clients
+
+    Raises:
+        HTTPException: If no token provided or token is invalid
+    """
+    if not credentials:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required",
+        )
+
+    # Verify token and extract user_id
+    payload = verify_jwt_token(credentials.credentials)
+
+    # Supabase stores user_id in the 'sub' (subject) claim
+    user_id = payload.get("sub")
+    if not user_id:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid token: user_id not found",
+        )
+
+    return user_id, credentials.credentials
+
+
 def enforce_ownership(user_id: str, resource_owner_id: str) -> None:
     """
     Enforce that authenticated user owns the resource.

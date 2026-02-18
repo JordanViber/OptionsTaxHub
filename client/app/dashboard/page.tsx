@@ -12,6 +12,7 @@ import {
   Button,
   CircularProgress,
   Alert,
+  AlertTitle,
   Drawer,
   List,
   ListItem,
@@ -84,7 +85,11 @@ export default function DashboardPage() {
   const { data: taxProfile } = useTaxProfile();
 
   // Load past upload history
-  const { data: history } = usePortfolioHistory();
+  const {
+    data: history,
+    error: historyError,
+    isPending: isHistoryFetching,
+  } = usePortfolioHistory();
 
   // Full portfolio analysis mutation
   const {
@@ -398,7 +403,14 @@ export default function DashboardPage() {
             <HistoryIcon /> Upload History
           </Typography>
           <Divider />
-          {!history || history.length === 0 ? (
+          {historyError ? (
+            <Alert severity="error" sx={{ m: 2 }}>
+              <AlertTitle>Failed to Load History</AlertTitle>
+              {historyError instanceof Error
+                ? historyError.message
+                : "Unable to load your past uploads. Please try refreshing the page."}
+            </Alert>
+          ) : !history || history.length === 0 ? (
             <Typography
               variant="body2"
               color="text.secondary"
