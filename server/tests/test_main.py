@@ -571,7 +571,7 @@ def test_analyze_portfolio_ai_failure_adds_warning(monkeypatch):
     monkeypatch.setattr("main.parse_csv", lambda _: (lots, [], []))
     monkeypatch.setattr("main.fetch_current_prices", lambda s, fb=None: ({}, []))
     monkeypatch.setattr("main.compute_lot_metrics", lambda l: l)
-    monkeypatch.setattr("main.detect_wash_sales", lambda t: [])  
+    monkeypatch.setattr("main.detect_wash_sales", lambda t: [])
     monkeypatch.setattr("main.prepare_positions_for_ai", lambda l: [{"symbol": "AMD"}])
 
     def fake_ai_fail(_positions):
