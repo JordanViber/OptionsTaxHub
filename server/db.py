@@ -213,7 +213,7 @@ def save_tax_profile(
     estimated_annual_income: float,
     state: str,
     tax_year: int,
-    ai_suggestions_enabled: bool = False,
+    ai_suggestions_enabled: bool = True,
 ) -> Optional[dict]:
     """
     Upsert user's tax profile to the tax_profiles table.

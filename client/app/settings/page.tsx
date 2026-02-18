@@ -42,7 +42,6 @@ export default function SettingsPage() {
   const [estimatedIncome, setEstimatedIncome] = useState<string>("75000");
   const [state, setState] = useState<string>("");
   const [taxYear, setTaxYear] = useState<number>(2025);
-  const [aiEnabled, setAiEnabled] = useState<boolean>(false);
   const [showSuccess, setShowSuccess] = useState(false);
 
   // Load existing profile
@@ -58,7 +57,6 @@ export default function SettingsPage() {
       setEstimatedIncome(String(profile.estimated_annual_income || 75000));
       setState(profile.state || "");
       setTaxYear(profile.tax_year || 2025);
-      setAiEnabled(profile.ai_suggestions_enabled || false);
     }
   }, [profile]);
 
@@ -77,7 +75,6 @@ export default function SettingsPage() {
         estimated_annual_income: Number.parseFloat(estimatedIncome) || 75000,
         state,
         tax_year: taxYear,
-        ai_suggestions_enabled: aiEnabled,
       },
       {
         onSuccess: () => {
@@ -222,40 +219,6 @@ export default function SettingsPage() {
                       <MenuItem value={2026}>2026</MenuItem>
                     </Select>
                   </FormControl>
-
-                  {/* AI Suggestions */}
-                  <Card
-                    variant="outlined"
-                    sx={{ p: 2, bgcolor: "background.default" }}
-                  >
-                    <FormControlLabel
-                      control={
-                        <Checkbox
-                          checked={aiEnabled}
-                          onChange={(e) => setAiEnabled(e.target.checked)}
-                        />
-                      }
-                      label={
-                        <Box>
-                          <Typography variant="body1" fontWeight={500}>
-                            Enable AI-Powered Suggestions
-                          </Typography>
-                          <Typography
-                            variant="caption"
-                            color="text.secondary"
-                            display="block"
-                            sx={{ mt: 0.5 }}
-                          >
-                            When enabled, anonymized portfolio data (symbols,
-                            quantities, cost basis, and P&L) will be sent to
-                            Google Gemini AI to generate personalized
-                            replacement security recommendations. No personal or
-                            account information is shared.
-                          </Typography>
-                        </Box>
-                      }
-                    />
-                  </Card>
 
                   {/* Save Button */}
                   <Button

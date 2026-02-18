@@ -190,45 +190,22 @@ def _save_history_best_effort(
         logger.warning(f"Failed to save analysis history: {e}", exc_info=True)
 
 
-def _get_user_ai_preferences(user_id: str) -> bool:
-    """
-    Check user's saved profile to determine if AI suggestions are enabled.
 
-    Returns True if user has opted in to AI suggestions, False otherwise.
-    """
-    if not user_id:
-        return False
-
-    try:
-        saved_profile = db_get_tax_profile(user_id)
-        return saved_profile.get("ai_suggestions_enabled", False) if saved_profile else False
-    except Exception as e:
-        logger.warning(
-            "Failed to fetch user AI preferences; defaulting to AI disabled.",
-            exc_info=True,
-        )
-        return False
 
 
 def _process_ai_suggestions(
-    ai_enabled: bool,
     tax_lots: List[Dict[str, Any]],
     all_warnings: List[str],
 ) -> tuple[Dict[str, Any] | None, List[str]]:
     """
-    Get AI-powered suggestions if user has opted in.
+    Get AI-powered suggestions for tax-loss harvesting.
 
     Returns (ai_suggestions, updated_warnings) tuple.
     """
     ai_suggestions: Dict[str, Any] | None = None
     warnings: List[str] = all_warnings[:]  # Copy to avoid mutation
 
-    if ai_enabled:
-        ai_suggestions = _try_get_ai_suggestions(tax_lots, warnings)
-    else:
-        warnings.append(
-            "AI-powered suggestions are disabled. Enable them in Settings to get personalized replacement security recommendations."
-        )
+    ai_suggestions = _try_get_ai_suggestions(tax_lots, warnings)
 
     return ai_suggestions, warnings
 
@@ -275,14 +252,11 @@ async def analyze_portfolio(
     except ValueError:
         fs = FilingStatus.SINGLE
 
-    # Check if user has AI suggestions enabled in their saved profile
-    ai_enabled = _get_user_ai_preferences(user_id)
-
     tax_profile = TaxProfile(
         filing_status=fs,
         estimated_annual_income=estimated_income or 75000.0,
         tax_year=tax_year or 2025,
-        ai_suggestions_enabled=ai_enabled,
+        ai_suggestions_enabled=True,
     )
 
     all_warnings = list(parse_errors)
@@ -308,8 +282,8 @@ async def analyze_portfolio(
     if wash_sale_flags:
         tax_lots = adjust_lots_for_wash_sales(tax_lots, wash_sale_flags)
 
-    # Get AI-powered suggestions if user has opted in
-    ai_suggestions, all_warnings = _process_ai_suggestions(ai_enabled, tax_lots, all_warnings)
+    # Get AI-powered suggestions
+    ai_suggestions, all_warnings = _process_ai_suggestions(tax_lots, all_warnings)
 
     suggestions = generate_suggestions(
         tax_lots=tax_lots,

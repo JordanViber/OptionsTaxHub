@@ -170,8 +170,8 @@ class TaxProfile(BaseModel):
     state: str = Field(default="", description="US state abbreviation for state tax rate")
     tax_year: int = Field(default=2025, ge=2024, le=2026)
     ai_suggestions_enabled: bool = Field(
-        default=False, 
-        description="User consent to send anonymized portfolio data to AI service for suggestions"
+        default=True, 
+        description="AI-powered suggestions enabled for anonymized portfolio data"
     )
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
