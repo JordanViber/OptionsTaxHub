@@ -202,22 +202,26 @@ def _get_user_ai_preferences(user_id: str) -> bool:
     try:
         saved_profile = db_get_tax_profile(user_id)
         return saved_profile.get("ai_suggestions_enabled", False) if saved_profile else False
-    except Exception:
+    except Exception as e:
+        logger.warning(
+            "Failed to fetch user AI preferences; defaulting to AI disabled.",
+            exc_info=True,
+        )
         return False
 
 
 def _process_ai_suggestions(
     ai_enabled: bool,
-    tax_lots: list,
-    all_warnings: list,
-) -> tuple[Optional[list], list]:
+    tax_lots: List[Dict[str, Any]],
+    all_warnings: List[str],
+) -> tuple[Dict[str, Any] | None, List[str]]:
     """
     Get AI-powered suggestions if user has opted in.
 
     Returns (ai_suggestions, updated_warnings) tuple.
     """
-    ai_suggestions = None
-    warnings = all_warnings[:]  # Copy to avoid mutation
+    ai_suggestions: Dict[str, Any] | None = None
+    warnings: List[str] = all_warnings[:]  # Copy to avoid mutation
 
     if ai_enabled:
         ai_suggestions = _try_get_ai_suggestions(tax_lots, warnings)
@@ -461,6 +465,7 @@ async def save_tax_profile_endpoint(
         estimated_annual_income=profile.estimated_annual_income,
         state=profile.state,
         tax_year=profile.tax_year,
+        ai_suggestions_enabled=profile.ai_suggestions_enabled,
     )
 
     if saved:

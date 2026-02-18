@@ -301,14 +301,16 @@ async function fetchPortfolioHistory(): Promise<AnalysisHistoryItem[]> {
  * React Query hook for authenticated user's portfolio analysis history.
  *
  * Fetches past uploads automatically. Refetches when invalidated (e.g., after upload).
+ * Query key is scoped to the user ID to prevent cross-user data exposure.
  */
-export function usePortfolioHistory() {
+export function usePortfolioHistory(userId?: string) {
   return useQuery({
-    queryKey: ["portfolio-history"],
+    queryKey: ["portfolio-history", userId],
     queryFn: fetchPortfolioHistory,
     staleTime: 0, // Always refetch when invalidated
     refetchOnMount: "always", // Refetch every time component mounts
     refetchOnWindowFocus: false, // Don't refetch on window focus
+    enabled: !!userId, // Only run query if userId is provided
   });
 }
 
