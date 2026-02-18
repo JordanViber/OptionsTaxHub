@@ -46,7 +46,7 @@ export default function SettingsPage() {
   const [showSuccess, setShowSuccess] = useState(false);
 
   // Load existing profile
-  const { data: profile, isLoading: profileLoading } = useTaxProfile(user?.id);
+  const { data: profile, isLoading: profileLoading } = useTaxProfile();
 
   // Save mutation
   const { mutate: saveProfile, isPending: saving } = useSaveTaxProfile();
@@ -224,7 +224,10 @@ export default function SettingsPage() {
                   </FormControl>
 
                   {/* AI Suggestions */}
-                  <Card variant="outlined" sx={{ p: 2, bgcolor: "background.default" }}>
+                  <Card
+                    variant="outlined"
+                    sx={{ p: 2, bgcolor: "background.default" }}
+                  >
                     <FormControlLabel
                       control={
                         <Checkbox
@@ -237,10 +240,17 @@ export default function SettingsPage() {
                           <Typography variant="body1" fontWeight={500}>
                             Enable AI-Powered Suggestions
                           </Typography>
-                          <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
-                            When enabled, anonymized portfolio data (symbols, quantities, cost basis, and P&L)
-                            will be sent to Google Gemini AI to generate personalized replacement security recommendations.
-                            No personal or account information is shared.
+                          <Typography
+                            variant="caption"
+                            color="text.secondary"
+                            display="block"
+                            sx={{ mt: 0.5 }}
+                          >
+                            When enabled, anonymized portfolio data (symbols,
+                            quantities, cost basis, and P&L) will be sent to
+                            Google Gemini AI to generate personalized
+                            replacement security recommendations. No personal or
+                            account information is shared.
                           </Typography>
                         </Box>
                       }
