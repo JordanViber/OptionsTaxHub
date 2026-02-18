@@ -81,10 +81,10 @@ export default function DashboardPage() {
   const queryClient = useQueryClient();
 
   // Load the user's tax profile for analyze params
-  const { data: taxProfile } = useTaxProfile(user?.id);
+  const { data: taxProfile } = useTaxProfile();
 
   // Load past upload history
-  const { data: history } = usePortfolioHistory(user?.id);
+  const { data: history } = usePortfolioHistory();
 
   // Full portfolio analysis mutation
   const {
@@ -124,10 +124,10 @@ export default function DashboardPage() {
   // --- One-time cleanup: delete orphan history entries without stored result ---
   useEffect(() => {
     if (user?.id) {
-      cleanupOrphanHistory(user.id)
+      cleanupOrphanHistory()
         .then(() => {
           queryClient.invalidateQueries({
-            queryKey: ["portfolio-history", user.id],
+            queryKey: ["portfolio-history"],
           });
         })
         .catch(() => {});
@@ -151,13 +151,12 @@ export default function DashboardPage() {
           filingStatus: taxProfile?.filing_status || "single",
           estimatedIncome: taxProfile?.estimated_annual_income || 75000,
           taxYear: taxProfile?.tax_year || 2025,
-          userId: user?.id,
         },
         {
           onSuccess: () => {
             // Refresh history sidebar after successful analysis
             queryClient.invalidateQueries({
-              queryKey: ["portfolio-history", user?.id],
+              queryKey: ["portfolio-history"],
             });
           },
         },
@@ -181,7 +180,7 @@ export default function DashboardPage() {
     if (!user?.id) return;
     setHistoryLoading(true);
     try {
-      const record = await fetchAnalysisById(itemId, user.id);
+      const record = await fetchAnalysisById(itemId);
       if (record?.result) {
         setLoadedAnalysis(record.result);
         setActiveTab(0);
@@ -201,9 +200,9 @@ export default function DashboardPage() {
   const handleDeleteConfirm = async () => {
     if (!user?.id || !deleteTarget) return;
     try {
-      await deleteAnalysis(deleteTarget.id, user.id);
+      await deleteAnalysis(deleteTarget.id);
       queryClient.invalidateQueries({
-        queryKey: ["portfolio-history", user.id],
+        queryKey: ["portfolio-history"],
       });
     } catch (err) {
       console.error("Failed to delete analysis:", err);

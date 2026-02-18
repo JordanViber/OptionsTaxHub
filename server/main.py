@@ -190,6 +190,45 @@ def _save_history_best_effort(
         logger.warning(f"Failed to save analysis history: {e}", exc_info=True)
 
 
+def _get_user_ai_preferences(user_id: str) -> bool:
+    """
+    Check user's saved profile to determine if AI suggestions are enabled.
+
+    Returns True if user has opted in to AI suggestions, False otherwise.
+    """
+    if not user_id:
+        return False
+
+    try:
+        saved_profile = db_get_tax_profile(user_id)
+        return saved_profile.get("ai_suggestions_enabled", False) if saved_profile else False
+    except Exception:
+        return False
+
+
+def _process_ai_suggestions(
+    ai_enabled: bool,
+    tax_lots: list,
+    all_warnings: list,
+) -> tuple[Optional[list], list]:
+    """
+    Get AI-powered suggestions if user has opted in.
+
+    Returns (ai_suggestions, updated_warnings) tuple.
+    """
+    ai_suggestions = None
+    warnings = all_warnings[:]  # Copy to avoid mutation
+
+    if ai_enabled:
+        ai_suggestions = _try_get_ai_suggestions(tax_lots, warnings)
+    else:
+        warnings.append(
+            "AI-powered suggestions are disabled. Enable them in Settings to get personalized replacement security recommendations."
+        )
+
+    return ai_suggestions, warnings
+
+
 @app.post("/api/portfolio/analyze", response_model=PortfolioAnalysis)
 async def analyze_portfolio(
     file: Annotated[UploadFile, File()],
@@ -233,11 +272,7 @@ async def analyze_portfolio(
         fs = FilingStatus.SINGLE
 
     # Check if user has AI suggestions enabled in their saved profile
-    ai_enabled = False
-    if user_id:
-        saved_profile = db_get_tax_profile(user_id)
-        if saved_profile:
-            ai_enabled = saved_profile.get("ai_suggestions_enabled", False)
+    ai_enabled = _get_user_ai_preferences(user_id)
 
     tax_profile = TaxProfile(
         filing_status=fs,
@@ -269,14 +304,8 @@ async def analyze_portfolio(
     if wash_sale_flags:
         tax_lots = adjust_lots_for_wash_sales(tax_lots, wash_sale_flags)
 
-    # Get AI-powered suggestions only if user has opted in
-    ai_suggestions = None
-    if ai_enabled:
-        ai_suggestions = _try_get_ai_suggestions(tax_lots, all_warnings)
-    else:
-        all_warnings.append(
-            "AI-powered suggestions are disabled. Enable them in Settings to get personalized replacement security recommendations."
-        )
+    # Get AI-powered suggestions if user has opted in
+    ai_suggestions, all_warnings = _process_ai_suggestions(ai_enabled, tax_lots, all_warnings)
 
     suggestions = generate_suggestions(
         tax_lots=tax_lots,
