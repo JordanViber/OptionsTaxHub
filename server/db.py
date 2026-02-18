@@ -213,6 +213,7 @@ def save_tax_profile(
     estimated_annual_income: float,
     state: str,
     tax_year: int,
+    ai_suggestions_enabled: bool = False,
 ) -> Optional[dict]:
     """
     Upsert user's tax profile to the tax_profiles table.
@@ -231,6 +232,7 @@ def save_tax_profile(
             "estimated_annual_income": estimated_annual_income,
             "state": state,
             "tax_year": tax_year,
+            "ai_suggestions_enabled": ai_suggestions_enabled,
             "updated_at": "now()",
         }
         result = (
@@ -259,7 +261,7 @@ def get_tax_profile(user_id: str) -> Optional[dict]:
     try:
         result = (
             client.table("tax_profiles")
-            .select("user_id, filing_status, estimated_annual_income, state, tax_year, created_at, updated_at")
+            .select("user_id, filing_status, estimated_annual_income, state, tax_year, ai_suggestions_enabled, created_at, updated_at")
             .eq("user_id", user_id)
             .limit(1)
             .execute()
