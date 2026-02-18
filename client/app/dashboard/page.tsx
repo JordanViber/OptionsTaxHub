@@ -61,8 +61,123 @@ import {
 } from "@/lib/api";
 import { useAuth } from "@/app/context/auth";
 import { useQueryClient } from "@tanstack/react-query";
-import type { PortfolioAnalysis } from "@/lib/types";
+import type { PortfolioAnalysis, AnalysisHistoryItem } from "@/lib/types";
+
 export const dynamic = "force-dynamic";
+
+// Helper function: restore analysis from session storage
+function restoreAnalysisFromStorage(): PortfolioAnalysis | null {
+  try {
+    const saved = sessionStorage.getItem("optionstaxhub-analysis");
+    return saved ? (JSON.parse(saved) as PortfolioAnalysis) : null;
+  } catch {
+    return null;
+  }
+}
+
+// Helper function: save analysis to session storage
+function saveAnalysisToStorage(analysis: PortfolioAnalysis): void {
+  try {
+    sessionStorage.setItem("optionstaxhub-analysis", JSON.stringify(analysis));
+  } catch {
+    // Storage full — ignore
+  }
+}
+
+// Helper component: render history list or empty/error state
+function HistoryContent({
+  history,
+  historyError,
+  historyLoading,
+  onItemClick,
+  onDeleteClick,
+}: Readonly<{
+  history: AnalysisHistoryItem[] | null | undefined;
+  historyError: Error | null;
+  historyLoading: boolean;
+  onItemClick: (id: string) => void;
+  onDeleteClick: (id: string, filename: string) => void;
+}>) {
+  if (historyError) {
+    return (
+      <Alert severity="error" sx={{ m: 2 }}>
+        <AlertTitle>Failed to Load History</AlertTitle>
+        {historyError instanceof Error
+          ? historyError.message
+          : "Unable to load your past uploads. Please try refreshing the page."}
+      </Alert>
+    );
+  }
+
+  if (!history || history.length === 0) {
+    return (
+      <Typography
+        variant="body2"
+        color="text.secondary"
+        sx={{ p: 2, textAlign: "center" }}
+      >
+        No past uploads yet. Upload a CSV to get started.
+      </Typography>
+    );
+  }
+
+  return (
+    <List dense sx={{ overflow: "auto", maxHeight: "calc(100vh - 80px)" }}>
+      {history.map((item) => (
+        <ListItem
+          key={item.id}
+          disablePadding
+          secondaryAction={
+            <IconButton
+              edge="end"
+              size="small"
+              aria-label="delete"
+              onClick={(e) => {
+                e.stopPropagation();
+                onDeleteClick(item.id, item.filename);
+              }}
+              sx={{
+                opacity: 0.5,
+                "&:hover": { opacity: 1, color: "error.main" },
+              }}
+            >
+              <CloseIcon fontSize="small" />
+            </IconButton>
+          }
+        >
+          <ListItemButton
+            onClick={() => onItemClick(item.id)}
+            disabled={historyLoading}
+            sx={{ pr: 5 }}
+          >
+            <ListItemText
+              primary={item.filename}
+              secondary={
+                <>
+                  {new Date(item.uploaded_at).toLocaleDateString("en-US", {
+                    month: "short",
+                    day: "numeric",
+                    year: "numeric",
+                    hour: "numeric",
+                    minute: "2-digit",
+                  })}
+                  {" · "}
+                  {item.positions_count} positions
+                  {" · "}
+                  {new Intl.NumberFormat("en-US", {
+                    style: "currency",
+                    currency: "USD",
+                    maximumFractionDigits: 0,
+                  }).format(item.total_market_value)}
+                </>
+              }
+            />
+          </ListItemButton>
+        </ListItem>
+      ))}
+    </List>
+  );
+}
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -85,11 +200,7 @@ export default function DashboardPage() {
   const { data: taxProfile } = useTaxProfile();
 
   // Load past upload history
-  const {
-    data: history,
-    error: historyError,
-    isPending: isHistoryFetching,
-  } = usePortfolioHistory();
+  const { data: history, error: historyError } = usePortfolioHistory();
 
   // Full portfolio analysis mutation
   const {
@@ -101,13 +212,9 @@ export default function DashboardPage() {
 
   // --- State persistence: restore analysis from sessionStorage on mount ---
   useEffect(() => {
-    try {
-      const saved = sessionStorage.getItem("optionstaxhub-analysis");
-      if (saved) {
-        setLoadedAnalysis(JSON.parse(saved) as PortfolioAnalysis);
-      }
-    } catch {
-      // Corrupted data — ignore
+    const saved = restoreAnalysisFromStorage();
+    if (saved) {
+      setLoadedAnalysis(saved);
     }
   }, []);
 
@@ -115,14 +222,7 @@ export default function DashboardPage() {
   const displayedAnalysis = loadedAnalysis || analysis;
   useEffect(() => {
     if (displayedAnalysis) {
-      try {
-        sessionStorage.setItem(
-          "optionstaxhub-analysis",
-          JSON.stringify(displayedAnalysis),
-        );
-      } catch {
-        // Storage full — ignore
-      }
+      saveAnalysisToStorage(displayedAnalysis);
     }
   }, [displayedAnalysis]);
 
@@ -403,86 +503,13 @@ export default function DashboardPage() {
             <HistoryIcon /> Upload History
           </Typography>
           <Divider />
-          {historyError ? (
-            <Alert severity="error" sx={{ m: 2 }}>
-              <AlertTitle>Failed to Load History</AlertTitle>
-              {historyError instanceof Error
-                ? historyError.message
-                : "Unable to load your past uploads. Please try refreshing the page."}
-            </Alert>
-          ) : !history || history.length === 0 ? (
-            <Typography
-              variant="body2"
-              color="text.secondary"
-              sx={{ p: 2, textAlign: "center" }}
-            >
-              No past uploads yet. Upload a CSV to get started.
-            </Typography>
-          ) : (
-            <List
-              dense
-              sx={{ overflow: "auto", maxHeight: "calc(100vh - 80px)" }}
-            >
-              {history.map((item) => (
-                <ListItem
-                  key={item.id}
-                  disablePadding
-                  secondaryAction={
-                    <IconButton
-                      edge="end"
-                      size="small"
-                      aria-label="delete"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setDeleteTarget({
-                          id: item.id,
-                          filename: item.filename,
-                        });
-                      }}
-                      sx={{
-                        opacity: 0.5,
-                        "&:hover": { opacity: 1, color: "error.main" },
-                      }}
-                    >
-                      <CloseIcon fontSize="small" />
-                    </IconButton>
-                  }
-                >
-                  <ListItemButton
-                    onClick={() => handleHistoryItemClick(item.id)}
-                    disabled={historyLoading}
-                    sx={{ pr: 5 }}
-                  >
-                    <ListItemText
-                      primary={item.filename}
-                      secondary={
-                        <>
-                          {new Date(item.uploaded_at).toLocaleDateString(
-                            "en-US",
-                            {
-                              month: "short",
-                              day: "numeric",
-                              year: "numeric",
-                              hour: "numeric",
-                              minute: "2-digit",
-                            },
-                          )}
-                          {" · "}
-                          {item.positions_count} positions
-                          {" · "}
-                          {new Intl.NumberFormat("en-US", {
-                            style: "currency",
-                            currency: "USD",
-                            maximumFractionDigits: 0,
-                          }).format(item.total_market_value)}
-                        </>
-                      }
-                    />
-                  </ListItemButton>
-                </ListItem>
-              ))}
-            </List>
-          )}
+          <HistoryContent
+            history={history}
+            historyError={historyError || null}
+            historyLoading={historyLoading}
+            onItemClick={handleHistoryItemClick}
+            onDeleteClick={(id, filename) => setDeleteTarget({ id, filename })}
+          />
         </Box>
       </Drawer>
 
