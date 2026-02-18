@@ -84,7 +84,7 @@ export default function DashboardPage() {
   const { data: taxProfile } = useTaxProfile();
 
   // Load past upload history
-  const { data: history } = usePortfolioHistory(user?.id);
+  const { data: history } = usePortfolioHistory();
 
   // Full portfolio analysis mutation
   const {
@@ -127,7 +127,7 @@ export default function DashboardPage() {
       cleanupOrphanHistory()
         .then(() => {
           queryClient.invalidateQueries({
-            queryKey: ["portfolio-history", user.id],
+            queryKey: ["portfolio-history"],
           });
         })
         .catch(() => {});
@@ -156,7 +156,7 @@ export default function DashboardPage() {
           onSuccess: () => {
             // Refresh history sidebar after successful analysis
             queryClient.invalidateQueries({
-              queryKey: ["portfolio-history", user?.id],
+              queryKey: ["portfolio-history"],
             });
           },
         },
@@ -207,7 +207,7 @@ export default function DashboardPage() {
     try {
       await deleteAnalysis(deleteTarget.id);
       queryClient.invalidateQueries({
-        queryKey: ["portfolio-history", user.id],
+        queryKey: ["portfolio-history"],
       });
     } catch (err) {
       console.error("Failed to delete analysis:", err);

@@ -21,7 +21,7 @@ async function getAuthHeaders(): Promise<HeadersInit> {
       throw new Error("No access token found");
     }
     return {
-      "Authorization": `Bearer ${session.access_token}`,
+      Authorization: `Bearer ${session.access_token}`,
       "Content-Type": "application/json",
     };
   } catch (error) {
@@ -98,7 +98,9 @@ async function analyzePortfolio(
   const headers = await getAuthHeaders();
 
   // Don't set Content-Type for FormData (browser will set it with boundary)
-  const headersForForm: HeadersInit = { Authorization: headers["Authorization"] };
+  const headersForForm: HeadersInit = {
+    Authorization: headers["Authorization"],
+  };
 
   const response = await fetch(url, {
     method: "POST",
@@ -301,16 +303,15 @@ async function fetchPortfolioHistory(): Promise<AnalysisHistoryItem[]> {
  * React Query hook for authenticated user's portfolio analysis history.
  *
  * Fetches past uploads automatically. Refetches when invalidated (e.g., after upload).
- * Query key is scoped to the user ID to prevent cross-user data exposure.
+ * Uses JWT authentication from getAuthHeaders().
  */
-export function usePortfolioHistory(userId?: string) {
+export function usePortfolioHistory() {
   return useQuery({
-    queryKey: ["portfolio-history", userId],
+    queryKey: ["portfolio-history"],
     queryFn: fetchPortfolioHistory,
     staleTime: 0, // Always refetch when invalidated
     refetchOnMount: "always", // Refetch every time component mounts
     refetchOnWindowFocus: false, // Don't refetch on window focus
-    enabled: !!userId, // Only run query if userId is provided
   });
 }
 
@@ -358,9 +359,7 @@ export async function cleanupOrphanHistory(): Promise<void> {
  * Returns true if deletion succeeded.
  * Requires JWT authentication.
  */
-export async function deleteAnalysis(
-  analysisId: string,
-): Promise<boolean> {
+export async function deleteAnalysis(analysisId: string): Promise<boolean> {
   const headers = await getAuthHeaders();
   const response = await fetch(
     `${API_URL}/api/portfolio/analysis/${analysisId}`,
