@@ -13,7 +13,7 @@ from typing import List, Dict, Any
 from pywebpush import webpush, WebPushException
 from pydantic import BaseModel
 
-from auth import get_current_user, enforce_ownership
+from auth import get_current_user, get_current_user_with_token, enforce_ownership
 from models import (
     FilingStatus,
     PortfolioAnalysis,
@@ -38,6 +38,7 @@ from db import (
     delete_analysis_by_id,
     save_tax_profile as db_save_tax_profile,
     get_tax_profile as db_get_tax_profile,
+    get_supabase_with_token,
 )
 
 # Configure logging
@@ -313,7 +314,7 @@ async def analyze_portfolio(
 
 @app.get("/api/portfolio/history")
 async def get_portfolio_history(
-    user_id: str = Depends(get_current_user),
+    auth_data: tuple[str, str] = Depends(get_current_user_with_token),
     limit: int = Query(default=20, ge=1, le=100),
 ):
     """
@@ -323,15 +324,27 @@ async def get_portfolio_history(
     without the full position data (which is processed in-memory only).
 
     **Authentication Required**: Must provide valid Supabase JWT token.
+    **RLS Enforced**: User can only access their own analyses.
     """
-    history = get_analysis_history(user_id, limit)
+    user_id, access_token = auth_data
+
+    # Create authenticated client to enforce RLS
+    auth_client = get_supabase_with_token(access_token)
+
+    if not auth_client:
+        raise HTTPException(
+            status_code=500,
+            detail="Database connection failed"
+        )
+
+    history = get_analysis_history(user_id, limit, client=auth_client)
     return history
 
 
 @app.get("/api/portfolio/analysis/{analysis_id}")
 async def get_portfolio_analysis(
     analysis_id: str,
-    user_id: str = Depends(get_current_user),
+    auth_data: tuple[str, str] = Depends(get_current_user_with_token),
 ):
     """
     Retrieve a single past portfolio analysis by ID, including the full result.
@@ -339,12 +352,23 @@ async def get_portfolio_analysis(
     Used when a user clicks a history item to reload that report.
 
     **Authentication Required**: Must provide valid Supabase JWT token.
-    **Authorization**: User can only access their own analyses.
+    **Authorization & RLS**: User can only access their own analyses.
     """
-    record = get_analysis_by_id(analysis_id, user_id)
+    user_id, access_token = auth_data
+
+    # Create authenticated client to enforce RLS
+    auth_client = get_supabase_with_token(access_token)
+
+    if not auth_client:
+        raise HTTPException(
+            status_code=500,
+            detail="Database connection failed"
+        )
+
+    record = get_analysis_by_id(analysis_id, user_id, client=auth_client)
     if not record:
         raise HTTPException(status_code=404, detail="Analysis not found")
-    # Enforce ownership
+    # Enforce ownership (redundant with RLS, but good defense-in-depth)
     enforce_ownership(user_id, record.get("user_id", ""))
     return record
 

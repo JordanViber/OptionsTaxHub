@@ -49,6 +49,35 @@ def get_supabase():
         return None
 
 
+def get_supabase_with_token(access_token: str):
+    """
+    Create a Supabase client with user's JWT token for RLS enforcement.
+
+    This client respects Row Level Security policies because it's initialized
+    with the user's authentication token, not the service role key.
+
+    Args:
+        access_token: User's JWT access token from Supabase Auth
+
+    Returns:
+        Authenticated Supabase client or None if initialization fails
+    """
+    url = os.environ.get("SUPABASE_URL")
+    if not url:
+        logger.warning("SUPABASE_URL not set — authentication features disabled")
+        return None
+
+    try:
+        from supabase import create_client
+
+        # Create client with user's token (respects RLS)
+        client = create_client(url, access_token)
+        return client
+    except Exception as e:
+        logger.error(f"Failed to create authenticated Supabase client: {e}")
+        return None
+
+
 # ---------- Portfolio History ----------
 
 
@@ -92,13 +121,21 @@ def save_analysis_history(
 def get_analysis_history(
     user_id: str,
     limit: int = 20,
+    client=None,
 ) -> list[dict]:
     """
     Retrieve past portfolio analyses for a user, newest first.
 
     Returns lightweight list (no full result) for the history sidebar.
+
+    Args:
+        user_id: User ID to fetch history for
+        limit: Maximum number of records to return
+        client: Optional authenticated Supabase client (for RLS enforcement)
+                If not provided, uses service role (bypasses RLS)
     """
-    client = get_supabase()
+    if client is None:
+        client = get_supabase()
     if client is None:
         return []
 
@@ -120,13 +157,21 @@ def get_analysis_history(
 def get_analysis_by_id(
     analysis_id: str,
     user_id: str,
+    client=None,
 ) -> Optional[dict]:
     """
     Retrieve a single portfolio analysis by ID, including the full result.
 
     Filters by user_id to enforce ownership.
+
+    Args:
+        analysis_id: ID of the analysis to retrieve
+        user_id: User ID (for ownership verification)
+        client: Optional authenticated Supabase client (for RLS enforcement)
+                If not provided, uses service role (bypasses RLS)
     """
-    client = get_supabase()
+    if client is None:
+        client = get_supabase()
     if client is None:
         return None
 
