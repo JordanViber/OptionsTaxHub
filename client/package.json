@@ -24,7 +24,7 @@
     "@mui/material": "^7.3.8",
     "@mui/x-data-grid": "^8.27.1",
     "@supabase/supabase-js": "^2.95.3",
-    "@tanstack/react-query": "^5.90.20",
+    "@tanstack/react-query": "^5.90.21",
     "next": "^14.2.0",
     "react": "^18",
     "react-dom": "^18"
