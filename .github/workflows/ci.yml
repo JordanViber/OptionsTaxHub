@@ -236,7 +236,7 @@ jobs:
           npm run test:e2e
 
       - name: Upload test results
-        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808  # v4
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f  # v4
         if: always()
         with:
           name: playwright-report
@@ -245,7 +245,7 @@ jobs:
 
       - name: Upload backend logs
         if: always()
-        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808  # v4
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f  # v4
         continue-on-error: true
         with:
           name: backend-logs
@@ -253,7 +253,7 @@ jobs:
 
       - name: Upload frontend logs
         if: always()
-        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808  # v4
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f  # v4
         continue-on-error: true
         with:
           name: frontend-logs
