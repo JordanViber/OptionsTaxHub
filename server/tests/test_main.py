@@ -192,6 +192,7 @@ def test_run_invokes_uvicorn(monkeypatch):
 
     monkeypatch.setattr(uvicorn, "run", fake_run)
     monkeypatch.setenv("PORT", "9090")
+    monkeypatch.setenv("ENVIRONMENT", "development")  # enable reload in dev mode
 
     main.run()
 
@@ -199,6 +200,24 @@ def test_run_invokes_uvicorn(monkeypatch):
     assert captured["kwargs"]["host"] == "0.0.0.0"
     assert captured["kwargs"]["port"] == 9090
     assert captured["kwargs"]["reload"] is True
+
+
+def test_run_invokes_uvicorn_no_reload_in_production(monkeypatch):
+    import uvicorn
+
+    captured = {}
+
+    def fake_run(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+
+    monkeypatch.setattr(uvicorn, "run", fake_run)
+    monkeypatch.setenv("PORT", "9090")
+    monkeypatch.setenv("ENVIRONMENT", "production")
+
+    main.run()
+
+    assert captured["kwargs"]["reload"] is False
 
 
 def test_main_entrypoint(monkeypatch):
