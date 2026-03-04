@@ -4,6 +4,12 @@ import re
 from typing import Annotated, Optional
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
+
+# Load environment variables BEFORE importing local modules that read os.environ
+# at module-import time (e.g. auth.py, db.py).  Order matters: .env.local wins.
+load_dotenv(".env.local")
+load_dotenv(".env")
+
 from fastapi import FastAPI, File, UploadFile, Query, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
@@ -44,10 +50,6 @@ from db import (
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# Load environment variables from .env.local or .env
-load_dotenv(".env.local")
-load_dotenv(".env")
 
 # Get environment variables
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
@@ -102,13 +104,23 @@ class PushNotification(BaseModel):
     data: Dict[str, Any] = {}
 
 # Enable CORS for frontend
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[FRONTEND_URL],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# In development allow any localhost port so dev servers on 3000/3001/etc work.
+if FRONTEND_URL.startswith("http://localhost"):
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=r"^http://localhost(:[0-9]+)?$",
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+else:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[FRONTEND_URL],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 def validate_user_id(user_id: Optional[str]) -> None:
     """
@@ -654,10 +666,12 @@ async def test_push_notification():
     return await send_push_notification(notification)
 
 def run():
-    port = int(os.environ.get("PORT", 8080))
+    port = int(os.environ.get("PORT", 8000))
     host = os.environ.get("HOST", "0.0.0.0")  # Bind to all interfaces for Render and other platforms
+    # Only enable auto-reload in local development; never in production (breaks container envs)
+    is_dev = os.environ.get("ENVIRONMENT", "production").lower() == "development"
     import uvicorn
-    uvicorn.run("main:app", host=host, port=port, reload=True)
+    uvicorn.run("main:app", host=host, port=port, reload=is_dev)
 
 if __name__ == "__main__":
     run()

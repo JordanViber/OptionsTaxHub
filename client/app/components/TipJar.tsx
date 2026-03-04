@@ -23,8 +23,18 @@ import {
   VolunteerActivism as GenerousIcon,
 } from "@mui/icons-material";
 
-const API_URL =
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+// Use relative path so the Next.js dev proxy forwards to the backend;
+// in production NEXT_PUBLIC_API_URL is the absolute server URL.
+const _RAW_API_URL = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
+const _isLocalhost = (() => {
+  try {
+    const u = new URL(_RAW_API_URL);
+    return u.hostname === "localhost" || u.hostname === "127.0.0.1";
+  } catch {
+    return false;
+  }
+})();
+const API_URL = !_RAW_API_URL || _isLocalhost ? "" : _RAW_API_URL;
 
 interface TipTier {
   id: string;
@@ -102,9 +112,7 @@ export default function TipJar({ open, onClose }: Readonly<TipJarProps>) {
       // Redirect to Stripe Checkout
       globalThis.location.href = data.checkout_url;
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Something went wrong",
-      );
+      setError(err instanceof Error ? err.message : "Something went wrong");
       setLoading(false);
       setSelected(null);
     }
@@ -193,11 +201,7 @@ export default function TipJar({ open, onClose }: Readonly<TipJarProps>) {
       <DialogContent sx={{ py: 3, px: 3 }}>
         <Stack spacing={2}>
           {/* Tip tier cards */}
-          <Stack
-            direction="row"
-            spacing={2}
-            justifyContent="center"
-          >
+          <Stack direction="row" spacing={2} justifyContent="center">
             {TIP_TIERS.map((tier) => {
               const isSelected = selected === tier.id;
               const isDisabled = loading && !isSelected;
@@ -293,10 +297,7 @@ export default function TipJar({ open, onClose }: Readonly<TipJarProps>) {
               <HeartOutlineIcon
                 sx={{ fontSize: 14, color: "text.secondary" }}
               />
-              <Typography
-                variant="caption"
-                color="text.secondary"
-              >
+              <Typography variant="caption" color="text.secondary">
                 Payments processed securely by Stripe
               </Typography>
             </Stack>

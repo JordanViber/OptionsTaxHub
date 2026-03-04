@@ -2,7 +2,7 @@
 JWT Authentication for OptionsTaxHub backend.
 
 Uses Supabase Auth tokens to:
-1. Verify JWT signatures
+1. Verify JWT signatures via JWKS (works with ECC P-256 and legacy HS256)
 2. Extract authenticated user_id
 3. Enforce ownership of user data
 """
@@ -10,44 +10,55 @@ Uses Supabase Auth tokens to:
 import os
 import logging
 from typing import Optional
-from functools import lru_cache
 
 from fastapi import HTTPException, Security
 from fastapi.security import HTTPBearer
 from fastapi.security.http import HTTPAuthorizationCredentials
-from jwt import decode, PyJWTError
-import requests
+from jwt import PyJWKClient, decode, PyJWTError
 
 logger = logging.getLogger(__name__)
-
-# Supabase JWT configuration
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
-SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
-JWT_SECRET = os.environ.get("SUPABASE_JWT_SECRET", "")
 
 # Security scheme
 security = HTTPBearer(auto_error=False)
 
+# Cached JWKS client — fetched once, keys are cached automatically by PyJWKClient
+_jwks_client: Optional[PyJWKClient] = None
 
-@lru_cache(maxsize=1)
-def get_jwt_secret() -> str:
-    """
-    Get JWT secret from environment.
 
-    In production, this should be cached and only retrieved once.
-    The secret is used to verify JWT tokens signed by Supabase Auth.
+def get_jwks_client() -> PyJWKClient:
     """
-    if not JWT_SECRET:
+    Return a cached PyJWKClient pointed at Supabase's JWKS endpoint.
+
+    Supabase exposes public signing keys at:
+      {SUPABASE_URL}/auth/v1/.well-known/jwks.json
+    
+    PyJWKClient fetches and caches these keys, so it works transparently
+    with both the current ECC (P-256) key and the legacy HS256 shared secret.
+    """
+    global _jwks_client
+    if _jwks_client is not None:
+        return _jwks_client
+
+    supabase_url = os.environ.get("SUPABASE_URL", "").rstrip("/")
+    if not supabase_url:
         raise ValueError(
-            "SUPABASE_JWT_SECRET not configured. "
-            "Get it from Supabase Dashboard > Project Settings > API > JWT Secrets"
+            "SUPABASE_URL not configured. "
+            "Set it to your Supabase project URL (e.g. https://xyz.supabase.co)."
         )
-    return JWT_SECRET
+
+    jwks_url = f"{supabase_url}/auth/v1/.well-known/jwks.json"
+    logger.info(f"Initialising JWKS client from {jwks_url}")
+    _jwks_client = PyJWKClient(jwks_url, cache_keys=True)
+    return _jwks_client
 
 
 def verify_jwt_token(token: str) -> dict:
     """
-    Verify JWT token and extract claims.
+    Verify a Supabase JWT token and extract its claims.
+
+    Uses JWKS to automatically select the correct signing key, so this works
+    with both the current ECC (P-256) key and any previously-used HS256 keys
+    that are still kept by Supabase for in-flight token verification.
 
     Args:
         token: JWT token from Authorization header
@@ -56,15 +67,16 @@ def verify_jwt_token(token: str) -> dict:
         Decoded JWT claims including user_id (sub)
 
     Raises:
-        HTTPException: If token is invalid or expired
+        HTTPException 401: If the token is invalid, expired, or unverifiable
     """
     try:
-        # Verify and decode the JWT
-        # Supabase uses HS256 algorithm by default
+        client = get_jwks_client()
+        signing_key = client.get_signing_key_from_jwt(token)
         payload = decode(
             token,
-            get_jwt_secret(),
-            algorithms=["HS256"],
+            signing_key.key,
+            algorithms=["RS256", "ES256", "HS256"],
+            options={"verify_aud": False},
         )
         return payload
     except PyJWTError as e:
@@ -72,6 +84,12 @@ def verify_jwt_token(token: str) -> dict:
         raise HTTPException(
             status_code=401,
             detail="Invalid or expired authentication token",
+        )
+    except Exception as e:
+        logger.error(f"Auth error: {e}")
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication failed",
         )
 
 

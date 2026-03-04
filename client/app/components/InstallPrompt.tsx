@@ -29,7 +29,11 @@ export default function InstallPrompt() {
       ).matches;
       return mobileRegex.test(userAgent) && (hasTouch || isNarrowViewport);
     };
-    setIsMobile(isMobileDevice());
+    const mobile = isMobileDevice();
+    setIsMobile(mobile);
+
+    // Only show install prompts on mobile devices — desktop users don't need them
+    if (!mobile) return;
 
     // Check if running in standalone mode (already installed and opened as PWA)
     if (
@@ -56,7 +60,9 @@ export default function InstallPrompt() {
     }
 
     // Check if the "already installed" message was dismissed (7-day cooldown)
-    const installedDismissed = localStorage.getItem("installedMessageDismissed");
+    const installedDismissed = localStorage.getItem(
+      "installedMessageDismissed",
+    );
     if (installedDismissed) {
       const dismissedTime = Number.parseInt(installedDismissed, 10);
       const sevenDays = 7 * 24 * 60 * 60 * 1000;
@@ -151,6 +157,11 @@ export default function InstallPrompt() {
     // The browser handles the actual opening - we just navigate to the app URL
     globalThis.location.href = globalThis.location.origin;
   };
+
+  // Never show install prompts on desktop — mobile only
+  if (!isMobile) {
+    return null;
+  }
 
   // Don't show anything if in standalone mode
   if (appState === "standalone") {

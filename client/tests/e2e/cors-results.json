@@ -1,0 +1,64 @@
+[
+  {
+    "type": "request",
+    "url": "http://localhost:3001/api/tax-profile",
+    "method": "GET"
+  },
+  {
+    "type": "response",
+    "url": "http://localhost:3001/api/tax-profile",
+    "status": 401,
+    "headers": {
+      "date": "Thu, 19 Feb 2026 00:19:56 GMT",
+      "server": "uvicorn",
+      "content-length": "36",
+      "content-type": "application/json",
+      "connection": "close",
+      "vary": "Accept-Encoding"
+    }
+  },
+  {
+    "type": "direct-fetch",
+    "url": "http://localhost:3001/api/tax-profile",
+    "status": 401,
+    "headers": {
+      "connection": "close",
+      "content-length": "36",
+      "content-type": "application/json",
+      "date": "Thu, 19 Feb 2026 00:19:56 GMT",
+      "server": "uvicorn",
+      "vary": "Accept-Encoding"
+    }
+  },
+  {
+    "type": "request",
+    "url": "http://localhost:3001/api/portfolio/history",
+    "method": "GET"
+  },
+  {
+    "type": "response",
+    "url": "http://localhost:3001/api/portfolio/history",
+    "status": 401,
+    "headers": {
+      "date": "Thu, 19 Feb 2026 00:19:56 GMT",
+      "server": "uvicorn",
+      "content-length": "36",
+      "content-type": "application/json",
+      "connection": "close",
+      "vary": "Accept-Encoding"
+    }
+  },
+  {
+    "type": "direct-fetch",
+    "url": "http://localhost:3001/api/portfolio/history",
+    "status": 401,
+    "headers": {
+      "connection": "close",
+      "content-length": "36",
+      "content-type": "application/json",
+      "date": "Thu, 19 Feb 2026 00:19:56 GMT",
+      "server": "uvicorn",
+      "vary": "Accept-Encoding"
+    }
+  }
+]
