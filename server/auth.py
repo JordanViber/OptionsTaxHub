@@ -31,7 +31,7 @@ def get_jwks_client() -> PyJWKClient:
 
     Supabase exposes public signing keys at:
       {SUPABASE_URL}/auth/v1/.well-known/jwks.json
-    
+
     PyJWKClient fetches and caches these keys, so it works transparently
     with both the current ECC (P-256) key and the legacy HS256 shared secret.
     """
