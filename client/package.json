@@ -22,7 +22,7 @@
     "@emotion/styled": "^11.14.1",
     "@mui/icons-material": "^7.3.8",
     "@mui/material": "^7.3.8",
-    "@mui/x-data-grid": "^8.27.1",
+    "@mui/x-data-grid": "^8.27.3",
     "@supabase/supabase-js": "^2.98.0",
     "@tanstack/react-query": "^5.90.21",
     "next": "^14.2.0",
