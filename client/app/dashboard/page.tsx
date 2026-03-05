@@ -55,6 +55,7 @@ import {
   useAnalyzePortfolio,
   useTaxProfile,
   usePortfolioHistory,
+  useBackendHealth,
   fetchAnalysisById,
   cleanupOrphanHistory,
   deleteAnalysis,
@@ -198,6 +199,12 @@ export default function DashboardPage() {
 
   // Load the user's tax profile for analyze params
   const { data: taxProfile } = useTaxProfile();
+
+  // Backend health check — shows a banner when the API server is unreachable
+  const {
+    isError: backendDown,
+    isFetched: backendChecked,
+  } = useBackendHealth();
 
   // Load past upload history
   const { data: history, error: historyError } = usePortfolioHistory();
@@ -611,14 +618,26 @@ export default function DashboardPage() {
             </CardContent>
           </Card>
 
+          {/* Backend health banner — shown when the API server is unreachable */}
+          {backendChecked && backendDown && (
+            <Alert severity="warning">
+              <AlertTitle>Backend server unreachable</AlertTitle>
+              The API server is not responding on port 8080. Run{" "}
+              <code>npm run dev:server</code> from the project root, or use
+              the <strong>Server: API</strong> task in VS Code.
+            </Alert>
+          )}
+
           {/* Error Alert */}
           {error && (
             <Alert severity="error" icon={<ErrorIcon />}>
-              <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                Analysis Failed
-              </Typography>
+              <AlertTitle>Analysis Failed</AlertTitle>
               <Typography variant="caption">
-                {error instanceof Error ? error.message : "An error occurred"}
+                {error instanceof Error
+                  ? /failed to fetch|network|econnrefused/i.test(error.message)
+                    ? "Could not reach the backend server. Make sure it is running on port 8080 (npm run dev:server)."
+                    : error.message
+                  : "An error occurred"}
               </Typography>
             </Alert>
           )}

@@ -36,6 +36,10 @@ jest.mock("../../lib/api", () => ({
     error: null,
     isPending: false,
   }),
+  useBackendHealth: () => ({
+    isError: false,
+    isFetched: true,
+  }),
   fetchAnalysisById: jest.fn(),
   cleanupOrphanHistory: jest.fn(() => Promise.resolve()),
   deleteAnalysis: jest.fn(() => Promise.resolve(true)),

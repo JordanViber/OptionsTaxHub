@@ -627,7 +627,7 @@ describe("api hooks", () => {
         json: async () => {
           throw new Error("not JSON");
         },
-      } as Response);
+      } as unknown as Response);
 
       render(<AnalyzeComponent file={file} />, { wrapper: createWrapper() });
       fireEvent.click(screen.getByText("Analyze"));
@@ -638,7 +638,8 @@ describe("api hooks", () => {
     });
   });
 
-  describe("saveTaxProfile via useSaveTaxProfile", () => {    it("saves tax profile successfully and invalidates cache", async () => {
+  describe("saveTaxProfile via useSaveTaxProfile", () => {
+    it("saves tax profile successfully and invalidates cache", async () => {
       const profile = {
         user_id: "test-user",
         filing_status: "single" as const,
@@ -694,4 +695,5 @@ describe("api hooks", () => {
         expect(result.current.isError).toBe(true);
       });
     });
-  });});
+  });
+});

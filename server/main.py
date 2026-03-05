@@ -702,7 +702,7 @@ async def test_push_notification():
     return await send_push_notification(notification)
 
 def run():
-    port = int(os.environ.get("PORT", 8000))
+    port = int(os.environ.get("PORT", 8080))
     host = os.environ.get("HOST", "0.0.0.0")  # Bind to all interfaces for Render and other platforms
     # Only enable auto-reload in local development; never in production (breaks container envs)
     is_dev = os.environ.get("ENVIRONMENT", "production").lower() == "development"

@@ -12,7 +12,10 @@ interface CorsRecord {
   error?: string;
 }
 
-test("reproduce CORS and unregister SW", async ({ page, context }, testInfo) => {
+test("reproduce CORS and unregister SW", async ({
+  page,
+  context,
+}, testInfo) => {
   const records: CorsRecord[] = [];
 
   page.on("request", (req) => {

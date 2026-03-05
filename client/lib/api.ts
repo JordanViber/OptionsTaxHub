@@ -21,7 +21,7 @@ function apiPath(path: string) {
   // If the configured base points to localhost, prefer relative paths during
   // development so the Next dev server can proxy /api/* to the backend and
   // avoid CORS errors in the browser (developers often set NEXT_PUBLIC_API_URL
-  // to http://localhost:8000 for convenience).
+  // to http://localhost:8080 for convenience).
   // NOTE: Do NOT apply this in production — Next.js rewrites only run in `next dev`.
   if (!IS_PROD) {
     try {
@@ -29,7 +29,8 @@ function apiPath(path: string) {
       if (url.hostname === "localhost" || url.hostname === "127.0.0.1") {
         return path.startsWith("/") ? path : `/${path}`;
       }
-    } catch (_e) { // NOSONAR typescript:S2486 — URL parse failure is expected when API_BASE is a relative path
+    } catch (_e) {
+      // NOSONAR typescript:S2486 — URL parse failure is expected when API_BASE is a relative path
       // If API_BASE is not a valid URL (e.g. a relative path), fall back to using it as-is.
     }
   }
@@ -396,4 +397,27 @@ export async function deleteAnalysis(analysisId: string): Promise<boolean> {
     },
   );
   return response.ok;
+}
+
+/**
+ * Poll the backend /health endpoint to detect server availability.
+ *
+ * Uses relative path so the Next.js dev proxy handles routing to port 8080.
+ * Refetches every 30 seconds and after a window focus/reconnect.
+ * Shows isFetched=true only after the first attempt completes so callers
+ * can distinguish "still checking" from "confirmed down".
+ */
+export function useBackendHealth() {
+  return useQuery({
+    queryKey: ["backend-health"],
+    queryFn: async () => {
+      const res = await fetch("/health");
+      if (!res.ok) throw new Error("Backend unhealthy");
+      return true;
+    },
+    retry: 1,
+    retryDelay: 2000,
+    refetchInterval: 30_000,
+    staleTime: 20_000,
+  });
 }
