@@ -133,7 +133,7 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array {
 // Send subscription to backend
 async function sendSubscriptionToBackend(subscription: PushSubscription) {
   try {
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
     const response = await fetch(`${apiUrl}/push/subscribe`, {
       method: "POST",
       headers: {
@@ -156,7 +156,7 @@ async function sendSubscriptionToBackend(subscription: PushSubscription) {
 // Remove subscription from backend
 async function removeSubscriptionFromBackend(subscription: PushSubscription) {
   try {
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
     const response = await fetch(`${apiUrl}/push/unsubscribe`, {
       method: "POST",
       headers: {

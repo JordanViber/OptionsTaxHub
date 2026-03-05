@@ -201,10 +201,8 @@ export default function DashboardPage() {
   const { data: taxProfile } = useTaxProfile();
 
   // Backend health check — shows a banner when the API server is unreachable
-  const {
-    isError: backendDown,
-    isFetched: backendChecked,
-  } = useBackendHealth();
+  const { isError: backendDown, isFetched: backendChecked } =
+    useBackendHealth();
 
   // Load past upload history
   const { data: history, error: historyError } = usePortfolioHistory();
@@ -622,9 +620,9 @@ export default function DashboardPage() {
           {backendChecked && backendDown && (
             <Alert severity="warning">
               <AlertTitle>Backend server unreachable</AlertTitle>
-              The API server is not responding on port 8080. Run{" "}
-              <code>npm run dev:server</code> from the project root, or use
-              the <strong>Server: API</strong> task in VS Code.
+              The API server is not responding on port 8001. Run{" "}
+              <code>npm run dev:server</code> from the project root, or use the{" "}
+              <strong>Server: API</strong> task in VS Code.
             </Alert>
           )}
 
@@ -635,7 +633,7 @@ export default function DashboardPage() {
               <Typography variant="caption">
                 {error instanceof Error
                   ? /failed to fetch|network|econnrefused/i.test(error.message)
-                    ? "Could not reach the backend server. Make sure it is running on port 8080 (npm run dev:server)."
+                    ? "Could not reach the backend server. Make sure it is running on port 8001 (npm run dev:server)."
                     : error.message
                   : "An error occurred"}
               </Typography>

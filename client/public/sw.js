@@ -2,7 +2,7 @@
 // v4: do not cache HTML documents — they contain version-specific ?v= script tags
 // that become stale whenever the dev server restarts or a new build is deployed.
 const CACHE_NAME = "optionstaxhub-v4";
-const API_URL = "http://localhost:8080";
+const API_URL = "http://localhost:8001";
 
 // Track recently shown notifications to prevent duplicates
 // Using a simple LRU-like implementation with time-based expiration
