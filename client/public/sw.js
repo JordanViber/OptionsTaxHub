@@ -1,5 +1,7 @@
 // Service Worker for OptionsTaxHub PWA
-const CACHE_NAME = "optionstaxhub-v3";
+// v4: do not cache HTML documents — they contain version-specific ?v= script tags
+// that become stale whenever the dev server restarts or a new build is deployed.
+const CACHE_NAME = "optionstaxhub-v4";
 const API_URL = "http://localhost:8080";
 
 // Track recently shown notifications to prevent duplicates
@@ -43,9 +45,11 @@ setInterval(() => {
   }
 }, CLEANUP_INTERVAL);
 
-// Assets to cache on install
+// Assets to cache on install.
+// NOTE: Do NOT include the HTML document ("/") — it contains version-specific
+// ?v= query params for JS/CSS chunks that change on every build/server restart.
+// Caching it causes the browser to replay stale chunk URLs that 404 on new builds.
 const STATIC_ASSETS = [
-  "/",
   "/manifest.json",
   "/icons/icon-192x192.png",
   "/icons/icon-512x512.png",
@@ -98,6 +102,14 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
+  // Never cache HTML documents — they embed version-specific ?v= chunk URLs
+  // that change on every build. Caching the document causes stale JS/CSS 404s.
+  const acceptHeader = request.headers.get("accept") || "";
+  if (acceptHeader.includes("text/html")) {
+    event.respondWith(fetch(request));
+    return;
+  }
+
   // Static assets - cache first, fallback to network
   event.respondWith(
     caches.match(request).then((cached) => {
@@ -105,8 +117,13 @@ self.addEventListener("fetch", (event) => {
         return cached;
       }
       return fetch(request).then((response) => {
-        // Only cache GET requests with successful responses
-        if (response?.status === 200 && request.method === "GET") {
+        // Only cache GET requests with successful non-HTML responses
+        const contentType = response.headers.get("content-type") || "";
+        if (
+          response?.status === 200 &&
+          request.method === "GET" &&
+          !contentType.includes("text/html")
+        ) {
           const responseClone = response.clone();
           caches.open(CACHE_NAME).then((cache) => {
             cache.put(request, responseClone);
