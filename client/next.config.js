@@ -27,13 +27,17 @@ const nextConfig = {
       },
     ];
   },
-  // In development, proxy /api/* to the local backend to keep same-origin requests
+  // In development, proxy /api/* and /upload-csv to the local backend to keep same-origin requests
   async rewrites() {
     if (process.env.NODE_ENV === "production") return [];
     return [
       {
         source: "/api/:path*",
         destination: `http://localhost:${process.env.BACKEND_PORT || 8000}/api/:path*`,
+      },
+      {
+        source: "/upload-csv",
+        destination: `http://localhost:${process.env.BACKEND_PORT || 8000}/upload-csv`,
       },
     ];
   },

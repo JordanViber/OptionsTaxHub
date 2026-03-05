@@ -279,7 +279,7 @@ jobs:
       - name: Ensure Trivy SARIF exists (avoid upload failure)
         run: |
           if [ ! -f trivy-results.sarif ]; then
-            echo "{}" > trivy-results.sarif
+            echo '{"$schema":"https://json.schemastore.org/sarif-2.1.0.json","version":"2.1.0","runs":[]}' > trivy-results.sarif
             echo "Created placeholder trivy-results.sarif"
           else
             echo "trivy-results.sarif exists"

@@ -25,8 +25,11 @@ import {
 
 // Use relative path so the Next.js dev proxy forwards to the backend;
 // in production NEXT_PUBLIC_API_URL is the absolute server URL.
+// Only collapse to a relative URL when NOT in production — Next.js rewrites
+// are not available in `next start` / production builds.
 const _RAW_API_URL = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
 const _isLocalhost = (() => {
+  if (process.env.NODE_ENV === "production") return false;
   try {
     const u = new URL(_RAW_API_URL);
     return u.hostname === "localhost" || u.hostname === "127.0.0.1";

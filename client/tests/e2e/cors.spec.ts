@@ -1,8 +1,19 @@
 import { test, expect } from "@playwright/test";
-import fs from "fs";
+import path from "path";
+import { writeFileSync, mkdirSync } from "fs";
 
-test("reproduce CORS and unregister SW", async ({ page, context }) => {
-  const records: any[] = [];
+interface CorsRecord {
+  type: "request" | "response" | "direct-fetch" | "direct-fetch-error";
+  url?: string;
+  method?: string;
+  status?: number;
+  headers?: Record<string, string>;
+  endpoint?: string;
+  error?: string;
+}
+
+test("reproduce CORS and unregister SW", async ({ page, context }, testInfo) => {
+  const records: CorsRecord[] = [];
 
   page.on("request", (req) => {
     const url = req.url();
@@ -69,13 +80,37 @@ test("reproduce CORS and unregister SW", async ({ page, context }) => {
     }
   }
 
-  // Save records
-  const out = JSON.stringify(records, null, 2);
-  fs.writeFileSync("tests/e2e/cors-results.json", out);
+  // Save records to Playwright's per-test output directory (not source tree)
+  const outputPath = testInfo.outputPath("cors-results.json");
+  mkdirSync(path.dirname(outputPath), { recursive: true });
+  writeFileSync(outputPath, JSON.stringify(records, null, 2));
+  await testInfo.attach("cors-results", {
+    path: outputPath,
+    contentType: "application/json",
+  });
 
-  // Assert that at least one API response was received (not strictly asserting success)
-  const responses = records.filter(
-    (r) => r.type === "response" || r.type === "direct-fetch",
-  );
-  expect(responses.length).toBeGreaterThan(0);
+  // Assert deterministic CORS behavior for the known endpoints we fetched explicitly
+  const directFetches = records.filter((r) => r.type === "direct-fetch");
+  // We expect one successful direct-fetch per endpoint
+  expect(directFetches).toHaveLength(endpoints.length);
+
+  for (const fetchRecord of directFetches) {
+    // Basic sanity check on HTTP status (auth errors 401/403 are expected without a session)
+    expect(fetchRecord.status).toBeGreaterThanOrEqual(200);
+    expect(fetchRecord.status).toBeLessThan(500);
+
+    const acao =
+      fetchRecord.headers?.["access-control-allow-origin"] ??
+      fetchRecord.headers?.["Access-Control-Allow-Origin"];
+
+    // CORS should either be open or allow our origin/BASE
+    if (acao !== undefined) {
+      expect(
+        acao === "*" ||
+          acao === BASE ||
+          acao === `${BASE}/` ||
+          acao === new URL(BASE).origin,
+      ).toBeTruthy();
+    }
+  }
 });

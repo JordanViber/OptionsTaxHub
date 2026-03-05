@@ -12,6 +12,7 @@ import { getSession } from "./supabase";
 // Base API URL: if NEXT_PUBLIC_API_URL is set (production), use it; otherwise use
 // relative paths so the dev server can proxy `/api/*` to the backend.
 const API_BASE = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
+const IS_PROD = process.env.NODE_ENV === "production";
 
 function apiPath(path: string) {
   // If no explicit base is configured, use relative paths so Next dev proxy rewrites work.
@@ -20,14 +21,17 @@ function apiPath(path: string) {
   // If the configured base points to localhost, prefer relative paths during
   // development so the Next dev server can proxy /api/* to the backend and
   // avoid CORS errors in the browser (developers often set NEXT_PUBLIC_API_URL
-  // to http://localhost:8080 for convenience).
-  try {
-    const url = new URL(API_BASE);
-    if (url.hostname === "localhost" || url.hostname === "127.0.0.1") {
-      return path.startsWith("/") ? path : `/${path}`;
+  // to http://localhost:8000 for convenience).
+  // NOTE: Do NOT apply this in production — Next.js rewrites only run in `next dev`.
+  if (!IS_PROD) {
+    try {
+      const url = new URL(API_BASE);
+      if (url.hostname === "localhost" || url.hostname === "127.0.0.1") {
+        return path.startsWith("/") ? path : `/${path}`;
+      }
+    } catch (e) {
+      // If parsing fails, fall back to using the provided base.
     }
-  } catch (e) {
-    // If parsing fails, fall back to using the provided base.
   }
 
   return `${API_BASE}${path.startsWith("/") ? path : `/${path}`}`;

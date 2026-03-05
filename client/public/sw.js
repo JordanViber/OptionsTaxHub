@@ -1,6 +1,6 @@
 // Service Worker for OptionsTaxHub PWA
 const CACHE_NAME = "optionstaxhub-v3";
-const API_URL = "http://localhost:8080";
+const API_URL = "http://localhost:8000";
 
 // Track recently shown notifications to prevent duplicates
 // Using a simple LRU-like implementation with time-based expiration
