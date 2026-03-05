@@ -6,7 +6,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "predev": "rimraf .next",
+    "predev": "npx kill-port 3000 && rimraf .next",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
