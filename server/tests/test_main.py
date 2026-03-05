@@ -933,3 +933,46 @@ def test_save_history_best_effort_exception():
             result=result_obj,
             summary=summary_obj,
         )
+
+
+def test_validate_user_id_invalid_format():
+    """validate_user_id raises HTTPException 400 for unsafe input (line 141)."""
+    import pytest
+    from fastapi import HTTPException as FastAPIHTTPException
+
+    with pytest.raises(FastAPIHTTPException) as exc_info:
+        main.validate_user_id("!!invalid user_id!!")
+    assert exc_info.value.status_code == 400
+    assert "Invalid user_id format" in exc_info.value.detail
+
+
+def test_get_portfolio_history_db_connection_failed(monkeypatch):
+    """Returns 500 when get_supabase_with_token returns None (line 347)."""
+    monkeypatch.setattr("main.get_supabase_with_token", lambda token: None)
+    response = client.get("/api/portfolio/history")
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Database connection failed"
+
+
+def test_get_portfolio_analysis_db_connection_failed(monkeypatch):
+    """Returns 500 when get_supabase_with_token returns None (line 375)."""
+    monkeypatch.setattr("main.get_supabase_with_token", lambda token: None)
+    response = client.get("/api/portfolio/analysis/some-analysis-id")
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Database connection failed"
+
+
+def test_lifespan_startup_no_stripe(monkeypatch):
+    """Lifespan startup logs warning when STRIPE_SECRET_KEY is absent (lines 70-83)."""
+    monkeypatch.setattr("main.STRIPE_SECRET_KEY", None)
+    with TestClient(main.app) as temp_client:
+        resp = temp_client.get("/health")
+        assert resp.status_code == 200
+
+
+def test_lifespan_startup_with_stripe(monkeypatch):
+    """Lifespan startup logs success when STRIPE_SECRET_KEY is set (else branch, lines 70-83)."""
+    monkeypatch.setattr("main.STRIPE_SECRET_KEY", "sk_test_fake_key")
+    with TestClient(main.app) as temp_client:
+        resp = temp_client.get("/health")
+        assert resp.status_code == 200
