@@ -188,42 +188,6 @@ export default function InstallPrompt() {
   // Show reminder if already installed
   if (appState === "installed") {
     // On mobile, show "Open App" button that will switch to the installed PWA
-    if (isMobile) {
-      return (
-        <div className="fixed bottom-4 left-4 right-4 md:left-auto md:right-4 md:max-w-sm bg-white dark:bg-gray-800 rounded-lg shadow-2xl border border-gray-200 dark:border-gray-700 p-4 z-50 animate-slide-up">
-          <div className="flex items-start gap-3">
-            <div className="flex-shrink-0 w-12 h-12 bg-gradient-to-br from-green-500 to-green-700 rounded-lg flex items-center justify-center text-white text-2xl font-bold">
-              ✓
-            </div>
-            <div className="flex-1">
-              <h3 className="font-semibold text-gray-900 dark:text-white mb-1">
-                App Already Installed
-              </h3>
-              <p className="text-sm text-gray-600 dark:text-gray-300 mb-3">
-                Open OptionsTaxHub from your home screen for the best
-                experience.
-              </p>
-              <div className="flex gap-2">
-                <button
-                  onClick={handleOpenApp}
-                  className="flex-1 bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
-                >
-                  Open App
-                </button>
-                <button
-                  onClick={handleDismissInstalled}
-                  className="px-4 py-2 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg text-sm font-medium transition-colors"
-                >
-                  Dismiss
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      );
-    }
-
-    // On desktop, just show a simple dismissible message (don't try to open app)
     return (
       <div className="fixed bottom-4 left-4 right-4 md:left-auto md:right-4 md:max-w-sm bg-white dark:bg-gray-800 rounded-lg shadow-2xl border border-gray-200 dark:border-gray-700 p-4 z-50 animate-slide-up">
         <div className="flex items-start gap-3">
@@ -235,15 +199,23 @@ export default function InstallPrompt() {
               App Already Installed
             </h3>
             <p className="text-sm text-gray-600 dark:text-gray-300 mb-3">
-              Launch OptionsTaxHub from your applications menu or start menu for
-              the best experience.
+              Open OptionsTaxHub from your home screen for the best
+              experience.
             </p>
-            <button
-              onClick={handleDismissInstalled}
-              className="w-full bg-gray-500 hover:bg-gray-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
-            >
-              Got it
-            </button>
+            <div className="flex gap-2">
+              <button
+                onClick={handleOpenApp}
+                className="flex-1 bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+              >
+                Open App
+              </button>
+              <button
+                onClick={handleDismissInstalled}
+                className="px-4 py-2 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg text-sm font-medium transition-colors"
+              >
+                Dismiss
+              </button>
+            </div>
           </div>
         </div>
       </div>

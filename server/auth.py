@@ -2,7 +2,7 @@
 JWT Authentication for OptionsTaxHub backend.
 
 Uses Supabase Auth tokens to:
-1. Verify JWT signatures via JWKS (works with ECC P-256 and legacy HS256)
+1. Verify JWT signatures (HS256 via shared secret; RS256/ES256 via JWKS)
 2. Extract authenticated user_id
 3. Enforce ownership of user data
 """
@@ -14,7 +14,7 @@ from typing import Optional
 from fastapi import HTTPException, Security
 from fastapi.security import HTTPBearer
 from fastapi.security.http import HTTPAuthorizationCredentials
-from jwt import PyJWKClient, decode, PyJWTError
+from jwt import PyJWKClient, decode, PyJWTError, get_unverified_header
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +32,8 @@ def get_jwks_client() -> PyJWKClient:
     Supabase exposes public signing keys at:
       {SUPABASE_URL}/auth/v1/.well-known/jwks.json
 
-    PyJWKClient fetches and caches these keys, so it works transparently
-    with both the current ECC (P-256) key and the legacy HS256 shared secret.
+    PyJWKClient fetches and caches these keys for asymmetric verification
+    (RS256 / ES256). HS256 tokens are verified separately via SUPABASE_JWT_SECRET.
     """
     global _jwks_client
     if _jwks_client is not None:
@@ -56,9 +56,11 @@ def verify_jwt_token(token: str) -> dict:
     """
     Verify a Supabase JWT token and extract its claims.
 
-    Uses JWKS to automatically select the correct signing key, so this works
-    with both the current ECC (P-256) key and any previously-used HS256 keys
-    that are still kept by Supabase for in-flight token verification.
+    Dispatches verification based on the token header's ``alg`` field to avoid
+    algorithm-confusion attacks:
+
+    * **HS256** – verified with the ``SUPABASE_JWT_SECRET`` shared secret.
+    * **RS256 / ES256** – verified via JWKS (public key fetched from Supabase).
 
     Args:
         token: JWT token from Authorization header
@@ -68,17 +70,56 @@ def verify_jwt_token(token: str) -> dict:
 
     Raises:
         HTTPException 401: If the token is invalid, expired, or unverifiable
+        HTTPException 500: If a configuration or network error prevents verification
     """
     try:
-        client = get_jwks_client()
-        signing_key = client.get_signing_key_from_jwt(token)
-        payload = decode(
-            token,
-            signing_key.key,
-            algorithms=["RS256", "ES256", "HS256"],
-            options={"verify_aud": False},
+        header = get_unverified_header(token)
+    except Exception as e:
+        logger.error(f"Failed to decode JWT header: {e}")
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid authentication token",
         )
+
+    alg = header.get("alg", "")
+
+    try:
+        if alg == "HS256":
+            # Symmetric path: verify with the shared JWT secret
+            jwt_secret = os.environ.get("SUPABASE_JWT_SECRET", "")
+            if not jwt_secret:
+                logger.error("SUPABASE_JWT_SECRET is not configured")
+                raise HTTPException(
+                    status_code=500,
+                    detail="Internal authentication error",
+                )
+            payload = decode(
+                token,
+                jwt_secret,
+                algorithms=["HS256"],
+                options={"verify_aud": False},
+            )
+        else:
+            # Asymmetric path: verify via JWKS (RS256 / ES256)
+            try:
+                client = get_jwks_client()
+                signing_key = client.get_signing_key_from_jwt(token)
+            except ValueError as e:
+                # Configuration error (e.g. SUPABASE_URL missing)
+                logger.exception(f"JWKS configuration error: {e}")
+                raise HTTPException(
+                    status_code=500,
+                    detail="Internal authentication error",
+                )
+            payload = decode(
+                token,
+                signing_key.key,
+                algorithms=["RS256", "ES256"],
+                options={"verify_aud": False},
+            )
         return payload
+    except HTTPException:
+        raise
     except PyJWTError as e:
         logger.error(f"JWT verification failed: {e}")
         raise HTTPException(
@@ -86,10 +127,10 @@ def verify_jwt_token(token: str) -> dict:
             detail="Invalid or expired authentication token",
         )
     except Exception as e:
-        logger.error(f"Auth error: {e}")
+        logger.exception(f"Unexpected authentication error: {e}")
         raise HTTPException(
-            status_code=401,
-            detail="Authentication failed",
+            status_code=500,
+            detail="Internal authentication error",
         )
 
 
