@@ -229,10 +229,9 @@ export function useSaveTaxProfile() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: saveTaxProfile,
-    onSuccess: (_data, variables) => {
-      queryClient.invalidateQueries({
-        queryKey: ["tax-profile", variables.user_id],
-      });
+    onSuccess: () => {
+      // Invalidate using the same key as useTaxProfile so the cache is cleared
+      queryClient.invalidateQueries({ queryKey: ["tax-profile"] });
     },
   });
 }

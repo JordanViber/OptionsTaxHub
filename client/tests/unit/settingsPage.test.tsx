@@ -194,7 +194,7 @@ describe("SettingsPage", () => {
       await screen.findByLabelText("Filing Status");
 
       const incomeInput = screen.getByLabelText("Estimated Annual Income");
-      expect((incomeInput as HTMLInputElement).value).toBe("150000");
+      expect((incomeInput as HTMLInputElement).value).toBe("150,000");
 
       const taxYearSelect = screen.getByLabelText("Tax Year");
       expect(taxYearSelect).toBeInTheDocument();
@@ -223,7 +223,7 @@ describe("SettingsPage", () => {
       renderWithClient(<SettingsPage />);
 
       const incomeInput = screen.getByLabelText("Estimated Annual Income");
-      expect((incomeInput as HTMLInputElement).value).toBe("75000"); // default
+      expect((incomeInput as HTMLInputElement).value).toBe("75,000"); // default
     });
   });
 
@@ -295,7 +295,7 @@ describe("SettingsPage", () => {
       renderWithClient(<SettingsPage />);
 
       const incomeInput = screen.getByLabelText("Estimated Annual Income");
-      expect((incomeInput as HTMLInputElement).value).toBe("75000");
+      expect((incomeInput as HTMLInputElement).value).toBe("75,000");
     });
   });
 
