@@ -7,7 +7,7 @@ services:
     branch: main
     rootDir: server
     buildCommand: pip install -r requirements.txt
-    startCommand: python main.py
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: DATABASE_URL
         sync: false
@@ -22,6 +22,10 @@ services:
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+      - key: SUPABASE_ANON_KEY
         sync: false
       - key: VAPID_PRIVATE_KEY
         sync: false
@@ -41,10 +45,7 @@ services:
     startCommand: npm start
     envVars:
       - key: NEXT_PUBLIC_API_URL
-        fromService:
-          type: web
-          name: options-tax-hub-server-prod
-          property: host
+        value: https://options-tax-hub-server-prod.onrender.com
       - key: NEXT_PUBLIC_VAPID_PUBLIC_KEY
         sync: false
       - key: NEXT_PUBLIC_SUPABASE_URL
@@ -60,7 +61,7 @@ services:
     branch: staging
     rootDir: server
     buildCommand: pip install -r requirements.txt
-    startCommand: python main.py
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: DATABASE_URL
         sync: false
@@ -75,6 +76,10 @@ services:
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+      - key: SUPABASE_ANON_KEY
         sync: false
       - key: VAPID_PRIVATE_KEY
         sync: false
@@ -94,10 +99,7 @@ services:
     startCommand: npm start
     envVars:
       - key: NEXT_PUBLIC_API_URL
-        fromService:
-          type: web
-          name: options-tax-hub-server-staging
-          property: host
+        value: https://options-tax-hub-server-staging.onrender.com
       - key: NEXT_PUBLIC_VAPID_PUBLIC_KEY
         sync: false
       - key: NEXT_PUBLIC_SUPABASE_URL

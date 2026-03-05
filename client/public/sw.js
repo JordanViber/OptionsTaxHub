@@ -1,6 +1,6 @@
 // Service Worker for OptionsTaxHub PWA
-const CACHE_NAME = "optionstaxhub-v1";
-const API_URL = "http://localhost:8080";
+const CACHE_NAME = "optionstaxhub-v3";
+const API_URL = "http://localhost:8000";
 
 // Track recently shown notifications to prevent duplicates
 // Using a simple LRU-like implementation with time-based expiration
@@ -13,27 +13,33 @@ const CLEANUP_INTERVAL = 10000; // Clean up every 10 seconds
 setInterval(() => {
   const now = Date.now();
   let cleanedCount = 0;
-  
+
   for (const [key, timestamp] of shownNotifications.entries()) {
     if (now - timestamp > NOTIFICATION_DEDUP_WINDOW) {
       shownNotifications.delete(key);
       cleanedCount++;
     }
   }
-  
+
   // If still too large after expiration cleanup, remove oldest entries (LRU)
   if (shownNotifications.size > MAX_NOTIFICATION_ENTRIES) {
-    const entries = Array.from(shownNotifications.entries())
-      .sort((a, b) => a[1] - b[1]); // Sort by timestamp (oldest first)
-    const toRemove = entries.slice(0, shownNotifications.size - MAX_NOTIFICATION_ENTRIES);
+    const entries = Array.from(shownNotifications.entries()).sort(
+      (a, b) => a[1] - b[1],
+    ); // Sort by timestamp (oldest first)
+    const toRemove = entries.slice(
+      0,
+      shownNotifications.size - MAX_NOTIFICATION_ENTRIES,
+    );
     for (const [key] of toRemove) {
       shownNotifications.delete(key);
       cleanedCount++;
     }
   }
-  
+
   if (cleanedCount > 0) {
-    console.log(`[SW] Cleaned ${cleanedCount} expired notification entries. Current size: ${shownNotifications.size}`);
+    console.log(
+      `[SW] Cleaned ${cleanedCount} expired notification entries. Current size: ${shownNotifications.size}`,
+    );
   }
 }, CLEANUP_INTERVAL);
 
@@ -54,6 +60,7 @@ self.addEventListener("install", (event) => {
       ); // Skip icons for now
     }),
   );
+  console.log("[SW] install event - skipping waiting");
   globalThis.skipWaiting();
 });
 
@@ -70,6 +77,7 @@ self.addEventListener("activate", (event) => {
       );
     }),
   );
+  console.log("[SW] activate event - claiming clients and clearing old caches");
   globalThis.clients.claim();
 });
 
@@ -83,8 +91,9 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // API requests - network only (no caching for now)
-  if (url.origin === API_URL) {
+  // Treat API requests as network-only. Match either the configured API origin
+  // or any path starting with /api/ so local dev (same-origin) also bypasses cache.
+  if (url.origin === API_URL || url.pathname.startsWith("/api/")) {
     event.respondWith(fetch(request));
     return;
   }

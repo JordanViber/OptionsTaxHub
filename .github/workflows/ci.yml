@@ -264,21 +264,35 @@ jobs:
     name: Security Scanning
     runs-on: ubuntu-latest
     continue-on-error: true
+    permissions:
+      contents: read
+      security-events: write
 
     steps:
       - uses: actions/checkout@a5ac7e51b41094c92402da3b24376905380afc29  # v6
 
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@18f2510ee396bbf400402947b394f2dd8c87dbb0  # master
+        continue-on-error: true
         with:
           scan-type: 'fs'
           scan-ref: '.'
           format: 'sarif'
           output: 'trivy-results.sarif'
+          exit-code: '0'
+
+      - name: Ensure Trivy SARIF exists (avoid upload failure)
+        if: always()
+        run: |
+          if [ ! -f trivy-results.sarif ]; then
+            echo '{"$schema":"https://json.schemastore.org/sarif-2.1.0.json","version":"2.1.0","runs":[]}' > trivy-results.sarif
+            echo "Created placeholder trivy-results.sarif"
+          fi
+          ls -la trivy-results.sarif
 
       - name: Upload Trivy results to GitHub Security
         uses: github/codeql-action/upload-sarif@4355270be187e1b672a7a1c7c7bae5afdc1ab94a  # v3.28.0
-        if: always()
+        if: github.event_name == 'push'
         continue-on-error: true
         with:
           sarif_file: 'trivy-results.sarif'

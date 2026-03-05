@@ -62,6 +62,8 @@ describe("InstallPrompt", () => {
     jest.useFakeTimers();
     localStorage.clear();
     sessionStorage.clear();
+    // Default to mobile so the component renders — desktop returns null by design
+    mockMobileDevice();
   });
 
   afterEach(() => {
@@ -190,25 +192,37 @@ describe("InstallPrompt", () => {
     });
   });
 
-  it("shows installed message when app was installed (desktop)", async () => {
+  it("does not show install prompts on desktop (returns null)", () => {
+    // Override beforeEach mobile mock — restore desktop UA/viewport
+    Object.defineProperty(globalThis.navigator, "userAgent", {
+      value: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+      configurable: true,
+    });
+    Object.defineProperty(globalThis, "innerWidth", {
+      value: 1920,
+      configurable: true,
+    });
+    globalThis.matchMedia = jest.fn().mockReturnValue({
+      matches: false,
+      media: "",
+      onchange: null,
+      addListener: jest.fn(),
+      removeListener: jest.fn(),
+      addEventListener: jest.fn(),
+      removeEventListener: jest.fn(),
+      dispatchEvent: jest.fn(),
+    });
+
     localStorage.setItem("appWasInstalled", "true");
 
-    render(<InstallPrompt />);
+    const { container } = render(<InstallPrompt />);
 
     act(() => {
       jest.advanceTimersByTime(3000);
     });
 
-    await waitFor(() => {
-      expect(screen.getByText("App Already Installed")).toBeInTheDocument();
-    });
-
-    // Desktop shows "Got it" button and no "Open App" button
-    expect(screen.getByText("Got it")).toBeInTheDocument();
-    expect(screen.queryByText("Open App")).not.toBeInTheDocument();
-
-    // Desktop message mentions start menu
-    expect(screen.getByText(/start menu/i)).toBeInTheDocument();
+    // Install prompts are mobile-only — desktop always renders null
+    expect(container.firstChild).toBeNull();
   });
 
   it("shows installed message with Open App button on mobile", async () => {
@@ -246,8 +260,8 @@ describe("InstallPrompt", () => {
       expect(screen.getByText("App Already Installed")).toBeInTheDocument();
     });
 
-    // Desktop has "Got it" button
-    fireEvent.click(screen.getByText("Got it"));
+    // Mobile has "Dismiss" button (desktop behaviour is tested separately)
+    fireEvent.click(screen.getByText("Dismiss"));
 
     expect(setItemSpy).toHaveBeenCalledWith(
       "installedMessageDismissed",

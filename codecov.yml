@@ -1,0 +1,14 @@
+coverage:
+  status:
+    project:
+      default:
+        target: 80%
+        threshold: 2%   # allow up to 2% drop before failing
+    patch:
+      default:
+        target: 80%
+        threshold: 2%
+
+comment:
+  layout: "reach,diff,flags,files"
+  behavior: default

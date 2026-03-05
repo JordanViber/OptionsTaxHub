@@ -9,7 +9,33 @@ import type {
 } from "@/lib/types";
 import { getSession } from "./supabase";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+// Base API URL: if NEXT_PUBLIC_API_URL is set (production), use it; otherwise use
+// relative paths so the dev server can proxy `/api/*` to the backend.
+const API_BASE = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
+const IS_PROD = process.env.NODE_ENV === "production";
+
+function apiPath(path: string) {
+  // If no explicit base is configured, use relative paths so Next dev proxy rewrites work.
+  if (!API_BASE) return path.startsWith("/") ? path : `/${path}`;
+
+  // If the configured base points to localhost, prefer relative paths during
+  // development so the Next dev server can proxy /api/* to the backend and
+  // avoid CORS errors in the browser (developers often set NEXT_PUBLIC_API_URL
+  // to http://localhost:8000 for convenience).
+  // NOTE: Do NOT apply this in production — Next.js rewrites only run in `next dev`.
+  if (!IS_PROD) {
+    try {
+      const url = new URL(API_BASE);
+      if (url.hostname === "localhost" || url.hostname === "127.0.0.1") {
+        return path.startsWith("/") ? path : `/${path}`;
+      }
+    } catch (e) {
+      // If parsing fails, fall back to using the provided base.
+    }
+  }
+
+  return `${API_BASE}${path.startsWith("/") ? path : `/${path}`}`;
+}
 
 /**
  * Get JWT token from Supabase session and add to request headers
@@ -45,7 +71,7 @@ async function uploadPortfolioCsv(file: File): Promise<PortfolioData[]> {
   const formData = new FormData();
   formData.append("file", file);
 
-  const response = await fetch(`${API_URL}/upload-csv`, {
+  const response = await fetch(apiPath(`/upload-csv`), {
     method: "POST",
     body: formData,
   });
@@ -94,7 +120,7 @@ async function analyzePortfolio(
     queryParams.set("estimated_income", params.estimatedIncome.toString());
   if (params.taxYear) queryParams.set("tax_year", params.taxYear.toString());
 
-  const url = `${API_URL}/api/portfolio/analyze?${queryParams.toString()}`;
+  const url = apiPath(`/api/portfolio/analyze?${queryParams.toString()}`);
   const headers = await getAuthHeaders();
 
   // Don't set Content-Type for FormData (browser will set it with boundary)
@@ -142,7 +168,7 @@ export function useAnalyzePortfolio() {
  */
 async function fetchPrices(symbols: string[]): Promise<PricesResponse> {
   const response = await fetch(
-    `${API_URL}/api/prices?symbols=${symbols.join(",")}`,
+    apiPath(`/api/prices?symbols=${symbols.join(",")}`),
   );
 
   if (!response.ok) {
@@ -180,7 +206,7 @@ async function saveTaxProfile(
   profile: TaxProfile,
 ): Promise<{ message: string; profile: TaxProfile }> {
   const headers = await getAuthHeaders();
-  const response = await fetch(`${API_URL}/api/tax-profile`, {
+  const response = await fetch(apiPath(`/api/tax-profile`), {
     method: "POST",
     headers,
     body: JSON.stringify(profile),
@@ -216,7 +242,7 @@ export function useSaveTaxProfile() {
  */
 async function fetchTaxProfile(): Promise<TaxProfile> {
   const headers = await getAuthHeaders();
-  const response = await fetch(`${API_URL}/api/tax-profile`, {
+  const response = await fetch(apiPath(`/api/tax-profile`), {
     headers,
   });
 
@@ -253,7 +279,7 @@ async function fetchTaxBrackets(
     income: income.toString(),
   });
 
-  const response = await fetch(`${API_URL}/api/tax-brackets?${params}`);
+  const response = await fetch(apiPath(`/api/tax-brackets?${params}`));
 
   if (!response.ok) {
     throw new Error(`Fetch failed: ${response.statusText}`);
@@ -288,7 +314,7 @@ export function useTaxBrackets(
  */
 async function fetchPortfolioHistory(): Promise<AnalysisHistoryItem[]> {
   const headers = await getAuthHeaders();
-  const response = await fetch(`${API_URL}/api/portfolio/history`, {
+  const response = await fetch(apiPath(`/api/portfolio/history`), {
     headers,
   });
 
@@ -326,7 +352,7 @@ export async function fetchAnalysisById(
 ): Promise<{ result: PortfolioAnalysis | null } & AnalysisHistoryItem> {
   const headers = await getAuthHeaders();
   const response = await fetch(
-    `${API_URL}/api/portfolio/analysis/${analysisId}`,
+    apiPath(`/api/portfolio/analysis/${analysisId}`),
     { headers },
   );
 
@@ -347,7 +373,7 @@ export async function fetchAnalysisById(
  */
 export async function cleanupOrphanHistory(): Promise<void> {
   const headers = await getAuthHeaders();
-  await fetch(`${API_URL}/api/portfolio/history/cleanup`, {
+  await fetch(apiPath(`/api/portfolio/history/cleanup`), {
     method: "DELETE",
     headers,
   });
@@ -362,7 +388,7 @@ export async function cleanupOrphanHistory(): Promise<void> {
 export async function deleteAnalysis(analysisId: string): Promise<boolean> {
   const headers = await getAuthHeaders();
   const response = await fetch(
-    `${API_URL}/api/portfolio/analysis/${analysisId}`,
+    apiPath(`/api/portfolio/analysis/${analysisId}`),
     {
       method: "DELETE",
       headers,

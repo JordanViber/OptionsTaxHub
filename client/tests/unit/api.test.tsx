@@ -17,6 +17,7 @@ mockGetSession.mockResolvedValue({
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -239,6 +240,40 @@ describe("api hooks", () => {
 
       const call = (globalThis.fetch as jest.Mock).mock.calls[0];
       expect(call[0]).toContain("/api/portfolio/analyze");
+    });
+
+    it("passes filingStatus and estimatedIncome as query params", async () => {
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          positions: [],
+          suggestions: [],
+          wash_sale_flags: [],
+          summary: {},
+        }),
+      } as Response);
+
+      const file = new File(["content"], "test.csv", { type: "text/csv" });
+      const wrapper = createWrapper();
+      const { result } = renderHook(() => useAnalyzePortfolio(), { wrapper });
+
+      await act(async () => {
+        result.current.mutate({
+          file,
+          filingStatus: "single",
+          estimatedIncome: 85000,
+          taxYear: 2025,
+        });
+      });
+
+      await waitFor(() => {
+        expect(result.current.isSuccess).toBe(true);
+      });
+
+      const call = (globalThis.fetch as jest.Mock).mock.calls[0];
+      expect(call[0]).toContain("filing_status=single");
+      expect(call[0]).toContain("estimated_income=85000");
+      expect(call[0]).toContain("tax_year=2025");
     });
 
     it("handles analyze errors with detail message", async () => {
@@ -544,5 +579,119 @@ describe("api hooks", () => {
       expect(call[1].method).toBe("DELETE");
       expect(call[1].headers.Authorization).toBe("Bearer mock-jwt-token");
     });
+
+    it("throws Authentication error when session is null", async () => {
+      mockGetSession.mockResolvedValueOnce(null);
+      globalThis.fetch = jest.fn();
+
+      await expect(deleteAnalysis("123")).rejects.toThrow(
+        "Authentication required",
+      );
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+
+    it("throws Authentication error when access_token is missing", async () => {
+      mockGetSession.mockResolvedValueOnce({ user: { id: "test" } });
+      globalThis.fetch = jest.fn();
+
+      await expect(fetchAnalysisById("123")).rejects.toThrow(
+        "Authentication required",
+      );
+    });
   });
-});
+
+  describe("analyzePortfolio error message paths", () => {
+    it("uses detail.message when error body has nested message", async () => {
+      const file = new File(["content"], "test.csv", { type: "text/csv" });
+
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: false,
+        statusText: "Bad Request",
+        json: async () => ({ detail: { message: "Field-level error detail" } }),
+      } as Response);
+
+      render(<AnalyzeComponent file={file} />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByText("Analyze"));
+
+      await waitFor(() => {
+        expect(screen.getByText("error")).toBeInTheDocument();
+      });
+    });
+
+    it("falls back to statusText message when json parsing fails", async () => {
+      const file = new File(["content"], "test.csv", { type: "text/csv" });
+
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: false,
+        statusText: "Internal Server Error",
+        json: async () => {
+          throw new Error("not JSON");
+        },
+      } as Response);
+
+      render(<AnalyzeComponent file={file} />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByText("Analyze"));
+
+      await waitFor(() => {
+        expect(screen.getByText("error")).toBeInTheDocument();
+      });
+    });
+  });
+
+  describe("saveTaxProfile via useSaveTaxProfile", () => {    it("saves tax profile successfully and invalidates cache", async () => {
+      const profile = {
+        user_id: "test-user",
+        filing_status: "single" as const,
+        estimated_annual_income: 75000,
+        state: "CA",
+        tax_year: 2025,
+      };
+
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ message: "Saved", profile }),
+      } as Response);
+
+      const wrapper = createWrapper();
+      const { result } = renderHook(() => useSaveTaxProfile(), { wrapper });
+
+      await act(async () => {
+        result.current.mutate(profile);
+      });
+
+      await waitFor(() => {
+        expect(result.current.isSuccess).toBe(true);
+      });
+
+      const call = (globalThis.fetch as jest.Mock).mock.calls[0];
+      expect(call[0]).toContain("/api/tax-profile");
+      expect(call[1].method).toBe("POST");
+      expect(call[1].headers.Authorization).toBe("Bearer mock-jwt-token");
+    });
+
+    it("throws when save fails", async () => {
+      const profile = {
+        user_id: "test-user",
+        filing_status: "single" as const,
+        estimated_annual_income: 75000,
+        state: "CA",
+        tax_year: 2025,
+      };
+
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: false,
+        statusText: "Unauthorized",
+      } as Response);
+
+      const wrapper = createWrapper();
+      const { result } = renderHook(() => useSaveTaxProfile(), { wrapper });
+
+      await act(async () => {
+        result.current.mutate(profile);
+      });
+
+      await waitFor(() => {
+        expect(result.current.isError).toBe(true);
+      });
+    });
+  });});
