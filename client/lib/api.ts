@@ -412,7 +412,8 @@ export function useBackendHealth() {
   return useQuery({
     queryKey: ["backend-health"],
     queryFn: async () => {
-      const res = await fetch("/health");
+      // Use apiPath so production hits the real backend URL, not the Next.js server.
+      const res = await fetch(apiPath("/health"));
       if (!res.ok) throw new Error("Backend unhealthy");
       return true;
     },
