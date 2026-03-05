@@ -198,7 +198,8 @@ describe("Auth Context", () => {
     });
 
     await act(async () => {
-      await result.current.signUp("", "password123", { // NOSONAR typescript:S2068
+      await result.current.signUp("", "password123", {
+        // NOSONAR typescript:S2068
         firstName: "Jane",
         lastName: "Doe",
         displayName: "Jane",
@@ -209,7 +210,7 @@ describe("Auth Context", () => {
 
     expect(mockSignUp).toHaveBeenCalledWith({
       phone: "+15551234567",
-      password: "password123",
+      password: "password123", // NOSONAR typescript:S2068 — test value, not a real credential
       options: {
         data: expect.objectContaining({
           provider_type: "phone",

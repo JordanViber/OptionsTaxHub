@@ -182,7 +182,7 @@ describe("Sign Up Page", () => {
 
   it("shows error when passwords do not match", async () => {
     const { container } = render(<SignupPage />);
-    fillForm(container, { confirmPassword: "different" });
+    fillForm(container, { confirmPassword: "different" }); // NOSONAR typescript:S2068 — test value, not a real credential
 
     const form = getForm(container);
     fireEvent.submit(form);
