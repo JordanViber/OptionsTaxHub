@@ -256,11 +256,13 @@ async function fetchTaxProfile(): Promise<TaxProfile> {
 
 /**
  * React Query hook for authenticated user's tax profile.
+ * Pass `enabled: !!user` to prevent firing before the auth session is ready.
  */
-export function useTaxProfile() {
+export function useTaxProfile({ enabled = true }: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: ["tax-profile"],
     queryFn: fetchTaxProfile,
+    enabled,
   });
 }
 

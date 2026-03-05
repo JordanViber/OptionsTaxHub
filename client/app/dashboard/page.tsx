@@ -198,7 +198,7 @@ export default function DashboardPage() {
   const queryClient = useQueryClient();
 
   // Load the user's tax profile for analyze params
-  const { data: taxProfile } = useTaxProfile();
+  const { data: taxProfile } = useTaxProfile({ enabled: !!user });
 
   // Backend health check — shows a banner when the API server is unreachable
   const { isError: backendDown, isFetched: backendChecked } =

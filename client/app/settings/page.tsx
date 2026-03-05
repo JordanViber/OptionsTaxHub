@@ -54,7 +54,9 @@ export default function SettingsPage() {
   };
 
   // Load existing profile
-  const { data: profile, isLoading: profileLoading } = useTaxProfile();
+  const { data: profile, isLoading: profileLoading } = useTaxProfile({
+    enabled: !!user,
+  });
 
   // Save mutation
   const { mutate: saveProfile, isPending: saving } = useSaveTaxProfile();
