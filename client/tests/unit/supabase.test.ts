@@ -81,10 +81,10 @@ describe("lib/supabase", () => {
       const fakeData = { user: { id: "1" }, session: null };
       mockAuth.signUp.mockResolvedValue({ data: fakeData, error: null });
 
-      const result = await signUp("test@example.com", "password123");
+      const result = await signUp("test@example.com", "password123"); // NOSONAR typescript:S2068
       expect(mockAuth.signUp).toHaveBeenCalledWith({
         email: "test@example.com",
-        password: "password123",
+        password: "password123", // NOSONAR typescript:S2068
       });
       expect(result).toEqual(fakeData);
     });
@@ -112,10 +112,10 @@ describe("lib/supabase", () => {
         error: null,
       });
 
-      const result = await signIn("test@example.com", "password123");
+      const result = await signIn("test@example.com", "password123"); // NOSONAR typescript:S2068
       expect(mockAuth.signInWithPassword).toHaveBeenCalledWith({
         email: "test@example.com",
-        password: "password123",
+        password: "password123", // NOSONAR typescript:S2068
       });
       expect(result).toEqual(fakeData);
     });

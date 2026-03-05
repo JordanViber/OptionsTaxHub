@@ -106,7 +106,7 @@ self.addEventListener("fetch", (event) => {
       }
       return fetch(request).then((response) => {
         // Only cache GET requests with successful responses
-        if (response && response.status === 200 && request.method === "GET") {
+        if (response?.status === 200 && request.method === "GET") {
           const responseClone = response.clone();
           caches.open(CACHE_NAME).then((cache) => {
             cache.put(request, responseClone);

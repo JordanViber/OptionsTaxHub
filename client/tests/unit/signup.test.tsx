@@ -62,8 +62,8 @@ function fillForm(
     firstName: "John",
     lastName: "Doe",
     email: "john@example.com",
-    password: "password123",
-    confirmPassword: "password123",
+    password: "password123", // NOSONAR typescript:S2068
+    confirmPassword: "password123", // NOSONAR typescript:S2068
     ...overrides,
   };
 
@@ -163,7 +163,7 @@ describe("Sign Up Page", () => {
     await waitFor(() => {
       expect(mockSignUp).toHaveBeenCalledWith(
         "john@example.com",
-        "password123",
+        "password123", // NOSONAR typescript:S2068
         {
           firstName: "John",
           lastName: "Doe",
@@ -196,7 +196,7 @@ describe("Sign Up Page", () => {
 
   it("shows error when password is too short", async () => {
     const { container } = render(<SignupPage />);
-    fillForm(container, { password: "12345", confirmPassword: "12345" });
+    fillForm(container, { password: "12345", confirmPassword: "12345" }); // NOSONAR typescript:S2068
 
     const form = getForm(container);
     fireEvent.submit(form);

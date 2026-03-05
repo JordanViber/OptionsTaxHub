@@ -105,8 +105,9 @@ class PushNotification(BaseModel):
 
 # Enable CORS for frontend
 # In development allow any localhost port so dev servers on 3000/3001/etc work.
+# CORSMiddleware is the only middleware — it is therefore implicitly last.
 if FRONTEND_URL.startswith("http://localhost"):
-    app.add_middleware(
+    app.add_middleware(  # NOSONAR python:S8414
         CORSMiddleware,
         allow_origin_regex=r"^http://localhost(:[0-9]+)?$",
         allow_credentials=True,
@@ -114,7 +115,7 @@ if FRONTEND_URL.startswith("http://localhost"):
         allow_headers=["*"],
     )
 else:
-    app.add_middleware(
+    app.add_middleware(  # NOSONAR python:S8414
         CORSMiddleware,
         allow_origins=[FRONTEND_URL],
         allow_credentials=True,
@@ -207,7 +208,7 @@ def _save_history_best_effort(
 
 
 def _process_ai_suggestions(
-    tax_lots: List[Dict[str, Any]],
+    tax_lots: List[Any],
     all_warnings: List[str],
 ) -> tuple[Dict[str, Any] | None, List[str]]:
     """
@@ -223,13 +224,17 @@ def _process_ai_suggestions(
     return ai_suggestions, warnings
 
 
-@app.post("/api/portfolio/analyze", response_model=PortfolioAnalysis)
+@app.post(
+    "/api/portfolio/analyze",
+    response_model=PortfolioAnalysis,
+    responses={400: {"description": "Invalid user ID format or unparseable CSV"}},
+)
 async def analyze_portfolio(
     file: Annotated[UploadFile, File()],
-    filing_status: Optional[str] = Query(default="single"),
-    estimated_income: Optional[float] = Query(default=75000.0),
-    tax_year: Optional[int] = Query(default=2025),
-    user_id: str = Depends(get_current_user),
+    filing_status: Annotated[Optional[str], Query()] = "single",
+    estimated_income: Annotated[Optional[float], Query()] = 75000.0,
+    tax_year: Annotated[Optional[int], Query()] = 2025,
+    user_id: Annotated[str, Depends(get_current_user)] = "",
 ):
     """
     Full portfolio analysis with tax-loss harvesting suggestions.
@@ -324,10 +329,13 @@ async def analyze_portfolio(
     return result
 
 
-@app.get("/api/portfolio/history")
+@app.get(
+    "/api/portfolio/history",
+    responses={500: {"description": "Database connection failed"}},
+)
 async def get_portfolio_history(
-    auth_data: tuple[str, str] = Depends(get_current_user_with_token),
-    limit: int = Query(default=20, ge=1, le=100),
+    auth_data: Annotated[tuple[str, str], Depends(get_current_user_with_token)],
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ):
     """
     Retrieve authenticated user's past portfolio analyses, newest first.
@@ -353,10 +361,16 @@ async def get_portfolio_history(
     return history
 
 
-@app.get("/api/portfolio/analysis/{analysis_id}")
+@app.get(
+    "/api/portfolio/analysis/{analysis_id}",
+    responses={
+        404: {"description": "Analysis not found"},
+        500: {"description": "Database connection failed"},
+    },
+)
 async def get_portfolio_analysis(
     analysis_id: str,
-    auth_data: tuple[str, str] = Depends(get_current_user_with_token),
+    auth_data: Annotated[tuple[str, str], Depends(get_current_user_with_token)],
 ):
     """
     Retrieve a single past portfolio analysis by ID, including the full result.
@@ -386,7 +400,9 @@ async def get_portfolio_analysis(
 
 
 @app.delete("/api/portfolio/history/cleanup")
-async def cleanup_orphan_history(user_id: str = Depends(get_current_user)):
+async def cleanup_orphan_history(
+    user_id: Annotated[str, Depends(get_current_user)],
+):
     """
     Delete portfolio analysis entries that have no stored result data.
 
@@ -399,10 +415,13 @@ async def cleanup_orphan_history(user_id: str = Depends(get_current_user)):
     return {"deleted": deleted}
 
 
-@app.delete("/api/portfolio/analysis/{analysis_id}")
+@app.delete(
+    "/api/portfolio/analysis/{analysis_id}",
+    responses={404: {"description": "Analysis not found"}},
+)
 async def delete_portfolio_analysis(
     analysis_id: str,
-    user_id: str = Depends(get_current_user),
+    user_id: Annotated[str, Depends(get_current_user)],
 ):
     """
     Delete a single portfolio analysis by ID.
@@ -416,8 +435,13 @@ async def delete_portfolio_analysis(
     return {"deleted": True}
 
 
-@app.get("/api/prices")
-async def get_prices(symbols: str = Query(..., description="Comma-separated ticker symbols")):
+@app.get(
+    "/api/prices",
+    responses={400: {"description": "No symbols provided"}},
+)
+async def get_prices(
+    symbols: Annotated[str, Query(description="Comma-separated ticker symbols")],
+):
     """Fetch current prices for given symbols via yfinance."""
     symbol_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
     if not symbol_list:
@@ -429,9 +453,9 @@ async def get_prices(symbols: str = Query(..., description="Comma-separated tick
 
 @app.get("/api/tax-brackets")
 async def get_tax_brackets(
-    year: int = Query(default=2025, ge=2024, le=2026),
-    filing_status: str = Query(default="single"),
-    income: float = Query(default=75000.0, ge=0),
+    year: Annotated[int, Query(ge=2024, le=2026)] = 2025,
+    filing_status: Annotated[str, Query()] = "single",
+    income: Annotated[float, Query(ge=0)] = 75000.0,
 ):
     """Return applicable tax brackets for the given parameters."""
     try:
@@ -448,10 +472,13 @@ async def get_tax_brackets(
     return get_tax_brackets_summary(profile)
 
 
-@app.post("/api/tax-profile")
+@app.post(
+    "/api/tax-profile",
+    responses={403: {"description": "Cannot save tax profile for another user"}},
+)
 async def save_tax_profile_endpoint(
     profile: TaxProfile,
-    user_id: str = Depends(get_current_user),
+    user_id: Annotated[str, Depends(get_current_user)],
 ):
     """
     Save authenticated user's tax profile settings to Supabase.
@@ -486,7 +513,9 @@ async def save_tax_profile_endpoint(
 
 
 @app.get("/api/tax-profile")
-async def get_tax_profile_endpoint(user_id: str = Depends(get_current_user)):
+async def get_tax_profile_endpoint(
+    user_id: Annotated[str, Depends(get_current_user)],
+):
     """
     Retrieve authenticated user's saved tax profile from Supabase.
 
@@ -540,7 +569,14 @@ async def get_tip_tiers():
     ]
 
 
-@app.post("/api/tips/checkout")
+@app.post(
+    "/api/tips/checkout",
+    responses={
+        400: {"description": "Invalid tip tier"},
+        502: {"description": "Stripe checkout session creation failed"},
+        503: {"description": "Stripe is not configured"},
+    },
+)
 async def create_tip_checkout(tip: TipRequest):
     """
     Create a Stripe Checkout Session for a one-time tip.

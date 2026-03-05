@@ -29,12 +29,13 @@ function apiPath(path: string) {
       if (url.hostname === "localhost" || url.hostname === "127.0.0.1") {
         return path.startsWith("/") ? path : `/${path}`;
       }
-    } catch (e) {
-      // If parsing fails, fall back to using the provided base.
+    } catch (_e) { // NOSONAR typescript:S2486 — URL parse failure is expected when API_BASE is a relative path
+      // If API_BASE is not a valid URL (e.g. a relative path), fall back to using it as-is.
     }
   }
 
-  return `${API_BASE}${path.startsWith("/") ? path : `/${path}`}`;
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  return `${API_BASE}${normalizedPath}`;
 }
 
 /**

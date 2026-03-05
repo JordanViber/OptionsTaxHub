@@ -132,7 +132,7 @@ describe("Auth Context", () => {
 
     expect(mockSignInWithPassword).toHaveBeenCalledWith({
       email: "test@example.com",
-      password: "password123",
+      password: "password123", // NOSONAR typescript:S2068
     });
   });
 
@@ -174,7 +174,7 @@ describe("Auth Context", () => {
 
     expect(mockSignUp).toHaveBeenCalledWith({
       email: "test@example.com",
-      password: "password123",
+      password: "password123", // NOSONAR typescript:S2068
       options: {
         data: {
           first_name: "John",
@@ -198,7 +198,7 @@ describe("Auth Context", () => {
     });
 
     await act(async () => {
-      await result.current.signUp("", "password123", {
+      await result.current.signUp("", "password123", { // NOSONAR typescript:S2068
         firstName: "Jane",
         lastName: "Doe",
         displayName: "Jane",
