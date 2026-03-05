@@ -2,6 +2,28 @@
 
 ## Always Remember
 
+### Available MCP Servers (always use these proactively)
+
+| MCP | Use for |
+|---|---|
+| **Supabase** | DB schema inspection, running migrations, executing SQL, listing tables. Never ask the user to run SQL manually. |
+| **Playwright/Browser** | End-to-end browser testing. Always verify fixes in-browser before declaring them complete. Navigate, fill forms, click, screenshot, read network requests. |
+| **GitHub** | Issues, PRs, branches, releases, searching code. |
+| **GitKraken** | Git commits, staging, worktrees, branch management. |
+| **SonarQube** | Code quality + security analysis. Run after finishing any code change. |
+| **Snyk** | Vulnerability scanning (SCA, SAST, containers, IaC). |
+| **Stripe** | Payment intents, customers, products, refunds, invoices. |
+| **Prisma** | Prisma DB migrations and schema management. |
+
+### Key Workflow Rules
+- **DB issues**: Use Supabase MCP to inspect live schema before assuming anything. Run `execute_sql` to check actual column names, constraints, and data.
+- **Bug fixes**: Always verify with Playwright MCP after every fix. Navigate to the affected page, interact with it, confirm the behavior is correct.
+- **Ports**: Local backend = **8001**. Port 8080 = blocked by OS on this machine.
+- **React Query cache keys**: `useTaxProfile` uses `["tax-profile"]`. `useSaveTaxProfile` must invalidate the exact same key.
+- **Auth guard**: Any React Query hook that calls protected endpoints must use `enabled: !!user` to avoid 401s before auth session is ready.
+- **Supabase project**: ID `vgrlucxqncajjdoaoctq`, region `us-west-2`, URL `https://vgrlucxqncajjdoaoctq.supabase.co`
+- **`tax_profiles` live schema**: `id UUID PK`, `user_id TEXT UNIQUE`, `filing_status`, `estimated_annual_income`, `state`, `tax_year`, `ai_suggestions_enabled BOOLEAN DEFAULT TRUE`, `created_at`, `updated_at`
+
 ## Project Overview
 
 This is a full-stack web app for retail investors focused on tax optimization and options trading.
@@ -29,7 +51,8 @@ OptionsTaxHub/
 
 - Structure: `/client` (Next.js 14, TypeScript, Tailwind CSS v4, Material UI), `/server` (FastAPI + Python 3.9+, uvicorn)
 - Frontend runs on `http://localhost:3000` (default `npm run dev`)
-- Backend runs on `http://localhost:8080` (uvicorn main:app --reload)
+- Backend runs on `http://localhost:8001` (uvicorn main:app --reload --port 8001)
+- **IMPORTANT**: Port 8080 is permanently occupied by `svchost.exe` on this machine. Never use port 8080 for local dev.
 - Database: Supabase PostgreSQL + Auth (free tier)
 - API style: REST endpoints, JSON responses, Pydantic models for validation
 - Frontend libraries: Material UI v7+ components, React Query v5+, Supabase client
@@ -85,5 +108,5 @@ cd frontend && npm run dev
 # → http://localhost:3000
 
 # Terminal 2 – Backend
-cd backend && uvicorn main:app --reload --port 8080
-# → http://localhost:8080
+cd server && uvicorn main:app --reload --port 8001
+# → http://localhost:8001
