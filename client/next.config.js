@@ -39,6 +39,10 @@ const nextConfig = {
         source: "/upload-csv",
         destination: `http://localhost:${process.env.BACKEND_PORT || 8080}/upload-csv`,
       },
+      {
+        source: "/health",
+        destination: `http://localhost:${process.env.BACKEND_PORT || 8080}/health`,
+      },
     ];
   },
 };
