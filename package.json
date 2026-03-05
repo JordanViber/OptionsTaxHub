@@ -10,10 +10,12 @@
     "server"
   ],
   "scripts": {
+    "kill-ports": "npx kill-port 3000 8001",
+    "predev": "npm run kill-ports",
     "dev": "concurrently \"npm run dev:client\" \"npm run dev:server\"",
     "dev:client": "cd client && npm run dev",
     "dev:server": "cd server && npm run dev",
-    "stop": "taskkill /F /IM node.exe 2>nul & taskkill /F /IM uvicorn.exe 2>nul & echo Stopped",
+    "stop": "npm run kill-ports",
     "test": "npm run test:client && node ./ci-skip-server-if-no-python.js",
     "test:client": "cd client && npm test",
     "test:server": "cd server && npm test",

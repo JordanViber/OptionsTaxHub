@@ -55,6 +55,7 @@ jest.mock("../../lib/api", () => ({
   useAnalyzePortfolio: () => mockUseAnalyzePortfolio(),
   useTaxProfile: () => mockUseTaxProfile(),
   usePortfolioHistory: () => mockUsePortfolioHistory(),
+  useBackendHealth: () => ({ isError: false, isFetched: true }),
   fetchAnalysisById: jest.fn().mockResolvedValue(null),
   cleanupOrphanHistory: jest.fn().mockResolvedValue(0),
 }));

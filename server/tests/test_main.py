@@ -688,9 +688,9 @@ def test_get_portfolio_history(monkeypatch):
         {"id": "h2", "filename": "test2.csv", "uploaded_at": "2025-01-02T00:00:00"},
     ]
 
-    # Mock get_supabase_with_token to return a dummy client object
-    mock_client = object()  # Placeholder; the function will use it to call get_analysis_history
-    monkeypatch.setattr("main.get_supabase_with_token", lambda token: mock_client)
+    # Mock get_supabase to return a dummy client object (service role path)
+    mock_client = object()
+    monkeypatch.setattr("main.get_supabase", lambda: mock_client)
     monkeypatch.setattr("main.get_analysis_history", lambda uid, limit, client=None: mock_history)
 
     response = client.get("/api/portfolio/history")
@@ -703,7 +703,7 @@ def test_get_portfolio_history(monkeypatch):
 def test_get_portfolio_history_empty(monkeypatch):
     """GET /api/portfolio/history returns empty list for new user."""
     mock_client = object()
-    monkeypatch.setattr("main.get_supabase_with_token", lambda token: mock_client)
+    monkeypatch.setattr("main.get_supabase", lambda: mock_client)
     monkeypatch.setattr("main.get_analysis_history", lambda uid, limit, client=None: [])
 
     response = client.get("/api/portfolio/history")
@@ -720,7 +720,7 @@ def test_get_portfolio_history_custom_limit(monkeypatch):
         return []
 
     mock_client = object()
-    monkeypatch.setattr("main.get_supabase_with_token", lambda token: mock_client)
+    monkeypatch.setattr("main.get_supabase", lambda: mock_client)
     monkeypatch.setattr("main.get_analysis_history", fake_history)
 
     response = client.get("/api/portfolio/history?limit=5")
@@ -747,7 +747,7 @@ def test_get_portfolio_analysis_found(monkeypatch):
     }
 
     mock_client = object()
-    monkeypatch.setattr("main.get_supabase_with_token", lambda token: mock_client)
+    monkeypatch.setattr("main.get_supabase", lambda: mock_client)
     monkeypatch.setattr("main.get_analysis_by_id", lambda aid, uid, client=None: mock_record)
 
     response = client.get("/api/portfolio/analysis/abc-123")
@@ -760,7 +760,7 @@ def test_get_portfolio_analysis_found(monkeypatch):
 def test_get_portfolio_analysis_not_found(monkeypatch):
     """GET /api/portfolio/analysis/{id} returns 404 when not found."""
     mock_client = object()
-    monkeypatch.setattr("main.get_supabase_with_token", lambda token: mock_client)
+    monkeypatch.setattr("main.get_supabase", lambda: mock_client)
     monkeypatch.setattr("main.get_analysis_by_id", lambda aid, uid, client=None: None)
 
     response = client.get("/api/portfolio/analysis/nonexistent")
@@ -947,16 +947,16 @@ def test_validate_user_id_invalid_format():
 
 
 def test_get_portfolio_history_db_connection_failed(monkeypatch):
-    """Returns 500 when get_supabase_with_token returns None (line 347)."""
-    monkeypatch.setattr("main.get_supabase_with_token", lambda token: None)
+    """Returns 500 when get_supabase returns None (DB unavailable)."""
+    monkeypatch.setattr("main.get_supabase", lambda: None)
     response = client.get("/api/portfolio/history")
     assert response.status_code == 500
     assert response.json()["detail"] == "Database connection failed"
 
 
 def test_get_portfolio_analysis_db_connection_failed(monkeypatch):
-    """Returns 500 when get_supabase_with_token returns None (line 375)."""
-    monkeypatch.setattr("main.get_supabase_with_token", lambda token: None)
+    """Returns 500 when get_supabase returns None (DB unavailable)."""
+    monkeypatch.setattr("main.get_supabase", lambda: None)
     response = client.get("/api/portfolio/analysis/some-analysis-id")
     assert response.status_code == 500
     assert response.json()["detail"] == "Database connection failed"

@@ -98,7 +98,7 @@ class TestVerifyJwtToken:
         assert exc_info.value.status_code == 401
 
     def test_hs256_valid_token(self, monkeypatch):
-        secret = "test-hs256-secret"
+        secret = "test-hs256-secret"  # NOSONAR python:S6418 — test value, not a real credential
         monkeypatch.setenv("SUPABASE_JWT_SECRET", secret)
         payload = {"sub": "user-abc", "role": "authenticated"}
         token = make_hs256_token(payload, secret)

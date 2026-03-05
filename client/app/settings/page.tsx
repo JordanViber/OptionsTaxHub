@@ -37,13 +37,26 @@ export default function SettingsPage() {
 
   // Form state
   const [filingStatus, setFilingStatus] = useState<FilingStatus>("single");
-  const [estimatedIncome, setEstimatedIncome] = useState<string>("75000");
+  const [estimatedIncome, setEstimatedIncome] = useState<string>("75,000");
   const [state, setState] = useState<string>("");
   const [taxYear, setTaxYear] = useState<number>(2025);
   const [showSuccess, setShowSuccess] = useState(false);
 
+  /** Format a number string with thousands commas, stripping anything non-numeric. */
+  const formatIncome = (raw: string) => {
+    const digits = raw.replace(/[^0-9]/g, "");
+    if (!digits) return "";
+    return Number(digits).toLocaleString("en-US");
+  };
+
+  const handleIncomeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setEstimatedIncome(formatIncome(e.target.value));
+  };
+
   // Load existing profile
-  const { data: profile, isLoading: profileLoading } = useTaxProfile();
+  const { data: profile, isLoading: profileLoading } = useTaxProfile({
+    enabled: !!user,
+  });
 
   // Save mutation
   const { mutate: saveProfile, isPending: saving } = useSaveTaxProfile();
@@ -52,7 +65,9 @@ export default function SettingsPage() {
   useEffect(() => {
     if (profile) {
       setFilingStatus(profile.filing_status || "single");
-      setEstimatedIncome(String(profile.estimated_annual_income || 75000));
+      setEstimatedIncome(
+        (profile.estimated_annual_income || 75000).toLocaleString("en-US"),
+      );
       setState(profile.state || "");
       setTaxYear(profile.tax_year || 2025);
     }
@@ -70,7 +85,8 @@ export default function SettingsPage() {
       {
         user_id: user?.id,
         filing_status: filingStatus,
-        estimated_annual_income: Number.parseFloat(estimatedIncome) || 75000,
+        estimated_annual_income:
+          Number.parseFloat(estimatedIncome.replace(/,/g, "")) || 75000,
         state,
         tax_year: taxYear,
       },
@@ -173,9 +189,10 @@ export default function SettingsPage() {
                   {/* Estimated Annual Income */}
                   <TextField
                     label="Estimated Annual Income"
-                    type="number"
+                    type="text"
+                    inputMode="numeric"
                     value={estimatedIncome}
-                    onChange={(e) => setEstimatedIncome(e.target.value)}
+                    onChange={handleIncomeChange}
                     slotProps={{
                       input: {
                         startAdornment: (

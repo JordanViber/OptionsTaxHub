@@ -3,8 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "start": "python -m uvicorn main:app --host 0.0.0.0 --port 8000",
-    "dev": "python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload",
+    "predev": "npx kill-port 8001",
+    "start": "python -m uvicorn main:app --host 0.0.0.0 --port 8001",
+    "dev": "python -m uvicorn main:app --host 0.0.0.0 --port 8001 --reload",
     "test": "python -m pytest",
     "test:coverage": "python -m pytest --cov=. --cov-report=term-missing",
     "test:watch": "python -m pytest --watch"

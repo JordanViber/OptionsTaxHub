@@ -33,11 +33,15 @@ const nextConfig = {
     return [
       {
         source: "/api/:path*",
-        destination: `http://localhost:${process.env.BACKEND_PORT || 8000}/api/:path*`,
+        destination: `http://localhost:${process.env.BACKEND_PORT || 8001}/api/:path*`,
       },
       {
         source: "/upload-csv",
-        destination: `http://localhost:${process.env.BACKEND_PORT || 8000}/upload-csv`,
+        destination: `http://localhost:${process.env.BACKEND_PORT || 8001}/upload-csv`,
+      },
+      {
+        source: "/health",
+        destination: `http://localhost:${process.env.BACKEND_PORT || 8001}/health`,
       },
     ];
   },

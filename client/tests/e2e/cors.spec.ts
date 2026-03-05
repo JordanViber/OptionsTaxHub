@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
-import path from "path";
-import { writeFileSync, mkdirSync } from "fs";
+import path from "node:path";
+import { writeFileSync, mkdirSync } from "node:fs";
 
 interface CorsRecord {
   type: "request" | "response" | "direct-fetch" | "direct-fetch-error";
@@ -12,7 +12,10 @@ interface CorsRecord {
   error?: string;
 }
 
-test("reproduce CORS and unregister SW", async ({ page, context }, testInfo) => {
+test("reproduce CORS and unregister SW", async ({
+  page,
+  context,
+}, testInfo) => {
   const records: CorsRecord[] = [];
 
   page.on("request", (req) => {
@@ -42,7 +45,7 @@ test("reproduce CORS and unregister SW", async ({ page, context }, testInfo) => 
         await r.unregister();
       }
     }
-    if ("caches" in window) {
+    if ("caches" in globalThis) {
       const keys = await caches.keys();
       await Promise.all(keys.map((k) => caches.delete(k)));
     }
@@ -50,7 +53,9 @@ test("reproduce CORS and unregister SW", async ({ page, context }, testInfo) => 
     try {
       localStorage.clear();
       sessionStorage.clear();
-    } catch (e) {}
+    } catch {
+      // Storage unavailable in this context — safe to ignore
+    }
   });
 
   // Reload and wait

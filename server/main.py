@@ -19,7 +19,7 @@ from typing import List, Dict, Any
 from pywebpush import webpush, WebPushException
 from pydantic import BaseModel
 
-from auth import get_current_user, get_current_user_with_token, enforce_ownership
+from auth import get_current_user, enforce_ownership
 from models import (
     FilingStatus,
     PortfolioAnalysis,
@@ -44,7 +44,7 @@ from db import (
     delete_analysis_by_id,
     save_tax_profile as db_save_tax_profile,
     get_tax_profile as db_get_tax_profile,
-    get_supabase_with_token,
+    get_supabase,
 )
 
 # Configure logging
@@ -105,8 +105,9 @@ class PushNotification(BaseModel):
 
 # Enable CORS for frontend
 # In development allow any localhost port so dev servers on 3000/3001/etc work.
+# CORSMiddleware is the only middleware — it is therefore implicitly last.
 if FRONTEND_URL.startswith("http://localhost"):
-    app.add_middleware(
+    app.add_middleware(  # NOSONAR python:S8414
         CORSMiddleware,
         allow_origin_regex=r"^http://localhost(:[0-9]+)?$",
         allow_credentials=True,
@@ -114,7 +115,7 @@ if FRONTEND_URL.startswith("http://localhost"):
         allow_headers=["*"],
     )
 else:
-    app.add_middleware(
+    app.add_middleware(  # NOSONAR python:S8414
         CORSMiddleware,
         allow_origins=[FRONTEND_URL],
         allow_credentials=True,
@@ -207,7 +208,7 @@ def _save_history_best_effort(
 
 
 def _process_ai_suggestions(
-    tax_lots: List[Dict[str, Any]],
+    tax_lots: List[Any],
     all_warnings: List[str],
 ) -> tuple[Dict[str, Any] | None, List[str]]:
     """
@@ -223,13 +224,17 @@ def _process_ai_suggestions(
     return ai_suggestions, warnings
 
 
-@app.post("/api/portfolio/analyze", response_model=PortfolioAnalysis)
+@app.post(
+    "/api/portfolio/analyze",
+    response_model=PortfolioAnalysis,
+    responses={400: {"description": "Invalid user ID format or unparseable CSV"}},
+)
 async def analyze_portfolio(
     file: Annotated[UploadFile, File()],
-    filing_status: Optional[str] = Query(default="single"),
-    estimated_income: Optional[float] = Query(default=75000.0),
-    tax_year: Optional[int] = Query(default=2025),
-    user_id: str = Depends(get_current_user),
+    filing_status: Annotated[Optional[str], Query()] = "single",
+    estimated_income: Annotated[Optional[float], Query()] = 75000.0,
+    tax_year: Annotated[Optional[int], Query()] = 2025,
+    user_id: Annotated[str, Depends(get_current_user)] = "",
 ):
     """
     Full portfolio analysis with tax-loss harvesting suggestions.
@@ -324,10 +329,13 @@ async def analyze_portfolio(
     return result
 
 
-@app.get("/api/portfolio/history")
+@app.get(
+    "/api/portfolio/history",
+    responses={500: {"description": "Database connection failed"}},
+)
 async def get_portfolio_history(
-    auth_data: tuple[str, str] = Depends(get_current_user_with_token),
-    limit: int = Query(default=20, ge=1, le=100),
+    user_id: Annotated[str, Depends(get_current_user)],
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ):
     """
     Retrieve authenticated user's past portfolio analyses, newest first.
@@ -336,27 +344,33 @@ async def get_portfolio_history(
     without the full position data (which is processed in-memory only).
 
     **Authentication Required**: Must provide valid Supabase JWT token.
-    **RLS Enforced**: User can only access their own analyses.
+    **Security**: user_id is extracted from the verified JWT; the query filters
+    by user_id so users can only access their own analyses.
     """
-    user_id, access_token = auth_data
+    # Use service role client — security is enforced at the app level:
+    # user_id comes from the verified JWT, and the query filters by user_id.
+    db_client = get_supabase()
 
-    # Create authenticated client to enforce RLS
-    auth_client = get_supabase_with_token(access_token)
-
-    if not auth_client:
+    if not db_client:
         raise HTTPException(
             status_code=500,
             detail="Database connection failed"
         )
 
-    history = get_analysis_history(user_id, limit, client=auth_client)
+    history = get_analysis_history(user_id, limit, client=db_client)
     return history
 
 
-@app.get("/api/portfolio/analysis/{analysis_id}")
+@app.get(
+    "/api/portfolio/analysis/{analysis_id}",
+    responses={
+        404: {"description": "Analysis not found"},
+        500: {"description": "Database connection failed"},
+    },
+)
 async def get_portfolio_analysis(
     analysis_id: str,
-    auth_data: tuple[str, str] = Depends(get_current_user_with_token),
+    user_id: Annotated[str, Depends(get_current_user)],
 ):
     """
     Retrieve a single past portfolio analysis by ID, including the full result.
@@ -364,20 +378,19 @@ async def get_portfolio_analysis(
     Used when a user clicks a history item to reload that report.
 
     **Authentication Required**: Must provide valid Supabase JWT token.
-    **Authorization & RLS**: User can only access their own analyses.
+    **Security**: user_id is extracted from the verified JWT. The query filters
+    by both analysis_id and user_id so users can only access their own analyses.
     """
-    user_id, access_token = auth_data
+    # Use service role client — security enforced at app level via user_id filter.
+    db_client = get_supabase()
 
-    # Create authenticated client to enforce RLS
-    auth_client = get_supabase_with_token(access_token)
-
-    if not auth_client:
+    if not db_client:
         raise HTTPException(
             status_code=500,
             detail="Database connection failed"
         )
 
-    record = get_analysis_by_id(analysis_id, user_id, client=auth_client)
+    record = get_analysis_by_id(analysis_id, user_id, client=db_client)
     if not record:
         raise HTTPException(status_code=404, detail="Analysis not found")
     # Enforce ownership (redundant with RLS, but good defense-in-depth)
@@ -386,7 +399,9 @@ async def get_portfolio_analysis(
 
 
 @app.delete("/api/portfolio/history/cleanup")
-async def cleanup_orphan_history(user_id: str = Depends(get_current_user)):
+async def cleanup_orphan_history(
+    user_id: Annotated[str, Depends(get_current_user)],
+):
     """
     Delete portfolio analysis entries that have no stored result data.
 
@@ -399,10 +414,13 @@ async def cleanup_orphan_history(user_id: str = Depends(get_current_user)):
     return {"deleted": deleted}
 
 
-@app.delete("/api/portfolio/analysis/{analysis_id}")
+@app.delete(
+    "/api/portfolio/analysis/{analysis_id}",
+    responses={404: {"description": "Analysis not found"}},
+)
 async def delete_portfolio_analysis(
     analysis_id: str,
-    user_id: str = Depends(get_current_user),
+    user_id: Annotated[str, Depends(get_current_user)],
 ):
     """
     Delete a single portfolio analysis by ID.
@@ -416,8 +434,13 @@ async def delete_portfolio_analysis(
     return {"deleted": True}
 
 
-@app.get("/api/prices")
-async def get_prices(symbols: str = Query(..., description="Comma-separated ticker symbols")):
+@app.get(
+    "/api/prices",
+    responses={400: {"description": "No symbols provided"}},
+)
+async def get_prices(
+    symbols: Annotated[str, Query(description="Comma-separated ticker symbols")],
+):
     """Fetch current prices for given symbols via yfinance."""
     symbol_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
     if not symbol_list:
@@ -429,9 +452,9 @@ async def get_prices(symbols: str = Query(..., description="Comma-separated tick
 
 @app.get("/api/tax-brackets")
 async def get_tax_brackets(
-    year: int = Query(default=2025, ge=2024, le=2026),
-    filing_status: str = Query(default="single"),
-    income: float = Query(default=75000.0, ge=0),
+    year: Annotated[int, Query(ge=2024, le=2026)] = 2025,
+    filing_status: Annotated[str, Query()] = "single",
+    income: Annotated[float, Query(ge=0)] = 75000.0,
 ):
     """Return applicable tax brackets for the given parameters."""
     try:
@@ -448,10 +471,13 @@ async def get_tax_brackets(
     return get_tax_brackets_summary(profile)
 
 
-@app.post("/api/tax-profile")
+@app.post(
+    "/api/tax-profile",
+    responses={403: {"description": "Cannot save tax profile for another user"}},
+)
 async def save_tax_profile_endpoint(
     profile: TaxProfile,
-    user_id: str = Depends(get_current_user),
+    user_id: Annotated[str, Depends(get_current_user)],
 ):
     """
     Save authenticated user's tax profile settings to Supabase.
@@ -486,7 +512,9 @@ async def save_tax_profile_endpoint(
 
 
 @app.get("/api/tax-profile")
-async def get_tax_profile_endpoint(user_id: str = Depends(get_current_user)):
+async def get_tax_profile_endpoint(
+    user_id: Annotated[str, Depends(get_current_user)],
+):
     """
     Retrieve authenticated user's saved tax profile from Supabase.
 
@@ -540,7 +568,14 @@ async def get_tip_tiers():
     ]
 
 
-@app.post("/api/tips/checkout")
+@app.post(
+    "/api/tips/checkout",
+    responses={
+        400: {"description": "Invalid tip tier"},
+        502: {"description": "Stripe checkout session creation failed"},
+        503: {"description": "Stripe is not configured"},
+    },
+)
 async def create_tip_checkout(tip: TipRequest):
     """
     Create a Stripe Checkout Session for a one-time tip.
@@ -666,7 +701,7 @@ async def test_push_notification():
     return await send_push_notification(notification)
 
 def run():
-    port = int(os.environ.get("PORT", 8000))
+    port = int(os.environ.get("PORT", 8001))
     host = os.environ.get("HOST", "0.0.0.0")  # Bind to all interfaces for Render and other platforms
     # Only enable auto-reload in local development; never in production (breaks container envs)
     is_dev = os.environ.get("ENVIRONMENT", "production").lower() == "development"

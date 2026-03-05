@@ -18,6 +18,9 @@ from jwt import PyJWKClient, decode, PyJWTError, get_unverified_header
 
 logger = logging.getLogger(__name__)
 
+# Reused error message constant (avoids duplication — python:S1192)
+_INTERNAL_AUTH_ERROR = "Internal authentication error"
+
 # Security scheme
 security = HTTPBearer(auto_error=False)
 
@@ -73,7 +76,8 @@ def verify_jwt_token(token: str) -> dict:
         HTTPException 500: If a configuration or network error prevents verification
     """
     try:
-        header = get_unverified_header(token)
+        # Read header only to dispatch to the correct verifier below — signature IS verified.
+        header = get_unverified_header(token)  # NOSONAR python:S5659
     except Exception as e:
         logger.error(f"Failed to decode JWT header: {e}")
         raise HTTPException(
@@ -91,7 +95,7 @@ def verify_jwt_token(token: str) -> dict:
                 logger.error("SUPABASE_JWT_SECRET is not configured")
                 raise HTTPException(
                     status_code=500,
-                    detail="Internal authentication error",
+                    detail=_INTERNAL_AUTH_ERROR,
                 )
             payload = decode(
                 token,
@@ -109,7 +113,7 @@ def verify_jwt_token(token: str) -> dict:
                 logger.exception(f"JWKS configuration error: {e}")
                 raise HTTPException(
                     status_code=500,
-                    detail="Internal authentication error",
+                    detail=_INTERNAL_AUTH_ERROR,
                 )
             payload = decode(
                 token,
@@ -130,7 +134,7 @@ def verify_jwt_token(token: str) -> dict:
         logger.exception(f"Unexpected authentication error: {e}")
         raise HTTPException(
             status_code=500,
-            detail="Internal authentication error",
+            detail=_INTERNAL_AUTH_ERROR,
         )
 
 
