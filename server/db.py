@@ -51,10 +51,15 @@ def get_supabase():
 
 def get_supabase_with_token(access_token: str):
     """
-    Create a Supabase client with user's JWT token for RLS enforcement.
+    Create a Supabase client that enforces RLS using the user's JWT token.
 
-    This client respects Row Level Security policies because it's initialized
-    with the user's authentication token, not the service role key.
+    Uses the anon key for the API gateway (required by Supabase/Kong) and then
+    overrides the PostgREST Authorization header with the user's JWT so that
+    ``auth.uid()`` resolves correctly in RLS policies.
+
+    Passing the JWT as the ``key`` parameter (as the service-role key) to
+    ``create_client`` breaks the API gateway — only anon/service-role keys are
+    valid there. This function does it correctly.
 
     Args:
         access_token: User's JWT access token from Supabase Auth
@@ -63,15 +68,22 @@ def get_supabase_with_token(access_token: str):
         Authenticated Supabase client or None if initialization fails
     """
     url = os.environ.get("SUPABASE_URL")
+    anon_key = os.environ.get("SUPABASE_ANON_KEY")
     if not url:
         logger.warning("SUPABASE_URL not set — authentication features disabled")
+        return None
+    if not anon_key:
+        logger.warning("SUPABASE_ANON_KEY not set — authenticated client unavailable")
         return None
 
     try:
         from supabase import create_client
 
-        # Create client with user's token (respects RLS)
-        client = create_client(url, access_token)
+        # Create client with anon key (passes Kong API gateway validation).
+        # Then set the user's JWT on the PostgREST sub-client so that
+        # auth.uid() resolves correctly and RLS is enforced.
+        client = create_client(url, anon_key)
+        client.postgrest.auth(access_token)
         return client
     except Exception as e:
         logger.error(f"Failed to create authenticated Supabase client: {e}")
