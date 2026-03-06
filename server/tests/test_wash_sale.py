@@ -330,10 +330,12 @@ class TestComputeSaleLossConsumesBuyQuantity:
 
         # First sell: 5 shares at $80 vs $100 cost = $100 loss
         assert loss1 == pytest.approx(5 * (100 - 80))
-        # Second sell: same 5 shares should NOT be counted again (they were consumed)
-        # If fix works: second sell has no remaining lots → loss = 0
-        # Without fix: second sell would incorrectly see 10 remaining → loss = $100
-        assert loss2 == pytest.approx(5 * (100 - 80))  # still correct — separate 5 shares
+        # Second sell: should use the remaining 5 shares from the same 10-share buy lot
+        # FIFO behavior: second sell also has 5 shares at $80 vs $100 cost = another $100 loss
+        # Together, both sells consume the full 10-share lot (5 + 5 = 10 shares used)
+        assert loss2 == pytest.approx(5 * (100 - 80))  # second, separate 5-share loss
+        # Verify that the total used quantity across both sells equals the original 10-share lot
+        assert sum(used.values()) == pytest.approx(10)
 
     def test_zero_quantity_lot_no_division_error(self):
         lots = [

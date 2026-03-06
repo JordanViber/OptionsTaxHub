@@ -209,7 +209,7 @@ export default function PositionsTable({
       <DataGrid
         rows={positions}
         columns={columns}
-        getRowId={(row) => row.symbol}
+        getRowId={(row) => row.position_id}
         initialState={{
           sorting: {
             sortModel: [{ field: "unrealized_pnl", sort: "asc" }],

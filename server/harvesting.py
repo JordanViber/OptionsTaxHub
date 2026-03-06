@@ -161,12 +161,20 @@ def aggregate_positions(tax_lots: list[TaxLot]) -> list[Position]:
     for (symbol, _asset_type_str), lots in positions_map.items():
         total_quantity = sum(lot.quantity for lot in lots)
         total_cost_basis = sum(lot.total_cost_basis for lot in lots)
-        avg_cost = total_cost_basis / total_quantity if total_quantity > 0 else 0
+        # For options, cost_basis is scaled ×100 (dollars per contract), but avg_cost
+        # should be per-share (i.e. per-unit premium) to stay consistent with
+        # TaxLot.cost_basis_per_share and current_price semantics.
+        avg_cost_divisor = total_quantity * 100 if lots[0].asset_type == AssetType.OPTION else total_quantity
+        avg_cost = total_cost_basis / avg_cost_divisor if avg_cost_divisor > 0 else 0
 
         current_price = lots[0].current_price  # All lots for same symbol have same price
         # Options: each contract controls 100 shares; scale market value accordingly.
         cost_multiplier = 100 if lots[0].asset_type == AssetType.OPTION else 1
-        market_value = current_price * total_quantity * cost_multiplier if current_price else None
+        market_value = (
+            current_price * total_quantity * cost_multiplier
+            if current_price is not None
+            else None
+        )
         unrealized_pnl = sum(lot.unrealized_pnl or 0 for lot in lots)
         unrealized_pnl_pct = (
             (unrealized_pnl / total_cost_basis * 100) if total_cost_basis > 0 else 0
@@ -179,12 +187,13 @@ def aggregate_positions(tax_lots: list[TaxLot]) -> list[Position]:
 
         positions.append(
             Position(
+                position_id=f"{symbol}:{lots[0].asset_type.value}",
                 symbol=symbol,
                 quantity=total_quantity,
                 avg_cost_basis=round(avg_cost, 2),
                 total_cost_basis=round(total_cost_basis, 2),
                 current_price=current_price,
-                market_value=round(market_value, 2) if market_value else None,
+                market_value=round(market_value, 2) if market_value is not None else None,
                 unrealized_pnl=round(unrealized_pnl, 2),
                 unrealized_pnl_pct=round(unrealized_pnl_pct, 2),
                 earliest_purchase_date=earliest_date,
@@ -259,10 +268,8 @@ def _compute_realized_gains(transactions: list[Transaction], tax_year: int | Non
     # then only accumulate gains for the target-year sells.
     for sell in all_sells:
         cost_basis = _fifo_cost_basis_for_sell(sell, buys, buy_remaining)
-        # sell.amount is negative for proceeds received (Robinhood convention)
-        # sell.amount is the net proceeds (positive for STC/SELL, negative for
-        # Robinhood bracket-notation). Use it when available; fall back to
-        # quantity * price for transactions where amount was not recorded.
+        # Use sell.amount when available; fall back to quantity * price for
+        # transactions where amount was not recorded.
         proceeds = abs(sell.amount) if sell.amount != 0 else sell.quantity * sell.price
         pnl = proceeds - cost_basis
         # Only count gains from the target year toward the harvest target
