@@ -2,14 +2,16 @@ import os
 import logging
 import re
 from collections import defaultdict
+from pathlib import Path
 from typing import Annotated, Optional
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
 # Load environment variables BEFORE importing local modules that read os.environ
 # at module-import time (e.g. auth.py, db.py).  Order matters: .env.local wins.
-load_dotenv(".env.local")
-load_dotenv(".env")
+SERVER_DIR = Path(__file__).resolve().parent
+load_dotenv(SERVER_DIR / ".env.local")
+load_dotenv(SERVER_DIR / ".env")
 
 from fastapi import FastAPI, File, UploadFile, Query, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -458,7 +460,7 @@ async def analyze_portfolio(
             },
         )
 
-    # Build tax profile from query params, but check user's saved profile for AI consent
+    # Build tax profile from query params.
     try:
         fs = FilingStatus(filing_status)
     except ValueError:
@@ -468,7 +470,6 @@ async def analyze_portfolio(
         filing_status=fs,
         estimated_annual_income=estimated_income or 75000.0,
         tax_year=tax_year or 2025,
-        ai_suggestions_enabled=True,
     )
 
     all_warnings = list(parse_errors)
@@ -707,7 +708,6 @@ async def save_tax_profile_endpoint(
         estimated_annual_income=profile.estimated_annual_income,
         state=profile.state,
         tax_year=profile.tax_year,
-        ai_suggestions_enabled=profile.ai_suggestions_enabled,
     )
 
     if saved:

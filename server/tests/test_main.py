@@ -568,9 +568,6 @@ def test_analyze_portfolio_saves_history(monkeypatch):
 
     assert response.status_code == 200
     assert save_called["value"] is True
-    # Verify AI suggestions are always enabled (removed opt-in)
-    data = response.json()
-    assert data["tax_profile"]["ai_suggestions_enabled"] is True
 
 
 def test_analyze_portfolio_ai_failure_adds_warning(monkeypatch):

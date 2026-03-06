@@ -22,7 +22,7 @@
 - **React Query cache keys**: `useTaxProfile` uses `["tax-profile"]`. `useSaveTaxProfile` must invalidate the exact same key.
 - **Auth guard**: Any React Query hook that calls protected endpoints must use `enabled: !!user` to avoid 401s before auth session is ready.
 - **Supabase project**: ID `vgrlucxqncajjdoaoctq`, region `us-west-2`, URL `https://vgrlucxqncajjdoaoctq.supabase.co`
-- **`tax_profiles` live schema**: `id UUID PK`, `user_id TEXT UNIQUE`, `filing_status`, `estimated_annual_income`, `state`, `tax_year`, `ai_suggestions_enabled BOOLEAN DEFAULT TRUE`, `created_at`, `updated_at`
+- **`tax_profiles` live schema**: `id UUID PK`, `user_id TEXT UNIQUE`, `filing_status`, `estimated_annual_income`, `state`, `tax_year`, `created_at`, `updated_at`
 - **`portfolio_analyses` live schema**: `id UUID PK`, `user_id TEXT`, `filename TEXT`, `uploaded_at TIMESTAMPTZ`, `summary JSONB`, `positions_count INT`, `total_market_value NUMERIC`, `created_at TIMESTAMPTZ`, `result JSONB NULL`
 - **Supabase client auth**: NEVER pass a user JWT as the `key` arg to `create_client(url, key)` — Kong (Supabase API gateway) only accepts the anon key or service role key there. For history reads, use `get_supabase()` (service role) + explicit `.eq("user_id", user_id)` filter from the verified JWT. For RLS-enforced reads, use `create_client(url, anon_key)` then `client.postgrest.auth(user_jwt)`.
 
