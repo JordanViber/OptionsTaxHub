@@ -1,6 +1,14 @@
 "use client";
 
-import { Box, Card, CardContent, Chip, Divider, Typography, Grid } from "@mui/material";
+import {
+  Box,
+  Card,
+  CardContent,
+  Chip,
+  Divider,
+  Typography,
+  Grid,
+} from "@mui/material";
 import {
   AccountBalance as PortfolioIcon,
   TrendingDown as LossIcon,
@@ -118,25 +126,50 @@ function RealizedCard({ realized }: Readonly<{ realized: RealizedSummary }>) {
               <Typography
                 variant="caption"
                 color="text.secondary"
-                sx={{ fontWeight: 500, textTransform: "uppercase", letterSpacing: 0.5 }}
+                sx={{
+                  fontWeight: 500,
+                  textTransform: "uppercase",
+                  letterSpacing: 0.5,
+                }}
               >
                 {realized.tax_year} Realized
               </Typography>
-              <Chip label={`${realized.transactions_count} trades`} size="small" variant="outlined" sx={{ height: 16, fontSize: "0.6rem" }} />
+              <Chip
+                label={`${realized.transactions_count} trades`}
+                size="small"
+                variant="outlined"
+                sx={{ height: 16, fontSize: "0.6rem" }}
+              />
             </Box>
-            <Typography variant="h5" sx={{ fontWeight: 700, color: netColor, mt: 0.5 }}>
-              {netSign}{formatCurrency(realized.total_net)}
+            <Typography
+              variant="h5"
+              sx={{ fontWeight: 700, color: netColor, mt: 0.5 }}
+            >
+              {netSign}
+              {formatCurrency(realized.total_net)}
             </Typography>
             <Divider sx={{ my: 0.5 }} />
             <Box sx={{ display: "flex", gap: 1 }}>
               <Typography variant="caption" color="text.secondary">
-                ST: <strong style={{ color: realized.net_st >= 0 ? "#2e7d32" : "#d32f2f" }}>
-                  {stSign}{formatCurrency(realized.net_st)}
+                ST:{" "}
+                <strong
+                  style={{
+                    color: realized.net_st >= 0 ? "#2e7d32" : "#d32f2f",
+                  }}
+                >
+                  {stSign}
+                  {formatCurrency(realized.net_st)}
                 </strong>
               </Typography>
               <Typography variant="caption" color="text.secondary">
-                LT: <strong style={{ color: realized.net_lt >= 0 ? "#2e7d32" : "#d32f2f" }}>
-                  {ltSign}{formatCurrency(realized.net_lt)}
+                LT:{" "}
+                <strong
+                  style={{
+                    color: realized.net_lt >= 0 ? "#2e7d32" : "#d32f2f",
+                  }}
+                >
+                  {ltSign}
+                  {formatCurrency(realized.net_lt)}
                 </strong>
               </Typography>
             </Box>

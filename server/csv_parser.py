@@ -212,7 +212,9 @@ def _parse_robinhood_row(
     try:
         trans_code = TransCode(raw_trans_code)
     except ValueError:
-        return None, f"Row {row_num}: Unknown Trans Code '{raw_trans_code}' for {instrument}"
+        # Unknown trans code — skip this row. If this code represents a sell/transfer-out,
+        # the corresponding position may remain open incorrectly in this analysis.
+        return None, f"Row {row_num}: Unrecognized Trans Code '{raw_trans_code}' for {instrument} — skipped (if this was a sale or transfer-out, the position may appear open incorrectly)"
 
     # Skip non-trading account activity (ACH deposits, interest, etc.)
     if raw_trans_code in ACCOUNT_ACTIVITY_CODES:
@@ -494,8 +496,22 @@ def transactions_to_tax_lots(transactions: list[Transaction]) -> tuple[list[TaxL
             _add_lot(open_lots, symbol, txn, asset_type=AssetType.OPTION)
 
         elif txn.trans_code in (TransCode.SPR, TransCode.OCA):
-            # Stock split / reverse split / corporate action — informational.
-            pass
+            # Stock split / reverse split / corporate action.
+            # We cannot safely adjust lot quantities without knowing the split ratio,
+            # so we log a warning to alert the user that positions may be inaccurate.
+            if txn.trans_code == TransCode.SPR:
+                warnings.append(
+                    f"Stock split detected for {symbol} — lot quantities are NOT automatically "
+                    f"adjusted. Reported positions for {symbol} may be inaccurate. Verify against "
+                    f"your brokerage account and re-run after the CSV reflects post-split quantities."
+                )
+            elif txn.trans_code == TransCode.OCA:
+                warnings.append(
+                    f"Corporate action (OCA) detected for {symbol} — lot quantities are NOT "
+                    f"automatically adjusted. Reported positions for {symbol} may be inaccurate. "
+                    f"Verify against your brokerage account and re-run after the CSV reflects any "
+                    f"post-action quantities."
+                )
 
     # Consolidated warning for sells that had no open lots
     if unmatched_sells:

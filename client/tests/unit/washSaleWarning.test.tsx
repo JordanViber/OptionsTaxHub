@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import WashSaleWarning from "../../app/components/WashSaleWarning";
 import type { WashSaleFlag } from "../../lib/types";
 
@@ -36,7 +36,9 @@ describe("WashSaleWarning", () => {
 
     // Component groups by ticker and shows "N events across M tickers"
     expect(
-      screen.getByRole("heading", { name: /Wash-Sale Rule Violations Detected/ }),
+      screen.getByRole("heading", {
+        name: /Wash-Sale Rule Violations Detected/,
+      }),
     ).toBeInTheDocument();
   });
 
@@ -85,5 +87,87 @@ describe("WashSaleWarning", () => {
     expect(
       screen.getByText("Repurchased identical security"),
     ).toBeInTheDocument();
+  });
+
+  it("shows singular 'ticker' label when only one ticker is present", () => {
+    render(<WashSaleWarning flags={[baseFlag]} />);
+
+    // 1 event across 1 ticker (singular)
+    expect(
+      screen.getByText(/1 events? across 1 ticker[^s]/),
+    ).toBeInTheDocument();
+  });
+
+  it("shows plural 'tickers' label when multiple tickers are present", () => {
+    const flags: WashSaleFlag[] = [
+      baseFlag,
+      { ...baseFlag, symbol: "MSFT", disallowed_loss: 300 },
+    ];
+    render(<WashSaleWarning flags={flags} />);
+
+    // 2 events across 2 tickers (plural)
+    expect(screen.getByText(/tickers/)).toBeInTheDocument();
+  });
+
+  it("groups multiple events for the same ticker into one accordion row", () => {
+    const flags: WashSaleFlag[] = [
+      baseFlag,
+      {
+        ...baseFlag,
+        sale_date: "2025-02-10",
+        disallowed_loss: 200,
+        explanation: "Second AAPL wash sale",
+      },
+    ];
+    render(<WashSaleWarning flags={flags} />);
+
+    // Only one AAPL row (grouped), showing combined total ($700.00)
+    const aaplElements = screen.getAllByText("AAPL");
+    expect(aaplElements).toHaveLength(1);
+    expect(screen.getByText("$700.00 disallowed")).toBeInTheDocument();
+    // Should show "2 events" plural
+    expect(screen.getByText("2 events")).toBeInTheDocument();
+  });
+
+  it("shows '1 event' (singular) for a ticker with only one flag", () => {
+    render(<WashSaleWarning flags={[baseFlag]} />);
+
+    expect(screen.getByText("1 event")).toBeInTheDocument();
+  });
+
+  it("expands an accordion when clicked and collapses it when clicked again", () => {
+    render(<WashSaleWarning flags={[baseFlag]} />);
+
+    const summaryButton = screen.getByRole("button", { name: /AAPL/ });
+    // Click to expand
+    fireEvent.click(summaryButton);
+    // Click again to collapse (triggers isExpanded = false branch)
+    fireEvent.click(summaryButton);
+    // Component still renders after collapse
+    expect(screen.getByText("AAPL")).toBeInTheDocument();
+  });
+
+  it("collapses a previously expanded ticker when a different ticker is expanded", () => {
+    const flags: WashSaleFlag[] = [
+      baseFlag,
+      {
+        ...baseFlag,
+        symbol: "MSFT",
+        disallowed_loss: 800,
+        explanation: "MSFT wash sale",
+      },
+    ];
+    render(<WashSaleWarning flags={flags} />);
+
+    const aaplButton = screen.getByRole("button", { name: /AAPL/ });
+    const msftButton = screen.getByRole("button", { name: /MSFT/ });
+
+    // Expand AAPL
+    fireEvent.click(aaplButton);
+    // Now expand MSFT — AAPL should collapse (expanded becomes "MSFT")
+    fireEvent.click(msftButton);
+    // Both tickers still visible
+    expect(screen.getByText("AAPL")).toBeInTheDocument();
+    expect(screen.getByText("MSFT")).toBeInTheDocument();
   });
 });

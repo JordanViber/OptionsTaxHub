@@ -45,13 +45,16 @@ function PnlCell({
   const sign = value >= 0 ? "+" : "";
   return (
     <Box sx={{ display: "flex", alignItems: "baseline", gap: 0.5 }}>
-      <Typography variant="body2" sx={{ color, fontWeight: 600, fontSize: "0.8rem" }}>
+      <Typography
+        variant="body2"
+        sx={{ color, fontWeight: 600, fontSize: "0.8rem" }}
+      >
         {sign}
         {formatCurrency(value)}
       </Typography>
       {pct != null && (
         <Typography variant="caption" sx={{ color, fontSize: "0.7rem" }}>
-          ({sign}{pct.toFixed(1)}%)
+          {`(${sign}${pct.toFixed(1)}%)`}
         </Typography>
       )}
     </Box>
@@ -130,7 +133,9 @@ const columns: GridColDef<Position>[] = [
       const isLong = params.row.is_long_term;
       return (
         <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
-          <Typography variant="body2" sx={{ fontSize: "0.8rem" }}>{formatHoldingPeriod(days)}</Typography>
+          <Typography variant="body2" sx={{ fontSize: "0.8rem" }}>
+            {formatHoldingPeriod(days)}
+          </Typography>
           <Tooltip
             title={
               isLong

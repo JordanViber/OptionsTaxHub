@@ -207,12 +207,19 @@ def _fifo_cost_basis_for_sell(
     return cost_basis
 
 
-def _compute_realized_gains(transactions: list[Transaction]) -> float:
+def _compute_realized_gains(transactions: list[Transaction], tax_year: int | None = None) -> float:
     """
-    Estimate total realized gains from sell transactions for the current tax year.
+    Estimate total realized gains from sell transactions for the specified tax year.
 
     Uses FIFO matching of buys to sells to determine realized P&L.
     Only counts net gains (losses are excluded since they're what we're harvesting).
+
+    Args:
+        transactions: Full transaction history (all years). Buys from all years
+                      are used for FIFO cost-basis matching even when filtering sells.
+        tax_year: If provided, only count realized gains from sells executed in
+                  this calendar year. This ensures the harvest target is calibrated
+                  to the actual tax liability for the year being analyzed.
     """
     if not transactions:
         return 0.0
@@ -223,7 +230,7 @@ def _compute_realized_gains(transactions: list[Transaction]) -> float:
         [t for t in transactions if t.trans_code in (TransCode.BUY, TransCode.BTO)],
         key=lambda t: t.activity_date,
     )
-    sells = sorted(
+    all_sells = sorted(
         [t for t in transactions if t.trans_code in (TransCode.SELL, TransCode.STC)],
         key=lambda t: t.activity_date,
     )
@@ -231,12 +238,15 @@ def _compute_realized_gains(transactions: list[Transaction]) -> float:
     buy_remaining: dict[int, float] = {i: b.quantity for i, b in enumerate(buys)}
     realized_gains = 0.0
 
-    for sell in sells:
+    # Run FIFO against ALL sells first so cost-basis matching is correct for earlier lots,
+    # then only accumulate gains for the target-year sells.
+    for sell in all_sells:
         cost_basis = _fifo_cost_basis_for_sell(sell, buys, buy_remaining)
         # sell.amount is negative for proceeds received (Robinhood convention)
         proceeds = abs(sell.amount) if sell.amount < 0 else sell.quantity * sell.price
         pnl = proceeds - cost_basis
-        if pnl > 0:
+        # Only count gains from the target year toward the harvest target
+        if (tax_year is None or sell.activity_date.year == tax_year) and pnl > 0:
             realized_gains += pnl
 
     return round(realized_gains, 2)
@@ -279,7 +289,9 @@ def generate_suggestions(
         return suggestions
 
     # Compute realized gains to determine optimal harvest target
-    realized_gains = _compute_realized_gains(transactions)
+    # Only count gains from the requested tax year — harvesting losses from 2025
+    # can only offset gains realized in 2025 on the 2025 tax return.
+    realized_gains = _compute_realized_gains(transactions, tax_year=tax_profile.tax_year)
     loss_limit = get_capital_loss_limit(tax_profile)
     # Optimal harvest target: offset realized gains + deduct up to $3k from income
     harvest_target = realized_gains + loss_limit

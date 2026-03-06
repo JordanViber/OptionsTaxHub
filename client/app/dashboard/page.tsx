@@ -22,6 +22,7 @@ import {
   ListItem,
   ListItemButton,
   ListItemText,
+  Snackbar,
   Stack,
   Typography,
   Menu,
@@ -102,7 +103,7 @@ function HistoryContent({
   history: AnalysisHistoryItem[] | null | undefined;
   historyError: Error | null;
   historyLoading: boolean;
-  onItemClick: (id: string) => void;
+  onItemClick: (id: string, filename: string) => void;
   onDeleteClick: (id: string, filename: string) => void;
 }>) {
   if (historyError) {
@@ -153,7 +154,7 @@ function HistoryContent({
           }
         >
           <ListItemButton
-            onClick={() => onItemClick(item.id)}
+            onClick={() => onItemClick(item.id, item.filename)}
             disabled={historyLoading}
             sx={{ pr: 5 }}
           >
@@ -200,6 +201,10 @@ export default function DashboardPage() {
   const [deleteTarget, setDeleteTarget] = useState<{
     id: string;
     filename: string;
+  } | null>(null);
+  const [snackbar, setSnackbar] = useState<{
+    message: string;
+    severity: "success" | "error" | "info";
   } | null>(null);
   const queryClient = useQueryClient();
 
@@ -296,22 +301,40 @@ export default function DashboardPage() {
 
   /**
    * Load a past analysis from history and display it.
+   *
+   * Closes the drawer immediately for responsiveness, then fetches the
+   * full result from the database in the background. A Snackbar confirms
+   * the load (or reports an error).
    */
-  const handleHistoryItemClick = async (itemId: string) => {
+  const handleHistoryItemClick = async (itemId: string, filename: string) => {
     if (!user?.id) return;
+    // Close drawer immediately so the user sees the dashboard right away
+    setHistoryOpen(false);
     setHistoryLoading(true);
     try {
       const record = await fetchAnalysisById(itemId);
       if (record?.result) {
         setLoadedAnalysis(record.result);
         setActiveTab(0);
+        setSnackbar({
+          message: `Loaded saved analysis: ${filename}`,
+          severity: "success",
+        });
+      } else {
+        setSnackbar({
+          message:
+            "No detailed data stored for this analysis. Re-upload the original CSV to see full results.",
+          severity: "info",
+        });
       }
     } catch (err) {
-      // Silently fail — old items may not have full result stored
       console.error("Failed to load analysis:", err);
+      setSnackbar({
+        message: "Failed to load saved analysis. Please try again.",
+        severity: "error",
+      });
     } finally {
       setHistoryLoading(false);
-      setHistoryOpen(false);
     }
   };
 
@@ -546,8 +569,26 @@ export default function DashboardPage() {
         </DialogActions>
       </Dialog>
 
-      {/* Loading bar */}
-      {(isPending || historyLoading) && <LinearProgress />}
+      {/* Loading bar — shows for new analysis (isPending) and history fetch (historyLoading) */}
+      {isPending && <LinearProgress />}
+      {historyLoading && <LinearProgress color="secondary" />}
+
+      {/* Snackbar for history load feedback */}
+      <Snackbar
+        open={!!snackbar}
+        autoHideDuration={4000}
+        onClose={() => setSnackbar(null)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+      >
+        <Alert
+          severity={snackbar?.severity ?? "info"}
+          onClose={() => setSnackbar(null)}
+          variant="filled"
+          sx={{ width: "100%" }}
+        >
+          {snackbar?.message}
+        </Alert>
+      </Snackbar>
 
       {/* Main Content */}
       <Container maxWidth="lg" sx={{ py: 3 }}>
@@ -650,7 +691,14 @@ export default function DashboardPage() {
           {hasResults && (
             <>
               {/* Tax year chip + summary cards */}
-              <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
+              <Box
+                sx={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 1,
+                  flexWrap: "wrap",
+                }}
+              >
                 {displayedAnalysis.tax_profile?.tax_year && (
                   <Chip
                     icon={<CalendarIcon />}
@@ -726,9 +774,17 @@ export default function DashboardPage() {
                   </Typography>
                 </AccordionSummary>
                 <AccordionDetails sx={{ pt: 0 }}>
-                  <Alert severity="warning" variant="outlined" sx={{ border: 0 }}>
+                  <Alert
+                    severity="warning"
+                    variant="outlined"
+                    sx={{ border: 0 }}
+                  >
                     {displayedAnalysis.warnings.map((w: string, i: number) => (
-                      <Typography key={i} variant="caption" sx={{ display: "block", mb: 0.25 }}>
+                      <Typography
+                        key={i}
+                        variant="caption"
+                        sx={{ display: "block", mb: 0.25 }}
+                      >
                         {w}
                       </Typography>
                     ))}
