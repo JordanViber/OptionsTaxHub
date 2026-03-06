@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 from auth import get_current_user, enforce_ownership
 from models import (
+    AssetType,
     FilingStatus,
     PortfolioAnalysis,
     RealizedSummary,
@@ -342,7 +343,10 @@ async def analyze_portfolio(
     all_warnings.extend(price_warnings)
 
     for lot in tax_lots:
-        if lot.symbol in live_prices:
+        # Only apply equity prices to stock lots; options have their own pricing
+        # and applying the underlying stock price ($401 for TSLA) to a TSLA
+        # option lot would produce nonsensical P&L figures.
+        if lot.symbol in live_prices and lot.asset_type == AssetType.STOCK:
             lot.current_price = live_prices[lot.symbol]
 
     tax_lots = compute_lot_metrics(tax_lots)

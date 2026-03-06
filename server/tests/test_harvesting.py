@@ -138,22 +138,23 @@ class TestComputeLotMetrics:
         """
         For an STO (short option) lot, profit = premium_collected - current_price.
         Selling a $5 option that is now worth $2 means you're $3/share ahead.
+        Each contract controls 100 shares, so the dollar P&L is multiplied by 100.
         Without the fix, the formula was (current - cost) = -3 (wrong sign).
         """
         lot = TaxLot(
             symbol="AAPL",
             quantity=2,
             cost_basis_per_share=5.00,   # premium collected when selling to open
-            total_cost_basis=10.00,
+            total_cost_basis=1000.00,    # 2 contracts × 100 × $5
             purchase_date=date(2025, 1, 10),
             current_price=2.00,           # option dropped in value (good for short)
             asset_type=AssetType.OPTION,
             is_short_position=True,
         )
         result = compute_lot_metrics([lot], reference_date=date(2025, 2, 1))
-        # profit = (5 - 2) * 2 = +6  (positive = short position is in your favor)
-        assert result[0].unrealized_pnl == pytest.approx(6.0)
-        # pnl_pct = 6 / 10 * 100 = 60%
+        # profit = (5 - 2) * 2 contracts * 100 shares/contract = +600
+        assert result[0].unrealized_pnl == pytest.approx(600.0)
+        # pnl_pct = 600 / 1000 * 100 = 60%
         assert result[0].unrealized_pnl_pct == pytest.approx(60.0)
 
     def test_short_position_pnl_adverse(self):
@@ -162,15 +163,15 @@ class TestComputeLotMetrics:
             symbol="TSLA",
             quantity=1,
             cost_basis_per_share=3.00,   # collected $3 premium
-            total_cost_basis=3.00,
+            total_cost_basis=300.00,     # 1 contract × 100 × $3
             purchase_date=date(2025, 1, 10),
             current_price=7.00,           # option rose (bad for short seller)
             asset_type=AssetType.OPTION,
             is_short_position=True,
         )
         result = compute_lot_metrics([lot], reference_date=date(2025, 2, 1))
-        # loss = (3 - 7) * 1 = -4
-        assert result[0].unrealized_pnl == pytest.approx(-4.0)
+        # loss = (3 - 7) * 1 contract * 100 shares/contract = -400
+        assert result[0].unrealized_pnl == pytest.approx(-400.0)
 
 
 # --- aggregate_positions ---

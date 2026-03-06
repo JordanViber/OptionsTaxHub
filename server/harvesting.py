@@ -21,6 +21,7 @@ import logging
 from datetime import date
 
 from models import (
+    AssetType,
     HarvestingSuggestion,
     PortfolioAnalysis,
     PortfolioSummary,
@@ -112,13 +113,15 @@ def compute_lot_metrics(
             # premium COLLECTED. Profit = collected - current_price (you want the
             # option price to fall after you sold it). Sign is the opposite of a
             # long position where profit = current_price - cost_basis.
+            # Options contracts each control 100 shares; multiply dollar P&L.
+            cost_multiplier = 100 if lot.asset_type == AssetType.OPTION else 1
             if lot.is_short_position:
                 lot.unrealized_pnl = round(
-                    (lot.cost_basis_per_share - lot.current_price) * lot.quantity, 2
+                    (lot.cost_basis_per_share - lot.current_price) * lot.quantity * cost_multiplier, 2
                 )
             else:
                 lot.unrealized_pnl = round(
-                    (lot.current_price - lot.cost_basis_per_share) * lot.quantity, 2
+                    (lot.current_price - lot.cost_basis_per_share) * lot.quantity * cost_multiplier, 2
                 )
             if lot.total_cost_basis > 0:
                 lot.unrealized_pnl_pct = round(
@@ -145,14 +148,17 @@ def aggregate_positions(tax_lots: list[TaxLot]) -> list[Position]:
     Returns:
         List of Position objects, one per unique symbol.
     """
-    positions_map: dict[str, list[TaxLot]] = {}
+    # Key by (symbol, asset_type) to prevent mixing stock and option lots
+    # for the same underlying ticker (e.g. TSLA stock vs TSLA puts).
+    positions_map: dict[tuple[str, str], list[TaxLot]] = {}
     for lot in tax_lots:
-        if lot.symbol not in positions_map:
-            positions_map[lot.symbol] = []
-        positions_map[lot.symbol].append(lot)
+        key = (lot.symbol, lot.asset_type.value)
+        if key not in positions_map:
+            positions_map[key] = []
+        positions_map[key].append(lot)
 
     positions: list[Position] = []
-    for symbol, lots in positions_map.items():
+    for (symbol, _asset_type_str), lots in positions_map.items():
         total_quantity = sum(lot.quantity for lot in lots)
         total_cost_basis = sum(lot.total_cost_basis for lot in lots)
         avg_cost = total_cost_basis / total_quantity if total_quantity > 0 else 0
@@ -252,7 +258,10 @@ def _compute_realized_gains(transactions: list[Transaction], tax_year: int | Non
     for sell in all_sells:
         cost_basis = _fifo_cost_basis_for_sell(sell, buys, buy_remaining)
         # sell.amount is negative for proceeds received (Robinhood convention)
-        proceeds = abs(sell.amount) if sell.amount < 0 else sell.quantity * sell.price
+        # sell.amount is the net proceeds (positive for STC/SELL, negative for
+        # Robinhood bracket-notation). Use it when available; fall back to
+        # quantity * price for transactions where amount was not recorded.
+        proceeds = abs(sell.amount) if sell.amount != 0 else sell.quantity * sell.price
         pnl = proceeds - cost_basis
         # Only count gains from the target year toward the harvest target
         if (tax_year is None or sell.activity_date.year == tax_year) and pnl > 0:

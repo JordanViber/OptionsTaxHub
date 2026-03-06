@@ -380,13 +380,16 @@ def _add_lot(
     is_short_position: bool = False,
 ) -> None:
     """Create and append a new tax lot for a purchase transaction."""
+    resolved_type = asset_type or txn.asset_type
+    # Options contracts each control 100 shares; multiply cost basis accordingly
+    cost_multiplier = 100 if resolved_type == AssetType.OPTION else 1
     lot = TaxLot(
         symbol=symbol,
         quantity=txn.quantity,
         cost_basis_per_share=txn.price,
-        total_cost_basis=txn.price * txn.quantity,
+        total_cost_basis=txn.price * txn.quantity * cost_multiplier,
         purchase_date=txn.activity_date,
-        asset_type=asset_type or txn.asset_type,
+        asset_type=resolved_type,
         is_short_position=is_short_position,
     )
     if symbol not in open_lots:
@@ -419,13 +422,28 @@ def _close_lots_fifo(
         unmatched_sells.append(symbol)
         return
 
-    while remaining_to_sell > 0 and open_lots.get(symbol):
-        oldest_lot = open_lots[symbol][0]
+    # Only close lots that match the transaction's asset type.
+    # This prevents a stock SELL from accidentally consuming an option lot
+    # (and vice versa) when both share the same underlying ticker symbol.
+    close_asset_type = txn.asset_type
+
+    while remaining_to_sell > 0:
+        # Find the earliest (FIFO) open lot with the matching asset type
+        matching_idx = next(
+            (i for i, lot in enumerate(open_lots.get(symbol, [])) if lot.asset_type == close_asset_type),
+            None,
+        )
+        if matching_idx is None:
+            break
+
+        oldest_lot = open_lots[symbol][matching_idx]
         qty_to_close = min(oldest_lot.quantity, remaining_to_sell)
         qty_to_close = round(qty_to_close, 6)
 
-        cost_basis_closed = oldest_lot.cost_basis_per_share * qty_to_close
-        proceeds_closed = sale_price * qty_to_close
+        # Options contracts each control 100 shares; scale dollar amounts
+        cost_multiplier = 100 if oldest_lot.asset_type == AssetType.OPTION else 1
+        cost_basis_closed = oldest_lot.cost_basis_per_share * qty_to_close * cost_multiplier
+        proceeds_closed = sale_price * qty_to_close * cost_multiplier
         # For short positions (STO lots), P&L is inverted: you collected the
         # premium (cost_basis) and pay to close (proceeds), so profit =
         # premium_collected - buyback_cost, which is -(proceeds - cost_basis).
@@ -451,11 +469,11 @@ def _close_lots_fifo(
 
         if oldest_lot.quantity <= remaining_to_sell:
             remaining_to_sell = round(remaining_to_sell - oldest_lot.quantity, 6)
-            open_lots[symbol].pop(0)
+            open_lots[symbol].pop(matching_idx)
         else:
             oldest_lot.quantity = round(oldest_lot.quantity - remaining_to_sell, 6)
             oldest_lot.total_cost_basis = (
-                oldest_lot.cost_basis_per_share * oldest_lot.quantity
+                oldest_lot.cost_basis_per_share * oldest_lot.quantity * cost_multiplier
             )
             remaining_to_sell = 0
 

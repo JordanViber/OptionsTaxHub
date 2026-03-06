@@ -830,9 +830,9 @@ class TestTransactionsToTaxLotsEdgeCases:
         lots, warnings, realized = transactions_to_tax_lots(txns)
         # After BTC, the STO lot is closed — no phantom open positions
         assert len(lots) == 0
-        # Realized gain: collected $5 premium, bought back at $2 → $3/share × 2 = $6 gain
+        # Realized gain: collected $5 premium, bought back at $2 → $3/share × 2 contracts × 100 = $600
         assert len(realized) == 1
-        assert realized[0].pnl == pytest.approx(6.0)
+        assert realized[0].pnl == pytest.approx(600.0)
 
     def test_oexp_long_option_records_realized_loss(self):
         """OEXP for a long option (BTO) expiring worthless creates a realized loss."""
@@ -857,9 +857,9 @@ class TestTransactionsToTaxLotsEdgeCases:
         lots, _, realized = transactions_to_tax_lots(txns)
         # Option expired — no open lots remain
         assert len(lots) == 0
-        # Realized loss = full premium paid = 3 × $4 = $12
+        # Realized loss = full premium paid = 3 contracts × $4 × 100 shares/contract = $1200
         assert len(realized) == 1
-        assert realized[0].pnl == pytest.approx(-12.0)
+        assert realized[0].pnl == pytest.approx(-1200.0)
         assert realized[0].is_long_term is False
 
     def test_oexp_short_option_records_realized_gain(self):
@@ -885,9 +885,9 @@ class TestTransactionsToTaxLotsEdgeCases:
         lots, _, realized = transactions_to_tax_lots(txns)
         # Short option expired worthless — no open lots remain
         assert len(lots) == 0
-        # Realized gain = full premium received = 5 × $3 = $15
+        # Realized gain = full premium received = 5 contracts × $3 × 100 shares/contract = $1500
         assert len(realized) == 1
-        assert realized[0].pnl == pytest.approx(15.0)
+        assert realized[0].pnl == pytest.approx(1500.0)
 
     def test_spr_oca_informational_no_lots(self):
         """SPR/OCA (splits, corporate actions) are informational only."""
