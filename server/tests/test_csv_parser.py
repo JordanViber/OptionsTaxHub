@@ -257,6 +257,44 @@ class TestTransactionsToTaxLots:
         assert lots[0].quantity == 3
         assert lots[0].cost_basis_per_share == pytest.approx(120.0)
 
+    def test_same_day_sell_before_buy_csv_order_does_not_leave_phantom_lot(self):
+        from models import Transaction, TransCode, AssetType
+        txns = [
+            # Robinhood CSVs are exported newest-first, so a later same-day sell
+            # can appear before the earlier same-day buy in the raw file order.
+            Transaction(
+                activity_date=date(2024, 3, 21),
+                process_date=date(2024, 3, 21),
+                settle_date=date(2024, 3, 21),
+                instrument="RDDT",
+                description="Reddit, Inc.",
+                trans_code=TransCode.SELL,
+                quantity=50,
+                price=56.50,
+                amount=2824.97,
+                asset_type=AssetType.STOCK,
+            ),
+            Transaction(
+                activity_date=date(2024, 3, 21),
+                process_date=date(2024, 3, 21),
+                settle_date=date(2024, 3, 21),
+                instrument="RDDT",
+                description="Reddit, Inc.",
+                trans_code=TransCode.BUY,
+                quantity=50,
+                price=47.00,
+                amount=-2350.00,
+                asset_type=AssetType.STOCK,
+            ),
+        ]
+
+        lots, warnings, realized = transactions_to_tax_lots(txns)
+
+        assert lots == []
+        assert realized[0].symbol == "RDDT"
+        assert realized[0].pnl == pytest.approx(475.0)
+        assert warnings == []
+
 
 # --- Full parse_csv Integration ---
 
@@ -715,7 +753,6 @@ class TestCloseLotsFifoEdgeCases:
     def test_sell_with_no_open_lots_warns(self):
         """Selling when no open lots exist produces a warning."""
         open_lots: dict[str, list[TaxLot]] = {}
-        warnings: list[str] = []
         txn = Transaction(
             activity_date=date(2025, 6, 1),
             process_date=None,
@@ -728,13 +765,11 @@ class TestCloseLotsFifoEdgeCases:
             amount=1500,
             asset_type=AssetType.STOCK,
         )
-        unmatched_sells: list[str] = []
+        unmatched_sells: list[tuple[str, str]] = []
         realized: list = []
-        _close_lots_fifo(open_lots, "AAPL", txn, warnings, unmatched_sells, realized)
+        _close_lots_fifo(open_lots, "AAPL", txn, unmatched_sells, realized)
         assert len(unmatched_sells) == 1
-        assert "AAPL" in unmatched_sells
-
-    def test_sell_exceeds_open_lots_warns(self):
+        assert ("AAPL", "no_lots") in unmatched_sells
         """Selling more shares than available in lots produces a warning."""
         lot = TaxLot(
             symbol="AAPL",
@@ -744,7 +779,6 @@ class TestCloseLotsFifoEdgeCases:
             purchase_date=date(2025, 1, 1),
         )
         open_lots: dict[str, list[TaxLot]] = {"AAPL": [lot]}
-        warnings: list[str] = []
         txn = Transaction(
             activity_date=date(2025, 6, 1),
             process_date=None,
@@ -757,11 +791,11 @@ class TestCloseLotsFifoEdgeCases:
             amount=1500,
             asset_type=AssetType.STOCK,
         )
-        unmatched_sells: list[str] = []
+        unmatched_sells: list[tuple[str, str]] = []
         realized: list = []
-        _close_lots_fifo(open_lots, "AAPL", txn, warnings, unmatched_sells, realized)
+        _close_lots_fifo(open_lots, "AAPL", txn, unmatched_sells, realized)
         assert len(unmatched_sells) == 1
-        assert "AAPL" in unmatched_sells
+        assert ("AAPL", "insufficient") in unmatched_sells
 
 
 class TestRemoveLotsFifoEdgeCases:
@@ -787,7 +821,7 @@ class TestRemoveLotsFifoEdgeCases:
 
 class TestTransactionsToTaxLotsEdgeCases:
     def test_sto_creates_option_lot(self):
-        """STO (sell to open) creates an option lot."""
+        """STO (sell to open) creates an option lot marked as short position."""
         txns = [
             Transaction(
                 activity_date=date(2025, 1, 1),
@@ -805,6 +839,89 @@ class TestTransactionsToTaxLotsEdgeCases:
         lots, _, _ = transactions_to_tax_lots(txns)
         assert len(lots) == 1
         assert lots[0].asset_type == AssetType.OPTION
+        assert lots[0].is_short_position is True  # Bug fix: STO must be marked short
+
+    def test_btc_closes_sto_lot(self):
+        """BTC (buy to close) must close the STO lot — not leave it open as phantom position."""
+        txns = [
+            Transaction(
+                activity_date=date(2025, 1, 10),
+                process_date=None, settle_date=None,
+                instrument="AAPL", description="AAPL 150 Put",
+                trans_code=TransCode.STO,
+                quantity=2, price=5.00, amount=1000.0,
+                asset_type=AssetType.OPTION,
+            ),
+            Transaction(
+                activity_date=date(2025, 2, 1),
+                process_date=None, settle_date=None,
+                instrument="AAPL", description="AAPL 150 Put",
+                trans_code=TransCode.BTC,
+                quantity=2, price=2.00, amount=-400.0,
+                asset_type=AssetType.OPTION,
+            ),
+        ]
+        lots, warnings, realized = transactions_to_tax_lots(txns)
+        # After BTC, the STO lot is closed — no phantom open positions
+        assert len(lots) == 0
+        # Realized gain: collected $5 premium, bought back at $2 → $3/share × 2 contracts × 100 = $600
+        assert len(realized) == 1
+        assert realized[0].pnl == pytest.approx(600.0)
+
+    def test_oexp_long_option_records_realized_loss(self):
+        """OEXP for a long option (BTO) expiring worthless creates a realized loss."""
+        txns = [
+            Transaction(
+                activity_date=date(2025, 1, 10),
+                process_date=None, settle_date=None,
+                instrument="TSLA", description="TSLA Call",
+                trans_code=TransCode.BTO,
+                quantity=3, price=4.00, amount=-1200.0,
+                asset_type=AssetType.OPTION,
+            ),
+            Transaction(
+                activity_date=date(2025, 2, 21),
+                process_date=None, settle_date=None,
+                instrument="TSLA", description="TSLA Call expired",
+                trans_code=TransCode.OEXP,
+                quantity=3, price=0.0, amount=0.0,
+                asset_type=AssetType.OPTION,
+            ),
+        ]
+        lots, _, realized = transactions_to_tax_lots(txns)
+        # Option expired — no open lots remain
+        assert len(lots) == 0
+        # Realized loss = full premium paid = 3 contracts × $4 × 100 shares/contract = $1200
+        assert len(realized) == 1
+        assert realized[0].pnl == pytest.approx(-1200.0)
+        assert realized[0].is_long_term is False
+
+    def test_oexp_short_option_records_realized_gain(self):
+        """OEXP for a short option (STO) expiring worthless creates a realized gain."""
+        txns = [
+            Transaction(
+                activity_date=date(2025, 1, 10),
+                process_date=None, settle_date=None,
+                instrument="MSFT", description="MSFT Put",
+                trans_code=TransCode.STO,
+                quantity=5, price=3.00, amount=1500.0,
+                asset_type=AssetType.OPTION,
+            ),
+            Transaction(
+                activity_date=date(2025, 2, 21),
+                process_date=None, settle_date=None,
+                instrument="MSFT", description="MSFT Put expired",
+                trans_code=TransCode.OEXP,
+                quantity=5, price=0.0, amount=0.0,
+                asset_type=AssetType.OPTION,
+            ),
+        ]
+        lots, _, realized = transactions_to_tax_lots(txns)
+        # Short option expired worthless — no open lots remain
+        assert len(lots) == 0
+        # Realized gain = full premium received = 5 contracts × $3 × 100 shares/contract = $1500
+        assert len(realized) == 1
+        assert realized[0].pnl == pytest.approx(1500.0)
 
     def test_spr_oca_informational_no_lots(self):
         """SPR/OCA (splits, corporate actions) are informational only."""

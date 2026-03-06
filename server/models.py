@@ -96,12 +96,14 @@ class TaxLot(BaseModel):
     """
 
     symbol: str
+    description: str = ""  # Full contract description (e.g. "TSLA Call 1/17 $250")
     quantity: float = Field(..., ge=0)
     cost_basis_per_share: float = Field(..., ge=0)
     total_cost_basis: float = Field(..., ge=0)
     purchase_date: date
     current_price: Optional[float] = None
     asset_type: AssetType = AssetType.STOCK
+    contract_label: Optional[str] = None
 
     # Computed fields populated during analysis
     unrealized_pnl: Optional[float] = None
@@ -109,6 +111,7 @@ class TaxLot(BaseModel):
     holding_period_days: Optional[int] = None
     is_long_term: Optional[bool] = None
     wash_sale_disallowed: float = 0.0  # Amount of loss disallowed by wash-sale rule
+    is_short_position: bool = False  # True for STO (sold-to-open) short option lots
 
 
 class Position(BaseModel):
@@ -119,7 +122,9 @@ class Position(BaseModel):
     for dashboard display.
     """
 
+    position_id: str  # Stable unique key: "{symbol}:{asset_type}" for DataGrid row IDs
     symbol: str
+    display_label: Optional[str] = None
     quantity: float
     avg_cost_basis: float
     total_cost_basis: float

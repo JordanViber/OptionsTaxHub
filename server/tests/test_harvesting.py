@@ -134,6 +134,45 @@ class TestComputeLotMetrics:
         result = compute_lot_metrics(lots)
         assert result[0].holding_period_days == 10
 
+    def test_short_position_pnl_direction(self):
+        """
+        For an STO (short option) lot, profit = premium_collected - current_price.
+        Selling a $5 option that is now worth $2 means you're $3/share ahead.
+        Each contract controls 100 shares, so the dollar P&L is multiplied by 100.
+        Without the fix, the formula was (current - cost) = -3 (wrong sign).
+        """
+        lot = TaxLot(
+            symbol="AAPL",
+            quantity=2,
+            cost_basis_per_share=5.00,   # premium collected when selling to open
+            total_cost_basis=1000.00,    # 2 contracts × 100 × $5
+            purchase_date=date(2025, 1, 10),
+            current_price=2.00,           # option dropped in value (good for short)
+            asset_type=AssetType.OPTION,
+            is_short_position=True,
+        )
+        result = compute_lot_metrics([lot], reference_date=date(2025, 2, 1))
+        # profit = (5 - 2) * 2 contracts * 100 shares/contract = +600
+        assert result[0].unrealized_pnl == pytest.approx(600.0)
+        # pnl_pct = 600 / 1000 * 100 = 60%
+        assert result[0].unrealized_pnl_pct == pytest.approx(60.0)
+
+    def test_short_position_pnl_adverse(self):
+        """Short option that has moved against you (current > premium collected) is a loss."""
+        lot = TaxLot(
+            symbol="TSLA",
+            quantity=1,
+            cost_basis_per_share=3.00,   # collected $3 premium
+            total_cost_basis=300.00,     # 1 contract × 100 × $3
+            purchase_date=date(2025, 1, 10),
+            current_price=7.00,           # option rose (bad for short seller)
+            asset_type=AssetType.OPTION,
+            is_short_position=True,
+        )
+        result = compute_lot_metrics([lot], reference_date=date(2025, 2, 1))
+        # loss = (3 - 7) * 1 contract * 100 shares/contract = -400
+        assert result[0].unrealized_pnl == pytest.approx(-400.0)
+
 
 # --- aggregate_positions ---
 
@@ -202,6 +241,71 @@ class TestAggregatePositions:
         positions = aggregate_positions(lots)
         assert positions[0].market_value is None
 
+    def test_option_positions_group_by_contract_label(self):
+        lots = [
+            TaxLot(
+                symbol="TSLA",
+                quantity=1,
+                cost_basis_per_share=7.42,
+                total_cost_basis=742.0,
+                purchase_date=date(2026, 3, 2),
+                current_price=7.42,
+                asset_type=AssetType.OPTION,
+                contract_label="TSLA 3/16/2026 Put $385.00",
+                is_short_position=True,
+            ),
+            TaxLot(
+                symbol="TSLA",
+                quantity=1,
+                cost_basis_per_share=4.92,
+                total_cost_basis=492.0,
+                purchase_date=date(2026, 3, 2),
+                current_price=4.92,
+                asset_type=AssetType.OPTION,
+                contract_label="TSLA 3/16/2026 Put $375.00",
+            ),
+        ]
+
+        lots = compute_lot_metrics(lots, reference_date=date(2026, 3, 6))
+        positions = aggregate_positions(lots)
+
+        assert len(positions) == 2
+        labels = {p.display_label for p in positions}
+        assert labels == {
+            "TSLA 3/16/2026 Put $385.00",
+            "TSLA 3/16/2026 Put $375.00",
+        }
+
+    def test_short_option_market_value_is_negative_liability(self):
+        short_lot = TaxLot(
+            symbol="MSTR",
+            quantity=1,
+            cost_basis_per_share=5.35,
+            total_cost_basis=535.0,
+            purchase_date=date(2026, 2, 20),
+            current_price=5.35,
+            asset_type=AssetType.OPTION,
+            contract_label="MSTR 3/20/2026 Put $115.00",
+            is_short_position=True,
+        )
+        long_lot = TaxLot(
+            symbol="MSTR",
+            quantity=1,
+            cost_basis_per_share=2.68,
+            total_cost_basis=268.0,
+            purchase_date=date(2026, 2, 20),
+            current_price=2.68,
+            asset_type=AssetType.OPTION,
+            contract_label="MSTR 3/20/2026 Put $100.00",
+        )
+
+        lots = compute_lot_metrics([short_lot, long_lot], reference_date=date(2026, 3, 6))
+        positions = aggregate_positions(lots)
+        values = {p.display_label: p.market_value for p in positions}
+
+        assert values["MSTR 3/20/2026 Put $115.00"] == pytest.approx(-535.0)
+        assert values["MSTR 3/20/2026 Put $100.00"] == pytest.approx(268.0)
+
 
 # --- _fifo_cost_basis_for_sell ---
 
@@ -253,6 +357,70 @@ class TestComputeRealizedGains:
         gains = _compute_realized_gains(txns)
         # Proceeds = 1200, cost = 1000 → gain = 200
         assert gains == pytest.approx(200.0)
+
+
+class TestBuildPortfolioSummary:
+    def test_total_market_value_uses_signed_option_liabilities(self):
+        positions = [
+            Position(
+                position_id="TSLA:stock",
+                symbol="TSLA",
+                display_label="TSLA",
+                quantity=35,
+                avg_cost_basis=399.02,
+                total_cost_basis=13965.7,
+                current_price=400.49,
+                market_value=14017.15,
+                unrealized_pnl=340.61,
+                unrealized_pnl_pct=2.44,
+                earliest_purchase_date=date(2026, 3, 2),
+                holding_period_days=4,
+                is_long_term=False,
+                asset_type=AssetType.STOCK,
+                tax_lots=[],
+                wash_sale_risk=False,
+            ),
+            Position(
+                position_id="TSLA:option:short",
+                symbol="TSLA",
+                display_label="TSLA 3/16/2026 Put $385.00",
+                quantity=1,
+                avg_cost_basis=7.42,
+                total_cost_basis=742.0,
+                current_price=7.42,
+                market_value=-742.0,
+                unrealized_pnl=0.0,
+                unrealized_pnl_pct=0.0,
+                earliest_purchase_date=date(2026, 3, 2),
+                holding_period_days=4,
+                is_long_term=False,
+                asset_type=AssetType.OPTION,
+                tax_lots=[],
+                wash_sale_risk=False,
+            ),
+            Position(
+                position_id="TSLA:option:long",
+                symbol="TSLA",
+                display_label="TSLA 3/16/2026 Put $375.00",
+                quantity=1,
+                avg_cost_basis=4.92,
+                total_cost_basis=492.0,
+                current_price=4.92,
+                market_value=492.0,
+                unrealized_pnl=0.0,
+                unrealized_pnl_pct=0.0,
+                earliest_purchase_date=date(2026, 3, 2),
+                holding_period_days=4,
+                is_long_term=False,
+                asset_type=AssetType.OPTION,
+                tax_lots=[],
+                wash_sale_risk=False,
+            ),
+        ]
+
+        summary = build_portfolio_summary(positions, [], [])
+
+        assert summary.total_market_value == pytest.approx(13767.15)
 
     def test_loss_excluded(self):
         txns = [
