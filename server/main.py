@@ -23,9 +23,10 @@ from auth import get_current_user, enforce_ownership
 from models import (
     FilingStatus,
     PortfolioAnalysis,
+    RealizedSummary,
     TaxProfile,
 )
-from csv_parser import parse_csv
+from csv_parser import parse_csv, RealizedEvent
 from tax_engine import get_tax_brackets_summary
 from harvesting import (
     compute_lot_metrics,
@@ -182,6 +183,35 @@ async def upload_csv(file: Annotated[UploadFile, File()]):
 # --- Portfolio Analysis Endpoints ---
 
 
+def _compute_realized_summary(realized: list[RealizedEvent], tax_year: int) -> RealizedSummary:
+    """
+    Aggregate realized gain/loss events for the specified tax year.
+
+    Filters realized events by sale_date.year == tax_year, then sums short-term
+    and long-term gains/losses separately.
+    """
+    year_events = [e for e in realized if e.sale_date.year == tax_year]
+
+    st_gains = sum(e.pnl for e in year_events if not e.is_long_term and e.pnl > 0)
+    st_losses = sum(e.pnl for e in year_events if not e.is_long_term and e.pnl < 0)
+    lt_gains = sum(e.pnl for e in year_events if e.is_long_term and e.pnl > 0)
+    lt_losses = sum(e.pnl for e in year_events if e.is_long_term and e.pnl < 0)
+    net_st = st_gains + st_losses
+    net_lt = lt_gains + lt_losses
+
+    return RealizedSummary(
+        tax_year=tax_year,
+        st_gains=round(st_gains, 2),
+        st_losses=round(st_losses, 2),
+        lt_gains=round(lt_gains, 2),
+        lt_losses=round(lt_losses, 2),
+        net_st=round(net_st, 2),
+        net_lt=round(net_lt, 2),
+        total_net=round(net_st + net_lt, 2),
+        transactions_count=len(year_events),
+    )
+
+
 def _try_get_ai_suggestions(
     tax_lots: list,
     warnings: list[str],
@@ -275,7 +305,7 @@ async def analyze_portfolio(
 
     # Read and parse CSV
     contents = await file.read()
-    tax_lots, transactions, parse_errors = parse_csv(contents.decode("utf-8"))
+    tax_lots, transactions, parse_errors, realized_events = parse_csv(contents.decode("utf-8"))
 
     if not tax_lots and not transactions:
         raise HTTPException(
@@ -334,6 +364,11 @@ async def analyze_portfolio(
 
     positions = aggregate_positions(tax_lots)
     summary = build_portfolio_summary(positions, suggestions, wash_sale_flags)
+
+    # Compute realized gain/loss breakdown for the requested tax year
+    summary.realized_summary = _compute_realized_summary(
+        realized_events, tax_profile.tax_year
+    )
 
     result = PortfolioAnalysis(
         positions=positions,

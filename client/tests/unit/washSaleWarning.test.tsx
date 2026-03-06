@@ -34,8 +34,9 @@ describe("WashSaleWarning", () => {
     ];
     render(<WashSaleWarning flags={flags} />);
 
+    // Component groups by ticker and shows "N events across M tickers"
     expect(
-      screen.getByText("Wash-Sale Rule Violations Detected (2)"),
+      screen.getByRole("heading", { name: /Wash-Sale Rule Violations Detected/ }),
     ).toBeInTheDocument();
   });
 
@@ -50,7 +51,9 @@ describe("WashSaleWarning", () => {
   it("shows symbol and disallowed loss for each flag", () => {
     render(<WashSaleWarning flags={[baseFlag]} />);
 
-    expect(screen.getByText(/AAPL: \$500 loss disallowed/)).toBeInTheDocument();
+    // Component renders ticker symbol and disallowed amount as separate elements in an accordion row
+    expect(screen.getByText("AAPL")).toBeInTheDocument();
+    expect(screen.getByText("$500.00 disallowed")).toBeInTheDocument();
   });
 
   it("shows explanation text for each flag", () => {
@@ -73,12 +76,12 @@ describe("WashSaleWarning", () => {
     ];
     render(<WashSaleWarning flags={flags} />);
 
-    expect(
-      screen.getByText(/AAPL: \$500 loss disallowed/),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(/TSLA: \$1,200 loss disallowed/),
-    ).toBeInTheDocument();
+    // Both tickers appear as accordion rows, sorted by total disallowed (TSLA first)
+    expect(screen.getByText("AAPL")).toBeInTheDocument();
+    expect(screen.getByText("$500.00 disallowed")).toBeInTheDocument();
+    expect(screen.getByText("TSLA")).toBeInTheDocument();
+    expect(screen.getByText("$1,200.00 disallowed")).toBeInTheDocument();
+    // Explanation text is inside the collapsed accordion detail — check it is in DOM
     expect(
       screen.getByText("Repurchased identical security"),
     ).toBeInTheDocument();

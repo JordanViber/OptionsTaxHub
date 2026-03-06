@@ -3,6 +3,9 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
+  Accordion,
+  AccordionSummary,
+  AccordionDetails,
   AppBar,
   Toolbar,
   Container,
@@ -10,6 +13,7 @@ import {
   Card,
   CardContent,
   Button,
+  Chip,
   CircularProgress,
   Alert,
   AlertTitle,
@@ -37,12 +41,14 @@ import {
 import {
   CloudUpload as CloudUploadIcon,
   Error as ErrorIcon,
+  ExpandMore as ExpandMoreIcon,
   Logout as LogoutIcon,
   Settings as SettingsIcon,
   Dashboard as DashboardIcon,
   History as HistoryIcon,
   Favorite as HeartIcon,
   Close as CloseIcon,
+  CalendarToday as CalendarIcon,
 } from "@mui/icons-material";
 import ServiceWorkerRegistration from "../components/ServiceWorkerRegistration";
 import TaxDisclaimer from "../components/TaxDisclaimer";
@@ -640,30 +646,29 @@ export default function DashboardPage() {
             </Alert>
           )}
 
-          {/* Warnings */}
-          {displayedAnalysis?.warnings &&
-            displayedAnalysis.warnings.length > 0 && (
-              <Alert severity="warning">
-                {displayedAnalysis.warnings.map((w: string) => (
-                  <Typography key={w} variant="body2">
-                    {w}
-                  </Typography>
-                ))}
-              </Alert>
-            )}
-
-          {/* Results */}
+          {/* Results — shown ABOVE warnings so actionable info is immediately visible */}
           {hasResults && (
             <>
-              {/* Summary Cards */}
+              {/* Tax year chip + summary cards */}
+              <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
+                {displayedAnalysis.tax_profile?.tax_year && (
+                  <Chip
+                    icon={<CalendarIcon />}
+                    label={`Tax Year: ${displayedAnalysis.tax_profile.tax_year}`}
+                    size="small"
+                    color="primary"
+                    variant="outlined"
+                  />
+                )}
+              </Box>
               <PortfolioSummaryCards summary={displayedAnalysis.summary} />
 
-              {/* Wash-Sale Warnings */}
+              {/* Wash-Sale Warnings — grouped by ticker accordion */}
               {displayedAnalysis.wash_sale_flags.length > 0 && (
                 <WashSaleWarning flags={displayedAnalysis.wash_sale_flags} />
               )}
 
-              {/* Tabbed view: Positions | Suggestions */}
+              {/* Tabbed view: Suggestions first (most actionable), then Positions */}
               <Card>
                 <Tabs
                   value={activeTab}
@@ -671,23 +676,23 @@ export default function DashboardPage() {
                   sx={{ borderBottom: 1, borderColor: "divider", px: 2 }}
                 >
                   <Tab
-                    label={`Positions (${displayedAnalysis.positions.length})`}
-                    id="tab-positions"
-                  />
-                  <Tab
                     label={`Suggestions (${displayedAnalysis.suggestions.length})`}
                     id="tab-suggestions"
+                  />
+                  <Tab
+                    label={`Positions (${displayedAnalysis.positions.length})`}
+                    id="tab-positions"
                   />
                 </Tabs>
 
                 <CardContent>
                   {activeTab === 0 && (
-                    <PositionsTable positions={displayedAnalysis.positions} />
-                  )}
-                  {activeTab === 1 && (
                     <HarvestingSuggestions
                       suggestions={displayedAnalysis.suggestions}
                     />
+                  )}
+                  {activeTab === 1 && (
+                    <PositionsTable positions={displayedAnalysis.positions} />
                   )}
                 </CardContent>
               </Card>
@@ -696,6 +701,41 @@ export default function DashboardPage() {
               <TaxDisclaimer />
             </>
           )}
+
+          {/* Parsing notes — collapsible accordion, shown below results */}
+          {displayedAnalysis?.warnings &&
+            displayedAnalysis.warnings.length > 0 && (
+              <Accordion
+                elevation={0}
+                sx={{
+                  border: "1px solid",
+                  borderColor: "warning.light",
+                  borderRadius: 1,
+                  "&:before": { display: "none" },
+                }}
+              >
+                <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                  <Typography
+                    variant="body2"
+                    color="warning.dark"
+                    sx={{ fontWeight: 500 }}
+                  >
+                    ⚠ {displayedAnalysis.warnings.length} parsing note
+                    {displayedAnalysis.warnings.length !== 1 ? "s" : ""} — click
+                    to expand
+                  </Typography>
+                </AccordionSummary>
+                <AccordionDetails sx={{ pt: 0 }}>
+                  <Alert severity="warning" variant="outlined" sx={{ border: 0 }}>
+                    {displayedAnalysis.warnings.map((w: string, i: number) => (
+                      <Typography key={i} variant="caption" sx={{ display: "block", mb: 0.25 }}>
+                        {w}
+                      </Typography>
+                    ))}
+                  </Alert>
+                </AccordionDetails>
+              </Accordion>
+            )}
         </Stack>
       </Container>
     </>

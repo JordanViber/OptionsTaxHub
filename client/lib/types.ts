@@ -108,6 +108,20 @@ export interface HarvestingSuggestion {
 
 // --- Portfolio Analysis Response ---
 
+// --- Realized Gain/Loss Summary ---
+
+export interface RealizedSummary {
+  tax_year: number;
+  st_gains: number;
+  st_losses: number;
+  lt_gains: number;
+  lt_losses: number;
+  net_st: number;
+  net_lt: number;
+  total_net: number;
+  transactions_count: number;
+}
+
 export interface PortfolioSummary {
   total_market_value: number;
   total_cost_basis: number;
@@ -119,6 +133,7 @@ export interface PortfolioSummary {
   lots_with_losses: number;
   lots_with_gains: number;
   wash_sale_flags_count: number;
+  realized_summary?: RealizedSummary | null;
 }
 
 export interface PortfolioAnalysis {

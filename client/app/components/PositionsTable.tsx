@@ -5,6 +5,18 @@ import { DataGrid, type GridColDef } from "@mui/x-data-grid";
 import { Warning as WarnIcon } from "@mui/icons-material";
 import type { Position } from "@/lib/types";
 
+/**
+ * Convert raw holding-period days to a human-readable label.
+ * Examples: 12 → "12d", 90 → "3mo", 400 → "1yr 1mo"
+ */
+function formatHoldingPeriod(days: number): string {
+  if (days < 30) return `${days}d`;
+  const years = Math.floor(days / 365);
+  const months = Math.floor((days % 365) / 30);
+  if (years === 0) return `${months}mo`;
+  return months > 0 ? `${years}yr ${months}mo` : `${years}yr`;
+}
+
 interface PositionsTableProps {
   positions: Position[];
 }
@@ -118,7 +130,7 @@ const columns: GridColDef<Position>[] = [
       const isLong = params.row.is_long_term;
       return (
         <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
-          <Typography variant="body2" sx={{ fontSize: "0.8rem" }}>{days}d</Typography>
+          <Typography variant="body2" sx={{ fontSize: "0.8rem" }}>{formatHoldingPeriod(days)}</Typography>
           <Tooltip
             title={
               isLong
