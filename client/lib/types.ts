@@ -37,7 +37,7 @@ export interface TaxLot {
 }
 
 export interface Position {
-  position_id: string;
+  position_id?: string;
   symbol: string;
   quantity: number;
   avg_cost_basis: number;

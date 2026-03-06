@@ -142,23 +142,30 @@ def aggregate_positions(tax_lots: list[TaxLot]) -> list[Position]:
     """
     Aggregate tax lots into Position summaries grouped by symbol.
 
+    Stock lots are grouped by (symbol, asset_type). Option lots are grouped by
+    (symbol, asset_type, description) so that distinct contracts (different
+    strikes/expiries) for the same underlying ticker are kept separate.
+
     Args:
         tax_lots: List of computed tax lots.
 
     Returns:
-        List of Position objects, one per unique symbol.
+        List of Position objects, one per unique (symbol, asset_type[, contract]).
     """
-    # Key by (symbol, asset_type) to prevent mixing stock and option lots
-    # for the same underlying ticker (e.g. TSLA stock vs TSLA puts).
-    positions_map: dict[tuple[str, str], list[TaxLot]] = {}
+    # Key by (symbol, asset_type) for stocks, or (symbol, asset_type, description)
+    # for options so each distinct contract is a separate Position row.
+    positions_map: dict[tuple, list[TaxLot]] = {}
     for lot in tax_lots:
-        key = (lot.symbol, lot.asset_type.value)
+        if lot.asset_type == AssetType.OPTION:
+            key = (lot.symbol, lot.asset_type.value, lot.description)
+        else:
+            key = (lot.symbol, lot.asset_type.value, "")
         if key not in positions_map:
             positions_map[key] = []
         positions_map[key].append(lot)
 
     positions: list[Position] = []
-    for (symbol, _asset_type_str), lots in positions_map.items():
+    for (symbol, _asset_type_str, description), lots in positions_map.items():
         total_quantity = sum(lot.quantity for lot in lots)
         total_cost_basis = sum(lot.total_cost_basis for lot in lots)
         # For options, cost_basis is scaled ×100 (dollars per contract), but avg_cost
@@ -185,9 +192,16 @@ def aggregate_positions(tax_lots: list[TaxLot]) -> list[Position]:
         is_long_term = any(lot.is_long_term for lot in lots)
         has_wash_risk = any(lot.wash_sale_disallowed > 0 for lot in lots)
 
+        # Build a stable unique id: use description (contract details) for options
+        # so each strike/expiry combo gets its own DataGrid row.
+        if lots[0].asset_type == AssetType.OPTION and description:
+            position_id = f"{symbol}:{lots[0].asset_type.value}:{description}"
+        else:
+            position_id = f"{symbol}:{lots[0].asset_type.value}"
+
         positions.append(
             Position(
-                position_id=f"{symbol}:{lots[0].asset_type.value}",
+                position_id=position_id,
                 symbol=symbol,
                 quantity=total_quantity,
                 avg_cost_basis=round(avg_cost, 2),

@@ -765,13 +765,11 @@ class TestCloseLotsFifoEdgeCases:
             amount=1500,
             asset_type=AssetType.STOCK,
         )
-        unmatched_sells: list[str] = []
+        unmatched_sells: list[tuple[str, str]] = []
         realized: list = []
         _close_lots_fifo(open_lots, "AAPL", txn, unmatched_sells, realized)
         assert len(unmatched_sells) == 1
-        assert "AAPL" in unmatched_sells
-
-    def test_sell_exceeds_open_lots_warns(self):
+        assert ("AAPL", "no_lots") in unmatched_sells
         """Selling more shares than available in lots produces a warning."""
         lot = TaxLot(
             symbol="AAPL",
@@ -793,11 +791,11 @@ class TestCloseLotsFifoEdgeCases:
             amount=1500,
             asset_type=AssetType.STOCK,
         )
-        unmatched_sells: list[str] = []
+        unmatched_sells: list[tuple[str, str]] = []
         realized: list = []
         _close_lots_fifo(open_lots, "AAPL", txn, unmatched_sells, realized)
         assert len(unmatched_sells) == 1
-        assert "AAPL" in unmatched_sells
+        assert ("AAPL", "insufficient") in unmatched_sells
 
 
 class TestRemoveLotsFifoEdgeCases:
