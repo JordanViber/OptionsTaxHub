@@ -404,7 +404,6 @@ def _close_lots_fifo(
     open_lots: dict[str, list[TaxLot]],
     symbol: str,
     txn: Transaction,
-    warnings: list[str],
     unmatched_sells: list[str],
     realized: list[RealizedEvent],
 ) -> None:
@@ -502,8 +501,22 @@ def transactions_to_tax_lots(transactions: list[Transaction]) -> tuple[list[TaxL
     unmatched_sells: list[str] = []  # Collected per-sell; consolidated at end
     realized: list[RealizedEvent] = []
 
-    # Sort transactions by date
-    sorted_txns = sorted(transactions, key=lambda t: t.activity_date)
+    # Robinhood exports are newest-first. For transactions that share the same
+    # date, reverse the original CSV order within that day so FIFO sees the
+    # earlier same-day buys before later same-day sells. Otherwise a same-day
+    # round-trip can be processed as SELL -> BUY, leaving a phantom open lot.
+    sorted_txns = [
+        txn
+        for _, txn in sorted(
+            enumerate(transactions),
+            key=lambda item: (
+                item[1].activity_date,
+                item[1].process_date or item[1].activity_date,
+                item[1].settle_date or item[1].activity_date,
+                -item[0],
+            ),
+        )
+    ]
 
     # Track open lots per symbol (FIFO order)
     open_lots: dict[str, list[TaxLot]] = {}
@@ -515,13 +528,13 @@ def transactions_to_tax_lots(transactions: list[Transaction]) -> tuple[list[TaxL
             _add_lot(open_lots, symbol, txn)
 
         elif txn.trans_code in (TransCode.SELL, TransCode.STC):
-            _close_lots_fifo(open_lots, symbol, txn, warnings, unmatched_sells, realized)
+            _close_lots_fifo(open_lots, symbol, txn, unmatched_sells, realized)
 
         elif txn.trans_code == TransCode.BTC:
             # Buy to Close — closes a short option position opened by STO.
             # Previously missed: BTC was silently dropped, leaving STO lots open
             # forever and creating phantom positions in the Positions tab.
-            _close_lots_fifo(open_lots, symbol, txn, warnings, unmatched_sells, realized)
+            _close_lots_fifo(open_lots, symbol, txn, unmatched_sells, realized)
 
         elif txn.trans_code in (TransCode.OEXP, TransCode.OASGN):
             # Option expiration or assignment — close the lot and record realized P&L.
@@ -531,7 +544,7 @@ def transactions_to_tax_lots(transactions: list[Transaction]) -> tuple[list[TaxL
             #   pnl = cost_basis - 0 = full premium collected → realized gain ✓
             # Previously used _remove_lots_fifo which silently dropped the lot
             # without recording any P&L, understating realized gains/losses.
-            _close_lots_fifo(open_lots, symbol, txn, warnings, unmatched_sells, realized)
+            _close_lots_fifo(open_lots, symbol, txn, unmatched_sells, realized)
             if txn.trans_code == TransCode.OASGN:
                 warnings.append(
                     f"Option assignment (OASGN) detected for {symbol} on "

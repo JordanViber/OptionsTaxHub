@@ -257,6 +257,44 @@ class TestTransactionsToTaxLots:
         assert lots[0].quantity == 3
         assert lots[0].cost_basis_per_share == pytest.approx(120.0)
 
+    def test_same_day_sell_before_buy_csv_order_does_not_leave_phantom_lot(self):
+        from models import Transaction, TransCode, AssetType
+        txns = [
+            # Robinhood CSVs are exported newest-first, so a later same-day sell
+            # can appear before the earlier same-day buy in the raw file order.
+            Transaction(
+                activity_date=date(2024, 3, 21),
+                process_date=date(2024, 3, 21),
+                settle_date=date(2024, 3, 21),
+                instrument="RDDT",
+                description="Reddit, Inc.",
+                trans_code=TransCode.SELL,
+                quantity=50,
+                price=56.50,
+                amount=2824.97,
+                asset_type=AssetType.STOCK,
+            ),
+            Transaction(
+                activity_date=date(2024, 3, 21),
+                process_date=date(2024, 3, 21),
+                settle_date=date(2024, 3, 21),
+                instrument="RDDT",
+                description="Reddit, Inc.",
+                trans_code=TransCode.BUY,
+                quantity=50,
+                price=47.00,
+                amount=-2350.00,
+                asset_type=AssetType.STOCK,
+            ),
+        ]
+
+        lots, warnings, realized = transactions_to_tax_lots(txns)
+
+        assert lots == []
+        assert realized[0].symbol == "RDDT"
+        assert realized[0].pnl == pytest.approx(475.0)
+        assert warnings == []
+
 
 # --- Full parse_csv Integration ---
 
@@ -715,7 +753,6 @@ class TestCloseLotsFifoEdgeCases:
     def test_sell_with_no_open_lots_warns(self):
         """Selling when no open lots exist produces a warning."""
         open_lots: dict[str, list[TaxLot]] = {}
-        warnings: list[str] = []
         txn = Transaction(
             activity_date=date(2025, 6, 1),
             process_date=None,
@@ -730,7 +767,7 @@ class TestCloseLotsFifoEdgeCases:
         )
         unmatched_sells: list[str] = []
         realized: list = []
-        _close_lots_fifo(open_lots, "AAPL", txn, warnings, unmatched_sells, realized)
+        _close_lots_fifo(open_lots, "AAPL", txn, unmatched_sells, realized)
         assert len(unmatched_sells) == 1
         assert "AAPL" in unmatched_sells
 
@@ -744,7 +781,6 @@ class TestCloseLotsFifoEdgeCases:
             purchase_date=date(2025, 1, 1),
         )
         open_lots: dict[str, list[TaxLot]] = {"AAPL": [lot]}
-        warnings: list[str] = []
         txn = Transaction(
             activity_date=date(2025, 6, 1),
             process_date=None,
@@ -759,7 +795,7 @@ class TestCloseLotsFifoEdgeCases:
         )
         unmatched_sells: list[str] = []
         realized: list = []
-        _close_lots_fifo(open_lots, "AAPL", txn, warnings, unmatched_sells, realized)
+        _close_lots_fifo(open_lots, "AAPL", txn, unmatched_sells, realized)
         assert len(unmatched_sells) == 1
         assert "AAPL" in unmatched_sells
 
