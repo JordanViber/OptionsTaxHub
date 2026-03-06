@@ -107,10 +107,19 @@ def compute_lot_metrics(
 
     for lot in tax_lots:
         if lot.current_price is not None:
-            # Unrealized P&L
-            lot.unrealized_pnl = round(
-                (lot.current_price - lot.cost_basis_per_share) * lot.quantity, 2
-            )
+            # Unrealized P&L.
+            # For short positions (STO), the lot's cost_basis_per_share is the
+            # premium COLLECTED. Profit = collected - current_price (you want the
+            # option price to fall after you sold it). Sign is the opposite of a
+            # long position where profit = current_price - cost_basis.
+            if lot.is_short_position:
+                lot.unrealized_pnl = round(
+                    (lot.cost_basis_per_share - lot.current_price) * lot.quantity, 2
+                )
+            else:
+                lot.unrealized_pnl = round(
+                    (lot.current_price - lot.cost_basis_per_share) * lot.quantity, 2
+                )
             if lot.total_cost_basis > 0:
                 lot.unrealized_pnl_pct = round(
                     (lot.unrealized_pnl / lot.total_cost_basis) * 100, 2

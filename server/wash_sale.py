@@ -51,6 +51,9 @@ def _compute_sale_loss(
             continue
         matched = min(available, remaining_sell_qty)
         total_cost_basis += matched * buy.price
+        # Consume the quantity from this buy lot so subsequent sells in the
+        # same pass don't double-count the same shares for cost-basis purposes.
+        used_buy_quantities[buy_idx] = used_buy_quantities.get(buy_idx, 0) + matched
         remaining_sell_qty -= matched
 
     sale_proceeds = sell.quantity * sell.price

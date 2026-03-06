@@ -109,6 +109,7 @@ class TaxLot(BaseModel):
     holding_period_days: Optional[int] = None
     is_long_term: Optional[bool] = None
     wash_sale_disallowed: float = 0.0  # Amount of loss disallowed by wash-sale rule
+    is_short_position: bool = False  # True for STO (sold-to-open) short option lots
 
 
 class Position(BaseModel):

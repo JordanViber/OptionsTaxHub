@@ -787,7 +787,7 @@ class TestRemoveLotsFifoEdgeCases:
 
 class TestTransactionsToTaxLotsEdgeCases:
     def test_sto_creates_option_lot(self):
-        """STO (sell to open) creates an option lot."""
+        """STO (sell to open) creates an option lot marked as short position."""
         txns = [
             Transaction(
                 activity_date=date(2025, 1, 1),
@@ -805,6 +805,89 @@ class TestTransactionsToTaxLotsEdgeCases:
         lots, _, _ = transactions_to_tax_lots(txns)
         assert len(lots) == 1
         assert lots[0].asset_type == AssetType.OPTION
+        assert lots[0].is_short_position is True  # Bug fix: STO must be marked short
+
+    def test_btc_closes_sto_lot(self):
+        """BTC (buy to close) must close the STO lot — not leave it open as phantom position."""
+        txns = [
+            Transaction(
+                activity_date=date(2025, 1, 10),
+                process_date=None, settle_date=None,
+                instrument="AAPL", description="AAPL 150 Put",
+                trans_code=TransCode.STO,
+                quantity=2, price=5.00, amount=1000.0,
+                asset_type=AssetType.OPTION,
+            ),
+            Transaction(
+                activity_date=date(2025, 2, 1),
+                process_date=None, settle_date=None,
+                instrument="AAPL", description="AAPL 150 Put",
+                trans_code=TransCode.BTC,
+                quantity=2, price=2.00, amount=-400.0,
+                asset_type=AssetType.OPTION,
+            ),
+        ]
+        lots, warnings, realized = transactions_to_tax_lots(txns)
+        # After BTC, the STO lot is closed — no phantom open positions
+        assert len(lots) == 0
+        # Realized gain: collected $5 premium, bought back at $2 → $3/share × 2 = $6 gain
+        assert len(realized) == 1
+        assert realized[0].pnl == pytest.approx(6.0)
+
+    def test_oexp_long_option_records_realized_loss(self):
+        """OEXP for a long option (BTO) expiring worthless creates a realized loss."""
+        txns = [
+            Transaction(
+                activity_date=date(2025, 1, 10),
+                process_date=None, settle_date=None,
+                instrument="TSLA", description="TSLA Call",
+                trans_code=TransCode.BTO,
+                quantity=3, price=4.00, amount=-1200.0,
+                asset_type=AssetType.OPTION,
+            ),
+            Transaction(
+                activity_date=date(2025, 2, 21),
+                process_date=None, settle_date=None,
+                instrument="TSLA", description="TSLA Call expired",
+                trans_code=TransCode.OEXP,
+                quantity=3, price=0.0, amount=0.0,
+                asset_type=AssetType.OPTION,
+            ),
+        ]
+        lots, _, realized = transactions_to_tax_lots(txns)
+        # Option expired — no open lots remain
+        assert len(lots) == 0
+        # Realized loss = full premium paid = 3 × $4 = $12
+        assert len(realized) == 1
+        assert realized[0].pnl == pytest.approx(-12.0)
+        assert realized[0].is_long_term is False
+
+    def test_oexp_short_option_records_realized_gain(self):
+        """OEXP for a short option (STO) expiring worthless creates a realized gain."""
+        txns = [
+            Transaction(
+                activity_date=date(2025, 1, 10),
+                process_date=None, settle_date=None,
+                instrument="MSFT", description="MSFT Put",
+                trans_code=TransCode.STO,
+                quantity=5, price=3.00, amount=1500.0,
+                asset_type=AssetType.OPTION,
+            ),
+            Transaction(
+                activity_date=date(2025, 2, 21),
+                process_date=None, settle_date=None,
+                instrument="MSFT", description="MSFT Put expired",
+                trans_code=TransCode.OEXP,
+                quantity=5, price=0.0, amount=0.0,
+                asset_type=AssetType.OPTION,
+            ),
+        ]
+        lots, _, realized = transactions_to_tax_lots(txns)
+        # Short option expired worthless — no open lots remain
+        assert len(lots) == 0
+        # Realized gain = full premium received = 5 × $3 = $15
+        assert len(realized) == 1
+        assert realized[0].pnl == pytest.approx(15.0)
 
     def test_spr_oca_informational_no_lots(self):
         """SPR/OCA (splits, corporate actions) are informational only."""

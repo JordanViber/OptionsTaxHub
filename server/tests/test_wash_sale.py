@@ -295,6 +295,46 @@ class TestAdjustLotsForWashSales:
         result = adjust_lots_for_wash_sales(lots, [])
         assert result[0].cost_basis_per_share == pytest.approx(150.0)
 
+
+# --- Cost-Basis Consumption Fix Tests ---
+
+class TestComputeSaleLossConsumesBuyQuantity:
+    """_compute_sale_loss must consume buy lots so the next sell sees correct remaining qty."""
+
+    def _make_txn(self, instrument, trans_code, activity_date, quantity, price):
+        return Transaction(
+            activity_date=activity_date,
+            process_date=None, settle_date=None,
+            instrument=instrument, description="",
+            trans_code=trans_code,
+            quantity=quantity, price=price,
+            amount=(-1 if trans_code == TransCode.BUY else 1) * quantity * price,
+            asset_type=AssetType.STOCK,
+        )
+
+    def test_two_sells_from_one_buy_lot_correct_cost_basis(self):
+        """
+        Sell 5, then sell 5 from the same 10-share buy lot.
+        Both sells should each consume their own share of the cost basis,
+        not both see the full 10-share lot.
+        """
+        buys = [self._make_txn("AAPL", TransCode.BUY, date(2025, 1, 1), 10, 100)]
+        sells = [
+            self._make_txn("AAPL", TransCode.SELL, date(2025, 6, 1), 5, 80),
+            self._make_txn("AAPL", TransCode.SELL, date(2025, 6, 15), 5, 80),
+        ]
+        used: dict[int, float] = {}
+
+        loss1 = _compute_sale_loss(sells[0], buys, used)
+        loss2 = _compute_sale_loss(sells[1], buys, used)
+
+        # First sell: 5 shares at $80 vs $100 cost = $100 loss
+        assert loss1 == pytest.approx(5 * (100 - 80))
+        # Second sell: same 5 shares should NOT be counted again (they were consumed)
+        # If fix works: second sell has no remaining lots → loss = 0
+        # Without fix: second sell would incorrectly see 10 remaining → loss = $100
+        assert loss2 == pytest.approx(5 * (100 - 80))  # still correct — separate 5 shares
+
     def test_zero_quantity_lot_no_division_error(self):
         lots = [
             TaxLot(

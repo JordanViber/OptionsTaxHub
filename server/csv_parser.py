@@ -377,6 +377,7 @@ def _add_lot(
     symbol: str,
     txn: Transaction,
     asset_type: AssetType | None = None,
+    is_short_position: bool = False,
 ) -> None:
     """Create and append a new tax lot for a purchase transaction."""
     lot = TaxLot(
@@ -386,6 +387,7 @@ def _add_lot(
         total_cost_basis=txn.price * txn.quantity,
         purchase_date=txn.activity_date,
         asset_type=asset_type or txn.asset_type,
+        is_short_position=is_short_position,
     )
     if symbol not in open_lots:
         open_lots[symbol] = []
@@ -424,7 +426,14 @@ def _close_lots_fifo(
 
         cost_basis_closed = oldest_lot.cost_basis_per_share * qty_to_close
         proceeds_closed = sale_price * qty_to_close
-        pnl = proceeds_closed - cost_basis_closed
+        # For short positions (STO lots), P&L is inverted: you collected the
+        # premium (cost_basis) and pay to close (proceeds), so profit =
+        # premium_collected - buyback_cost, which is -(proceeds - cost_basis).
+        # For OEXP at price=0: short lot gain = full premium collected ✓
+        if oldest_lot.is_short_position:
+            pnl = cost_basis_closed - proceeds_closed
+        else:
+            pnl = proceeds_closed - cost_basis_closed
 
         # Holding period — from purchase date to sale date
         holding_days = (txn.activity_date - oldest_lot.purchase_date).days
@@ -487,13 +496,33 @@ def transactions_to_tax_lots(transactions: list[Transaction]) -> tuple[list[TaxL
         elif txn.trans_code in (TransCode.SELL, TransCode.STC):
             _close_lots_fifo(open_lots, symbol, txn, warnings, unmatched_sells, realized)
 
+        elif txn.trans_code == TransCode.BTC:
+            # Buy to Close — closes a short option position opened by STO.
+            # Previously missed: BTC was silently dropped, leaving STO lots open
+            # forever and creating phantom positions in the Positions tab.
+            _close_lots_fifo(open_lots, symbol, txn, warnings, unmatched_sells, realized)
+
         elif txn.trans_code in (TransCode.OEXP, TransCode.OASGN):
-            # Option expiration or assignment — remove the lot
-            _remove_lots_fifo(open_lots, symbol, txn.quantity)
+            # Option expiration or assignment — close the lot and record realized P&L.
+            # For long options (BTO lots) expiring worthless: price=0, so
+            #   pnl = 0 - cost_basis = -(full premium paid)  → realized loss ✓
+            # For short options (STO lots) expiring worthless: price=0, so
+            #   pnl = cost_basis - 0 = full premium collected → realized gain ✓
+            # Previously used _remove_lots_fifo which silently dropped the lot
+            # without recording any P&L, understating realized gains/losses.
+            _close_lots_fifo(open_lots, symbol, txn, warnings, unmatched_sells, realized)
+            if txn.trans_code == TransCode.OASGN:
+                warnings.append(
+                    f"Option assignment (OASGN) detected for {symbol} on "
+                    f"{txn.activity_date.strftime('%m/%d/%Y')} — the option P&L has "
+                    f"been recorded, but the resulting stock position change from "
+                    f"assignment/exercise may require manual verification."
+                )
 
         elif txn.trans_code == TransCode.STO:
-            # Sell to Open — creates a short option position
-            _add_lot(open_lots, symbol, txn, asset_type=AssetType.OPTION)
+            # Sell to Open — creates a short option position (credit received).
+            # Mark as short so P&L direction is computed correctly.
+            _add_lot(open_lots, symbol, txn, asset_type=AssetType.OPTION, is_short_position=True)
 
         elif txn.trans_code in (TransCode.SPR, TransCode.OCA):
             # Stock split / reverse split / corporate action.
