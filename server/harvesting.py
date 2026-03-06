@@ -235,14 +235,6 @@ def _compute_realized_gains(transactions: list[Transaction], tax_year: int | Non
         key=lambda t: t.activity_date,
     )
 
-    # Filter sells to only those in the requested tax year.
-    # We still use ALL buys for FIFO cost-basis matching (the cost of a 2025 sale
-    # can be traced back to a buy made years earlier).
-    if tax_year is not None:
-        sells = [s for s in all_sells if s.activity_date.year == tax_year]
-    else:
-        sells = all_sells
-
     buy_remaining: dict[int, float] = {i: b.quantity for i, b in enumerate(buys)}
     realized_gains = 0.0
 
@@ -254,7 +246,7 @@ def _compute_realized_gains(transactions: list[Transaction], tax_year: int | Non
         proceeds = abs(sell.amount) if sell.amount < 0 else sell.quantity * sell.price
         pnl = proceeds - cost_basis
         # Only count gains from the target year toward the harvest target
-        if sell in sells and pnl > 0:
+        if (tax_year is None or sell.activity_date.year == tax_year) and pnl > 0:
             realized_gains += pnl
 
     return round(realized_gains, 2)
