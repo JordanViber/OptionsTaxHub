@@ -385,6 +385,7 @@ def _add_lot(
     cost_multiplier = 100 if resolved_type == AssetType.OPTION else 1
     lot = TaxLot(
         symbol=symbol,
+        description=txn.description,
         quantity=txn.quantity,
         cost_basis_per_share=txn.price,
         total_cost_basis=txn.price * txn.quantity * cost_multiplier,
@@ -404,14 +405,15 @@ def _close_lots_fifo(
     open_lots: dict[str, list[TaxLot]],
     symbol: str,
     txn: Transaction,
-    unmatched_sells: list[str],
+    unmatched_sells: list[tuple[str, str]],
     realized: list[RealizedEvent],
 ) -> None:
     """Close lots in FIFO order for a sell transaction.
 
-    Unmatched sells (no open lots, or floating-point residuals) are collected
-    in ``unmatched_sells`` rather than ``warnings`` so the caller can aggregate
-    them into a single consolidated message instead of flooding the output.
+    Unmatched sells (no open lots, asset-type mismatches, or insufficient quantity)
+    are collected in ``unmatched_sells`` as ``(symbol, reason)`` tuples rather than
+    ``warnings`` so the caller can aggregate them into a single consolidated message.
+    Possible reasons: "no_lots", "type_mismatch", "insufficient".
 
     Realized gain/loss events are appended to ``realized`` for each lot closed.
     """
@@ -421,13 +423,14 @@ def _close_lots_fifo(
     sale_price = txn.price  # already absolute value from parse_robinhood_amount
 
     if symbol not in open_lots or not open_lots[symbol]:
-        unmatched_sells.append(symbol)
+        unmatched_sells.append((symbol, "no_lots"))
         return
 
     # Only close lots that match the transaction's asset type.
     # This prevents a stock SELL from accidentally consuming an option lot
     # (and vice versa) when both share the same underlying ticker symbol.
     close_asset_type = txn.asset_type
+    matched_any = False
 
     while remaining_to_sell > 0:
         # Find the earliest (FIFO) open lot with the matching asset type
@@ -438,6 +441,7 @@ def _close_lots_fifo(
         if matching_idx is None:
             break
 
+        matched_any = True
         oldest_lot = open_lots[symbol][matching_idx]
         qty_to_close = min(oldest_lot.quantity, remaining_to_sell)
         qty_to_close = round(qty_to_close, 6)
@@ -481,7 +485,8 @@ def _close_lots_fifo(
 
     # Treat sub-cent floating-point residuals as fully closed
     if remaining_to_sell > 0.00001:
-        unmatched_sells.append(symbol)
+        reason = "insufficient" if matched_any else "type_mismatch"
+        unmatched_sells.append((symbol, reason))
 
 
 def transactions_to_tax_lots(transactions: list[Transaction]) -> tuple[list[TaxLot], list[str], list[RealizedEvent]]:
@@ -498,7 +503,7 @@ def transactions_to_tax_lots(transactions: list[Transaction]) -> tuple[list[TaxL
         Tuple of (list of open TaxLot positions, list of warnings, list of realized events).
     """
     warnings: list[str] = []
-    unmatched_sells: list[str] = []  # Collected per-sell; consolidated at end
+    unmatched_sells: list[tuple[str, str]] = []  # (symbol, reason) tuples; consolidated at end
     realized: list[RealizedEvent] = []
 
     # Robinhood exports are newest-first. For transactions that share the same
@@ -576,17 +581,41 @@ def transactions_to_tax_lots(transactions: list[Transaction]) -> tuple[list[TaxL
                     f"post-action quantities."
                 )
 
-    # Consolidated warning for sells that had no open lots
+    # Consolidated warnings for sells that could not be matched to open lots,
+    # grouped by reason so each message is accurate and actionable.
     if unmatched_sells:
-        from collections import Counter
-        counts = Counter(unmatched_sells)
-        tickers = ", ".join(sorted(counts.keys()))
-        total = sum(counts.values())
-        warnings.append(
-            f"{total} sell transaction(s) across {len(counts)} ticker(s) ({tickers}) "
-            f"had no matching open lots — likely short sales or trades before the CSV "
-            f"start date. These are excluded from gain/loss calculations."
-        )
+        from collections import Counter, defaultdict
+        by_reason: dict[str, list[str]] = defaultdict(list)
+        for sym, reason in unmatched_sells:
+            by_reason[reason].append(sym)
+
+        if by_reason["no_lots"]:
+            counts = Counter(by_reason["no_lots"])
+            tickers = ", ".join(sorted(counts.keys()))
+            total = sum(counts.values())
+            warnings.append(
+                f"{total} sell transaction(s) across {len(counts)} ticker(s) ({tickers}) "
+                f"had no open lots at all — likely trades before the CSV start date or "
+                f"short sales. These are excluded from gain/loss calculations."
+            )
+        if by_reason["type_mismatch"]:
+            counts = Counter(by_reason["type_mismatch"])
+            tickers = ", ".join(sorted(counts.keys()))
+            total = sum(counts.values())
+            warnings.append(
+                f"{total} sell transaction(s) across {len(counts)} ticker(s) ({tickers}) "
+                f"had open lots but none matched the required asset type (stock vs option). "
+                f"These sells are excluded from gain/loss calculations."
+            )
+        if by_reason["insufficient"]:
+            counts = Counter(by_reason["insufficient"])
+            tickers = ", ".join(sorted(counts.keys()))
+            total = sum(counts.values())
+            warnings.append(
+                f"{total} sell transaction(s) across {len(counts)} ticker(s) ({tickers}) "
+                f"exceeded the available open lot quantity. The excess shares are excluded "
+                f"from gain/loss calculations."
+            )
 
     # Flatten remaining open lots, dropping near-zero float residuals
     all_open_lots = []

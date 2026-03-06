@@ -1,8 +1,8 @@
 # Dashboard UX & Results Improvement Plan
 
-Inspected 2025 tax year analysis of a Robinhood CSV export (Sep 8, 2023 – Mar 5, 2026) on production at `optionstaxhub.com/dashboard` on March 5, 2026.
+Inspected a sample 2025 tax year analysis of a brokerage CSV export on a production-like environment on March 5, 2026.
 
-**Analysis produced:** $47,173 portfolio, 37 positions, $16,513 unrealized P&L (+48.8%), $3,088 harvestable losses, 347 wash-sale warnings, 15 harvesting suggestions.
+**Example analysis output (synthetic test data):** [portfolio value], [number of positions], [unrealized P&L], [harvestable losses], [wash-sale warnings], [harvesting suggestions].
 
 ---
 

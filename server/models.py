@@ -96,6 +96,7 @@ class TaxLot(BaseModel):
     """
 
     symbol: str
+    description: str = ""  # Full contract description (e.g. "TSLA Call 1/17 $250")
     quantity: float = Field(..., ge=0)
     cost_basis_per_share: float = Field(..., ge=0)
     total_cost_basis: float = Field(..., ge=0)
