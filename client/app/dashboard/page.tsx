@@ -688,9 +688,7 @@ export default function DashboardPage() {
           {error && (
             <Alert severity="error" icon={<ErrorIcon />}>
               <AlertTitle>Analysis Failed</AlertTitle>
-              <Typography variant="caption">
-                {analysisErrorMessage}
-              </Typography>
+              <Typography variant="caption">{analysisErrorMessage}</Typography>
             </Alert>
           )}
 
