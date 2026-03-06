@@ -441,7 +441,7 @@ def test_analyze_portfolio_success(monkeypatch):
     ]
     positions = [
         Position(
-            symbol="AAPL", quantity=10, avg_cost_basis=150.0,
+            position_id="AAPL:stock", symbol="AAPL", quantity=10, avg_cost_basis=150.0,
             total_cost_basis=1500.0, current_price=145.0, market_value=1450.0,
             unrealized_pnl=-50.0, unrealized_pnl_pct=-3.33,
         ),
@@ -500,7 +500,7 @@ def test_analyze_portfolio_invalid_filing_status(monkeypatch):
     ]
     positions = [
         Position(
-            symbol="TSLA", quantity=2, avg_cost_basis=200.0,
+            position_id="TSLA:stock", symbol="TSLA", quantity=2, avg_cost_basis=200.0,
             total_cost_basis=400.0, current_price=210.0, market_value=420.0,
         ),
     ]
@@ -539,7 +539,7 @@ def test_analyze_portfolio_saves_history(monkeypatch):
     ]
     positions = [
         Position(
-            symbol="NVDA", quantity=3, avg_cost_basis=400.0,
+            position_id="NVDA:stock", symbol="NVDA", quantity=3, avg_cost_basis=400.0,
             total_cost_basis=1200.0, current_price=450.0, market_value=1350.0,
         ),
     ]
@@ -587,7 +587,7 @@ def test_analyze_portfolio_ai_failure_adds_warning(monkeypatch):
     ]
     positions = [
         Position(
-            symbol="AMD", quantity=5, avg_cost_basis=100.0,
+            position_id="AMD:stock", symbol="AMD", quantity=5, avg_cost_basis=100.0,
             total_cost_basis=500.0, current_price=95.0, market_value=475.0,
         ),
     ]
@@ -649,7 +649,7 @@ def test_analyze_portfolio_with_wash_sales(monkeypatch):
     ]
     positions = [
         Position(
-            symbol="AAPL", quantity=10, avg_cost_basis=155.0,
+            position_id="AAPL:stock", symbol="AAPL", quantity=10, avg_cost_basis=155.0,
             total_cost_basis=1550.0, current_price=145.0, market_value=1450.0,
             wash_sale_risk=True,
         ),

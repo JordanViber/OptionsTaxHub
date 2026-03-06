@@ -120,6 +120,7 @@ class Position(BaseModel):
     for dashboard display.
     """
 
+    position_id: str  # Stable unique key: "{symbol}:{asset_type}" for DataGrid row IDs
     symbol: str
     quantity: float
     avg_cost_basis: float
