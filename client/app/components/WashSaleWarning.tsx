@@ -78,8 +78,7 @@ export default function WashSaleWarning({
             minimumFractionDigits: 2,
             maximumFractionDigits: 2,
           })}
-        </strong>{" "}
-        . The IRS wash-sale rule disallows loss deductions when you repurchase
+        </strong>. The IRS wash-sale rule disallows loss deductions when you repurchase
         substantially identical securities within 30 days of selling at a loss.
         The disallowed amount is added to the cost basis of the replacement
         shares. Expand a ticker below for details.

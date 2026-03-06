@@ -786,7 +786,7 @@ export default function DashboardPage() {
                     variant="outlined"
                     sx={{ border: 0 }}
                   >
-                    {displayedAnalysis.warnings.map((w: string) => (
+                    {[...new Set<string>(displayedAnalysis.warnings)].map((w: string) => (
                       <Typography
                         key={w}
                         variant="caption"
