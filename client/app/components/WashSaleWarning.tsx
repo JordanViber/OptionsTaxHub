@@ -64,7 +64,7 @@ export default function WashSaleWarning({
     >
       <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>
         Wash-Sale Rule Violations Detected ({flags.length} events across{" "}
-        {tickers.length} ticker{tickers.length !== 1 ? "s" : ""})
+        {tickers.length} ticker{tickers.length === 1 ? "" : "s"})
       </Typography>
       <Typography
         variant="caption"
@@ -78,7 +78,7 @@ export default function WashSaleWarning({
             minimumFractionDigits: 2,
             maximumFractionDigits: 2,
           })}
-        </strong>
+        </strong>{" "}
         . The IRS wash-sale rule disallows loss deductions when you repurchase
         substantially identical securities within 30 days of selling at a loss.
         The disallowed amount is added to the cost basis of the replacement
@@ -139,7 +139,7 @@ export default function WashSaleWarning({
                     sx={{ ml: "auto" }}
                   >
                     {group.flags.length} event
-                    {group.flags.length !== 1 ? "s" : ""}
+                    {group.flags.length === 1 ? "" : "s"}
                   </Typography>
                 </Box>
               </AccordionSummary>

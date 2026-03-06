@@ -389,6 +389,17 @@ export default function DashboardPage() {
   // displayedAnalysis is computed above (near sessionStorage effects)
   const hasResults = !!displayedAnalysis;
 
+  // Pre-compute error message using if/else to avoid nested ternary (SonarQube S3358)
+  let analysisErrorMessage = "An error occurred";
+  if (error instanceof Error) {
+    if (/failed to fetch|network|econnrefused/i.test(error.message)) {
+      analysisErrorMessage =
+        "Could not reach the backend server. Make sure it is running on port 8001 (npm run dev:server).";
+    } else {
+      analysisErrorMessage = error.message;
+    }
+  }
+
   return (
     <>
       <ServiceWorkerRegistration />
@@ -678,11 +689,7 @@ export default function DashboardPage() {
             <Alert severity="error" icon={<ErrorIcon />}>
               <AlertTitle>Analysis Failed</AlertTitle>
               <Typography variant="caption">
-                {error instanceof Error
-                  ? /failed to fetch|network|econnrefused/i.test(error.message)
-                    ? "Could not reach the backend server. Make sure it is running on port 8001 (npm run dev:server)."
-                    : error.message
-                  : "An error occurred"}
+                {analysisErrorMessage}
               </Typography>
             </Alert>
           )}
@@ -699,7 +706,7 @@ export default function DashboardPage() {
                   flexWrap: "wrap",
                 }}
               >
-                {displayedAnalysis.tax_profile?.tax_year && (
+                {!!displayedAnalysis.tax_profile?.tax_year && (
                   <Chip
                     icon={<CalendarIcon />}
                     label={`Tax Year: ${displayedAnalysis.tax_profile.tax_year}`}
@@ -769,7 +776,7 @@ export default function DashboardPage() {
                     sx={{ fontWeight: 500 }}
                   >
                     ⚠ {displayedAnalysis.warnings.length} parsing note
-                    {displayedAnalysis.warnings.length !== 1 ? "s" : ""} — click
+                    {displayedAnalysis.warnings.length === 1 ? "" : "s"} — click
                     to expand
                   </Typography>
                 </AccordionSummary>
@@ -779,9 +786,9 @@ export default function DashboardPage() {
                     variant="outlined"
                     sx={{ border: 0 }}
                   >
-                    {displayedAnalysis.warnings.map((w: string, i: number) => (
+                    {displayedAnalysis.warnings.map((w: string) => (
                       <Typography
-                        key={i}
+                        key={w}
                         variant="caption"
                         sx={{ display: "block", mb: 0.25 }}
                       >
