@@ -505,6 +505,13 @@ def transactions_to_tax_lots(transactions: list[Transaction]) -> tuple[list[TaxL
                     f"adjusted. Reported positions for {symbol} may be inaccurate. Verify against "
                     f"your brokerage account and re-run after the CSV reflects post-split quantities."
                 )
+            elif txn.trans_code == TransCode.OCA:
+                warnings.append(
+                    f"Corporate action (OCA) detected for {symbol} — lot quantities are NOT "
+                    f"automatically adjusted. Reported positions for {symbol} may be inaccurate. "
+                    f"Verify against your brokerage account and re-run after the CSV reflects any "
+                    f"post-action quantities."
+                )
 
     # Consolidated warning for sells that had no open lots
     if unmatched_sells:

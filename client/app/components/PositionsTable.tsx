@@ -54,8 +54,7 @@ function PnlCell({
       </Typography>
       {pct != null && (
         <Typography variant="caption" sx={{ color, fontSize: "0.7rem" }}>
-          ({sign}
-          {pct.toFixed(1)}%)
+          {`(${sign}${pct.toFixed(1)}%)`}
         </Typography>
       )}
     </Box>
