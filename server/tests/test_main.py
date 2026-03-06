@@ -489,7 +489,7 @@ def test_analyze_portfolio_empty_csv(monkeypatch):
 def test_analyze_portfolio_invalid_filing_status(monkeypatch):
     """POST /api/portfolio/analyze falls back to SINGLE for invalid filing status."""
     from datetime import date
-    from models import TaxLot, Position, PortfolioSummary, Transaction, TransCode
+    from models import TaxLot, Position, PortfolioSummary
 
     lots = [
         TaxLot(
