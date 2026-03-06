@@ -69,15 +69,68 @@ import {
 } from "@/lib/api";
 import { useAuth } from "@/app/context/auth";
 import { useQueryClient } from "@tanstack/react-query";
-import type { PortfolioAnalysis, AnalysisHistoryItem } from "@/lib/types";
+import type {
+  PortfolioAnalysis,
+  AnalysisHistoryItem,
+  Position,
+} from "@/lib/types";
 
 export const dynamic = "force-dynamic";
+
+function buildPositionId(position: Position, index: number): string {
+  return (
+    position.position_id ??
+    [
+      position.symbol,
+      position.asset_type,
+      position.earliest_purchase_date ?? "unknown",
+      index,
+    ].join(":")
+  );
+}
+
+function normalizeAnalysis(analysis: PortfolioAnalysis): PortfolioAnalysis {
+  return {
+    ...analysis,
+    positions: analysis.positions.map((position, index) => ({
+      ...position,
+      position_id: buildPositionId(position, index),
+    })),
+  };
+}
+
+function getDisplayedAnalysis(
+  loadedAnalysis: PortfolioAnalysis | null,
+  analysis: PortfolioAnalysis | undefined,
+): PortfolioAnalysis | null {
+  if (loadedAnalysis) {
+    return normalizeAnalysis(loadedAnalysis);
+  }
+
+  if (analysis) {
+    return normalizeAnalysis(analysis);
+  }
+
+  return null;
+}
+
+function getAnalysisErrorMessage(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return "An error occurred";
+  }
+
+  if (/failed to fetch|network|econnrefused/i.test(error.message)) {
+    return "Could not reach the backend server. Make sure it is running on port 8001 (npm run dev:server).";
+  }
+
+  return error.message;
+}
 
 // Helper function: restore analysis from session storage
 function restoreAnalysisFromStorage(): PortfolioAnalysis | null {
   try {
     const saved = sessionStorage.getItem("optionstaxhub-analysis");
-    return saved ? (JSON.parse(saved) as PortfolioAnalysis) : null;
+    return saved ? normalizeAnalysis(JSON.parse(saved) as PortfolioAnalysis) : null;
   } catch {
     return null;
   }
@@ -235,7 +288,7 @@ export default function DashboardPage() {
   }, []);
 
   // --- State persistence: save displayedAnalysis whenever it changes ---
-  const displayedAnalysis = loadedAnalysis || analysis;
+  const displayedAnalysis = getDisplayedAnalysis(loadedAnalysis, analysis);
   useEffect(() => {
     if (displayedAnalysis) {
       saveAnalysisToStorage(displayedAnalysis);
@@ -314,7 +367,7 @@ export default function DashboardPage() {
     try {
       const record = await fetchAnalysisById(itemId);
       if (record?.result) {
-        setLoadedAnalysis(record.result);
+        setLoadedAnalysis(normalizeAnalysis(record.result));
         setActiveTab(0);
         setSnackbar({
           message: `Loaded saved analysis: ${filename}`,
@@ -390,15 +443,7 @@ export default function DashboardPage() {
   const hasResults = !!displayedAnalysis;
 
   // Pre-compute error message using if/else to avoid nested ternary (SonarQube S3358)
-  let analysisErrorMessage = "An error occurred";
-  if (error instanceof Error) {
-    if (/failed to fetch|network|econnrefused/i.test(error.message)) {
-      analysisErrorMessage =
-        "Could not reach the backend server. Make sure it is running on port 8001 (npm run dev:server).";
-    } else {
-      analysisErrorMessage = error.message;
-    }
-  }
+  const analysisErrorMessage = getAnalysisErrorMessage(error);
 
   return (
     <>
@@ -687,8 +732,7 @@ export default function DashboardPage() {
           {/* Error Alert */}
           {error && (
             <Alert severity="error" icon={<ErrorIcon />}>
-              <AlertTitle>Analysis Failed</AlertTitle>
-              <Typography variant="caption">{analysisErrorMessage}</Typography>
+              <AlertTitle>Analysis Failed</AlertTitle>              <Typography variant="caption">{analysisErrorMessage}</Typography>
             </Alert>
           )}
 
