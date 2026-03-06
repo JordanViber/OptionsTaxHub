@@ -69,3 +69,6 @@ Thumbs.db
 # Build outputs
 dist/
 build/
+
+# Personal financial data exports (Robinhood CSV)
+docs/*.csv

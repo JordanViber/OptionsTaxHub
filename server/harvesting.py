@@ -164,7 +164,9 @@ def aggregate_positions(tax_lots: list[TaxLot]) -> list[Position]:
         avg_cost = total_cost_basis / total_quantity if total_quantity > 0 else 0
 
         current_price = lots[0].current_price  # All lots for same symbol have same price
-        market_value = current_price * total_quantity if current_price else None
+        # Options: each contract controls 100 shares; scale market value accordingly.
+        cost_multiplier = 100 if lots[0].asset_type == AssetType.OPTION else 1
+        market_value = current_price * total_quantity * cost_multiplier if current_price else None
         unrealized_pnl = sum(lot.unrealized_pnl or 0 for lot in lots)
         unrealized_pnl_pct = (
             (unrealized_pnl / total_cost_basis * 100) if total_cost_basis > 0 else 0
