@@ -273,6 +273,32 @@ class TestComputeRealizedGains:
         gains = _compute_realized_gains(txns)
         assert gains == pytest.approx(200.0)
 
+    def test_tax_year_filter_excludes_other_years(self):
+        """Gains from prior tax years must not inflate the 2025 harvest target."""
+        txns = [
+            # 2024 gain — should be excluded when tax_year=2025
+            _txn("AAPL", TransCode.BUY, date(2023, 1, 1), 10, 100.0),
+            _txn("AAPL", TransCode.SELL, date(2024, 6, 1), 10, 150.0),  # +500 in 2024
+            # 2025 gain — should be included
+            _txn("MSFT", TransCode.BUY, date(2024, 1, 1), 5, 200.0),
+            _txn("MSFT", TransCode.SELL, date(2025, 3, 1), 5, 240.0),  # +200 in 2025
+        ]
+        gains_2025 = _compute_realized_gains(txns, tax_year=2025)
+        # Only the 2025 MSFT gain counts
+        assert gains_2025 == pytest.approx(200.0)
+
+    def test_tax_year_filter_none_includes_all_years(self):
+        """When no tax_year is specified, gains from all years are counted."""
+        txns = [
+            _txn("AAPL", TransCode.BUY, date(2023, 1, 1), 10, 100.0),
+            _txn("AAPL", TransCode.SELL, date(2024, 6, 1), 10, 150.0),  # +500 in 2024
+            _txn("MSFT", TransCode.BUY, date(2024, 1, 1), 5, 200.0),
+            _txn("MSFT", TransCode.SELL, date(2025, 3, 1), 5, 240.0),  # +200 in 2025
+        ]
+        gains_all = _compute_realized_gains(txns, tax_year=None)
+        # Both gains counted: 500 + 200 = 700
+        assert gains_all == pytest.approx(700.0)
+
 
 # --- generate_suggestions ---
 

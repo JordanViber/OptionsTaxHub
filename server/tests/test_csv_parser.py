@@ -130,7 +130,7 @@ class TestParseRobinhoodCsv:
         transactions, errors = parse_robinhood_csv(self._make_df(rows))
         assert len(transactions) == 0
         assert len(errors) == 1
-        assert "Unknown Trans Code" in errors[0]
+        assert "Unrecognized Trans Code" in errors[0]
 
     def test_options_detection(self):
         rows = [{
@@ -606,7 +606,7 @@ class TestParseRobinhoodRowEdgeCases:
         txn, err = _parse_robinhood_row(row, 1)
         assert txn is None
         assert err is not None
-        assert "Unknown Trans Code" in err
+        assert "Unrecognized Trans Code" in err
 
     def test_nan_description_cleaned(self):
         """'nan' description is cleaned to empty string."""
