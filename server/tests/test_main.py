@@ -452,7 +452,7 @@ def test_analyze_portfolio_success(monkeypatch):
         positions_count=1, lots_with_losses=1,
     )
 
-    monkeypatch.setattr("main.parse_csv", lambda _: (lots, [], []))
+    monkeypatch.setattr("main.parse_csv", lambda _: (lots, [], [], []))
     monkeypatch.setattr("main.fetch_current_prices", lambda s, fb=None: ({"AAPL": 145.0}, []))
     monkeypatch.setattr("main.compute_lot_metrics", lambda l: l)
     monkeypatch.setattr("main.detect_wash_sales", lambda t: [])
@@ -477,7 +477,7 @@ def test_analyze_portfolio_success(monkeypatch):
 
 def test_analyze_portfolio_empty_csv(monkeypatch):
     """POST /api/portfolio/analyze returns 400 if CSV has no parseable data."""
-    monkeypatch.setattr("main.parse_csv", lambda _: ([], [], ["No valid rows"]))
+    monkeypatch.setattr("main.parse_csv", lambda _: ([], [], ["No valid rows"], []))
 
     response = client.post("/api/portfolio/analyze", files=_make_csv("bad,csv\n"))
     assert response.status_code == 400
@@ -506,7 +506,7 @@ def test_analyze_portfolio_invalid_filing_status(monkeypatch):
     ]
     summary = PortfolioSummary(positions_count=1)
 
-    monkeypatch.setattr("main.parse_csv", lambda _: (lots, [], []))
+    monkeypatch.setattr("main.parse_csv", lambda _: (lots, [], [], []))
     monkeypatch.setattr("main.fetch_current_prices", lambda s, fb=None: ({}, []))
     monkeypatch.setattr("main.compute_lot_metrics", lambda l: l)
     monkeypatch.setattr("main.detect_wash_sales", lambda t: [])
@@ -550,7 +550,7 @@ def test_analyze_portfolio_saves_history(monkeypatch):
     def fake_save(**_kw):
         save_called["value"] = True
 
-    monkeypatch.setattr("main.parse_csv", lambda _: (lots, [], []))
+    monkeypatch.setattr("main.parse_csv", lambda _: (lots, [], [], []))
     monkeypatch.setattr("main.fetch_current_prices", lambda s, fb=None: ({}, []))
     monkeypatch.setattr("main.compute_lot_metrics", lambda l: l)
     monkeypatch.setattr("main.detect_wash_sales", lambda t: [])
@@ -593,7 +593,7 @@ def test_analyze_portfolio_ai_failure_adds_warning(monkeypatch):
     ]
     summary = PortfolioSummary(positions_count=1)
 
-    monkeypatch.setattr("main.parse_csv", lambda _: (lots, [], []))
+    monkeypatch.setattr("main.parse_csv", lambda _: (lots, [], [], []))
     monkeypatch.setattr("main.fetch_current_prices", lambda s, fb=None: ({}, []))
     monkeypatch.setattr("main.compute_lot_metrics", lambda l: l)
     monkeypatch.setattr("main.detect_wash_sales", lambda t: [])
@@ -656,7 +656,7 @@ def test_analyze_portfolio_with_wash_sales(monkeypatch):
     ]
     summary = PortfolioSummary(positions_count=1, wash_sale_flags_count=1)
 
-    monkeypatch.setattr("main.parse_csv", lambda _: (lots, transactions, []))
+    monkeypatch.setattr("main.parse_csv", lambda _: (lots, transactions, [], []))
     monkeypatch.setattr("main.fetch_current_prices", lambda s, fb=None: ({"AAPL": 145.0}, []))
     monkeypatch.setattr("main.compute_lot_metrics", lambda l: l)
     monkeypatch.setattr("main.detect_wash_sales", lambda t: wash_flags)

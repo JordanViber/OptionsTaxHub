@@ -35,6 +35,12 @@ class TransCode(str, Enum):
     # Corporate action / account activity codes
     SPR = "SPR"  # Stock Split / Reverse Split
     ROC = "ROC"  # Return of Capital
+    # Robinhood income / corporate-action codes (silently skipped — no lot effect)
+    CDIV = "CDIV"  # Cash Dividend payout
+    SLIP = "SLIP"  # Stock Lending Income Payment
+    SPL = "SPL"   # Stock Price / Split Adjustment (Robinhood variant)
+    BCXL = "BCXL"  # Buy Order Cancelled — no lot created
+    REC = "REC"   # Receive / Dividend Reinvestment deposit
     # Non-trading account activity (skipped during parsing)
     ACH = "ACH"  # ACH Deposit / Withdrawal
     RTP = "RTP"  # Instant Bank Transfer
@@ -262,6 +268,21 @@ class PortfolioSummary(BaseModel):
     lots_with_losses: int = 0
     lots_with_gains: int = 0
     wash_sale_flags_count: int = 0
+    realized_summary: Optional["RealizedSummary"] = None
+
+
+class RealizedSummary(BaseModel):
+    """Realized gain/loss breakdown for a specific tax year, derived from FIFO lot matching."""
+
+    tax_year: int
+    st_gains: float = 0.0   # Short-term gains (held ≤ 365 days)
+    st_losses: float = 0.0  # Short-term losses (held ≤ 365 days, negative values)
+    lt_gains: float = 0.0   # Long-term gains (held > 365 days)
+    lt_losses: float = 0.0  # Long-term losses (held > 365 days, negative values)
+    net_st: float = 0.0     # st_gains + st_losses
+    net_lt: float = 0.0     # lt_gains + lt_losses
+    total_net: float = 0.0  # net_st + net_lt
+    transactions_count: int = 0  # Number of sell transactions contributing
 
 
 class PortfolioAnalysis(BaseModel):

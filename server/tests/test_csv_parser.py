@@ -205,7 +205,7 @@ class TestTransactionsToTaxLots:
                 asset_type=AssetType.STOCK,
             ),
         ]
-        lots, _ = transactions_to_tax_lots(txns)
+        lots, _, _ = transactions_to_tax_lots(txns)
         assert len(lots) == 1
         assert lots[0].symbol == "AAPL"
         assert lots[0].quantity == 10
@@ -251,7 +251,7 @@ class TestTransactionsToTaxLots:
                 asset_type=AssetType.STOCK,
             ),
         ]
-        lots, _ = transactions_to_tax_lots(txns)
+        lots, _, _ = transactions_to_tax_lots(txns)
         # Sold 12: first 10 from lot 1, 2 from lot 2 → 3 left from lot 2
         assert len(lots) == 1
         assert lots[0].quantity == 3
@@ -263,7 +263,7 @@ class TestTransactionsToTaxLots:
 class TestParseCsv:
     def test_simple_csv_integration(self):
         csv_text = "symbol,quantity,purchase_price,current_price\nAAPL,10,150,160\nMSFT,5,300,310\n"
-        lots, transactions, _ = parse_csv(csv_text)
+        lots, transactions, _, _ = parse_csv(csv_text)
         assert len(lots) == 2
         assert len(transactions) == 0  # Simple CSV has no transactions
 
@@ -272,7 +272,7 @@ class TestParseCsv:
             "Activity Date,Process Date,Settle Date,Instrument,Description,Trans Code,Quantity,Price,Amount\n"
             "07/01/2025,07/01/2025,07/03/2025,AAPL,Apple Inc,Buy,10,150.00,-1500.00\n"
         )
-        lots, transactions, _ = parse_csv(csv_text)
+        lots, transactions, _, _ = parse_csv(csv_text)
         assert len(lots) == 1
         assert lots[0].symbol == "AAPL"
         assert len(transactions) == 1
@@ -465,7 +465,7 @@ class TestRealRobinhoodPatterns:
             '""\n'
             '"","","","","","","","","","The data provided is for informational purposes only."\n'
         )
-        lots, _, _ = parse_csv(csv_text)
+        lots, _, _, _ = parse_csv(csv_text)
         assert len(lots) == 1
         assert lots[0].symbol == "ALAB"
         assert lots[0].cost_basis_per_share == pytest.approx(146.40)
@@ -478,7 +478,7 @@ class TestRealRobinhoodPatterns:
             'CUSIP: 39959A205\n'
             '2 UPXI Options Assigned","Buy","200","$5.00","($1,000.00)"\n'
         )
-        _, transactions, _ = parse_csv(csv_text)
+        _, transactions, _, _ = parse_csv(csv_text)
         assert len(transactions) == 1
         assert transactions[0].instrument == "UPXI"
         assert transactions[0].price == pytest.approx(5.00)
@@ -507,7 +507,7 @@ class TestRealRobinhoodPatterns:
                 asset_type=AssetType.OPTION,
             ),
         ]
-        lots, _ = transactions_to_tax_lots(txns)
+        lots, _, _ = transactions_to_tax_lots(txns)
         # Option lot should be removed by assignment
         assert len([l for l in lots if l.symbol == "UPXI"]) == 0
 
@@ -728,9 +728,11 @@ class TestCloseLotsFifoEdgeCases:
             amount=1500,
             asset_type=AssetType.STOCK,
         )
-        _close_lots_fifo(open_lots, "AAPL", txn, warnings)
-        assert len(warnings) == 1
-        assert "no open lots found" in warnings[0]
+        unmatched_sells: list[str] = []
+        realized: list = []
+        _close_lots_fifo(open_lots, "AAPL", txn, warnings, unmatched_sells, realized)
+        assert len(unmatched_sells) == 1
+        assert "AAPL" in unmatched_sells
 
     def test_sell_exceeds_open_lots_warns(self):
         """Selling more shares than available in lots produces a warning."""
@@ -755,9 +757,11 @@ class TestCloseLotsFifoEdgeCases:
             amount=1500,
             asset_type=AssetType.STOCK,
         )
-        _close_lots_fifo(open_lots, "AAPL", txn, warnings)
-        assert len(warnings) == 1
-        assert "could not be matched" in warnings[0]
+        unmatched_sells: list[str] = []
+        realized: list = []
+        _close_lots_fifo(open_lots, "AAPL", txn, warnings, unmatched_sells, realized)
+        assert len(unmatched_sells) == 1
+        assert "AAPL" in unmatched_sells
 
 
 class TestRemoveLotsFifoEdgeCases:
@@ -798,7 +802,7 @@ class TestTransactionsToTaxLotsEdgeCases:
                 asset_type=AssetType.OPTION,
             ),
         ]
-        lots, _ = transactions_to_tax_lots(txns)
+        lots, _, _ = transactions_to_tax_lots(txns)
         assert len(lots) == 1
         assert lots[0].asset_type == AssetType.OPTION
 
@@ -818,7 +822,7 @@ class TestTransactionsToTaxLotsEdgeCases:
                 asset_type=AssetType.STOCK,
             ),
         ]
-        lots, _ = transactions_to_tax_lots(txns)
+        lots, _, _ = transactions_to_tax_lots(txns)
         # SPR is informational; no lots created
         assert len(lots) == 0
 
@@ -826,12 +830,12 @@ class TestTransactionsToTaxLotsEdgeCases:
 class TestParseCsvEdgeCases:
     def test_empty_csv(self):
         """Empty CSV returns errors."""
-        _, _, errors = parse_csv("")
+        _, _, errors, _ = parse_csv("")
         assert len(errors) > 0
 
     def test_unknown_format(self):
         """Unknown format returns descriptive error."""
-        _, _, errors = parse_csv("foo,bar,baz\n1,2,3")
+        _, _, errors, _ = parse_csv("foo,bar,baz\n1,2,3")
         assert any("Unrecognized CSV format" in e for e in errors)
 
     def test_robinhood_with_no_valid_transactions(self):
@@ -840,7 +844,7 @@ class TestParseCsvEdgeCases:
             "Activity Date,Process Date,Settle Date,Instrument,Description,Trans Code,Quantity,Price,Amount\n"
             ",,,,,,,,"
         )
-        lots, txns, _ = parse_csv(csv_text)
+        lots, txns, _, _ = parse_csv(csv_text)
         # Either "No valid transactions" or similar error
         assert len(lots) == 0
         assert len(txns) == 0

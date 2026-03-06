@@ -14,7 +14,8 @@ from __future__ import annotations
 
 import io
 import logging
-from datetime import date, datetime
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 import pandas as pd
@@ -22,6 +23,19 @@ import pandas as pd
 from models import AssetType, TaxLot, Transaction, TransCode
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class RealizedEvent:
+    """A single closed tax lot's realized gain or loss."""
+    sale_date: date
+    symbol: str
+    quantity: float
+    cost_basis: float       # Total cost basis of the closed quantity
+    sale_proceeds: float    # Total proceeds from the sale (0 if proceeds unknown)
+    pnl: float              # Positive = gain, negative = loss
+    is_long_term: bool      # True if held > 365 days from purchase to sale
+
 
 # Column name constants (avoid duplication)
 COL_ACTIVITY_DATE = "Activity Date"
@@ -47,7 +61,15 @@ SIMPLE_COLUMNS = {"symbol", "quantity", "purchase_price", "current_price"}
 OPTIONS_TRANS_CODES = {"STO", "BTC", "BTO", "STC", "OEXP", "OASGN", "OCA"}
 
 # Non-trading account activity codes (skipped during parsing)
-ACCOUNT_ACTIVITY_CODES = {"ACH", "RTP", "FUTSWP", "MINT", "ROC"}
+ACCOUNT_ACTIVITY_CODES = {
+    "ACH", "RTP", "FUTSWP", "MINT", "ROC",
+    # Robinhood income / corporate-action codes — no tax-lot impact
+    "CDIV",   # Cash Dividend
+    "SLIP",   # Stock Lending Income Payment
+    "SPL",    # Stock Price/Split Adjustment (Robinhood-specific variant)
+    "BCXL",   # Buy Order Cancelled
+    "REC",    # Receive / Dividend Reinvestment deposit
+}
 
 # Corporate action codes (tracked but don't create lots by themselves)
 CORPORATE_ACTION_CODES = {"SPR", "OCA"}
@@ -373,37 +395,65 @@ def _close_lots_fifo(
     symbol: str,
     txn: Transaction,
     warnings: list[str],
+    unmatched_sells: list[str],
+    realized: list[RealizedEvent],
 ) -> None:
-    """Close lots in FIFO order for a sell transaction."""
-    remaining_to_sell = txn.quantity
+    """Close lots in FIFO order for a sell transaction.
+
+    Unmatched sells (no open lots, or floating-point residuals) are collected
+    in ``unmatched_sells`` rather than ``warnings`` so the caller can aggregate
+    them into a single consolidated message instead of flooding the output.
+
+    Realized gain/loss events are appended to ``realized`` for each lot closed.
+    """
+    # Round to 6 decimal places to avoid float accumulation artifacts
+    remaining_to_sell = round(txn.quantity, 6)
+    # Sale price per share (from transaction); use per-share proceeds
+    sale_price = txn.price  # already absolute value from parse_robinhood_amount
 
     if symbol not in open_lots or not open_lots[symbol]:
-        warnings.append(
-            f"Sell of {txn.quantity} {symbol} on {txn.activity_date} "
-            f"but no open lots found (short sale or prior history not in CSV)"
-        )
+        unmatched_sells.append(symbol)
         return
 
     while remaining_to_sell > 0 and open_lots.get(symbol):
         oldest_lot = open_lots[symbol][0]
+        qty_to_close = min(oldest_lot.quantity, remaining_to_sell)
+        qty_to_close = round(qty_to_close, 6)
+
+        cost_basis_closed = oldest_lot.cost_basis_per_share * qty_to_close
+        proceeds_closed = sale_price * qty_to_close
+        pnl = proceeds_closed - cost_basis_closed
+
+        # Holding period — from purchase date to sale date
+        holding_days = (txn.activity_date - oldest_lot.purchase_date).days
+        is_long_term = holding_days > 365
+
+        realized.append(RealizedEvent(
+            sale_date=txn.activity_date,
+            symbol=symbol,
+            quantity=qty_to_close,
+            cost_basis=cost_basis_closed,
+            sale_proceeds=proceeds_closed,
+            pnl=pnl,
+            is_long_term=is_long_term,
+        ))
+
         if oldest_lot.quantity <= remaining_to_sell:
-            remaining_to_sell -= oldest_lot.quantity
+            remaining_to_sell = round(remaining_to_sell - oldest_lot.quantity, 6)
             open_lots[symbol].pop(0)
         else:
-            oldest_lot.quantity -= remaining_to_sell
+            oldest_lot.quantity = round(oldest_lot.quantity - remaining_to_sell, 6)
             oldest_lot.total_cost_basis = (
                 oldest_lot.cost_basis_per_share * oldest_lot.quantity
             )
             remaining_to_sell = 0
 
-    if remaining_to_sell > 0:
-        warnings.append(
-            f"Sell of {symbol} on {txn.activity_date}: "
-            f"{remaining_to_sell} shares could not be matched to open lots"
-        )
+    # Treat sub-cent floating-point residuals as fully closed
+    if remaining_to_sell > 0.00001:
+        unmatched_sells.append(symbol)
 
 
-def transactions_to_tax_lots(transactions: list[Transaction]) -> tuple[list[TaxLot], list[str]]:
+def transactions_to_tax_lots(transactions: list[Transaction]) -> tuple[list[TaxLot], list[str], list[RealizedEvent]]:
     """
     Aggregate Robinhood transactions into TaxLot positions using FIFO.
 
@@ -414,9 +464,11 @@ def transactions_to_tax_lots(transactions: list[Transaction]) -> tuple[list[TaxL
         transactions: List of parsed Transaction objects, sorted by date.
 
     Returns:
-        Tuple of (list of open TaxLot positions, list of warnings).
+        Tuple of (list of open TaxLot positions, list of warnings, list of realized events).
     """
     warnings: list[str] = []
+    unmatched_sells: list[str] = []  # Collected per-sell; consolidated at end
+    realized: list[RealizedEvent] = []
 
     # Sort transactions by date
     sorted_txns = sorted(transactions, key=lambda t: t.activity_date)
@@ -431,7 +483,7 @@ def transactions_to_tax_lots(transactions: list[Transaction]) -> tuple[list[TaxL
             _add_lot(open_lots, symbol, txn)
 
         elif txn.trans_code in (TransCode.SELL, TransCode.STC):
-            _close_lots_fifo(open_lots, symbol, txn, warnings)
+            _close_lots_fifo(open_lots, symbol, txn, warnings, unmatched_sells, realized)
 
         elif txn.trans_code in (TransCode.OEXP, TransCode.OASGN):
             # Option expiration or assignment — remove the lot
@@ -445,15 +497,29 @@ def transactions_to_tax_lots(transactions: list[Transaction]) -> tuple[list[TaxL
             # Stock split / reverse split / corporate action — informational.
             pass
 
-    # Flatten all remaining open lots
+    # Consolidated warning for sells that had no open lots
+    if unmatched_sells:
+        from collections import Counter
+        counts = Counter(unmatched_sells)
+        tickers = ", ".join(sorted(counts.keys()))
+        total = sum(counts.values())
+        warnings.append(
+            f"{total} sell transaction(s) across {len(counts)} ticker(s) ({tickers}) "
+            f"had no matching open lots — likely short sales or trades before the CSV "
+            f"start date. These are excluded from gain/loss calculations."
+        )
+
+    # Flatten remaining open lots, dropping near-zero float residuals
     all_open_lots = []
     for symbol_lots in open_lots.values():
-        all_open_lots.extend(symbol_lots)
+        for lot in symbol_lots:
+            if round(lot.quantity, 6) >= 0.000001:
+                all_open_lots.append(lot)
 
-    return all_open_lots, warnings
+    return all_open_lots, warnings, realized
 
 
-def parse_csv(file_content: str) -> tuple[list[TaxLot], list[Transaction], list[str]]:
+def parse_csv(file_content: str) -> tuple[list[TaxLot], list[Transaction], list[str], list[RealizedEvent]]:
     """
     Main entry point: parse a CSV file and return tax lots and transactions.
 
@@ -463,16 +529,17 @@ def parse_csv(file_content: str) -> tuple[list[TaxLot], list[Transaction], list[
         file_content: Raw CSV file content as a string.
 
     Returns:
-        Tuple of (list of TaxLot positions, list of Transaction objects, list of errors/warnings).
-        For simplified CSVs, transactions list will be empty.
+        Tuple of (list of TaxLot positions, list of Transaction objects,
+                  list of errors/warnings, list of RealizedEvent objects).
+        For simplified CSVs, transactions and realized lists will be empty.
     """
     try:
         df = pd.read_csv(io.StringIO(file_content), on_bad_lines="skip")
     except Exception as e:
-        return [], [], [f"Failed to read CSV file: {str(e)}"]
+        return [], [], [f"Failed to read CSV file: {str(e)}"], []
 
     if df.empty:
-        return [], [], ["CSV file is empty"]
+        return [], [], ["CSV file is empty"], []
 
     csv_format = detect_csv_format(df)
 
@@ -481,16 +548,16 @@ def parse_csv(file_content: str) -> tuple[list[TaxLot], list[Transaction], list[
         transactions, errors = parse_robinhood_csv(df)
 
         if not transactions:
-            return [], [], errors or ["No valid transactions found in CSV"]
+            return [], [], errors or ["No valid transactions found in CSV"], []
 
         # Aggregate into tax lots via FIFO
-        tax_lots, lot_warnings = transactions_to_tax_lots(transactions)
-        return tax_lots, transactions, errors + lot_warnings
+        tax_lots, lot_warnings, realized = transactions_to_tax_lots(transactions)
+        return tax_lots, transactions, errors + lot_warnings, realized
 
     elif csv_format == "simple":
         logger.info("Detected simplified portfolio CSV format")
         tax_lots, errors = parse_simple_csv(df)
-        return tax_lots, [], errors
+        return tax_lots, [], errors, []
 
     else:
         return [], [], [
@@ -498,4 +565,4 @@ def parse_csv(file_content: str) -> tuple[list[TaxLot], list[Transaction], list[
             "  • Robinhood format: Activity Date, Process Date, Settle Date, "
             "Instrument, Description, Trans Code, Quantity, Price, Amount\n"
             "  • Simplified format: symbol, quantity, purchase_price, current_price"
-        ]
+        ], []
