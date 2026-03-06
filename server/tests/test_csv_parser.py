@@ -861,7 +861,7 @@ class TestTransactionsToTaxLotsEdgeCases:
                 asset_type=AssetType.OPTION,
             ),
         ]
-        lots, warnings, realized = transactions_to_tax_lots(txns)
+        lots, _, realized = transactions_to_tax_lots(txns)
         # After BTC, the STO lot is closed — no phantom open positions
         assert len(lots) == 0
         # Realized gain: collected $5 premium, bought back at $2 → $3/share × 2 contracts × 100 = $600

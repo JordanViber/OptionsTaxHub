@@ -77,6 +77,8 @@ import type {
 
 export const dynamic = "force-dynamic";
 
+type AnalysisSource = "fresh-upload" | "saved-history" | "restored-session";
+
 function buildPositionId(position: Position, index: number): string {
   return (
     position.position_id ??
@@ -130,7 +132,9 @@ function getAnalysisErrorMessage(error: unknown): string {
 function restoreAnalysisFromStorage(): PortfolioAnalysis | null {
   try {
     const saved = sessionStorage.getItem("optionstaxhub-analysis");
-    return saved ? normalizeAnalysis(JSON.parse(saved) as PortfolioAnalysis) : null;
+    return saved
+      ? normalizeAnalysis(JSON.parse(saved) as PortfolioAnalysis)
+      : null;
   } catch {
     return null;
   }
@@ -143,6 +147,128 @@ function saveAnalysisToStorage(analysis: PortfolioAnalysis): void {
   } catch {
     // Storage full — ignore
   }
+}
+
+function getAnalysisSourceDisplay(source: AnalysisSource): {
+  label: string;
+  color: "success" | "info" | "default";
+} {
+  switch (source) {
+    case "fresh-upload":
+      return { label: "Fresh upload", color: "success" };
+    case "saved-history":
+      return { label: "Saved analysis", color: "info" };
+    case "restored-session":
+      return { label: "Restored from browser", color: "default" };
+  }
+}
+
+function getConfidenceSummary(analysis: PortfolioAnalysis): {
+  severity: "success" | "info" | "warning";
+  label: string;
+  summary: string;
+  details: string[];
+} {
+  const warnings = analysis.warnings ?? [];
+  const details: string[] = [];
+
+  if (
+    warnings.some((warning) =>
+      /had no open lots at all|matched the required asset type|exceeded the available open lot quantity/i.test(
+        warning,
+      ),
+    )
+  ) {
+    details.push(
+      "Some sells could not be matched to complete tax lots, so related gains or losses were excluded.",
+    );
+  }
+
+  if (
+    warnings.some((warning) =>
+      /Corporate action activity|stock split|share position may need manual verification/i.test(
+        warning,
+      ),
+    )
+  ) {
+    details.push(
+      "Unsupported brokerage events may still affect share counts or current position accuracy.",
+    );
+  }
+
+  if (
+    warnings.some((warning) =>
+      /(^Row )|(CSV row\(s\) could not be parsed)/i.test(warning),
+    )
+  ) {
+    details.push(
+      "Some CSV rows could not be parsed and were excluded from the analysis.",
+    );
+  }
+
+  if (
+    warnings.some((warning) => /Live prices were unavailable/i.test(warning))
+  ) {
+    details.push(
+      "Some current prices came from the CSV instead of a live market quote.",
+    );
+  }
+
+  if (details.length === 0) {
+    return {
+      severity: "success",
+      label: "High confidence",
+      summary:
+        "No major data quality issues were detected in this result. You can use the suggestions as a strong first pass for this tax year.",
+      details: [],
+    };
+  }
+
+  if (details.length === 1 && /live market quote/i.test(details[0])) {
+    return {
+      severity: "info",
+      label: "Moderate confidence",
+      summary:
+        "This result is usable, but a small part of the valuation relied on fallback pricing instead of a live quote.",
+      details,
+    };
+  }
+
+  return {
+    severity: "warning",
+    label: "Partial confidence",
+    summary:
+      "Use these results as a starting point, but verify the affected holdings before acting on the analysis.",
+    details,
+  };
+}
+
+function getRecommendedNextSteps(analysis: PortfolioAnalysis): string[] {
+  const steps: string[] = [];
+
+  if (analysis.suggestions.length > 0) {
+    steps.push(
+      `Start with the ${analysis.suggestions.length} harvesting suggestion${analysis.suggestions.length === 1 ? "" : "s"} shown below.`,
+    );
+  } else {
+    steps.push(
+      "No obvious harvesting candidates were found, so review your open positions and realized gains for this tax year first.",
+    );
+  }
+
+  if (analysis.wash_sale_flags.length > 0) {
+    steps.push(
+      "Review the wash-sale panel before relying on losses from affected symbols.",
+    );
+  }
+
+  if (analysis.warnings.length > 0) {
+    steps.push(
+      "After that, check the data quality notes for any positions that may need manual verification.",
+    );
+  }
+
+  return steps;
 }
 
 // Helper component: render history list or empty/error state
@@ -250,6 +376,9 @@ export default function DashboardPage() {
   const [tipJarOpen, setTipJarOpen] = useState(false);
   const [loadedAnalysis, setLoadedAnalysis] =
     useState<PortfolioAnalysis | null>(null);
+  const [analysisSource, setAnalysisSource] = useState<AnalysisSource | null>(
+    null,
+  );
   const [historyLoading, setHistoryLoading] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<{
     id: string;
@@ -284,6 +413,7 @@ export default function DashboardPage() {
     const saved = restoreAnalysisFromStorage();
     if (saved) {
       setLoadedAnalysis(saved);
+      setAnalysisSource("restored-session");
     }
   }, []);
 
@@ -294,6 +424,12 @@ export default function DashboardPage() {
       saveAnalysisToStorage(displayedAnalysis);
     }
   }, [displayedAnalysis]);
+
+  useEffect(() => {
+    if (analysis && !loadedAnalysis) {
+      setAnalysisSource("fresh-upload");
+    }
+  }, [analysis, loadedAnalysis]);
 
   // --- One-time cleanup: delete orphan history entries without stored result ---
   useEffect(() => {
@@ -318,6 +454,7 @@ export default function DashboardPage() {
     if (file) {
       // Clear any previously loaded history analysis + cached state
       setLoadedAnalysis(null);
+      setAnalysisSource(null);
       sessionStorage.removeItem("optionstaxhub-analysis");
       analyzePortfolio(
         {
@@ -368,6 +505,7 @@ export default function DashboardPage() {
       const record = await fetchAnalysisById(itemId);
       if (record?.result) {
         setLoadedAnalysis(normalizeAnalysis(record.result));
+        setAnalysisSource("saved-history");
         setActiveTab(0);
         setSnackbar({
           message: `Loaded saved analysis: ${filename}`,
@@ -441,6 +579,15 @@ export default function DashboardPage() {
 
   // displayedAnalysis is computed above (near sessionStorage effects)
   const hasResults = !!displayedAnalysis;
+  const confidenceSummary = displayedAnalysis
+    ? getConfidenceSummary(displayedAnalysis)
+    : null;
+  const recommendedNextSteps = displayedAnalysis
+    ? getRecommendedNextSteps(displayedAnalysis)
+    : [];
+  const sourceDisplay = analysisSource
+    ? getAnalysisSourceDisplay(analysisSource)
+    : null;
 
   // Pre-compute error message using if/else to avoid nested ternary (SonarQube S3358)
   const analysisErrorMessage = getAnalysisErrorMessage(error);
@@ -732,7 +879,8 @@ export default function DashboardPage() {
           {/* Error Alert */}
           {error && (
             <Alert severity="error" icon={<ErrorIcon />}>
-              <AlertTitle>Analysis Failed</AlertTitle>              <Typography variant="caption">{analysisErrorMessage}</Typography>
+              <AlertTitle>Analysis Failed</AlertTitle>{" "}
+              <Typography variant="caption">{analysisErrorMessage}</Typography>
             </Alert>
           )}
 
@@ -757,12 +905,89 @@ export default function DashboardPage() {
                     variant="outlined"
                   />
                 )}
+                {sourceDisplay && (
+                  <Chip
+                    label={sourceDisplay.label}
+                    size="small"
+                    color={sourceDisplay.color}
+                    variant="outlined"
+                  />
+                )}
+                {confidenceSummary && (
+                  <Chip
+                    label={confidenceSummary.label}
+                    size="small"
+                    color={confidenceSummary.severity}
+                    variant="filled"
+                  />
+                )}
               </Box>
+
+              {confidenceSummary && (
+                <Alert severity={confidenceSummary.severity} variant="outlined">
+                  <AlertTitle>{confidenceSummary.label}</AlertTitle>
+                  <Typography
+                    variant="body2"
+                    sx={{ mb: confidenceSummary.details.length ? 0.5 : 0 }}
+                  >
+                    {confidenceSummary.summary}
+                  </Typography>
+                  {analysisSource === "restored-session" && (
+                    <Typography
+                      variant="caption"
+                      sx={{ display: "block", mb: 0.5 }}
+                    >
+                      This result was restored from browser storage and may not
+                      reflect your newest upload. Re-upload the CSV for a fully
+                      fresh run.
+                    </Typography>
+                  )}
+                  {analysisSource === "saved-history" && (
+                    <Typography
+                      variant="caption"
+                      sx={{ display: "block", mb: 0.5 }}
+                    >
+                      This result was loaded from saved history. Re-upload the
+                      CSV if you want the latest prices and a new live analysis.
+                    </Typography>
+                  )}
+                  {confidenceSummary.details.length > 0 && (
+                    <Box component="ul" sx={{ pl: 2, my: 0 }}>
+                      {confidenceSummary.details.map((detail) => (
+                        <Typography
+                          component="li"
+                          variant="caption"
+                          key={detail}
+                        >
+                          {detail}
+                        </Typography>
+                      ))}
+                    </Box>
+                  )}
+                </Alert>
+              )}
+
+              {recommendedNextSteps.length > 0 && (
+                <Alert severity="info" variant="outlined">
+                  <AlertTitle>Recommended next steps</AlertTitle>
+                  <Box component="ol" sx={{ pl: 2.5, my: 0 }}>
+                    {recommendedNextSteps.map((step) => (
+                      <Typography component="li" variant="body2" key={step}>
+                        {step}
+                      </Typography>
+                    ))}
+                  </Box>
+                </Alert>
+              )}
+
               <PortfolioSummaryCards summary={displayedAnalysis.summary} />
 
               {/* Wash-Sale Warnings — grouped by ticker accordion */}
               {displayedAnalysis.wash_sale_flags.length > 0 && (
-                <WashSaleWarning flags={displayedAnalysis.wash_sale_flags} />
+                <WashSaleWarning
+                  flags={displayedAnalysis.wash_sale_flags}
+                  taxYear={displayedAnalysis.tax_profile?.tax_year}
+                />
               )}
 
               {/* Tabbed view: Suggestions first (most actionable), then Positions */}
@@ -799,7 +1024,7 @@ export default function DashboardPage() {
             </>
           )}
 
-          {/* Parsing notes — collapsible accordion, shown below results */}
+          {/* Data quality notes — collapsible accordion, shown below results */}
           {displayedAnalysis?.warnings &&
             displayedAnalysis.warnings.length > 0 && (
               <Accordion
@@ -817,7 +1042,7 @@ export default function DashboardPage() {
                     color="warning.dark"
                     sx={{ fontWeight: 500 }}
                   >
-                    ⚠ {displayedAnalysis.warnings.length} parsing note
+                    ⚠ {displayedAnalysis.warnings.length} data quality note
                     {displayedAnalysis.warnings.length === 1 ? "" : "s"} — click
                     to expand
                   </Typography>

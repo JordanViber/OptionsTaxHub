@@ -105,6 +105,7 @@ def _build_wash_sale_explanation(
 
 def detect_wash_sales(
     transactions: list[Transaction],
+    tax_year: int | None = None,
 ) -> list[WashSaleFlag]:
     """
     Detect wash sales in a list of realized transactions.
@@ -115,6 +116,9 @@ def detect_wash_sales(
 
     Args:
         transactions: All parsed transactions, including both buys and sells.
+        tax_year: Optional sale year filter. When provided, only sales from
+            that tax year are surfaced, while repurchases may still come from
+            the surrounding 30-day window even if they cross into another year.
 
     Returns:
         List of WashSaleFlag objects for each detected wash sale.
@@ -130,6 +134,9 @@ def detect_wash_sales(
         t for t in transactions
         if t.trans_code in (TransCode.SELL, TransCode.STC)
     ]
+
+    if tax_year is not None:
+        sells = [t for t in sells if t.activity_date.year == tax_year]
 
     buys_sorted = sorted(buys, key=lambda t: t.activity_date)
     sells_sorted = sorted(sells, key=lambda t: t.activity_date)
@@ -152,6 +159,10 @@ def detect_wash_sales(
         else:
             disallowed_loss = loss * (total_repurchase_qty / sell.quantity)
 
+        rounded_disallowed_loss = round(disallowed_loss, 2)
+        if rounded_disallowed_loss <= 0:
+            continue
+
         earliest_repurchase = min(qualifying, key=lambda x: x[1].activity_date)
         repurchase_txn = earliest_repurchase[1]
         original_cost = repurchase_txn.price * min(repurchase_txn.quantity, sell.quantity)
@@ -167,7 +178,7 @@ def detect_wash_sales(
                 sale_loss=loss,
                 repurchase_date=repurchase_txn.activity_date,
                 repurchase_quantity=min(total_repurchase_qty, sell.quantity),
-                disallowed_loss=round(disallowed_loss, 2),
+                disallowed_loss=rounded_disallowed_loss,
                 adjusted_cost_basis=round(adjusted_cost, 2),
                 explanation=explanation,
             )

@@ -84,6 +84,47 @@ class TestDetectWashSales:
         assert len(flags) == 1
         assert flags[0].symbol == "MSFT"
 
+    def test_tax_year_filter_excludes_other_sale_years(self):
+        """Only sale events from the selected tax year should be returned."""
+        txns = [
+            self._make_txn("AAPL", TransCode.BUY, date(2024, 12, 1), 10, 200),
+            self._make_txn("AAPL", TransCode.SELL, date(2024, 12, 20), 10, 150),
+            self._make_txn("AAPL", TransCode.BUY, date(2025, 1, 5), 10, 155),
+            self._make_txn("TSLA", TransCode.BUY, date(2025, 5, 1), 10, 300),
+            self._make_txn("TSLA", TransCode.SELL, date(2025, 6, 15), 10, 200),
+            self._make_txn("TSLA", TransCode.BUY, date(2025, 6, 20), 10, 210),
+        ]
+
+        flags = detect_wash_sales(txns, tax_year=2025)
+
+        assert len(flags) == 1
+        assert flags[0].symbol == "TSLA"
+
+    def test_tax_year_filter_keeps_cross_year_repurchase(self):
+        """Late-year sale should still detect a repurchase in the following calendar year."""
+        txns = [
+            self._make_txn("NVDA", TransCode.BUY, date(2025, 11, 1), 10, 200),
+            self._make_txn("NVDA", TransCode.SELL, date(2025, 12, 20), 10, 150),
+            self._make_txn("NVDA", TransCode.BUY, date(2026, 1, 5), 10, 155),
+        ]
+
+        flags = detect_wash_sales(txns, tax_year=2025)
+
+        assert len(flags) == 1
+        assert flags[0].symbol == "NVDA"
+
+    def test_zero_cent_disallowed_loss_is_suppressed(self):
+        """Sub-cent wash-sale noise should not create a user-facing flag."""
+        txns = [
+            self._make_txn("QQQ", TransCode.BUY, date(2025, 1, 1), 1, 100.001),
+            self._make_txn("QQQ", TransCode.SELL, date(2025, 2, 1), 1, 100.0001),
+            self._make_txn("QQQ", TransCode.BUY, date(2025, 2, 10), 1, 100.0),
+        ]
+
+        flags = detect_wash_sales(txns, tax_year=2025)
+
+        assert flags == []
+
 
 # --- Prospective Wash-Sale Risk Tests ---
 

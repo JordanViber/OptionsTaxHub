@@ -18,6 +18,7 @@ import type { WashSaleFlag } from "@/lib/types";
 
 interface WashSaleWarningProps {
   flags: WashSaleFlag[];
+  taxYear?: number;
 }
 
 /**
@@ -29,14 +30,19 @@ interface WashSaleWarningProps {
  */
 export default function WashSaleWarning({
   flags,
+  taxYear,
 }: Readonly<WashSaleWarningProps>) {
   const [expanded, setExpanded] = useState<string | false>(false);
 
-  if (flags.length === 0) return null;
+  const meaningfulFlags = flags.filter(
+    (flag) => Math.abs(flag.disallowed_loss) >= 0.01,
+  );
+
+  if (meaningfulFlags.length === 0) return null;
 
   // Group flags by symbol and compute per-ticker totals
   const grouped: Record<string, { total: number; flags: WashSaleFlag[] }> = {};
-  for (const flag of flags) {
+  for (const flag of meaningfulFlags) {
     if (!grouped[flag.symbol]) {
       grouped[flag.symbol] = { total: 0, flags: [] };
     }
@@ -49,7 +55,10 @@ export default function WashSaleWarning({
     (a, b) => grouped[b].total - grouped[a].total,
   );
 
-  const totalDisallowed = flags.reduce((sum, f) => sum + f.disallowed_loss, 0);
+  const totalDisallowed = meaningfulFlags.reduce(
+    (sum, f) => sum + f.disallowed_loss,
+    0,
+  );
 
   const handleChange =
     (panel: string) => (_: React.SyntheticEvent, isExpanded: boolean) => {
@@ -63,8 +72,8 @@ export default function WashSaleWarning({
       sx={{ "& .MuiAlert-message": { width: "100%" } }}
     >
       <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>
-        Wash-Sale Rule Violations Detected ({flags.length} events across{" "}
-        {tickers.length} ticker{tickers.length === 1 ? "" : "s"})
+        Wash-Sale Rule Violations Detected ({meaningfulFlags.length} events
+        across {tickers.length} ticker{tickers.length === 1 ? "" : "s"})
       </Typography>
       <Typography
         variant="caption"
@@ -78,8 +87,12 @@ export default function WashSaleWarning({
             minimumFractionDigits: 2,
             maximumFractionDigits: 2,
           })}
-        </strong>. The IRS wash-sale rule disallows loss deductions when you repurchase
+        </strong>
+        . The IRS wash-sale rule disallows loss deductions when you repurchase
         substantially identical securities within 30 days of selling at a loss.
+        {taxYear
+          ? ` This panel only shows sale events from tax year ${taxYear}.`
+          : ""}
         The disallowed amount is added to the cost basis of the replacement
         shares. Expand a ticker below for details.
       </Typography>
