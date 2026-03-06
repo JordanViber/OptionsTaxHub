@@ -36,7 +36,9 @@ describe("WashSaleWarning", () => {
 
     // Component groups by ticker and shows "N events across M tickers"
     expect(
-      screen.getByRole("heading", { name: /Wash-Sale Rule Violations Detected/ }),
+      screen.getByRole("heading", {
+        name: /Wash-Sale Rule Violations Detected/,
+      }),
     ).toBeInTheDocument();
   });
 
@@ -148,7 +150,12 @@ describe("WashSaleWarning", () => {
   it("collapses a previously expanded ticker when a different ticker is expanded", () => {
     const flags: WashSaleFlag[] = [
       baseFlag,
-      { ...baseFlag, symbol: "MSFT", disallowed_loss: 800, explanation: "MSFT wash sale" },
+      {
+        ...baseFlag,
+        symbol: "MSFT",
+        disallowed_loss: 800,
+        explanation: "MSFT wash sale",
+      },
     ];
     render(<WashSaleWarning flags={flags} />);
 

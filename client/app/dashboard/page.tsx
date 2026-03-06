@@ -691,7 +691,14 @@ export default function DashboardPage() {
           {hasResults && (
             <>
               {/* Tax year chip + summary cards */}
-              <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
+              <Box
+                sx={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 1,
+                  flexWrap: "wrap",
+                }}
+              >
                 {displayedAnalysis.tax_profile?.tax_year && (
                   <Chip
                     icon={<CalendarIcon />}
@@ -767,9 +774,17 @@ export default function DashboardPage() {
                   </Typography>
                 </AccordionSummary>
                 <AccordionDetails sx={{ pt: 0 }}>
-                  <Alert severity="warning" variant="outlined" sx={{ border: 0 }}>
+                  <Alert
+                    severity="warning"
+                    variant="outlined"
+                    sx={{ border: 0 }}
+                  >
                     {displayedAnalysis.warnings.map((w: string, i: number) => (
-                      <Typography key={i} variant="caption" sx={{ display: "block", mb: 0.25 }}>
+                      <Typography
+                        key={i}
+                        variant="caption"
+                        sx={{ display: "block", mb: 0.25 }}
+                      >
                         {w}
                       </Typography>
                     ))}

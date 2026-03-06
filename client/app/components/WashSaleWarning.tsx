@@ -106,7 +106,11 @@ export default function WashSaleWarning({
             >
               <AccordionSummary
                 expandIcon={<ExpandMoreIcon />}
-                sx={{ py: 0.25, minHeight: 36, "& .MuiAccordionSummary-content": { my: 0 } }}
+                sx={{
+                  py: 0.25,
+                  minHeight: 36,
+                  "& .MuiAccordionSummary-content": { my: 0 },
+                }}
               >
                 <Box
                   sx={{
@@ -134,7 +138,8 @@ export default function WashSaleWarning({
                     color="text.secondary"
                     sx={{ ml: "auto" }}
                   >
-                    {group.flags.length} event{group.flags.length !== 1 ? "s" : ""}
+                    {group.flags.length} event
+                    {group.flags.length !== 1 ? "s" : ""}
                   </Typography>
                 </Box>
               </AccordionSummary>
