@@ -19,7 +19,7 @@ describe("PortfolioSummaryCards", () => {
   it("renders all four metric cards", () => {
     render(<PortfolioSummaryCards summary={baseSummary} />);
 
-    expect(screen.getByText("Portfolio Value")).toBeInTheDocument();
+    expect(screen.getByText("Net Open Position Value")).toBeInTheDocument();
     expect(screen.getByText("Unrealized P&L")).toBeInTheDocument();
     expect(screen.getByText("Harvestable Losses")).toBeInTheDocument();
     expect(screen.getByText("Est. Tax Savings")).toBeInTheDocument();
@@ -34,7 +34,11 @@ describe("PortfolioSummaryCards", () => {
   it("displays position count subtitle", () => {
     render(<PortfolioSummaryCards summary={baseSummary} />);
 
-    expect(screen.getByText("5 positions")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "5 open positions — excludes cash and account equity adjustments",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("shows negative P&L with correct format", () => {
