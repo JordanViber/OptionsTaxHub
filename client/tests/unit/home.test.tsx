@@ -340,7 +340,7 @@ describe("Home page", () => {
       positions: [{ symbol: "AAPL" }],
       suggestions: [{ symbol: "TSLA" }],
       wash_sale_flags: [],
-      summary: { total_market_value: 1000 },
+      summary: { total_market_value: 1000, positions_count: 1 },
       warnings: [],
       errors: [],
     };
@@ -359,7 +359,8 @@ describe("Home page", () => {
     renderWithClient(<Home />);
 
     expect(screen.getByTestId("summary-cards")).toBeInTheDocument();
-    expect(screen.getByText("1 positions")).toBeInTheDocument();
+    // Suggestions tab is now default (tab 0), so HarvestingSuggestions is rendered with 1 item
+    expect(screen.getByText("1 suggestions")).toBeInTheDocument();
     expect(screen.getByText("Suggestions (1)")).toBeInTheDocument();
   });
 
