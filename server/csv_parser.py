@@ -31,10 +31,10 @@ class RealizedEvent:
     sale_date: date
     symbol: str
     quantity: float
-    cost_basis: float       # Total cost basis of the closed quantity
-    sale_proceeds: float    # Total proceeds from the sale (0 if proceeds unknown)
-    pnl: float              # Positive = gain, negative = loss
-    is_long_term: bool      # True if held > 365 days from purchase to sale
+    cost_basis: float
+    sale_proceeds: float
+    pnl: float
+    is_long_term: bool
 
 
 # Column name constants (avoid duplication)
@@ -391,6 +391,7 @@ def _add_lot(
         total_cost_basis=txn.price * txn.quantity * cost_multiplier,
         purchase_date=txn.activity_date,
         asset_type=resolved_type,
+        contract_label=txn.description or None,
         is_short_position=is_short_position,
         # Seed option current_price with last-known premium so market_value is
         # non-None until a live option quote can be fetched.
@@ -489,6 +490,63 @@ def _close_lots_fifo(
         unmatched_sells.append((symbol, reason))
 
 
+def _warn_on_corporate_action(txn: Transaction, warnings: list[str]) -> None:
+    """Append user-facing warnings for unsupported corporate actions."""
+    symbol = txn.instrument
+    if txn.trans_code == TransCode.SPR:
+        warnings.append(
+            f"Stock split detected for {symbol} — lot quantities are NOT automatically "
+            f"adjusted. Reported positions for {symbol} may be inaccurate. Verify against "
+            f"your brokerage account and re-run after the CSV reflects post-split quantities."
+        )
+        return
+
+    if txn.trans_code == TransCode.OCA:
+        warnings.append(
+            f"Corporate action (OCA) detected for {symbol} — lot quantities are NOT "
+            f"automatically adjusted. Reported positions for {symbol} may be inaccurate. "
+            f"Verify against your brokerage account and re-run after the CSV reflects any "
+            f"post-action quantities."
+        )
+
+
+def _process_transaction(
+    txn: Transaction,
+    open_lots: dict[str, list[TaxLot]],
+    warnings: list[str],
+    unmatched_sells: list[str],
+    realized: list[RealizedEvent],
+) -> None:
+    """Apply a single transaction to the open-lot ledger."""
+    symbol = txn.instrument
+
+    if txn.trans_code in (TransCode.BUY, TransCode.BTO):
+        _add_lot(open_lots, symbol, txn)
+        return
+
+    if txn.trans_code in (TransCode.SELL, TransCode.STC, TransCode.BTC):
+        _close_lots_fifo(open_lots, symbol, txn, unmatched_sells, realized)
+        return
+
+    if txn.trans_code in (TransCode.OEXP, TransCode.OASGN):
+        _close_lots_fifo(open_lots, symbol, txn, unmatched_sells, realized)
+        if txn.trans_code == TransCode.OASGN:
+            warnings.append(
+                f"Option assignment (OASGN) detected for {symbol} on "
+                f"{txn.activity_date.strftime('%m/%d/%Y')} — the option P&L has "
+                f"been recorded, but the resulting stock position change from "
+                f"assignment/exercise may require manual verification."
+            )
+        return
+
+    if txn.trans_code == TransCode.STO:
+        _add_lot(open_lots, symbol, txn, asset_type=AssetType.OPTION, is_short_position=True)
+        return
+
+    if txn.trans_code in (TransCode.SPR, TransCode.OCA):
+        _warn_on_corporate_action(txn, warnings)
+
+
 def transactions_to_tax_lots(transactions: list[Transaction]) -> tuple[list[TaxLot], list[str], list[RealizedEvent]]:
     """
     Aggregate Robinhood transactions into TaxLot positions using FIFO.
@@ -527,59 +585,7 @@ def transactions_to_tax_lots(transactions: list[Transaction]) -> tuple[list[TaxL
     open_lots: dict[str, list[TaxLot]] = {}
 
     for txn in sorted_txns:
-        symbol = txn.instrument
-
-        if txn.trans_code in (TransCode.BUY, TransCode.BTO):
-            _add_lot(open_lots, symbol, txn)
-
-        elif txn.trans_code in (TransCode.SELL, TransCode.STC):
-            _close_lots_fifo(open_lots, symbol, txn, unmatched_sells, realized)
-
-        elif txn.trans_code == TransCode.BTC:
-            # Buy to Close — closes a short option position opened by STO.
-            # Previously missed: BTC was silently dropped, leaving STO lots open
-            # forever and creating phantom positions in the Positions tab.
-            _close_lots_fifo(open_lots, symbol, txn, unmatched_sells, realized)
-
-        elif txn.trans_code in (TransCode.OEXP, TransCode.OASGN):
-            # Option expiration or assignment — close the lot and record realized P&L.
-            # For long options (BTO lots) expiring worthless: price=0, so
-            #   pnl = 0 - cost_basis = -(full premium paid)  → realized loss ✓
-            # For short options (STO lots) expiring worthless: price=0, so
-            #   pnl = cost_basis - 0 = full premium collected → realized gain ✓
-            # Previously used _remove_lots_fifo which silently dropped the lot
-            # without recording any P&L, understating realized gains/losses.
-            _close_lots_fifo(open_lots, symbol, txn, unmatched_sells, realized)
-            if txn.trans_code == TransCode.OASGN:
-                warnings.append(
-                    f"Option assignment (OASGN) detected for {symbol} on "
-                    f"{txn.activity_date.strftime('%m/%d/%Y')} — the option P&L has "
-                    f"been recorded, but the resulting stock position change from "
-                    f"assignment/exercise may require manual verification."
-                )
-
-        elif txn.trans_code == TransCode.STO:
-            # Sell to Open — creates a short option position (credit received).
-            # Mark as short so P&L direction is computed correctly.
-            _add_lot(open_lots, symbol, txn, asset_type=AssetType.OPTION, is_short_position=True)
-
-        elif txn.trans_code in (TransCode.SPR, TransCode.OCA):
-            # Stock split / reverse split / corporate action.
-            # We cannot safely adjust lot quantities without knowing the split ratio,
-            # so we log a warning to alert the user that positions may be inaccurate.
-            if txn.trans_code == TransCode.SPR:
-                warnings.append(
-                    f"Stock split detected for {symbol} — lot quantities are NOT automatically "
-                    f"adjusted. Reported positions for {symbol} may be inaccurate. Verify against "
-                    f"your brokerage account and re-run after the CSV reflects post-split quantities."
-                )
-            elif txn.trans_code == TransCode.OCA:
-                warnings.append(
-                    f"Corporate action (OCA) detected for {symbol} — lot quantities are NOT "
-                    f"automatically adjusted. Reported positions for {symbol} may be inaccurate. "
-                    f"Verify against your brokerage account and re-run after the CSV reflects any "
-                    f"post-action quantities."
-                )
+        _process_transaction(txn, open_lots, warnings, unmatched_sells, realized)
 
     # Consolidated warnings for sells that could not be matched to open lots,
     # grouped by reason so each message is accurate and actionable.

@@ -29,6 +29,7 @@ export interface TaxLot {
   purchase_date: string; // ISO date string
   current_price: number | null;
   asset_type: AssetType;
+  contract_label?: string | null;
   unrealized_pnl: number | null;
   unrealized_pnl_pct: number | null;
   holding_period_days: number | null;
@@ -39,6 +40,7 @@ export interface TaxLot {
 export interface Position {
   position_id?: string;
   symbol: string;
+  display_label?: string | null;
   quantity: number;
   avg_cost_basis: number;
   total_cost_basis: number;

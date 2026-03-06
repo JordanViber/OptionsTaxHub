@@ -103,6 +103,7 @@ class TaxLot(BaseModel):
     purchase_date: date
     current_price: Optional[float] = None
     asset_type: AssetType = AssetType.STOCK
+    contract_label: Optional[str] = None
 
     # Computed fields populated during analysis
     unrealized_pnl: Optional[float] = None
@@ -123,6 +124,7 @@ class Position(BaseModel):
 
     position_id: str  # Stable unique key: "{symbol}:{asset_type}" for DataGrid row IDs
     symbol: str
+    display_label: Optional[str] = None
     quantity: float
     avg_cost_basis: float
     total_cost_basis: float

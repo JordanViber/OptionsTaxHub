@@ -89,6 +89,83 @@ FALLBACK_REPLACEMENTS: dict[str, list[dict[str, str]]] = {
 }
 
 
+def _position_group_key(lot: TaxLot) -> tuple[str, str, str | None]:
+    """Build a grouping key for position aggregation.
+
+    Stocks are grouped by underlying symbol. Options are grouped by contract label
+    so different expirations/strikes for the same underlying do not get merged into
+    a single synthetic position.
+    """
+    contract_key = lot.contract_label if lot.asset_type == AssetType.OPTION else None
+    return (lot.symbol, lot.asset_type.value, contract_key)
+
+
+def _lot_market_value(lot: TaxLot) -> float | None:
+    """Return signed market value for a single lot.
+
+    Long options/stocks contribute positive value. Short options are open
+    liabilities and therefore contribute negative market value.
+    """
+    if lot.current_price is None:
+        return None
+
+    cost_multiplier = 100 if lot.asset_type == AssetType.OPTION else 1
+    sign = -1 if lot.is_short_position else 1
+    return lot.current_price * lot.quantity * cost_multiplier * sign
+
+
+def _aggregate_position_from_lots(
+    symbol: str,
+    contract_label: str | None,
+    lots: list[TaxLot],
+) -> Position:
+    """Aggregate a homogeneous list of lots into a position row."""
+    total_quantity = sum(lot.quantity for lot in lots)
+    total_cost_basis = sum(lot.total_cost_basis for lot in lots)
+    avg_cost_divisor = total_quantity * 100 if lots[0].asset_type == AssetType.OPTION else total_quantity
+    avg_cost = total_cost_basis / avg_cost_divisor if avg_cost_divisor > 0 else 0
+
+    distinct_prices = {lot.current_price for lot in lots}
+    current_price = distinct_prices.pop() if len(distinct_prices) == 1 else None
+    lot_market_values = [_lot_market_value(lot) for lot in lots]
+    market_value = None
+    if all(value is not None for value in lot_market_values):
+        market_value = sum(value for value in lot_market_values if value is not None)
+
+    unrealized_pnl = sum(lot.unrealized_pnl or 0 for lot in lots)
+    unrealized_pnl_pct = (
+        (unrealized_pnl / total_cost_basis * 100) if total_cost_basis > 0 else 0
+    )
+
+    earliest_date = min(lot.purchase_date for lot in lots)
+    holding_days = max(lot.holding_period_days or 0 for lot in lots)
+    is_long_term = any(lot.is_long_term for lot in lots)
+    has_wash_risk = any(lot.wash_sale_disallowed > 0 for lot in lots)
+
+    return Position(
+        position_id=(
+            f"{symbol}:{lots[0].asset_type.value}:{contract_label}"
+            if contract_label
+            else f"{symbol}:{lots[0].asset_type.value}"
+        ),
+        symbol=symbol,
+        display_label=contract_label or symbol,
+        quantity=total_quantity,
+        avg_cost_basis=round(avg_cost, 2),
+        total_cost_basis=round(total_cost_basis, 2),
+        current_price=current_price,
+        market_value=round(market_value, 2) if market_value is not None else None,
+        unrealized_pnl=round(unrealized_pnl, 2),
+        unrealized_pnl_pct=round(unrealized_pnl_pct, 2),
+        earliest_purchase_date=earliest_date,
+        holding_period_days=holding_days,
+        is_long_term=is_long_term,
+        asset_type=lots[0].asset_type,
+        tax_lots=lots,
+        wash_sale_risk=has_wash_risk,
+    )
+
+
 def compute_lot_metrics(
     tax_lots: list[TaxLot],
     reference_date: date | None = None,
@@ -152,72 +229,18 @@ def aggregate_positions(tax_lots: list[TaxLot]) -> list[Position]:
     Returns:
         List of Position objects, one per unique (symbol, asset_type[, contract]).
     """
-    # Key by (symbol, asset_type) for stocks, or (symbol, asset_type, description)
-    # for options so each distinct contract is a separate Position row.
-    positions_map: dict[tuple, list[TaxLot]] = {}
+    # Group options by contract label so spreads/legs are not merged into one
+    # misleading underlying-level option row.
+    positions_map: dict[tuple[str, str, str | None], list[TaxLot]] = {}
     for lot in tax_lots:
-        if lot.asset_type == AssetType.OPTION:
-            key = (lot.symbol, lot.asset_type.value, lot.description)
-        else:
-            key = (lot.symbol, lot.asset_type.value, "")
+        key = _position_group_key(lot)
         if key not in positions_map:
             positions_map[key] = []
         positions_map[key].append(lot)
 
     positions: list[Position] = []
-    for (symbol, _asset_type_str, description), lots in positions_map.items():
-        total_quantity = sum(lot.quantity for lot in lots)
-        total_cost_basis = sum(lot.total_cost_basis for lot in lots)
-        # For options, cost_basis is scaled ×100 (dollars per contract), but avg_cost
-        # should be per-share (i.e. per-unit premium) to stay consistent with
-        # TaxLot.cost_basis_per_share and current_price semantics.
-        avg_cost_divisor = total_quantity * 100 if lots[0].asset_type == AssetType.OPTION else total_quantity
-        avg_cost = total_cost_basis / avg_cost_divisor if avg_cost_divisor > 0 else 0
-
-        current_price = lots[0].current_price  # All lots for same symbol have same price
-        # Options: each contract controls 100 shares; scale market value accordingly.
-        cost_multiplier = 100 if lots[0].asset_type == AssetType.OPTION else 1
-        market_value = (
-            current_price * total_quantity * cost_multiplier
-            if current_price is not None
-            else None
-        )
-        unrealized_pnl = sum(lot.unrealized_pnl or 0 for lot in lots)
-        unrealized_pnl_pct = (
-            (unrealized_pnl / total_cost_basis * 100) if total_cost_basis > 0 else 0
-        )
-
-        earliest_date = min(lot.purchase_date for lot in lots)
-        holding_days = max(lot.holding_period_days or 0 for lot in lots)
-        is_long_term = any(lot.is_long_term for lot in lots)
-        has_wash_risk = any(lot.wash_sale_disallowed > 0 for lot in lots)
-
-        # Build a stable unique id: use description (contract details) for options
-        # so each strike/expiry combo gets its own DataGrid row.
-        if lots[0].asset_type == AssetType.OPTION and description:
-            position_id = f"{symbol}:{lots[0].asset_type.value}:{description}"
-        else:
-            position_id = f"{symbol}:{lots[0].asset_type.value}"
-
-        positions.append(
-            Position(
-                position_id=position_id,
-                symbol=symbol,
-                quantity=total_quantity,
-                avg_cost_basis=round(avg_cost, 2),
-                total_cost_basis=round(total_cost_basis, 2),
-                current_price=current_price,
-                market_value=round(market_value, 2) if market_value is not None else None,
-                unrealized_pnl=round(unrealized_pnl, 2),
-                unrealized_pnl_pct=round(unrealized_pnl_pct, 2),
-                earliest_purchase_date=earliest_date,
-                holding_period_days=holding_days,
-                is_long_term=is_long_term,
-                asset_type=lots[0].asset_type,
-                tax_lots=lots,
-                wash_sale_risk=has_wash_risk,
-            )
-        )
+    for (symbol, _asset_type_str, contract_label), lots in positions_map.items():
+        positions.append(_aggregate_position_from_lots(symbol, contract_label, lots))
 
     return positions
 

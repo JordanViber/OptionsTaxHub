@@ -64,12 +64,20 @@ function PnlCell({
 const columns: GridColDef<Position>[] = [
   {
     field: "symbol",
-    headerName: "Symbol",
-    width: 100,
+    headerName: "Position",
+    width: 220,
     renderCell: (params) => (
-      <Typography variant="body2" sx={{ fontWeight: 700 }}>
-        {params.value}
-      </Typography>
+      <Box sx={{ minWidth: 0 }}>
+        <Typography variant="body2" sx={{ fontWeight: 700 }} noWrap>
+          {params.row.display_label ?? params.value}
+        </Typography>
+        {params.row.display_label &&
+          params.row.display_label !== params.value && (
+            <Typography variant="caption" color="text.secondary" noWrap>
+              {params.value}
+            </Typography>
+          )}
+      </Box>
     ),
   },
   {

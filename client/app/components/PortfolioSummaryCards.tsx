@@ -183,7 +183,7 @@ function RealizedCard({ realized }: Readonly<{ realized: RealizedSummary }>) {
 /**
  * Portfolio summary cards — displayed at top of dashboard after analysis.
  *
- * Shows: Total Portfolio Value, Unrealized P&L, Harvestable Losses, Est. Tax Savings,
+ * Shows: Net Open Position Value, Unrealized P&L, Harvestable Losses, Est. Tax Savings,
  * and (when available) the realized gain/loss breakdown for the analysis tax year.
  */
 export default function PortfolioSummaryCards({
@@ -198,9 +198,9 @@ export default function PortfolioSummaryCards({
     <Grid container spacing={2}>
       <Grid size={{ xs: 12, sm: 6, md }}>
         <MetricCard
-          title="Portfolio Value"
+          title="Net Open Position Value"
           value={formatCurrency(summary.total_market_value)}
-          subtitle={`${summary.positions_count} positions`}
+          subtitle={`${summary.positions_count} open positions — excludes cash and account equity adjustments`}
           icon={<PortfolioIcon />}
           color="#1976d2"
         />
