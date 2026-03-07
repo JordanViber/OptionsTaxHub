@@ -109,6 +109,14 @@ describe("WashSaleWarning", () => {
     expect(screen.getByText(/tickers/)).toBeInTheDocument();
   });
 
+  it("mentions the selected tax year when provided", () => {
+    render(<WashSaleWarning flags={[baseFlag]} taxYear={2025} />);
+
+    expect(
+      screen.getByText(/only shows sale events from tax year 2025/i),
+    ).toBeInTheDocument();
+  });
+
   it("groups multiple events for the same ticker into one accordion row", () => {
     const flags: WashSaleFlag[] = [
       baseFlag,
@@ -133,6 +141,18 @@ describe("WashSaleWarning", () => {
     render(<WashSaleWarning flags={[baseFlag]} />);
 
     expect(screen.getByText("1 event")).toBeInTheDocument();
+  });
+
+  it("suppresses zero-dollar wash-sale flags", () => {
+    render(
+      <WashSaleWarning
+        flags={[
+          { ...baseFlag, disallowed_loss: 0.001, explanation: "Tiny event" },
+        ]}
+      />,
+    );
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("expands an accordion when clicked and collapses it when clicked again", () => {

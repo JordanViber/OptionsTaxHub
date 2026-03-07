@@ -568,9 +568,6 @@ def test_analyze_portfolio_saves_history(monkeypatch):
 
     assert response.status_code == 200
     assert save_called["value"] is True
-    # Verify AI suggestions are always enabled (removed opt-in)
-    data = response.json()
-    assert data["tax_profile"]["ai_suggestions_enabled"] is True
 
 
 def test_analyze_portfolio_ai_failure_adds_warning(monkeypatch):
@@ -659,7 +656,7 @@ def test_analyze_portfolio_with_wash_sales(monkeypatch):
     monkeypatch.setattr("main.parse_csv", lambda _: (lots, transactions, [], []))
     monkeypatch.setattr("main.fetch_current_prices", lambda s, fb=None: ({"AAPL": 145.0}, []))
     monkeypatch.setattr("main.compute_lot_metrics", lambda l: l)
-    monkeypatch.setattr("main.detect_wash_sales", lambda t: wash_flags)
+    monkeypatch.setattr("main.detect_wash_sales", lambda t, tax_year=None: wash_flags)
     monkeypatch.setattr("main.adjust_lots_for_wash_sales", lambda l, w: l)
     monkeypatch.setattr("main.prepare_positions_for_ai", lambda l: [])
     monkeypatch.setattr("main.generate_suggestions", lambda **kw: [])
@@ -673,6 +670,79 @@ def test_analyze_portfolio_with_wash_sales(monkeypatch):
     assert len(data["wash_sale_flags"]) == 1
     assert data["wash_sale_flags"][0]["symbol"] == "AAPL"
     assert data["summary"]["wash_sale_flags_count"] == 1
+
+
+def test_analyze_portfolio_passes_selected_tax_year_to_wash_sale_detector(monkeypatch):
+    """POST /api/portfolio/analyze scopes wash-sale output to the selected tax year."""
+    from datetime import date
+    from models import TaxLot, Position, PortfolioSummary, Transaction, TransCode
+
+    lots = [
+        TaxLot(
+            symbol="AAPL", quantity=10, cost_basis_per_share=150.0,
+            total_cost_basis=1500.0, purchase_date=date(2024, 1, 15),
+            current_price=145.0,
+        ),
+    ]
+    positions = [
+        Position(
+            position_id="AAPL:stock", symbol="AAPL", quantity=10, avg_cost_basis=150.0,
+            total_cost_basis=1500.0, current_price=145.0, market_value=1450.0,
+        ),
+    ]
+    summary = PortfolioSummary(positions_count=1, wash_sale_flags_count=0)
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "main.parse_csv",
+        lambda _: (
+            lots,
+            [
+                Transaction(
+                    activity_date=date(2025, 6, 1), instrument="AAPL",
+                    trans_code=TransCode.SELL, quantity=10, price=140.0, amount=-1400.0,
+                ),
+            ],
+            [],
+            [],
+        ),
+    )
+    monkeypatch.setattr("main.fetch_current_prices", lambda s, fb=None: ({"AAPL": 145.0}, []))
+    monkeypatch.setattr("main.compute_lot_metrics", lambda l: l)
+    monkeypatch.setattr(
+        "main.detect_wash_sales",
+        lambda t, tax_year=None: captured.update({"tax_year": tax_year}) or [],
+    )
+    monkeypatch.setattr("main.adjust_lots_for_wash_sales", lambda l, w: l)
+    monkeypatch.setattr("main.prepare_positions_for_ai", lambda l: [])
+    monkeypatch.setattr("main.generate_suggestions", lambda **kw: [])
+    monkeypatch.setattr("main.aggregate_positions", lambda l: positions)
+    monkeypatch.setattr("main.build_portfolio_summary", lambda p, s, w: summary)
+
+    response = client.post("/api/portfolio/analyze?tax_year=2026", files=_make_csv())
+
+    assert response.status_code == 200
+    assert captured["tax_year"] == 2026
+
+
+def test_summarize_warnings_consolidates_repetitive_broker_messages():
+    """Repeated broker-specific warnings should be grouped into plain English summaries."""
+    from main import _summarize_warnings
+
+    warnings = [
+        "Option assignment (OASGN) detected for TSLL on 09/22/2025 — the option P&L has been recorded, but the resulting stock position change from assignment/exercise may require manual verification.",
+        "Option assignment (OASGN) detected for TSLL on 09/26/2025 — the option P&L has been recorded, but the resulting stock position change from assignment/exercise may require manual verification.",
+        "Corporate action (OCA) detected for ASST — lot quantities are NOT automatically adjusted. Reported positions for ASST may be inaccurate. Verify against your brokerage account and re-run after the CSV reflects any post-action quantities.",
+        "Corporate action (OCA) detected for ASST — lot quantities are NOT automatically adjusted. Reported positions for ASST may be inaccurate. Verify against your brokerage account and re-run after the CSV reflects any post-action quantities.",
+        "Using CSV-provided price for CEP (live price unavailable)",
+    ]
+
+    summarized = _summarize_warnings(warnings)
+
+    assert any("Option assignments affected TSLL 2 times" in w for w in summarized)
+    assert any("Corporate action activity may have changed" in w for w in summarized)
+    assert any("Live prices were unavailable for CEP" in w for w in summarized)
+    assert len(summarized) == 3
 
 
 

@@ -1,14 +1,17 @@
 import os
 import logging
 import re
+from collections import defaultdict
+from pathlib import Path
 from typing import Annotated, Optional
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
 # Load environment variables BEFORE importing local modules that read os.environ
 # at module-import time (e.g. auth.py, db.py).  Order matters: .env.local wins.
-load_dotenv(".env.local")
-load_dotenv(".env")
+SERVER_DIR = Path(__file__).resolve().parent
+load_dotenv(SERVER_DIR / ".env.local")
+load_dotenv(SERVER_DIR / ".env")
 
 from fastapi import FastAPI, File, UploadFile, Query, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -277,6 +280,146 @@ def _process_ai_suggestions(
     return ai_suggestions, warnings
 
 
+def _classify_warning(
+    warning: str,
+    row_errors: list[str],
+    option_assignments: dict[str, list[str]],
+    corporate_actions: dict[str, int],
+    stock_splits: dict[str, int],
+    fallback_prices: list[str],
+    passthrough: list[str],
+) -> None:
+    """Place a raw warning into the appropriate summary bucket."""
+    if warning.startswith("Row "):
+        row_errors.append(warning)
+        return
+
+    assignment_match = re.match(
+        r"^Option assignment \(OASGN\) detected for (?P<symbol>\S+) on (?P<date>\d{2}/\d{2}/\d{4})",
+        warning,
+    )
+    if assignment_match:
+        option_assignments[assignment_match.group("symbol")].append(
+            assignment_match.group("date")
+        )
+        return
+
+    corporate_match = re.match(
+        r"^Corporate action \(OCA\) detected for (?P<symbol>\S+)",
+        warning,
+    )
+    if corporate_match:
+        corporate_actions[corporate_match.group("symbol")] += 1
+        return
+
+    split_match = re.match(r"^Stock split detected for (?P<symbol>\S+)", warning)
+    if split_match:
+        stock_splits[split_match.group("symbol")] += 1
+        return
+
+    price_match = re.match(r"^Using CSV-provided price for (?P<symbol>\S+) ", warning)
+    if price_match:
+        fallback_prices.append(price_match.group("symbol"))
+        return
+
+    passthrough.append(warning)
+
+
+def _build_summarized_warning_messages(
+    row_errors: list[str],
+    option_assignments: dict[str, list[str]],
+    corporate_actions: dict[str, int],
+    stock_splits: dict[str, int],
+    fallback_prices: list[str],
+) -> list[str]:
+    """Convert warning buckets into short plain-English messages."""
+    summarized: list[str] = []
+
+    if row_errors:
+        if len(row_errors) == 1:
+            summarized.append(row_errors[0])
+        else:
+            summarized.append(
+                f"{len(row_errors)} CSV row(s) could not be parsed. First issue: {row_errors[0]}"
+            )
+
+    for symbol in sorted(option_assignments.keys()):
+        dates = sorted(option_assignments[symbol])
+        if len(dates) == 1:
+            summarized.append(
+                f"Option assignment affected {symbol} on {dates[0]}. We recorded the option result, but the resulting share position may need manual verification."
+            )
+        else:
+            summarized.append(
+                f"Option assignments affected {symbol} {len(dates)} times ({dates[0]} to {dates[-1]}). We recorded the option results, but the resulting share position may need manual verification."
+            )
+
+    for symbol in sorted(corporate_actions.keys()):
+        count = corporate_actions[symbol]
+        summarized.append(
+            f"Corporate action activity may have changed the reported share count for {symbol} ({count} event{'s' if count != 1 else ''}). Position totals for {symbol} may be inaccurate until the brokerage CSV fully reflects the change."
+        )
+
+    for symbol in sorted(stock_splits.keys()):
+        count = stock_splits[symbol]
+        summarized.append(
+            f"A stock split may have changed the reported share count for {symbol} ({count} event{'s' if count != 1 else ''}). Position totals for {symbol} may be inaccurate until the brokerage CSV fully reflects the split."
+        )
+
+    if fallback_prices:
+        symbols = ", ".join(sorted(set(fallback_prices)))
+        summarized.append(
+            f"Live prices were unavailable for {symbols}, so the analysis used the CSV-provided price instead."
+        )
+
+    return summarized
+
+
+def _dedupe_preserving_order(warnings: list[str]) -> list[str]:
+    """Return unique warning strings without changing their order."""
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for warning in warnings:
+        if warning not in seen:
+            seen.add(warning)
+            ordered.append(warning)
+    return ordered
+
+
+def _summarize_warnings(warnings: List[str]) -> List[str]:
+    """Collapse repetitive technical warnings into shorter plain-English notes."""
+    if not warnings:
+        return []
+
+    row_errors: list[str] = []
+    option_assignments: dict[str, list[str]] = defaultdict(list)
+    corporate_actions: dict[str, int] = defaultdict(int)
+    stock_splits: dict[str, int] = defaultdict(int)
+    fallback_prices: list[str] = []
+    passthrough: list[str] = []
+
+    for warning in warnings:
+        _classify_warning(
+            warning,
+            row_errors,
+            option_assignments,
+            corporate_actions,
+            stock_splits,
+            fallback_prices,
+            passthrough,
+        )
+
+    summarized = _build_summarized_warning_messages(
+        row_errors,
+        option_assignments,
+        corporate_actions,
+        stock_splits,
+        fallback_prices,
+    )
+
+    return _dedupe_preserving_order([*summarized, *passthrough])
+
+
 @app.post(
     "/api/portfolio/analyze",
     response_model=PortfolioAnalysis,
@@ -317,7 +460,7 @@ async def analyze_portfolio(
             },
         )
 
-    # Build tax profile from query params, but check user's saved profile for AI consent
+    # Build tax profile from query params.
     try:
         fs = FilingStatus(filing_status)
     except ValueError:
@@ -327,7 +470,6 @@ async def analyze_portfolio(
         filing_status=fs,
         estimated_annual_income=estimated_income or 75000.0,
         tax_year=tax_year or 2025,
-        ai_suggestions_enabled=True,
     )
 
     all_warnings = list(parse_errors)
@@ -352,7 +494,11 @@ async def analyze_portfolio(
     tax_lots = compute_lot_metrics(tax_lots)
 
     # Detect wash sales from transaction history
-    wash_sale_flags = detect_wash_sales(transactions) if transactions else []
+    wash_sale_flags = (
+        detect_wash_sales(transactions, tax_year=tax_profile.tax_year)
+        if transactions
+        else []
+    )
     if wash_sale_flags:
         tax_lots = adjust_lots_for_wash_sales(tax_lots, wash_sale_flags)
 
@@ -381,7 +527,7 @@ async def analyze_portfolio(
         wash_sale_flags=wash_sale_flags,
         summary=summary,
         tax_profile=tax_profile,
-        warnings=all_warnings,
+        warnings=_summarize_warnings(all_warnings),
     )
 
     # Save analysis to history for authenticated user
@@ -562,7 +708,6 @@ async def save_tax_profile_endpoint(
         estimated_annual_income=profile.estimated_annual_income,
         state=profile.state,
         tax_year=profile.tax_year,
-        ai_suggestions_enabled=profile.ai_suggestions_enabled,
     )
 
     if saved:

@@ -3,18 +3,32 @@ import ServiceWorkerRegistration from "../../app/components/ServiceWorkerRegistr
 
 describe("ServiceWorkerRegistration", () => {
   const originalServiceWorker = navigator.serviceWorker;
+  const originalNodeEnv = process.env.NODE_ENV;
+  const serviceWorkerGlobal = globalThis as typeof globalThis & {
+    __OPTIONS_TAX_HUB_DISABLE_SW__?: boolean;
+  };
 
   beforeEach(() => {
     jest.useFakeTimers();
+    Object.defineProperty(process.env, "NODE_ENV", {
+      value: originalNodeEnv,
+      configurable: true,
+    });
+    delete serviceWorkerGlobal.__OPTIONS_TAX_HUB_DISABLE_SW__;
   });
 
   afterEach(() => {
     jest.runOnlyPendingTimers();
     jest.useRealTimers();
+    Object.defineProperty(process.env, "NODE_ENV", {
+      value: originalNodeEnv,
+      configurable: true,
+    });
     Object.defineProperty(navigator, "serviceWorker", {
       value: originalServiceWorker,
       configurable: true,
     });
+    delete serviceWorkerGlobal.__OPTIONS_TAX_HUB_DISABLE_SW__;
   });
 
   it("registers service worker and schedules updates", async () => {
@@ -69,5 +83,26 @@ describe("ServiceWorkerRegistration", () => {
     delete (navigator as { serviceWorker?: unknown }).serviceWorker;
 
     render(<ServiceWorkerRegistration />);
+  });
+
+  it("unregisters existing service workers in development instead of registering a new one", async () => {
+    serviceWorkerGlobal.__OPTIONS_TAX_HUB_DISABLE_SW__ = true;
+    const unregister = jest.fn().mockResolvedValue(true);
+    const getRegistrations = jest.fn().mockResolvedValue([{ unregister }]);
+    const register = jest.fn().mockResolvedValue({ update: jest.fn() });
+
+    Object.defineProperty(navigator, "serviceWorker", {
+      value: { register, getRegistrations },
+      configurable: true,
+    });
+
+    render(<ServiceWorkerRegistration />);
+
+    await waitFor(() => {
+      expect(getRegistrations).toHaveBeenCalled();
+    });
+
+    expect(unregister).toHaveBeenCalled();
+    expect(register).not.toHaveBeenCalled();
   });
 });
