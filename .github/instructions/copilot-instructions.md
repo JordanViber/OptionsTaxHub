@@ -20,7 +20,7 @@
 - **Bug fixes**: Always verify with Playwright MCP after every fix. Navigate to the affected page, interact with it, confirm the behavior is correct.
 - **Product thinking**: Proactively look for small, low-risk functionality or UX improvements that materially reduce confusion, improve trust, or make the workflow clearer for end users. When the improvement is clearly beneficial, implement it, update tests, and document any important behavior changes.
 - **Ports**: Local backend = **8001**. Port 8080 = blocked by OS on this machine.
-- **React Query cache keys**: `useTaxProfile` uses `["tax-profile"]`. `useSaveTaxProfile` must invalidate the exact same key.
+- **React Query cache keys**: `useTaxProfile` uses a user-scoped key like `["tax-profile", userId ?? "anonymous"]`. `useSaveTaxProfile` must invalidate that exact same user-scoped key.
 - **Auth guard**: Any React Query hook that calls protected endpoints must use `enabled: !!user` to avoid 401s before auth session is ready.
 - **Supabase project**: ID `vgrlucxqncajjdoaoctq`, region `us-west-2`, URL `https://vgrlucxqncajjdoaoctq.supabase.co`
 - **`tax_profiles` live schema**: `id UUID PK`, `user_id TEXT UNIQUE`, `filing_status`, `estimated_annual_income`, `state`, `tax_year`, `created_at`, `updated_at`

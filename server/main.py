@@ -484,7 +484,7 @@ def _apply_manual_review_flags(
 
 def _apply_live_prices_to_tax_lots(tax_lots: list, all_warnings: list[str]) -> list:
     """Populate stock and option lots with live prices when available."""
-    symbols = list({lot.symbol for lot in tax_lots})
+    symbols = list({lot.symbol for lot in tax_lots if lot.asset_type == AssetType.STOCK})
     fallback_prices = {
         lot.symbol: lot.current_price
         for lot in tax_lots
@@ -534,7 +534,8 @@ def _filter_suggestion_tax_lots(
     affected_symbols = {
         txn.instrument
         for txn in transactions
-        if txn.trans_code in (TransCode.SPR, TransCode.OCA)
+        if txn.asset_type == AssetType.STOCK
+        and txn.trans_code in (TransCode.SPR, TransCode.OCA)
     }
     if not affected_symbols:
         return tax_lots, []
