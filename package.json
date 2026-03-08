@@ -10,7 +10,7 @@
     "server"
   ],
   "scripts": {
-    "kill-ports": "npx kill-port 3000 8001",
+    "kill-ports": "npx kill-port 3000 8001 8011",
     "predev": "npm run kill-ports",
     "dev": "concurrently \"npm run dev:client\" \"npm run dev:server\"",
     "dev:client": "cd client && npm run dev",

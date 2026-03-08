@@ -29,7 +29,7 @@ function apiPath(path: string) {
       if (url.hostname === "localhost" || url.hostname === "127.0.0.1") {
         return path.startsWith("/") ? path : `/${path}`;
       }
-    } catch (_e) {
+    } catch {
       // NOSONAR typescript:S2486 — URL parse failure is expected when API_BASE is a relative path
       // If API_BASE is not a valid URL (e.g. a relative path), fall back to using it as-is.
     }
@@ -221,17 +221,30 @@ async function saveTaxProfile(
   return response.json();
 }
 
+function normalizeTaxProfile(profile: TaxProfile): TaxProfile {
+  return {
+    ...profile,
+    estimated_annual_income: Number(profile.estimated_annual_income ?? 75000),
+    tax_year: Number(profile.tax_year ?? 2025),
+    state: profile.state ?? "",
+    filing_status: profile.filing_status ?? "single",
+  };
+}
+
 /**
  * React Query mutation hook for saving tax profile.
  * Invalidates the tax-profile cache on success so subsequent reads get fresh data.
  */
-export function useSaveTaxProfile() {
+export function useSaveTaxProfile(userId?: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: saveTaxProfile,
-    onSuccess: () => {
-      // Invalidate using the same key as useTaxProfile so the cache is cleared
-      queryClient.invalidateQueries({ queryKey: ["tax-profile"] });
+    onSuccess: (response) => {
+      const profile = normalizeTaxProfile(response.profile);
+      const queryKey = ["tax-profile", userId ?? profile.user_id ?? "anonymous"];
+
+      queryClient.setQueryData(queryKey, profile);
+      queryClient.invalidateQueries({ queryKey });
     },
   });
 }
@@ -245,24 +258,33 @@ async function fetchTaxProfile(): Promise<TaxProfile> {
   const headers = await getAuthHeaders();
   const response = await fetch(apiPath(`/api/tax-profile`), {
     headers,
+    cache: "no-store",
   });
 
   if (!response.ok) {
     throw new Error(`Fetch failed: ${response.statusText}`);
   }
 
-  return response.json();
+  return normalizeTaxProfile(await response.json());
 }
 
 /**
  * React Query hook for authenticated user's tax profile.
  * Pass `enabled: !!user` to prevent firing before the auth session is ready.
  */
-export function useTaxProfile({ enabled = true }: { enabled?: boolean } = {}) {
+export function useTaxProfile({
+  enabled = true,
+  userId,
+}: {
+  enabled?: boolean;
+  userId?: string;
+} = {}) {
   return useQuery({
-    queryKey: ["tax-profile"],
+    queryKey: ["tax-profile", userId ?? "anonymous"],
     queryFn: fetchTaxProfile,
-    enabled,
+    enabled: enabled && !!userId,
+    staleTime: 0,
+    refetchOnMount: "always",
   });
 }
 
@@ -334,10 +356,11 @@ async function fetchPortfolioHistory(): Promise<AnalysisHistoryItem[]> {
  * Fetches past uploads automatically. Refetches when invalidated (e.g., after upload).
  * Uses JWT authentication from getAuthHeaders().
  */
-export function usePortfolioHistory() {
+export function usePortfolioHistory(userId?: string) {
   return useQuery({
-    queryKey: ["portfolio-history"],
+    queryKey: ["portfolio-history", userId ?? "anonymous"],
     queryFn: fetchPortfolioHistory,
+    enabled: !!userId,
     staleTime: 0, // Always refetch when invalidated
     refetchOnMount: "always", // Refetch every time component mounts
     refetchOnWindowFocus: false, // Don't refetch on window focus

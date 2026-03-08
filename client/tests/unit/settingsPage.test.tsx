@@ -16,8 +16,8 @@ jest.mock("../../app/context/auth", () => ({
 }));
 
 jest.mock("../../lib/api", () => ({
-  useTaxProfile: () => mockUseTaxProfile(),
-  useSaveTaxProfile: () => mockUseSaveTaxProfile(),
+  useTaxProfile: (...args: unknown[]) => mockUseTaxProfile(...args),
+  useSaveTaxProfile: (...args: unknown[]) => mockUseSaveTaxProfile(...args),
 }));
 
 jest.mock("../../app/components/TaxDisclaimer", () => () => (
@@ -87,6 +87,11 @@ describe("SettingsPage", () => {
       });
 
       renderWithClient(<SettingsPage />);
+
+      expect(mockUseTaxProfile).toHaveBeenCalledWith({
+        enabled: true,
+        userId: "user-1",
+      });
 
       expect(screen.getByText("Tax Profile Settings")).toBeInTheDocument();
       expect(screen.getByText("Your Tax Profile")).toBeInTheDocument();
@@ -178,7 +183,7 @@ describe("SettingsPage", () => {
         data: {
           user_id: "user-1",
           filing_status: "married_filing_jointly",
-          estimated_annual_income: 150000,
+          estimated_annual_income: "150000",
           state: "NY",
           tax_year: 2025,
         },

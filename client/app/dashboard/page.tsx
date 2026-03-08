@@ -122,7 +122,7 @@ function getAnalysisErrorMessage(error: unknown): string {
   }
 
   if (/failed to fetch|network|econnrefused/i.test(error.message)) {
-    return "Could not reach the backend server. Make sure it is running on port 8001 (npm run dev:server).";
+    return "Could not reach the backend server. Make sure it is running on port 8011 (npm run dev:server).";
   }
 
   return error.message;
@@ -391,14 +391,17 @@ export default function DashboardPage() {
   const queryClient = useQueryClient();
 
   // Load the user's tax profile for analyze params
-  const { data: taxProfile } = useTaxProfile({ enabled: !!user });
+  const { data: taxProfile } = useTaxProfile({
+    enabled: !!user,
+    userId: user?.id,
+  });
 
   // Backend health check — shows a banner when the API server is unreachable
   const { isError: backendDown, isFetched: backendChecked } =
     useBackendHealth();
 
   // Load past upload history
-  const { data: history, error: historyError } = usePortfolioHistory();
+  const { data: history, error: historyError } = usePortfolioHistory(user?.id);
 
   // Full portfolio analysis mutation
   const {
@@ -437,7 +440,7 @@ export default function DashboardPage() {
       cleanupOrphanHistory()
         .then(() => {
           queryClient.invalidateQueries({
-            queryKey: ["portfolio-history"],
+            queryKey: ["portfolio-history", user?.id],
           });
         })
         .catch(() => {});
@@ -467,7 +470,7 @@ export default function DashboardPage() {
           onSuccess: () => {
             // Refresh history sidebar after successful analysis
             queryClient.invalidateQueries({
-              queryKey: ["portfolio-history"],
+              queryKey: ["portfolio-history", user?.id],
             });
           },
         },
@@ -482,7 +485,10 @@ export default function DashboardPage() {
     // Remove cached portfolio history when the user signs out to avoid
     // briefly showing a previous user's history while refetching.
     queryClient.removeQueries({
-      queryKey: ["portfolio-history"],
+      queryKey: ["portfolio-history", user?.id],
+    });
+    queryClient.removeQueries({
+      queryKey: ["tax-profile", user?.id],
     });
     await signOut();
     setMenuAnchor(null);
@@ -537,7 +543,7 @@ export default function DashboardPage() {
     try {
       await deleteAnalysis(deleteTarget.id);
       queryClient.invalidateQueries({
-        queryKey: ["portfolio-history"],
+        queryKey: ["portfolio-history", user?.id],
       });
     } catch (err) {
       console.error("Failed to delete analysis:", err);
@@ -870,7 +876,7 @@ export default function DashboardPage() {
           {backendChecked && backendDown && (
             <Alert severity="warning">
               <AlertTitle>Backend server unreachable</AlertTitle>
-              The API server is not responding on port 8001. Run{" "}
+              The API server is not responding on port 8011. Run{" "}
               <code>npm run dev:server</code> from the project root, or use the{" "}
               <strong>Server: API</strong> task in VS Code.
             </Alert>
