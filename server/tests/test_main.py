@@ -745,6 +745,139 @@ def test_summarize_warnings_consolidates_repetitive_broker_messages():
     assert len(summarized) == 3
 
 
+def test_filter_suggestion_tax_lots_skips_split_affected_stock_lots():
+    from datetime import date
+    from main import _filter_suggestion_tax_lots
+    from models import TaxLot, Transaction, AssetType, TransCode
+
+    stock_lot = TaxLot(
+        symbol="ASST",
+        quantity=5,
+        cost_basis_per_share=1.0,
+        total_cost_basis=5.0,
+        purchase_date=date(2026, 1, 15),
+        asset_type=AssetType.STOCK,
+    )
+    option_lot = TaxLot(
+        symbol="ASST",
+        quantity=1,
+        cost_basis_per_share=2.5,
+        total_cost_basis=250.0,
+        purchase_date=date(2026, 1, 15),
+        asset_type=AssetType.OPTION,
+        contract_label="ASST 4/17/2026 Call $1.00",
+    )
+    transactions = [
+        Transaction(
+            activity_date=date(2026, 2, 6),
+            instrument="ASST",
+            description="Stock Split",
+            trans_code=TransCode.SPR,
+            quantity=400,
+            price=0.0,
+            amount=0.0,
+            asset_type=AssetType.STOCK,
+        )
+    ]
+
+    filtered_lots, warnings = _filter_suggestion_tax_lots(
+        [stock_lot, option_lot],
+        transactions,
+    )
+
+    assert filtered_lots == [option_lot]
+    assert any("Skipped automated harvesting suggestions for ASST" in w for w in warnings)
+
+
+def test_build_manual_review_notes_by_symbol_summarizes_unsupported_events():
+    from datetime import date
+    from main import _build_manual_review_notes_by_symbol
+    from models import AssetType, Transaction, TransCode
+
+    transactions = [
+        Transaction(
+            activity_date=date(2026, 2, 6),
+            instrument="ASST",
+            description="Stock Split",
+            trans_code=TransCode.SPR,
+            quantity=400,
+            price=0.0,
+            amount=0.0,
+            asset_type=AssetType.STOCK,
+        ),
+        Transaction(
+            activity_date=date(2026, 2, 7),
+            instrument="ASST",
+            description="Corporate Action",
+            trans_code=TransCode.OCA,
+            quantity=1,
+            price=0.0,
+            amount=0.0,
+            asset_type=AssetType.OPTION,
+        ),
+        Transaction(
+            activity_date=date(2026, 2, 8),
+            instrument="TSLL",
+            description="Option Assignment",
+            trans_code=TransCode.OASGN,
+            quantity=1,
+            price=0.0,
+            amount=0.0,
+            asset_type=AssetType.OPTION,
+        ),
+    ]
+
+    notes = _build_manual_review_notes_by_symbol(transactions)
+
+    assert "ASST" in notes
+    assert "stock split activity" in notes["ASST"]
+    assert "corporate-action adjustments" in notes["ASST"]
+    assert "TSLL" in notes
+    assert "option assignment activity" in notes["TSLL"]
+
+
+def test_apply_manual_review_flags_marks_positions_and_suggestions():
+    from main import _apply_manual_review_flags
+    from models import AssetType, HarvestingSuggestion, Position
+
+    reason = (
+        "Recent stock split activity affected ASST. Verify reported quantities, "
+        "adjusted contracts, and cost basis manually before acting."
+    )
+    positions = [
+        Position(
+            position_id="ASST:stock",
+            symbol="ASST",
+            quantity=5,
+            avg_cost_basis=1.0,
+            total_cost_basis=5.0,
+            asset_type=AssetType.STOCK,
+            tax_lots=[],
+        )
+    ]
+    suggestions = [
+        HarvestingSuggestion(
+            symbol="ASST",
+            suggestion_id="ASST-stock-2026-01-15",
+            display_label="ASST",
+            lot_details="Tax lot opened Jan 15, 2026 at $1.00/share",
+            quantity=5,
+            cost_basis_per_share=1.0,
+            estimated_loss=1.5,
+            tax_savings_estimate=0.3,
+            holding_period_days=10,
+            is_long_term=False,
+        )
+    ]
+
+    _apply_manual_review_flags(positions, suggestions, {"ASST": reason})
+
+    assert positions[0].manual_review_required is True
+    assert positions[0].manual_review_reason == reason
+    assert suggestions[0].manual_review_required is True
+    assert suggestions[0].manual_review_reason == reason
+
+
 
 
 
@@ -917,6 +1050,55 @@ def test_get_prices_with_warnings(monkeypatch):
     assert response.status_code == 200
     data = response.json()
     assert len(data["warnings"]) == 1
+
+
+def test_analyze_portfolio_applies_live_option_prices(monkeypatch):
+    from datetime import date
+    import pytest
+    from models import TaxLot, Transaction, TransCode, AssetType, Position, PortfolioSummary
+
+    option_lot = TaxLot(
+        symbol="TSLA",
+        description="TSLA 3/16/2026 Put $375.00",
+        quantity=1,
+        cost_basis_per_share=4.92,
+        total_cost_basis=492.0,
+        purchase_date=date(2026, 3, 2),
+        current_price=4.92,
+        asset_type=AssetType.OPTION,
+        contract_label="TSLA 3/16/2026 Put $375.00",
+    )
+    transactions = [
+        Transaction(
+            activity_date=date(2026, 3, 2),
+            instrument="TSLA",
+            description="TSLA 3/16/2026 Put $375.00",
+            trans_code=TransCode.BTO,
+            quantity=1,
+            price=4.92,
+            amount=-492.0,
+            asset_type=AssetType.OPTION,
+        )
+    ]
+
+    monkeypatch.setattr("main.parse_csv", lambda _: ([option_lot], transactions, [], []))
+    monkeypatch.setattr("main.fetch_current_prices", lambda s, fb=None: ({}, []))
+    monkeypatch.setattr(
+        "main.fetch_option_prices",
+        lambda labels, fb=None: ({"TSLA 3/16/2026 Put $375.00": 6.25}, []),
+    )
+    monkeypatch.setattr("main.prepare_positions_for_ai", lambda l: [])
+    monkeypatch.setattr("main.generate_suggestions", lambda **kw: [])
+    monkeypatch.setattr("main.detect_wash_sales", lambda *args, **kwargs: [])
+    monkeypatch.setattr("main._save_history_best_effort", lambda *args, **kwargs: None)
+
+    response = client.post("/api/portfolio/analyze", files=_make_csv())
+    assert response.status_code == 200
+
+    data = response.json()
+    assert data["positions"][0]["current_price"] == pytest.approx(6.25)
+    assert data["positions"][0]["market_value"] == pytest.approx(625.0)
+    assert data["positions"][0]["unrealized_pnl"] == pytest.approx(133.0)
 
 
 def test_get_prices_empty_symbols():

@@ -29,6 +29,7 @@ from models import (
     TaxLot,
     TaxProfile,
     Transaction,
+    TransCode,
 )
 from tax_engine import calculate_tax_savings, get_capital_loss_limit
 from wash_sale import check_prospective_wash_sale_risk, detect_wash_sales, adjust_lots_for_wash_sales
@@ -245,6 +246,111 @@ def aggregate_positions(tax_lots: list[TaxLot]) -> list[Position]:
     return positions
 
 
+def _stock_trade_totals_by_symbol(transactions: list[Transaction]) -> dict[str, dict[str, float]]:
+    """Summarize stock-only buy/sell quantities by symbol."""
+    totals_by_symbol: dict[str, dict[str, float]] = {}
+
+    for txn in transactions:
+        if txn.asset_type != AssetType.STOCK:
+            continue
+        if txn.trans_code not in (TransCode.BUY, TransCode.SELL):
+            continue
+
+        totals = totals_by_symbol.setdefault(txn.instrument, {"buy": 0.0, "sell": 0.0})
+        side = "buy" if txn.trans_code == TransCode.BUY else "sell"
+        totals[side] += txn.quantity
+
+    return totals_by_symbol
+
+
+def _position_estimated_market_value(position: Position) -> float:
+    """Estimate absolute market value for a position, even if market value is unset."""
+    if position.market_value is not None:
+        return abs(position.market_value)
+
+    fallback_price = position.current_price or position.avg_cost_basis or 0.0
+    return abs(position.quantity * fallback_price)
+
+
+def _is_likely_brokerage_residual(
+    position: Position,
+    totals: dict[str, float] | None,
+) -> bool:
+    """Return True when a stock position looks like stale brokerage dust."""
+    quantity = float(position.quantity)
+
+    if position.asset_type != AssetType.STOCK:
+        return False
+    if quantity <= 0 or quantity >= 1:
+        return False
+    if not totals or totals["buy"] <= 0 or totals["sell"] <= 0:
+        return False
+
+    historical_volume = max(totals["buy"], totals["sell"])
+    if historical_volume <= 0:
+        return False
+
+    residual_ratio = quantity / historical_volume
+    market_value = _position_estimated_market_value(position)
+    return market_value <= 10 and residual_ratio <= 0.001
+
+
+def _brokerage_residual_warning(position: Position, totals: dict[str, float]) -> str:
+    """Build a user-facing warning for a suppressed residual position."""
+    market_value = _position_estimated_market_value(position)
+    return (
+        f"Suppressed likely brokerage residual for {position.symbol}: "
+        f"{position.quantity:.6f} share(s) (~${market_value:.2f}) remained after "
+        f"{totals['sell']:.6f} shares sold. This usually indicates stale fractional "
+        f"dust in the export rather than a real open position."
+    )
+
+
+def suppress_fractional_residual_positions(
+    tax_lots: list[TaxLot],
+    transactions: list[Transaction],
+) -> tuple[list[TaxLot], list[str]]:
+    """Hide likely brokerage dust left behind after an apparent full liquidation.
+
+    Some broker exports can temporarily leave behind a tiny fractional stock lot
+    even when the live account no longer shows a position. To avoid displaying a
+    misleading phantom holding, suppress only very small stock residuals when the
+    residual is trivial relative to the symbol's historical trading volume.
+
+    The heuristic is intentionally conservative:
+    - stock positions only
+    - remaining quantity must be under 1 share
+    - estimated position value must be $10 or less
+    - the residual must be <= 0.1% of the larger of total stock buys/sells
+    - the symbol must have both buys and sells in the parsed transaction history
+    """
+    if not tax_lots or not transactions:
+        return tax_lots, []
+
+    stock_trade_totals = _stock_trade_totals_by_symbol(transactions)
+
+    warnings: list[str] = []
+    suppressed_symbols: set[str] = set()
+
+    for position in aggregate_positions(tax_lots):
+        totals = stock_trade_totals.get(position.symbol)
+        if not _is_likely_brokerage_residual(position, totals):
+            continue
+
+        suppressed_symbols.add(position.symbol)
+        warnings.append(_brokerage_residual_warning(position, totals or {"sell": 0.0}))
+
+    if not suppressed_symbols:
+        return tax_lots, []
+
+    filtered_lots = [
+        lot
+        for lot in tax_lots
+        if not (lot.asset_type == AssetType.STOCK and lot.symbol in suppressed_symbols)
+    ]
+    return filtered_lots, warnings
+
+
 def _fifo_cost_basis_for_sell(
     sell: Transaction,
     buys: list[Transaction],
@@ -316,6 +422,36 @@ def _compute_realized_gains(transactions: list[Transaction], tax_year: int | Non
     return round(realized_gains, 2)
 
 
+def _suggestion_id_for_lot(lot: TaxLot) -> str:
+    """Build a stable unique identifier for a harvesting suggestion."""
+    return "::".join(
+        [
+            lot.symbol,
+            lot.asset_type.value,
+            lot.contract_label or lot.description or "stock-lot",
+            lot.purchase_date.isoformat(),
+            f"{lot.cost_basis_per_share:.6f}",
+            f"{lot.quantity:.6f}",
+        ]
+    )
+
+
+def _display_label_for_lot(lot: TaxLot) -> str:
+    """Return the primary user-facing label for a lot suggestion."""
+    return lot.contract_label or lot.symbol
+
+
+def _lot_details_for_suggestion(lot: TaxLot) -> str:
+    """Return a short per-lot description to distinguish repeated symbols."""
+    opened = lot.purchase_date.strftime("%b %d, %Y")
+    if lot.asset_type == AssetType.OPTION:
+        return (
+            f"Option lot opened {opened} at ${lot.cost_basis_per_share:.2f} premium"
+        )
+
+    return f"Tax lot opened {opened} at ${lot.cost_basis_per_share:.2f}/share"
+
+
 def generate_suggestions(
     tax_lots: list[TaxLot],
     transactions: list[Transaction],
@@ -385,6 +521,9 @@ def generate_suggestions(
 
         suggestion = HarvestingSuggestion(
             symbol=lot.symbol,
+            suggestion_id=_suggestion_id_for_lot(lot),
+            display_label=_display_label_for_lot(lot),
+            lot_details=_lot_details_for_suggestion(lot),
             action="SELL",
             quantity=lot.quantity,
             current_price=lot.current_price,

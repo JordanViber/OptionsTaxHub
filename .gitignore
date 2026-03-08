@@ -15,6 +15,10 @@ env/
 .coverage
 htmlcov/
 
+# Jest run artifacts / test output JSON
+client/dashboard-jest.json
+*-jest.json
+
 # Jest coverage
 coverage/
 client/coverage/

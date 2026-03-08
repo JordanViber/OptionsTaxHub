@@ -138,6 +138,8 @@ class Position(BaseModel):
     asset_type: AssetType = AssetType.STOCK
     tax_lots: list[TaxLot] = []
     wash_sale_risk: bool = False
+    manual_review_required: bool = False
+    manual_review_reason: str = ""
 
 
 # --- Wash-Sale Models ---
@@ -224,6 +226,9 @@ class HarvestingSuggestion(BaseModel):
     """
 
     symbol: str
+    suggestion_id: str = ""
+    display_label: str = ""
+    lot_details: str = ""
     action: str = "SELL"
     quantity: float
     current_price: Optional[float] = None
@@ -241,6 +246,8 @@ class HarvestingSuggestion(BaseModel):
         description="Whether selling now would trigger a wash-sale due to recent purchases",
     )
     wash_sale_explanation: str = ""
+    manual_review_required: bool = False
+    manual_review_reason: str = ""
     replacement_candidates: list[ReplacementCandidate] = []
     ai_explanation: str = Field(
         default="", description="AI-generated explanation of this suggestion"

@@ -77,6 +77,24 @@ const columns: GridColDef<Position>[] = [
               {params.value}
             </Typography>
           )}
+        {params.row.manual_review_required &&
+          params.row.manual_review_reason && (
+            <Tooltip title={params.row.manual_review_reason}>
+              <Box
+                sx={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 0.5,
+                  minWidth: 0,
+                }}
+              >
+                <WarnIcon sx={{ color: "warning.main", fontSize: 14 }} />
+                <Typography variant="caption" color="warning.dark" noWrap>
+                  Manual review
+                </Typography>
+              </Box>
+            </Tooltip>
+          )}
       </Box>
     ),
   },

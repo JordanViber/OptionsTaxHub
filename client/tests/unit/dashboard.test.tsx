@@ -92,6 +92,11 @@ const baseAnalysis: PortfolioAnalysis = {
   suggestions: [
     {
       symbol: "TSLA",
+      suggestion_id: "TSLA::stock::2025-01-01",
+      display_label: "TSLA",
+      lot_details: "Tax lot opened Jan 01, 2025 at $250.00/share",
+      manual_review_required: false,
+      manual_review_reason: "",
       action: "SELL",
       quantity: 1,
       current_price: 200,
@@ -274,6 +279,26 @@ describe("DashboardPage", () => {
       ).toBeInTheDocument();
       expect(
         screen.getByText(/check the data quality notes/i),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("explains when automated suggestions were skipped for split-affected symbols", async () => {
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      warnings: [
+        "Skipped automated harvesting suggestions for ASST stock lots because a stock split or corporate action changed the share count. Verify ASST manually before acting on any loss estimate.",
+      ],
+    };
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByText("Manual review needed")).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          /Automated harvesting suggestions were skipped for ASST/i,
+        ),
       ).toBeInTheDocument();
     });
   });

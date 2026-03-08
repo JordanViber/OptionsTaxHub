@@ -60,7 +60,9 @@ export default function SettingsPage() {
   });
 
   // Save mutation
-  const { mutate: saveProfile, isPending: saving } = useSaveTaxProfile(user?.id);
+  const { mutate: saveProfile, isPending: saving } = useSaveTaxProfile(
+    user?.id,
+  );
 
   // Populate form when profile loads
   useEffect(() => {

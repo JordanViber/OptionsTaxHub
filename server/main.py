@@ -29,6 +29,7 @@ from models import (
     PortfolioAnalysis,
     RealizedSummary,
     TaxProfile,
+    TransCode,
 )
 from csv_parser import parse_csv, RealizedEvent
 from tax_engine import get_tax_brackets_summary
@@ -37,9 +38,10 @@ from harvesting import (
     aggregate_positions,
     generate_suggestions,
     build_portfolio_summary,
+    suppress_fractional_residual_positions,
 )
 from wash_sale import detect_wash_sales, adjust_lots_for_wash_sales
-from price_service import fetch_current_prices
+from price_service import fetch_current_prices, fetch_option_prices
 from ai_advisor import get_ai_suggestions, prepare_positions_for_ai
 from db import (
     save_analysis_history,
@@ -420,6 +422,142 @@ def _summarize_warnings(warnings: List[str]) -> List[str]:
     return _dedupe_preserving_order([*summarized, *passthrough])
 
 
+def _build_manual_review_notes_by_symbol(transactions: list) -> dict[str, str]:
+    """Build per-symbol manual-review notes for unsupported position-changing events."""
+    if not transactions:
+        return {}
+
+    events_by_symbol: dict[str, set[str]] = defaultdict(set)
+    for txn in transactions:
+        symbol = getattr(txn, "instrument", "")
+        if not symbol:
+            continue
+
+        if txn.trans_code == TransCode.SPR:
+            events_by_symbol[symbol].add("stock split activity")
+        elif txn.trans_code == TransCode.OCA:
+            events_by_symbol[symbol].add("corporate-action adjustments")
+        elif txn.trans_code == TransCode.OASGN:
+            events_by_symbol[symbol].add("option assignment activity")
+
+    notes: dict[str, str] = {}
+    for symbol, event_labels in events_by_symbol.items():
+        labels = sorted(event_labels)
+        if len(labels) == 1:
+            events_text = labels[0]
+        elif len(labels) == 2:
+            events_text = f"{labels[0]} and {labels[1]}"
+        else:
+            events_text = f"{', '.join(labels[:-1])}, and {labels[-1]}"
+
+        notes[symbol] = (
+            f"Recent {events_text} affected {symbol}. Verify reported quantities, "
+            f"adjusted contracts, and cost basis manually before acting."
+        )
+
+    return notes
+
+
+def _apply_manual_review_flags(
+    positions: list,
+    suggestions: list,
+    manual_review_notes: dict[str, str],
+) -> None:
+    """Attach structured manual-review metadata to affected positions and suggestions."""
+    if not manual_review_notes:
+        return
+
+    for position in positions:
+        reason = manual_review_notes.get(position.symbol)
+        if not reason:
+            continue
+        position.manual_review_required = True
+        position.manual_review_reason = reason
+
+    for suggestion in suggestions:
+        reason = manual_review_notes.get(suggestion.symbol)
+        if not reason:
+            continue
+        suggestion.manual_review_required = True
+        suggestion.manual_review_reason = reason
+
+
+def _apply_live_prices_to_tax_lots(tax_lots: list, all_warnings: list[str]) -> list:
+    """Populate stock and option lots with live prices when available."""
+    symbols = list({lot.symbol for lot in tax_lots})
+    fallback_prices = {
+        lot.symbol: lot.current_price
+        for lot in tax_lots
+        if lot.asset_type == AssetType.STOCK and lot.current_price is not None
+    }
+    live_prices, price_warnings = fetch_current_prices(symbols, fallback_prices)
+    all_warnings.extend(price_warnings)
+
+    option_labels = list(
+        {
+            lot.contract_label
+            for lot in tax_lots
+            if lot.asset_type == AssetType.OPTION and lot.contract_label
+        }
+    )
+    option_fallback_prices = {
+        lot.contract_label: lot.current_price
+        for lot in tax_lots
+        if lot.asset_type == AssetType.OPTION
+        and lot.contract_label
+        and lot.current_price is not None
+    }
+    option_prices, option_price_warnings = fetch_option_prices(
+        option_labels,
+        option_fallback_prices,
+    )
+    all_warnings.extend(option_price_warnings)
+
+    for lot in tax_lots:
+        if lot.asset_type == AssetType.STOCK and lot.symbol in live_prices:
+            lot.current_price = live_prices[lot.symbol]
+            continue
+        if lot.asset_type == AssetType.OPTION and lot.contract_label in option_prices:
+            lot.current_price = option_prices[lot.contract_label]
+
+    return tax_lots
+
+
+def _filter_suggestion_tax_lots(
+    tax_lots: list,
+    transactions: list,
+) -> tuple[list, list[str]]:
+    """Exclude stock lots with split/corporate-action drift from harvesting suggestions."""
+    if not tax_lots or not transactions:
+        return tax_lots, []
+
+    affected_symbols = {
+        txn.instrument
+        for txn in transactions
+        if txn.trans_code in (TransCode.SPR, TransCode.OCA)
+    }
+    if not affected_symbols:
+        return tax_lots, []
+
+    filtered_lots = []
+    skipped_symbols: set[str] = set()
+    for lot in tax_lots:
+        if lot.asset_type == AssetType.STOCK and lot.symbol in affected_symbols:
+            skipped_symbols.add(lot.symbol)
+            continue
+        filtered_lots.append(lot)
+
+    warnings = [
+        (
+            f"Skipped automated harvesting suggestions for {symbol} stock lots because "
+            f"a stock split or corporate action changed the share count. Verify {symbol} "
+            f"manually before acting on any loss estimate."
+        )
+        for symbol in sorted(skipped_symbols)
+    ]
+    return filtered_lots, warnings
+
+
 @app.post(
     "/api/portfolio/analyze",
     response_model=PortfolioAnalysis,
@@ -474,22 +612,7 @@ async def analyze_portfolio(
 
     all_warnings = list(parse_errors)
 
-    # Fetch live prices for all symbols
-    symbols = list({lot.symbol for lot in tax_lots})
-    fallback_prices = {
-        lot.symbol: lot.current_price
-        for lot in tax_lots
-        if lot.current_price is not None
-    }
-    live_prices, price_warnings = fetch_current_prices(symbols, fallback_prices)
-    all_warnings.extend(price_warnings)
-
-    for lot in tax_lots:
-        # Only apply equity prices to stock lots; options have their own pricing
-        # and applying the underlying stock price ($401 for TSLA) to a TSLA
-        # option lot would produce nonsensical P&L figures.
-        if lot.symbol in live_prices and lot.asset_type == AssetType.STOCK:
-            lot.current_price = live_prices[lot.symbol]
+    tax_lots = _apply_live_prices_to_tax_lots(tax_lots, all_warnings)
 
     tax_lots = compute_lot_metrics(tax_lots)
 
@@ -502,17 +625,34 @@ async def analyze_portfolio(
     if wash_sale_flags:
         tax_lots = adjust_lots_for_wash_sales(tax_lots, wash_sale_flags)
 
+    tax_lots, residual_warnings = suppress_fractional_residual_positions(
+        tax_lots,
+        transactions,
+    )
+    all_warnings.extend(residual_warnings)
+
+    suggestion_tax_lots, suggestion_filter_warnings = _filter_suggestion_tax_lots(
+        tax_lots,
+        transactions,
+    )
+    all_warnings.extend(suggestion_filter_warnings)
+
     # Get AI-powered suggestions
-    ai_suggestions, all_warnings = _process_ai_suggestions(tax_lots, all_warnings)
+    ai_suggestions, all_warnings = _process_ai_suggestions(
+        suggestion_tax_lots,
+        all_warnings,
+    )
 
     suggestions = generate_suggestions(
-        tax_lots=tax_lots,
+        tax_lots=suggestion_tax_lots,
         transactions=transactions,
         tax_profile=tax_profile,
         ai_suggestions=ai_suggestions,
     )
 
     positions = aggregate_positions(tax_lots)
+    manual_review_notes = _build_manual_review_notes_by_symbol(transactions)
+    _apply_manual_review_flags(positions, suggestions, manual_review_notes)
     summary = build_portfolio_summary(positions, suggestions, wash_sale_flags)
 
     # Compute realized gain/loss breakdown for the requested tax year
