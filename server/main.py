@@ -71,6 +71,7 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
 SUPABASE_JWT_SECRET = os.environ.get("SUPABASE_JWT_SECRET", "")
 STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY")
+_MAX_SUPPLEMENTAL_PDF_BYTES = 20 * 1024 * 1024  # 20 MB: max size for supplemental 1099 PDF uploads
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -499,6 +500,7 @@ def _parse_supplemental_1099_summary(
     )
 
 
+
 async def _maybe_parse_supplemental_1099(
     supplemental_1099: UploadFile | None,
     current_symbols: set[str],
@@ -508,8 +510,14 @@ async def _maybe_parse_supplemental_1099(
     if supplemental_1099 is None:
         return None, []
 
+    content_type = supplemental_1099.content_type or ""
+    if "pdf" not in content_type.lower():
+        return None, ["Supplemental 1099 must be a PDF file (received unsupported content type)."]
+
     try:
-        supplemental_bytes = await supplemental_1099.read()
+        supplemental_bytes = await supplemental_1099.read(_MAX_SUPPLEMENTAL_PDF_BYTES + 1)
+        if len(supplemental_bytes) > _MAX_SUPPLEMENTAL_PDF_BYTES:
+            return None, ["Supplemental 1099 PDF exceeds the 20 MB size limit and was ignored."]
         summary = _parse_supplemental_1099_summary(
             supplemental_bytes,
             supplemental_1099.filename or "prior-year-1099.pdf",
