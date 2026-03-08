@@ -422,6 +422,36 @@ def _compute_realized_gains(transactions: list[Transaction], tax_year: int | Non
     return round(realized_gains, 2)
 
 
+def _suggestion_id_for_lot(lot: TaxLot) -> str:
+    """Build a stable unique identifier for a harvesting suggestion."""
+    return "::".join(
+        [
+            lot.symbol,
+            lot.asset_type.value,
+            lot.contract_label or lot.description or "stock-lot",
+            lot.purchase_date.isoformat(),
+            f"{lot.cost_basis_per_share:.6f}",
+            f"{lot.quantity:.6f}",
+        ]
+    )
+
+
+def _display_label_for_lot(lot: TaxLot) -> str:
+    """Return the primary user-facing label for a lot suggestion."""
+    return lot.contract_label or lot.symbol
+
+
+def _lot_details_for_suggestion(lot: TaxLot) -> str:
+    """Return a short per-lot description to distinguish repeated symbols."""
+    opened = lot.purchase_date.strftime("%b %d, %Y")
+    if lot.asset_type == AssetType.OPTION:
+        return (
+            f"Option lot opened {opened} at ${lot.cost_basis_per_share:.2f} premium"
+        )
+
+    return f"Tax lot opened {opened} at ${lot.cost_basis_per_share:.2f}/share"
+
+
 def generate_suggestions(
     tax_lots: list[TaxLot],
     transactions: list[Transaction],
@@ -491,6 +521,9 @@ def generate_suggestions(
 
         suggestion = HarvestingSuggestion(
             symbol=lot.symbol,
+            suggestion_id=_suggestion_id_for_lot(lot),
+            display_label=_display_label_for_lot(lot),
+            lot_details=_lot_details_for_suggestion(lot),
             action="SELL",
             quantity=lot.quantity,
             current_price=lot.current_price,

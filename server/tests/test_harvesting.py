@@ -517,9 +517,36 @@ class TestGenerateSuggestions:
         assert len(suggestions) >= 1
         s = suggestions[0]
         assert s.symbol == "AAPL"
+        assert s.display_label == "AAPL"
+        assert s.suggestion_id
+        assert "Tax lot opened" in s.lot_details
         assert s.estimated_loss == pytest.approx(100.0)
         assert s.tax_savings_estimate > 0
         assert s.priority == 1
+
+    def test_option_suggestion_uses_contract_label(self):
+        option_lot = TaxLot(
+            symbol="TSLA",
+            description="TSLA 3/20/2026 Put $375.00",
+            quantity=1,
+            cost_basis_per_share=7.5,
+            total_cost_basis=750.0,
+            purchase_date=date(2026, 3, 2),
+            current_price=5.0,
+            asset_type=AssetType.OPTION,
+            contract_label="TSLA 3/20/2026 Put $375.00",
+        )
+        lots = compute_lot_metrics([option_lot], reference_date=date(2026, 3, 8))
+
+        suggestions = generate_suggestions(
+            tax_lots=lots,
+            transactions=[],
+            tax_profile=_profile(tax_year=2026),
+        )
+
+        assert len(suggestions) == 1
+        assert suggestions[0].display_label == "TSLA 3/20/2026 Put $375.00"
+        assert "Option lot opened" in suggestions[0].lot_details
 
     def test_wash_sale_risk_excluded(self):
         """Lots with prospective wash-sale risk should not appear in main suggestions."""
@@ -678,6 +705,9 @@ class TestBuildPortfolioSummary:
         suggestions = [
             HarvestingSuggestion(
                 symbol="MSFT",
+                suggestion_id="MSFT::stock::lot",
+                display_label="MSFT",
+                lot_details="Tax lot opened Jan 01, 2025 at $300.00/share",
                 quantity=5,
                 cost_basis_per_share=300.0,
                 estimated_loss=50.0,

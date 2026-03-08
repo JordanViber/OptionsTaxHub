@@ -29,6 +29,7 @@ from models import (
     PortfolioAnalysis,
     RealizedSummary,
     TaxProfile,
+    TransCode,
 )
 from csv_parser import parse_csv, RealizedEvent
 from tax_engine import get_tax_brackets_summary
@@ -462,6 +463,41 @@ def _apply_live_prices_to_tax_lots(tax_lots: list, all_warnings: list[str]) -> l
     return tax_lots
 
 
+def _filter_suggestion_tax_lots(
+    tax_lots: list,
+    transactions: list,
+) -> tuple[list, list[str]]:
+    """Exclude stock lots with split/corporate-action drift from harvesting suggestions."""
+    if not tax_lots or not transactions:
+        return tax_lots, []
+
+    affected_symbols = {
+        txn.instrument
+        for txn in transactions
+        if txn.trans_code in (TransCode.SPR, TransCode.OCA)
+    }
+    if not affected_symbols:
+        return tax_lots, []
+
+    filtered_lots = []
+    skipped_symbols: set[str] = set()
+    for lot in tax_lots:
+        if lot.asset_type == AssetType.STOCK and lot.symbol in affected_symbols:
+            skipped_symbols.add(lot.symbol)
+            continue
+        filtered_lots.append(lot)
+
+    warnings = [
+        (
+            f"Skipped automated harvesting suggestions for {symbol} stock lots because "
+            f"a stock split or corporate action changed the share count. Verify {symbol} "
+            f"manually before acting on any loss estimate."
+        )
+        for symbol in sorted(skipped_symbols)
+    ]
+    return filtered_lots, warnings
+
+
 @app.post(
     "/api/portfolio/analyze",
     response_model=PortfolioAnalysis,
@@ -535,11 +571,20 @@ async def analyze_portfolio(
     )
     all_warnings.extend(residual_warnings)
 
+    suggestion_tax_lots, suggestion_filter_warnings = _filter_suggestion_tax_lots(
+        tax_lots,
+        transactions,
+    )
+    all_warnings.extend(suggestion_filter_warnings)
+
     # Get AI-powered suggestions
-    ai_suggestions, all_warnings = _process_ai_suggestions(tax_lots, all_warnings)
+    ai_suggestions, all_warnings = _process_ai_suggestions(
+        suggestion_tax_lots,
+        all_warnings,
+    )
 
     suggestions = generate_suggestions(
-        tax_lots=tax_lots,
+        tax_lots=suggestion_tax_lots,
         transactions=transactions,
         tax_profile=tax_profile,
         ai_suggestions=ai_suggestions,

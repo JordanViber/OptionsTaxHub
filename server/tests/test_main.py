@@ -745,6 +745,50 @@ def test_summarize_warnings_consolidates_repetitive_broker_messages():
     assert len(summarized) == 3
 
 
+def test_filter_suggestion_tax_lots_skips_split_affected_stock_lots():
+    from datetime import date
+    from main import _filter_suggestion_tax_lots
+    from models import TaxLot, Transaction, AssetType, TransCode
+
+    stock_lot = TaxLot(
+        symbol="ASST",
+        quantity=5,
+        cost_basis_per_share=1.0,
+        total_cost_basis=5.0,
+        purchase_date=date(2026, 1, 15),
+        asset_type=AssetType.STOCK,
+    )
+    option_lot = TaxLot(
+        symbol="ASST",
+        quantity=1,
+        cost_basis_per_share=2.5,
+        total_cost_basis=250.0,
+        purchase_date=date(2026, 1, 15),
+        asset_type=AssetType.OPTION,
+        contract_label="ASST 4/17/2026 Call $1.00",
+    )
+    transactions = [
+        Transaction(
+            activity_date=date(2026, 2, 6),
+            instrument="ASST",
+            description="Stock Split",
+            trans_code=TransCode.SPR,
+            quantity=400,
+            price=0.0,
+            amount=0.0,
+            asset_type=AssetType.STOCK,
+        )
+    ]
+
+    filtered_lots, warnings = _filter_suggestion_tax_lots(
+        [stock_lot, option_lot],
+        transactions,
+    )
+
+    assert filtered_lots == [option_lot]
+    assert any("Skipped automated harvesting suggestions for ASST" in w for w in warnings)
+
+
 
 
 

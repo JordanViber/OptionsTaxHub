@@ -92,6 +92,9 @@ export interface ReplacementCandidate {
 
 export interface HarvestingSuggestion {
   symbol: string;
+  suggestion_id: string;
+  display_label: string;
+  lot_details: string;
   action: string;
   quantity: number;
   current_price: number | null;

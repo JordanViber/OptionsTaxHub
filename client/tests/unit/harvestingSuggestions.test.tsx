@@ -4,6 +4,9 @@ import type { HarvestingSuggestion } from "../../lib/types";
 
 const baseSuggestion: HarvestingSuggestion = {
   symbol: "AAPL",
+  suggestion_id: "AAPL-stock-2025-01-01",
+  display_label: "AAPL",
+  lot_details: "Tax lot opened Jan 15, 2025 at $150.00/share",
   action: "SELL",
   quantity: 10,
   current_price: 140,
@@ -32,7 +35,14 @@ describe("HarvestingSuggestions", () => {
   it("renders suggestion cards for each suggestion", () => {
     const suggestions: HarvestingSuggestion[] = [
       baseSuggestion,
-      { ...baseSuggestion, symbol: "MSFT", priority: 2 },
+      {
+        ...baseSuggestion,
+        symbol: "MSFT",
+        suggestion_id: "MSFT-stock-2025-01-02",
+        display_label: "MSFT",
+        lot_details: "Tax lot opened Jan 16, 2025 at $150.00/share",
+        priority: 2,
+      },
     ];
     render(<HarvestingSuggestions suggestions={suggestions} />);
 
@@ -44,6 +54,28 @@ describe("HarvestingSuggestions", () => {
     render(<HarvestingSuggestions suggestions={[baseSuggestion]} />);
 
     expect(screen.getByText("#1")).toBeInTheDocument();
+  });
+
+  it("shows per-lot details for repeated symbols", () => {
+    const suggestions: HarvestingSuggestion[] = [
+      baseSuggestion,
+      {
+        ...baseSuggestion,
+        suggestion_id: "AAPL-stock-2025-02-01",
+        lot_details: "Tax lot opened Feb 01, 2025 at $155.00/share",
+        cost_basis_per_share: 155,
+        priority: 2,
+      },
+    ];
+
+    render(<HarvestingSuggestions suggestions={suggestions} />);
+
+    expect(
+      screen.getByText("Tax lot opened Jan 15, 2025 at $150.00/share"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Tax lot opened Feb 01, 2025 at $155.00/share"),
+    ).toBeInTheDocument();
   });
 
   it("shows Short-Term chip for short holding period", () => {

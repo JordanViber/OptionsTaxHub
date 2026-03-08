@@ -75,8 +75,17 @@ function SuggestionCard({
               sx={{ display: "flex", alignItems: "center", gap: 1, mb: 0.5 }}
             >
               <Typography variant="h6" sx={{ fontWeight: 700 }}>
-                {suggestion.symbol}
+                {suggestion.display_label || suggestion.symbol}
               </Typography>
+              {suggestion.display_label &&
+                suggestion.display_label !== suggestion.symbol && (
+                  <Chip
+                    label={suggestion.symbol}
+                    size="small"
+                    variant="outlined"
+                    sx={{ height: 20, fontSize: "0.65rem" }}
+                  />
+                )}
               <Chip
                 label={`#${suggestion.priority}`}
                 size="small"
@@ -104,6 +113,16 @@ function SuggestionCard({
                 />
               )}
             </Box>
+
+            {suggestion.lot_details && (
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{ display: "block", mb: 0.5 }}
+              >
+                {suggestion.lot_details}
+              </Typography>
+            )}
 
             <Stack direction="row" spacing={3} sx={{ mt: 1 }}>
               <Box>
@@ -280,7 +299,10 @@ export default function HarvestingSuggestions({
   return (
     <Stack spacing={2}>
       {suggestions.map((suggestion) => (
-        <SuggestionCard key={suggestion.symbol} suggestion={suggestion} />
+        <SuggestionCard
+          key={suggestion.suggestion_id || `${suggestion.symbol}-${suggestion.priority}`}
+          suggestion={suggestion}
+        />
       ))}
     </Stack>
   );

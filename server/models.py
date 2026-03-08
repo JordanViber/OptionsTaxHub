@@ -224,6 +224,9 @@ class HarvestingSuggestion(BaseModel):
     """
 
     symbol: str
+    suggestion_id: str = ""
+    display_label: str = ""
+    lot_details: str = ""
     action: str = "SELL"
     quantity: float
     current_price: Optional[float] = None
