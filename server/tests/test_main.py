@@ -919,6 +919,55 @@ def test_get_prices_with_warnings(monkeypatch):
     assert len(data["warnings"]) == 1
 
 
+def test_analyze_portfolio_applies_live_option_prices(monkeypatch):
+    from datetime import date
+    import pytest
+    from models import TaxLot, Transaction, TransCode, AssetType, Position, PortfolioSummary
+
+    option_lot = TaxLot(
+        symbol="TSLA",
+        description="TSLA 3/16/2026 Put $375.00",
+        quantity=1,
+        cost_basis_per_share=4.92,
+        total_cost_basis=492.0,
+        purchase_date=date(2026, 3, 2),
+        current_price=4.92,
+        asset_type=AssetType.OPTION,
+        contract_label="TSLA 3/16/2026 Put $375.00",
+    )
+    transactions = [
+        Transaction(
+            activity_date=date(2026, 3, 2),
+            instrument="TSLA",
+            description="TSLA 3/16/2026 Put $375.00",
+            trans_code=TransCode.BTO,
+            quantity=1,
+            price=4.92,
+            amount=-492.0,
+            asset_type=AssetType.OPTION,
+        )
+    ]
+
+    monkeypatch.setattr("main.parse_csv", lambda _: ([option_lot], transactions, [], []))
+    monkeypatch.setattr("main.fetch_current_prices", lambda s, fb=None: ({}, []))
+    monkeypatch.setattr(
+        "main.fetch_option_prices",
+        lambda labels, fb=None: ({"TSLA 3/16/2026 Put $375.00": 6.25}, []),
+    )
+    monkeypatch.setattr("main.prepare_positions_for_ai", lambda l: [])
+    monkeypatch.setattr("main.generate_suggestions", lambda **kw: [])
+    monkeypatch.setattr("main.detect_wash_sales", lambda *args, **kwargs: [])
+    monkeypatch.setattr("main._save_history_best_effort", lambda *args, **kwargs: None)
+
+    response = client.post("/api/portfolio/analyze", files=_make_csv())
+    assert response.status_code == 200
+
+    data = response.json()
+    assert data["positions"][0]["current_price"] == pytest.approx(6.25)
+    assert data["positions"][0]["market_value"] == pytest.approx(625.0)
+    assert data["positions"][0]["unrealized_pnl"] == pytest.approx(133.0)
+
+
 def test_get_prices_empty_symbols():
     """GET /api/prices with empty symbols returns 400."""
     response = client.get("/api/prices?symbols=")

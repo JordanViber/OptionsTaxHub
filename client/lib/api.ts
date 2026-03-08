@@ -241,7 +241,10 @@ export function useSaveTaxProfile(userId?: string) {
     mutationFn: saveTaxProfile,
     onSuccess: (response) => {
       const profile = normalizeTaxProfile(response.profile);
-      const queryKey = ["tax-profile", userId ?? profile.user_id ?? "anonymous"];
+      const queryKey = [
+        "tax-profile",
+        userId ?? profile.user_id ?? "anonymous",
+      ];
 
       queryClient.setQueryData(queryKey, profile);
       queryClient.invalidateQueries({ queryKey });

@@ -30,6 +30,9 @@ from price_service import (
     _extract_multi_ticker_prices,
     _download_yfinance_prices,
     _apply_fallback_prices,
+    _parse_option_contract_label,
+    _extract_option_contract_price,
+    fetch_option_prices,
     fetch_current_prices,
     fetch_single_price,
     CACHE_TTL_SECONDS,
@@ -284,6 +287,84 @@ class TestFetchCurrentPrices:
             prices, _ = fetch_current_prices(["AAPL", "MSFT"])
             assert prices["AAPL"] == pytest.approx(150.0)
             assert prices["MSFT"] == pytest.approx(310.0)
+
+
+class TestOptionPricing:
+    def test_parse_option_contract_label(self):
+        parsed = _parse_option_contract_label("TSLA 3/16/2026 Put $375.00")
+        assert parsed is not None
+        assert parsed["symbol"] == "TSLA"
+        assert parsed["expiration"] == "2026-03-16"
+        assert parsed["kind"] == "put"
+        assert parsed["strike"] == pytest.approx(375.0)
+
+    def test_extract_option_contract_price_prefers_last_price(self):
+        table = pd.DataFrame(
+            [{"strike": 375.0, "lastPrice": 6.25, "bid": 6.1, "ask": 6.4}]
+        )
+        assert _extract_option_contract_price(table, 375.0) == pytest.approx(6.25)
+
+    def test_fetch_option_prices_success(self):
+        calls = pd.DataFrame([{"strike": 385.0, "lastPrice": 8.1, "bid": 8.0, "ask": 8.2}])
+        puts = pd.DataFrame([{"strike": 375.0, "lastPrice": 6.25, "bid": 6.2, "ask": 6.3}])
+        mock_chain = MagicMock(calls=calls, puts=puts)
+        mock_ticker = MagicMock()
+        mock_ticker.options = ["2026-03-16"]
+        mock_ticker.option_chain.return_value = mock_chain
+        mock_yf = MagicMock()
+        mock_yf.Ticker.return_value = mock_ticker
+
+        with patch.dict("sys.modules", {"yfinance": mock_yf}):
+            import importlib
+            importlib.reload(price_service)
+            prices, warnings = price_service.fetch_option_prices([
+                "TSLA 3/16/2026 Put $375.00",
+                "TSLA 3/16/2026 Call $385.00",
+            ])
+
+            assert prices["TSLA 3/16/2026 Put $375.00"] == pytest.approx(6.25)
+            assert prices["TSLA 3/16/2026 Call $385.00"] == pytest.approx(8.1)
+            assert warnings == []
+
+    def test_fetch_option_prices_uses_nearest_available_expiration(self):
+        puts = pd.DataFrame([{"strike": 375.0, "lastPrice": 6.25, "bid": 6.2, "ask": 6.3}])
+        mock_chain = MagicMock(calls=pd.DataFrame(), puts=puts)
+        mock_ticker = MagicMock()
+        mock_ticker.options = ["2026-03-20"]
+        mock_ticker.option_chain.return_value = mock_chain
+        mock_yf = MagicMock()
+        mock_yf.Ticker.return_value = mock_ticker
+
+        with patch.dict("sys.modules", {"yfinance": mock_yf}):
+            import importlib
+            importlib.reload(price_service)
+            prices, warnings = price_service.fetch_option_prices(
+                ["TSLA 3/16/2026 Put $375.00"]
+            )
+
+            assert prices["TSLA 3/16/2026 Put $375.00"] == pytest.approx(6.25)
+            assert any(
+                "Used listed option expiration 2026-03-20 for TSLA" in warning
+                for warning in warnings
+            )
+
+    def test_fetch_option_prices_uses_fallback(self):
+        mock_chain = MagicMock(calls=pd.DataFrame(), puts=pd.DataFrame())
+        mock_ticker = MagicMock()
+        mock_ticker.option_chain.return_value = mock_chain
+        mock_yf = MagicMock()
+        mock_yf.Ticker.return_value = mock_ticker
+
+        with patch.dict("sys.modules", {"yfinance": mock_yf}):
+            import importlib
+            importlib.reload(price_service)
+            prices, warnings = price_service.fetch_option_prices(
+                ["TSLA 3/16/2026 Put $375.00"],
+                {"TSLA 3/16/2026 Put $375.00": 4.92},
+            )
+
+            assert prices["TSLA 3/16/2026 Put $375.00"] == pytest.approx(4.92)
+            assert any("CSV-provided option premium" in warning for warning in warnings)
 
 
 # --- fetch_single_price ---

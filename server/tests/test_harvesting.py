@@ -30,6 +30,7 @@ from harvesting import (
     aggregate_positions,
     generate_suggestions,
     build_portfolio_summary,
+    suppress_fractional_residual_positions,
     _fifo_cost_basis_for_sell,
     _compute_realized_gains,
     _get_replacements,
@@ -327,6 +328,30 @@ class TestFifoCostBasisForSell:
         remaining = {0: 5.0, 1: 5.0}
         cost = _fifo_cost_basis_for_sell(sell, buys, remaining)
         assert cost == pytest.approx(740.0)
+
+
+class TestSuppressFractionalResidualPositions:
+    def test_suppresses_tiny_fractional_residual_after_large_round_trip(self):
+        lot = _lot(symbol="CLSK", quantity=0.225471, cost_basis=15.77, current_price=10.15)
+        txns = [
+            _txn("CLSK", TransCode.BUY, date(2024, 11, 13), 1000.375632, 15.77),
+            _txn("CLSK", TransCode.SELL, date(2025, 1, 8), 1000.150161, 10.15),
+        ]
+
+        filtered_lots, warnings = suppress_fractional_residual_positions([lot], txns)
+
+        assert filtered_lots == []
+        assert len(warnings) == 1
+        assert "Suppressed likely brokerage residual for CLSK" in warnings[0]
+
+    def test_keeps_intentional_small_fractional_position(self):
+        lot = _lot(symbol="TSLA", quantity=0.25, cost_basis=300.0, current_price=350.0)
+        txns = [_txn("TSLA", TransCode.BUY, date(2025, 1, 2), 0.25, 300.0)]
+
+        filtered_lots, warnings = suppress_fractional_residual_positions([lot], txns)
+
+        assert len(filtered_lots) == 1
+        assert warnings == []
 
     def test_different_instrument_ignored(self):
         buys = [_txn("MSFT", TransCode.BUY, date(2025, 1, 1), 10, 300.0)]

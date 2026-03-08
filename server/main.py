@@ -37,9 +37,10 @@ from harvesting import (
     aggregate_positions,
     generate_suggestions,
     build_portfolio_summary,
+    suppress_fractional_residual_positions,
 )
 from wash_sale import detect_wash_sales, adjust_lots_for_wash_sales
-from price_service import fetch_current_prices
+from price_service import fetch_current_prices, fetch_option_prices
 from ai_advisor import get_ai_suggestions, prepare_positions_for_ai
 from db import (
     save_analysis_history,
@@ -420,6 +421,47 @@ def _summarize_warnings(warnings: List[str]) -> List[str]:
     return _dedupe_preserving_order([*summarized, *passthrough])
 
 
+def _apply_live_prices_to_tax_lots(tax_lots: list, all_warnings: list[str]) -> list:
+    """Populate stock and option lots with live prices when available."""
+    symbols = list({lot.symbol for lot in tax_lots})
+    fallback_prices = {
+        lot.symbol: lot.current_price
+        for lot in tax_lots
+        if lot.current_price is not None
+    }
+    live_prices, price_warnings = fetch_current_prices(symbols, fallback_prices)
+    all_warnings.extend(price_warnings)
+
+    option_labels = list(
+        {
+            lot.contract_label
+            for lot in tax_lots
+            if lot.asset_type == AssetType.OPTION and lot.contract_label
+        }
+    )
+    option_fallback_prices = {
+        lot.contract_label: lot.current_price
+        for lot in tax_lots
+        if lot.asset_type == AssetType.OPTION
+        and lot.contract_label
+        and lot.current_price is not None
+    }
+    option_prices, option_price_warnings = fetch_option_prices(
+        option_labels,
+        option_fallback_prices,
+    )
+    all_warnings.extend(option_price_warnings)
+
+    for lot in tax_lots:
+        if lot.asset_type == AssetType.STOCK and lot.symbol in live_prices:
+            lot.current_price = live_prices[lot.symbol]
+            continue
+        if lot.asset_type == AssetType.OPTION and lot.contract_label in option_prices:
+            lot.current_price = option_prices[lot.contract_label]
+
+    return tax_lots
+
+
 @app.post(
     "/api/portfolio/analyze",
     response_model=PortfolioAnalysis,
@@ -474,22 +516,7 @@ async def analyze_portfolio(
 
     all_warnings = list(parse_errors)
 
-    # Fetch live prices for all symbols
-    symbols = list({lot.symbol for lot in tax_lots})
-    fallback_prices = {
-        lot.symbol: lot.current_price
-        for lot in tax_lots
-        if lot.current_price is not None
-    }
-    live_prices, price_warnings = fetch_current_prices(symbols, fallback_prices)
-    all_warnings.extend(price_warnings)
-
-    for lot in tax_lots:
-        # Only apply equity prices to stock lots; options have their own pricing
-        # and applying the underlying stock price ($401 for TSLA) to a TSLA
-        # option lot would produce nonsensical P&L figures.
-        if lot.symbol in live_prices and lot.asset_type == AssetType.STOCK:
-            lot.current_price = live_prices[lot.symbol]
+    tax_lots = _apply_live_prices_to_tax_lots(tax_lots, all_warnings)
 
     tax_lots = compute_lot_metrics(tax_lots)
 
@@ -501,6 +528,12 @@ async def analyze_portfolio(
     )
     if wash_sale_flags:
         tax_lots = adjust_lots_for_wash_sales(tax_lots, wash_sale_flags)
+
+    tax_lots, residual_warnings = suppress_fractional_residual_positions(
+        tax_lots,
+        transactions,
+    )
+    all_warnings.extend(residual_warnings)
 
     # Get AI-powered suggestions
     ai_suggestions, all_warnings = _process_ai_suggestions(tax_lots, all_warnings)
