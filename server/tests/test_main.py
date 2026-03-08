@@ -1204,6 +1204,97 @@ def test_analyze_portfolio_parses_supplemental_1099_pdf(monkeypatch):
     assert "CLSK" in payload["supplemental_1099"]["matched_symbols"]
 
 
+def test_parse_supplemental_1099_summary_delegates_to_parser(monkeypatch):
+    from main import _parse_supplemental_1099_summary
+    from models import Supplemental1099Summary
+
+    captured: dict[str, object] = {}
+
+    def fake_parser(pdf_bytes, *, current_symbols, filename, expected_previous_year):
+        captured["pdf_bytes"] = pdf_bytes
+        captured["current_symbols"] = current_symbols
+        captured["filename"] = filename
+        captured["expected_previous_year"] = expected_previous_year
+        return Supplemental1099Summary(source_filename=filename, tax_year=expected_previous_year)
+
+    monkeypatch.setattr("main.parse_robinhood_1099_pdf", fake_parser)
+
+    summary = _parse_supplemental_1099_summary(
+        b"pdf-bytes",
+        "prior.pdf",
+        {"CLSK", "TSLL"},
+        2024,
+    )
+
+    assert summary.source_filename == "prior.pdf"
+    assert captured == {
+        "pdf_bytes": b"pdf-bytes",
+        "current_symbols": {"CLSK", "TSLL"},
+        "filename": "prior.pdf",
+        "expected_previous_year": 2024,
+    }
+
+
+def test_maybe_parse_supplemental_1099_returns_warning_for_year_mismatch(monkeypatch):
+    import asyncio
+
+    from main import _maybe_parse_supplemental_1099
+    from models import Supplemental1099Summary
+
+    class DummyUpload:
+        filename = "prior.pdf"
+
+        async def read(self):
+            await asyncio.sleep(0)
+            return b"pdf"
+
+    monkeypatch.setattr(
+        "main._parse_supplemental_1099_summary",
+        lambda *_args, **_kwargs: Supplemental1099Summary(
+            source_filename="prior.pdf",
+            broker_name="Robinhood",
+            tax_year=2022,
+        ),
+    )
+
+    summary, warnings = asyncio.run(
+        _maybe_parse_supplemental_1099(DummyUpload(), {"CLSK"}, 2024)
+    )
+
+    assert summary is not None
+    assert summary.tax_year == 2022
+    assert warnings == [
+        "The supplemental 1099 PDF was parsed successfully, but its tax year does not match the expected prior year for this analysis."
+    ]
+
+
+def test_maybe_parse_supplemental_1099_ignores_unparseable_pdf(monkeypatch):
+    import asyncio
+
+    from main import _maybe_parse_supplemental_1099
+
+    class DummyUpload:
+        filename = "broken.pdf"
+
+        async def read(self):
+            await asyncio.sleep(0)
+            return b"broken"
+
+    def fail_parse(*_args, **_kwargs):
+        raise ValueError("bad pdf")
+
+    monkeypatch.setattr("main._parse_supplemental_1099_summary", fail_parse)
+
+    summary, warnings = asyncio.run(
+        _maybe_parse_supplemental_1099(DummyUpload(), {"CLSK"}, 2024)
+    )
+
+    assert summary is None
+    assert warnings == [
+        "Supplemental 1099 PDF could not be parsed and was ignored for this analysis."
+    ]
+
+
 def test_get_prices_empty_symbols():
     """GET /api/prices with empty symbols returns 400."""
     response = client.get("/api/prices?symbols=")

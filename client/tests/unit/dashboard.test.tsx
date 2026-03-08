@@ -21,7 +21,17 @@ jest.mock("../../app/context/auth", () => ({
 
 // Mock API hooks
 let mockAnalyzeData: PortfolioAnalysis | null = null;
+let mockHistoryData: Array<{
+  id: string;
+  filename: string;
+  uploaded_at: string;
+  positions_count?: number;
+  total_market_value?: number;
+}> = [];
 const mockAnalyzeMutate = jest.fn();
+const mockFetchAnalysisById = jest.fn();
+const mockCleanupOrphanHistory = jest.fn(() => Promise.resolve());
+const mockDeleteAnalysis = jest.fn(() => Promise.resolve(true));
 
 jest.mock("../../lib/api", () => ({
   useAnalyzePortfolio: () => ({
@@ -36,7 +46,7 @@ jest.mock("../../lib/api", () => ({
     isPending: false,
   }),
   usePortfolioHistory: () => ({
-    data: [],
+    data: mockHistoryData,
     error: null,
     isPending: false,
   }),
@@ -44,9 +54,9 @@ jest.mock("../../lib/api", () => ({
     isError: false,
     isFetched: true,
   }),
-  fetchAnalysisById: jest.fn(),
-  cleanupOrphanHistory: jest.fn(() => Promise.resolve()),
-  deleteAnalysis: jest.fn(() => Promise.resolve(true)),
+  fetchAnalysisById: mockFetchAnalysisById,
+  cleanupOrphanHistory: mockCleanupOrphanHistory,
+  deleteAnalysis: mockDeleteAnalysis,
 }));
 
 // Mock components
@@ -160,7 +170,11 @@ describe("DashboardPage", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockAnalyzeData = null;
+    mockHistoryData = [];
     mockAnalyzeMutate.mockReset();
+    mockFetchAnalysisById.mockReset();
+    mockCleanupOrphanHistory.mockClear();
+    mockDeleteAnalysis.mockClear();
     mockSessionValue = null;
     // Mock sessionStorage
     Object.defineProperty(globalThis, "sessionStorage", {
@@ -267,17 +281,19 @@ describe("DashboardPage", () => {
         long_term_net_gain: 0,
         referenced_symbols: ["CLSK", "TSLL"],
         matched_symbols: ["CLSK"],
-        insights: ["Matched prior-year 1099 activity to 1 current symbol(s): CLSK."],
+        insights: [
+          "Matched prior-year 1099 activity to 1 current symbol(s): CLSK.",
+        ],
       },
     } satisfies PortfolioAnalysis);
 
     render(<DashboardPage />, { wrapper: createWrapper() });
 
     await waitFor(() => {
-      expect(screen.getByText("Included in restored result")).toBeInTheDocument();
       expect(
-        screen.getByText("2024-robinhood-1099.pdf"),
+        screen.getByText("Included in restored result"),
       ).toBeInTheDocument();
+      expect(screen.getByText("2024-robinhood-1099.pdf")).toBeInTheDocument();
       expect(
         screen.queryByRole("button", { name: /Remove 1099 PDF/i }),
       ).not.toBeInTheDocument();
@@ -285,6 +301,35 @@ describe("DashboardPage", () => {
         screen.queryByText(/Need help with edge-case reconciliation/i),
       ).not.toBeInTheDocument();
     });
+  });
+
+  it("queues a selected 1099 for the next CSV analysis when no CSV has been uploaded yet", async () => {
+    const { container } = render(<DashboardPage />, {
+      wrapper: createWrapper(),
+    });
+
+    const pdfInput = container.querySelector(
+      'input[type="file"][accept=".pdf,application/pdf"]',
+    );
+
+    if (!(pdfInput instanceof HTMLInputElement)) {
+      throw new TypeError("PDF input not found");
+    }
+
+    fireEvent.change(pdfInput, {
+      target: {
+        files: [
+          new File(["pdf"], "queued-1099.pdf", { type: "application/pdf" }),
+        ],
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Ready for next analysis")).toBeInTheDocument();
+      expect(screen.getByText("queued-1099.pdf")).toBeInTheDocument();
+    });
+
+    expect(mockAnalyzeMutate).not.toHaveBeenCalled();
   });
 
   it("shows recommended next steps above the detailed tabs", async () => {
@@ -452,6 +497,7 @@ describe("DashboardPage", () => {
 
     await waitFor(() => {
       expect(mockAnalyzeMutate).toHaveBeenCalledTimes(2);
+      expect(screen.getByText("Auto-applied to latest CSV")).toBeInTheDocument();
     });
 
     expect(mockAnalyzeMutate.mock.calls[1][0]).toMatchObject({
@@ -459,5 +505,97 @@ describe("DashboardPage", () => {
       supplemental1099File: expect.objectContaining({ name: "supplement.pdf" }),
     });
     expect(screen.queryByText(/Re-run with 1099/i)).not.toBeInTheDocument();
+  });
+
+  it("removes an applied 1099 and refreshes the latest CSV analysis without it", async () => {
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      supplemental_1099: {
+        source_filename: "2024-1099.pdf",
+        broker_name: "Robinhood",
+        tax_year: 2024,
+        short_term_proceeds: 281823.83,
+        short_term_cost_basis: 264439.89,
+        short_term_wash_sale_disallowed: 17409.64,
+        short_term_net_gain: 34793.58,
+        long_term_proceeds: 108.56,
+        long_term_cost_basis: 141.72,
+        long_term_wash_sale_disallowed: 33.16,
+        long_term_net_gain: 0,
+        referenced_symbols: ["CLSK", "TSLL"],
+        matched_symbols: ["CLSK"],
+        insights: ["Matched prior-year 1099 activity to 1 current symbol(s): CLSK."],
+      },
+    };
+
+    const { container } = render(<DashboardPage />, {
+      wrapper: createWrapper(),
+    });
+
+    const csvInput = container.querySelector(
+      'input[type="file"][accept=".csv"]',
+    );
+
+    if (!(csvInput instanceof HTMLInputElement)) {
+      throw new TypeError("CSV input not found");
+    }
+
+    fireEvent.change(csvInput, {
+      target: {
+        files: [
+          new File(["symbol,qty\nTSLA,1"], "portfolio.csv", {
+            type: "text/csv",
+          }),
+        ],
+      },
+    });
+
+    await waitFor(() => {
+      expect(mockAnalyzeMutate).toHaveBeenCalledTimes(1);
+      expect(screen.getByRole("button", { name: /Remove 1099 PDF/i })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /Remove 1099 PDF/i }));
+
+    await waitFor(() => {
+      expect(mockAnalyzeMutate).toHaveBeenCalledTimes(2);
+    });
+
+    expect(mockAnalyzeMutate.mock.calls[1][0]).toMatchObject({
+      file: expect.objectContaining({ name: "portfolio.csv" }),
+    });
+    expect(mockAnalyzeMutate.mock.calls[1][0].supplemental1099File).toBeUndefined();
+  });
+
+  it("loads a saved analysis from history and shows saved-history messaging", async () => {
+    mockHistoryData = [
+      {
+        id: "analysis-1",
+        filename: "saved.csv",
+        uploaded_at: "2026-03-08T12:00:00Z",
+        positions_count: 2,
+        total_market_value: 1000,
+      },
+    ];
+    mockFetchAnalysisById.mockResolvedValue({
+      id: "analysis-1",
+      filename: "saved.csv",
+      result: baseAnalysis,
+    });
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getAllByRole("button", { name: /History/i })[0]);
+    fireEvent.click(await screen.findByText("saved.csv"));
+
+    await waitFor(() => {
+      expect(screen.getByText("Saved analysis")).toBeInTheDocument();
+      expect(
+        screen.getByText(/This result was loaded from saved history/i),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(/Loaded saved analysis: saved.csv/i),
+      ).toBeInTheDocument();
+    });
   });
 });

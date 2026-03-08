@@ -42,3 +42,50 @@ def test_parse_robinhood_1099_pdf_extracts_summary_and_symbols(
     assert summary.matched_symbols == ["CLSK", "TSLL"]
     assert any("expected prior tax year (2024)" in insight for insight in summary.insights)
     assert any("$17,442.80" in insight for insight in summary.insights)
+
+
+def test_parse_robinhood_1099_pdf_handles_missing_totals_and_unknown_year(monkeypatch):
+    monkeypatch.setattr(
+        "pdf_1099_parser.extract_text_from_pdf",
+        lambda _pdf_bytes: "Account summary without tax tables or symbol references.",
+    )
+
+    summary = parse_robinhood_1099_pdf(
+        b"fake-pdf",
+        current_symbols={"AAPL"},
+        filename="empty.pdf",
+        expected_previous_year=2024,
+    )
+
+    assert summary.source_filename == "empty.pdf"
+    assert summary.broker_name == ""
+    assert summary.tax_year is None
+    assert summary.short_term_proceeds == pytest.approx(0.0)
+    assert summary.long_term_wash_sale_disallowed == pytest.approx(0.0)
+    assert summary.referenced_symbols == []
+    assert summary.matched_symbols == []
+    assert summary.insights == []
+
+
+def test_parse_robinhood_1099_pdf_reports_year_mismatch_and_unmatched_symbols(monkeypatch):
+    monkeypatch.setattr(
+        "pdf_1099_parser.extract_text_from_pdf",
+        lambda _pdf_bytes: (
+            "Enclosed is your 2023 Consolidated Tax Statement\n"
+            "/ Symbol: XYZ\n"
+            "Robinhood"
+        ),
+    )
+
+    summary = parse_robinhood_1099_pdf(
+        b"fake-pdf",
+        current_symbols={"AAPL"},
+        filename="mismatch.pdf",
+        expected_previous_year=2024,
+    )
+
+    assert summary.tax_year == 2023
+    assert summary.referenced_symbols == ["XYZ"]
+    assert summary.matched_symbols == []
+    assert any("not the expected prior year (2024)" in insight for insight in summary.insights)
+    assert any("No symbols from the prior-year 1099 directly matched the current CSV" in insight for insight in summary.insights)

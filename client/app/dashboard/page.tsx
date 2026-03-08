@@ -514,13 +514,15 @@ function Supplemental1099UploadPanel({
   onClearFile: () => void;
   isPending: boolean;
 }>) {
-  const displayFileName = selectedFileName ?? appliedSummary?.source_filename ?? null;
+  const displayFileName =
+    selectedFileName ?? appliedSummary?.source_filename ?? null;
   const isApplied = Boolean(appliedSummary);
   const hasSelectedFile = Boolean(displayFileName);
   const isRestoredAppliedSummary =
     Boolean(appliedSummary) &&
     !selectedFileName &&
-    (analysisSource === "restored-session" || analysisSource === "saved-history");
+    (analysisSource === "restored-session" ||
+      analysisSource === "saved-history");
   const helperText = getSupplemental1099HelperText({
     isApplied,
     isRestoredAppliedSummary,
@@ -1558,7 +1560,7 @@ export default function DashboardPage() {
                   hasUploadedCsv={Boolean(lastUploadedCsv)}
                   canRemoveSupplement={Boolean(
                     supplemental1099File ||
-                      (lastUploadedCsv && displayedAnalysis?.supplemental_1099),
+                    (lastUploadedCsv && displayedAnalysis?.supplemental_1099),
                   )}
                   onChooseFile={handleSupplemental1099UploadClick}
                   onClearFile={handleClearSupplemental1099}
