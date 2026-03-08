@@ -1558,10 +1558,14 @@ export default function DashboardPage() {
                   appliedSummary={displayedAnalysis?.supplemental_1099}
                   analysisSource={analysisSource}
                   hasUploadedCsv={Boolean(lastUploadedCsv)}
-                  canRemoveSupplement={Boolean(
-                    supplemental1099File ||
-                    (lastUploadedCsv && displayedAnalysis?.supplemental_1099),
-                  )}
+                  canRemoveSupplement={
+                    analysisSource !== "saved-history" &&
+                    analysisSource !== "restored-session" &&
+                    Boolean(
+                      supplemental1099File ||
+                        (lastUploadedCsv && displayedAnalysis?.supplemental_1099),
+                    )
+                  }
                   onChooseFile={handleSupplemental1099UploadClick}
                   onClearFile={handleClearSupplemental1099}
                   isPending={isPending}
