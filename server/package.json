@@ -3,11 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "predev": "npx kill-port 8001",
-    "start": "python -m uvicorn main:app --host 0.0.0.0 --port 8001",
-    "dev": "python -m uvicorn main:app --host 0.0.0.0 --port 8001 --reload",
-    "test": "python -m pytest",
-    "test:coverage": "python -m pytest --cov=. --cov-report=term-missing",
-    "test:watch": "python -m pytest --watch"
+    "start": "node dev-server.js",
+    "dev": "node dev-server.js --reload",
+    "test": "node venv-python.js -m pytest",
+    "test:coverage": "node venv-python.js -m pytest --cov=. --cov-report=term-missing",
+    "test:watch": "node venv-python.js -m pytest --watch"
   }
 }

@@ -711,7 +711,8 @@ async def save_tax_profile_endpoint(
     )
 
     if saved:
-        return {"message": "Tax profile saved", "profile": saved}
+        normalized_profile = TaxProfile.model_validate(saved).model_dump(mode="json")
+        return {"message": "Tax profile saved", "profile": normalized_profile}
 
     # Fallback: return the validated profile even if DB is unavailable
     return {"message": "Tax profile saved (not persisted)", "profile": profile.model_dump()}
@@ -730,7 +731,7 @@ async def get_tax_profile_endpoint(
     """
     saved = db_get_tax_profile(user_id)
     if saved:
-        return saved
+        return TaxProfile.model_validate(saved).model_dump(mode="json")
 
     # No saved profile — return defaults
     default_profile = TaxProfile(user_id=user_id)

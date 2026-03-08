@@ -114,6 +114,25 @@ export function usePushNotifications() {
   };
 }
 
+function getPushEndpoint(path: string): string {
+  const configuredApiUrl = process.env.NEXT_PUBLIC_API_URL || "";
+
+  if (configuredApiUrl) {
+    try {
+      const url = new URL(configuredApiUrl);
+      if (url.hostname === "localhost" || url.hostname === "127.0.0.1") {
+        return path;
+      }
+
+      return `${configuredApiUrl.replace(/\/$/, "")}${path}`;
+    } catch {
+      // Fall back to same-origin relative paths for malformed local config values.
+    }
+  }
+
+  return path;
+}
+
 // Helper function to convert base64 VAPID key to Uint8Array
 function urlBase64ToUint8Array(base64String: string): Uint8Array {
   const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
@@ -133,8 +152,7 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array {
 // Send subscription to backend
 async function sendSubscriptionToBackend(subscription: PushSubscription) {
   try {
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
-    const response = await fetch(`${apiUrl}/push/subscribe`, {
+    const response = await fetch(getPushEndpoint("/push/subscribe"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -156,8 +174,7 @@ async function sendSubscriptionToBackend(subscription: PushSubscription) {
 // Remove subscription from backend
 async function removeSubscriptionFromBackend(subscription: PushSubscription) {
   try {
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
-    const response = await fetch(`${apiUrl}/push/unsubscribe`, {
+    const response = await fetch(getPushEndpoint("/push/unsubscribe"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

@@ -1,4 +1,8 @@
 /** @type {import('next').NextConfig} */
+function localDestination(path) {
+  return `http://localhost:${process.env.BACKEND_PORT || 8011}${path}`;
+}
+
 const nextConfig = {
   // Enable PWA support
   headers: async () => {
@@ -33,15 +37,19 @@ const nextConfig = {
     return [
       {
         source: "/api/:path*",
-        destination: `http://localhost:${process.env.BACKEND_PORT || 8001}/api/:path*`,
+        destination: localDestination("/api/:path*"),
       },
       {
         source: "/upload-csv",
-        destination: `http://localhost:${process.env.BACKEND_PORT || 8001}/upload-csv`,
+        destination: localDestination("/upload-csv"),
       },
       {
         source: "/health",
-        destination: `http://localhost:${process.env.BACKEND_PORT || 8001}/health`,
+        destination: localDestination("/health"),
+      },
+      {
+        source: "/push/:path*",
+        destination: localDestination("/push/:path*"),
       },
     ];
   },

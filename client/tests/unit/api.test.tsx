@@ -85,7 +85,7 @@ function UploadComponent({ file }: Readonly<{ file: File }>) {
 }
 
 function HistoryComponent() {
-  const { data, error } = usePortfolioHistory();
+  const { data, error } = usePortfolioHistory("test-user-id");
   return (
     <div>
       <span>{getHistoryStatus(data, error)}</span>
@@ -114,7 +114,7 @@ function PricesComponent({ symbols }: Readonly<{ symbols: string[] }>) {
 }
 
 function TaxProfileComponent() {
-  const { data, error } = useTaxProfile();
+  const { data, error } = useTaxProfile({ userId: "test-user-id" });
   return (
     <div>
       <span>{getStatus(data, error)}</span>
@@ -356,7 +356,7 @@ describe("api hooks", () => {
         json: async () => ({
           user_id: "test-user-123",
           filing_status: "single",
-          estimated_annual_income: 75000,
+          estimated_annual_income: "75000",
           state: "CA",
           tax_year: 2025,
         }),
@@ -371,6 +371,7 @@ describe("api hooks", () => {
 
       const call = (globalThis.fetch as jest.Mock).mock.calls[0];
       expect(call[1].headers.Authorization).toBe("Bearer mock-jwt-token");
+      expect(call[1].cache).toBe("no-store");
     });
 
     it("handles tax profile fetch errors", async () => {
@@ -402,7 +403,9 @@ describe("api hooks", () => {
       } as Response);
 
       const wrapper = createWrapper();
-      const { result } = renderHook(() => useSaveTaxProfile(), { wrapper });
+      const { result } = renderHook(() => useSaveTaxProfile("test-user"), {
+        wrapper,
+      });
 
       expect(result.current.mutate).toBeDefined();
       expect(result.current.isPending).toBe(false);
@@ -422,7 +425,9 @@ describe("api hooks", () => {
       } as Response);
 
       const wrapper = createWrapper();
-      const { result } = renderHook(() => useSaveTaxProfile(), { wrapper });
+      const { result } = renderHook(() => useSaveTaxProfile("test-user"), {
+        wrapper,
+      });
 
       expect(result.current.mutate).toBeDefined();
     });
@@ -654,7 +659,9 @@ describe("api hooks", () => {
       } as Response);
 
       const wrapper = createWrapper();
-      const { result } = renderHook(() => useSaveTaxProfile(), { wrapper });
+      const { result } = renderHook(() => useSaveTaxProfile("test-user"), {
+        wrapper,
+      });
 
       await act(async () => {
         result.current.mutate(profile);
@@ -685,7 +692,9 @@ describe("api hooks", () => {
       } as Response);
 
       const wrapper = createWrapper();
-      const { result } = renderHook(() => useSaveTaxProfile(), { wrapper });
+      const { result } = renderHook(() => useSaveTaxProfile("test-user"), {
+        wrapper,
+      });
 
       await act(async () => {
         result.current.mutate(profile);

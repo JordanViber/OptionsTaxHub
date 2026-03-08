@@ -44,7 +44,7 @@ export default function SettingsPage() {
 
   /** Format a number string with thousands commas, stripping anything non-numeric. */
   const formatIncome = (raw: string) => {
-    const digits = raw.replace(/[^0-9]/g, "");
+    const digits = raw.replaceAll(/\D/g, "");
     if (!digits) return "";
     return Number(digits).toLocaleString("en-US");
   };
@@ -56,17 +56,20 @@ export default function SettingsPage() {
   // Load existing profile
   const { data: profile, isLoading: profileLoading } = useTaxProfile({
     enabled: !!user,
+    userId: user?.id,
   });
 
   // Save mutation
-  const { mutate: saveProfile, isPending: saving } = useSaveTaxProfile();
+  const { mutate: saveProfile, isPending: saving } = useSaveTaxProfile(user?.id);
 
   // Populate form when profile loads
   useEffect(() => {
     if (profile) {
       setFilingStatus(profile.filing_status || "single");
       setEstimatedIncome(
-        (profile.estimated_annual_income || 75000).toLocaleString("en-US"),
+        Number(profile.estimated_annual_income || 75000).toLocaleString(
+          "en-US",
+        ),
       );
       setState(profile.state || "");
       setTaxYear(profile.tax_year || 2025);
@@ -86,7 +89,7 @@ export default function SettingsPage() {
         user_id: user?.id,
         filing_status: filingStatus,
         estimated_annual_income:
-          Number.parseFloat(estimatedIncome.replace(/,/g, "")) || 75000,
+          Number.parseFloat(estimatedIncome.replaceAll(",", "")) || 75000,
         state,
         tax_year: taxYear,
       },
