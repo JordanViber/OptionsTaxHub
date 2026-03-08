@@ -10,6 +10,22 @@ jest.mock("@mui/x-data-grid", () => ({
     getRowClassName,
   }: Readonly<Record<string, unknown>>) => {
     const rowsArray = Array.isArray(rows) ? rows : [];
+    const columnsArray = Array.isArray(columns) ? columns : [];
+    const symbolColumn = columnsArray.find(
+      (column: unknown) =>
+        typeof column === "object" &&
+        column !== null &&
+        "field" in (column as Record<string, unknown>) &&
+        (column as Record<string, unknown>).field === "symbol",
+    ) as
+      | {
+          renderCell?: (params: {
+            row: Position;
+            value: string;
+          }) => React.ReactNode;
+        }
+      | undefined;
+
     return (
       <div data-testid="positions-table">
         {rowsArray.map((row: unknown) => {
@@ -18,6 +34,10 @@ jest.mock("@mui/x-data-grid", () => ({
             (getRowClassName as (params: Record<string, unknown>) => string)?.({
               row: position,
             }) || "";
+          const renderedSymbol = symbolColumn?.renderCell?.({
+            row: position,
+            value: position.symbol,
+          });
           return (
             <div
               key={position.symbol}
@@ -25,6 +45,9 @@ jest.mock("@mui/x-data-grid", () => ({
               className={rowClass}
               data-pnl={position.unrealized_pnl}
             >
+              <div data-testid={`rendered-symbol-${position.symbol}`}>
+                {renderedSymbol}
+              </div>
               <span data-testid={`symbol-${position.symbol}`}>
                 {position.symbol}
               </span>
@@ -139,6 +162,38 @@ describe("PositionsTable", () => {
       expect(screen.getByTestId("price-AAPL")).toHaveTextContent("175");
       expect(screen.getByTestId("value-AAPL")).toHaveTextContent("17500");
       expect(screen.getByTestId("pnl-AAPL")).toHaveTextContent("2500");
+    });
+
+    it("shows manual-review note for affected positions", () => {
+      const position: Position = {
+        symbol: "ASST",
+        display_label: "ASST",
+        manual_review_required: true,
+        manual_review_reason:
+          "Recent stock split activity affected ASST. Verify reported quantities, adjusted contracts, and cost basis manually before acting.",
+        quantity: 3,
+        avg_cost_basis: 1.25,
+        current_price: 0.85,
+        market_value: 2.55,
+        unrealized_pnl: -1.2,
+        unrealized_pnl_pct: -32,
+        holding_period_days: 45,
+        is_long_term: false,
+        wash_sale_risk: false,
+        asset_type: "stock",
+        total_cost_basis: 3.75,
+        earliest_purchase_date: "2026-01-01",
+        tax_lots: [],
+      };
+
+      render(<PositionsTable positions={[position]} />);
+
+      expect(screen.getByTestId("rendered-symbol-ASST")).toHaveTextContent(
+        "Manual review",
+      );
+      expect(
+        screen.getByLabelText(/Recent stock split activity affected ASST/i),
+      ).toBeInTheDocument();
     });
 
     it("renders empty list of positions", () => {

@@ -7,6 +7,8 @@ const baseSuggestion: HarvestingSuggestion = {
   suggestion_id: "AAPL-stock-2025-01-01",
   display_label: "AAPL",
   lot_details: "Tax lot opened Jan 15, 2025 at $150.00/share",
+  manual_review_required: false,
+  manual_review_reason: "",
   action: "SELL",
   quantity: 10,
   current_price: 140,
@@ -70,11 +72,33 @@ describe("HarvestingSuggestions", () => {
 
     render(<HarvestingSuggestions suggestions={suggestions} />);
 
+    expect(screen.getByText("Lot 1/2")).toBeInTheDocument();
+    expect(screen.getByText("Lot 2/2")).toBeInTheDocument();
     expect(
-      screen.getByText("Tax lot opened Jan 15, 2025 at $150.00/share"),
+      screen.getByText(
+        "Lot 1 of 2 • Tax lot opened Jan 15, 2025 at $150.00/share",
+      ),
     ).toBeInTheDocument();
     expect(
-      screen.getByText("Tax lot opened Feb 01, 2025 at $155.00/share"),
+      screen.getByText(
+        "Lot 2 of 2 • Tax lot opened Feb 01, 2025 at $155.00/share",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("shows manual-review context for affected symbols", () => {
+    const requiresReview: HarvestingSuggestion = {
+      ...baseSuggestion,
+      manual_review_required: true,
+      manual_review_reason:
+        "Recent stock split activity affected AAPL. Verify reported quantities, adjusted contracts, and cost basis manually before acting.",
+    };
+
+    render(<HarvestingSuggestions suggestions={[requiresReview]} />);
+
+    expect(screen.getByText("Manual review")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Recent stock split activity affected AAPL/i),
     ).toBeInTheDocument();
   });
 
@@ -158,7 +182,11 @@ describe("HarvestingSuggestions", () => {
     const withCandidates: HarvestingSuggestion = {
       ...baseSuggestion,
       replacement_candidates: [
-        { symbol: "VTI", name: "Vanguard Total Market", reason: "Similar exposure" },
+        {
+          symbol: "VTI",
+          name: "Vanguard Total Market",
+          reason: "Similar exposure",
+        },
       ],
     };
     render(<HarvestingSuggestions suggestions={[withCandidates]} />);

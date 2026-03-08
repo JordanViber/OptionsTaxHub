@@ -41,6 +41,8 @@ export interface Position {
   position_id?: string;
   symbol: string;
   display_label?: string | null;
+  manual_review_required?: boolean;
+  manual_review_reason?: string;
   quantity: number;
   avg_cost_basis: number;
   total_cost_basis: number;
@@ -95,6 +97,8 @@ export interface HarvestingSuggestion {
   suggestion_id: string;
   display_label: string;
   lot_details: string;
+  manual_review_required?: boolean;
+  manual_review_reason?: string;
   action: string;
   quantity: number;
   current_price: number | null;

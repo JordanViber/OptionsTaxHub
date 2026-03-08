@@ -422,6 +422,66 @@ def _summarize_warnings(warnings: List[str]) -> List[str]:
     return _dedupe_preserving_order([*summarized, *passthrough])
 
 
+def _build_manual_review_notes_by_symbol(transactions: list) -> dict[str, str]:
+    """Build per-symbol manual-review notes for unsupported position-changing events."""
+    if not transactions:
+        return {}
+
+    events_by_symbol: dict[str, set[str]] = defaultdict(set)
+    for txn in transactions:
+        symbol = getattr(txn, "instrument", "")
+        if not symbol:
+            continue
+
+        if txn.trans_code == TransCode.SPR:
+            events_by_symbol[symbol].add("stock split activity")
+        elif txn.trans_code == TransCode.OCA:
+            events_by_symbol[symbol].add("corporate-action adjustments")
+        elif txn.trans_code == TransCode.OASGN:
+            events_by_symbol[symbol].add("option assignment activity")
+
+    notes: dict[str, str] = {}
+    for symbol, event_labels in events_by_symbol.items():
+        labels = sorted(event_labels)
+        if len(labels) == 1:
+            events_text = labels[0]
+        elif len(labels) == 2:
+            events_text = f"{labels[0]} and {labels[1]}"
+        else:
+            events_text = f"{', '.join(labels[:-1])}, and {labels[-1]}"
+
+        notes[symbol] = (
+            f"Recent {events_text} affected {symbol}. Verify reported quantities, "
+            f"adjusted contracts, and cost basis manually before acting."
+        )
+
+    return notes
+
+
+def _apply_manual_review_flags(
+    positions: list,
+    suggestions: list,
+    manual_review_notes: dict[str, str],
+) -> None:
+    """Attach structured manual-review metadata to affected positions and suggestions."""
+    if not manual_review_notes:
+        return
+
+    for position in positions:
+        reason = manual_review_notes.get(position.symbol)
+        if not reason:
+            continue
+        position.manual_review_required = True
+        position.manual_review_reason = reason
+
+    for suggestion in suggestions:
+        reason = manual_review_notes.get(suggestion.symbol)
+        if not reason:
+            continue
+        suggestion.manual_review_required = True
+        suggestion.manual_review_reason = reason
+
+
 def _apply_live_prices_to_tax_lots(tax_lots: list, all_warnings: list[str]) -> list:
     """Populate stock and option lots with live prices when available."""
     symbols = list({lot.symbol for lot in tax_lots})
@@ -591,6 +651,8 @@ async def analyze_portfolio(
     )
 
     positions = aggregate_positions(tax_lots)
+    manual_review_notes = _build_manual_review_notes_by_symbol(transactions)
+    _apply_manual_review_flags(positions, suggestions, manual_review_notes)
     summary = build_portfolio_summary(positions, suggestions, wash_sale_flags)
 
     # Compute realized gain/loss breakdown for the requested tax year

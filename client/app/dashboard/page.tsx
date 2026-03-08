@@ -79,6 +79,11 @@ export const dynamic = "force-dynamic";
 
 type AnalysisSource = "fresh-upload" | "saved-history" | "restored-session";
 
+type DeleteTarget = {
+  id: string;
+  filename: string;
+};
+
 function buildPositionId(position: Position, index: number): string {
   return (
     position.position_id ??
@@ -271,6 +276,79 @@ function getRecommendedNextSteps(analysis: PortfolioAnalysis): string[] {
   return steps;
 }
 
+function getSkippedSuggestionSymbols(analysis: PortfolioAnalysis): string[] {
+  const symbols = new Set<string>();
+  const skippedSuggestionPattern =
+    /^Skipped automated harvesting suggestions for (\S+) stock lots/i;
+
+  for (const warning of analysis.warnings ?? []) {
+    const match = skippedSuggestionPattern.exec(warning);
+    if (match?.[1]) {
+      symbols.add(match[1]);
+    }
+  }
+
+  return Array.from(symbols).sort((left, right) => left.localeCompare(right));
+}
+
+function getSkippedSuggestionSymbolsForAnalysis(
+  analysis: PortfolioAnalysis | null,
+): string[] {
+  if (!analysis) {
+    return [];
+  }
+
+  return getSkippedSuggestionSymbols(analysis);
+}
+
+function SuggestionsPanel({
+  suggestions,
+  skippedSuggestionSymbols,
+}: Readonly<{
+  suggestions: PortfolioAnalysis["suggestions"];
+  skippedSuggestionSymbols: string[];
+}>) {
+  return (
+    <Stack spacing={2}>
+      {skippedSuggestionSymbols.length > 0 && (
+        <Alert severity="warning" variant="outlined">
+          <AlertTitle>Manual review needed</AlertTitle>
+          Automated harvesting suggestions were skipped for{" "}
+          {skippedSuggestionSymbols.join(", ")} because a split or corporate
+          action changed the reported share count. Review those symbols manually
+          before acting.
+        </Alert>
+      )}
+      <HarvestingSuggestions suggestions={suggestions} />
+    </Stack>
+  );
+}
+
+async function deleteHistoryEntry({
+  userId,
+  deleteTarget,
+  invalidateHistory,
+  clearDeleteTarget,
+}: {
+  userId: string | undefined;
+  deleteTarget: DeleteTarget | null;
+  invalidateHistory: () => void;
+  clearDeleteTarget: () => void;
+}): Promise<void> {
+  if (!userId || !deleteTarget) {
+    return;
+  }
+
+  try {
+    await deleteAnalysis(deleteTarget.id);
+    invalidateHistory();
+  } catch (err) {
+    console.error("Failed to delete analysis:", err);
+  } finally {
+    clearDeleteTarget();
+  }
+}
+
 // Helper component: render history list or empty/error state
 function HistoryContent({
   history,
@@ -380,10 +458,7 @@ export default function DashboardPage() {
     null,
   );
   const [historyLoading, setHistoryLoading] = useState(false);
-  const [deleteTarget, setDeleteTarget] = useState<{
-    id: string;
-    filename: string;
-  } | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
   const [snackbar, setSnackbar] = useState<{
     message: string;
     severity: "success" | "error" | "info";
@@ -422,6 +497,8 @@ export default function DashboardPage() {
 
   // --- State persistence: save displayedAnalysis whenever it changes ---
   const displayedAnalysis = getDisplayedAnalysis(loadedAnalysis, analysis);
+  const skippedSuggestionSymbols =
+    getSkippedSuggestionSymbolsForAnalysis(displayedAnalysis);
   useEffect(() => {
     if (displayedAnalysis) {
       saveAnalysisToStorage(displayedAnalysis);
@@ -539,17 +616,16 @@ export default function DashboardPage() {
    * Delete a history item after user confirms via dialog.
    */
   const handleDeleteConfirm = async () => {
-    if (!user?.id || !deleteTarget) return;
-    try {
-      await deleteAnalysis(deleteTarget.id);
-      queryClient.invalidateQueries({
-        queryKey: ["portfolio-history", user?.id],
-      });
-    } catch (err) {
-      console.error("Failed to delete analysis:", err);
-    } finally {
-      setDeleteTarget(null);
-    }
+    await deleteHistoryEntry({
+      userId: user?.id,
+      deleteTarget,
+      invalidateHistory: () => {
+        queryClient.invalidateQueries({
+          queryKey: ["portfolio-history", user?.id],
+        });
+      },
+      clearDeleteTarget: () => setDeleteTarget(null),
+    });
   };
 
   useEffect(() => {
@@ -1015,8 +1091,9 @@ export default function DashboardPage() {
 
                 <CardContent>
                   {activeTab === 0 && (
-                    <HarvestingSuggestions
+                    <SuggestionsPanel
                       suggestions={displayedAnalysis.suggestions}
+                      skippedSuggestionSymbols={skippedSuggestionSymbols}
                     />
                   )}
                   {activeTab === 1 && (

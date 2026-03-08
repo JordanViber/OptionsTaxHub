@@ -29,6 +29,12 @@ interface HarvestingSuggestionsProps {
   suggestions: HarvestingSuggestion[];
 }
 
+interface SuggestionDisplayMeta {
+  suggestion: HarvestingSuggestion;
+  lotIndex: number;
+  lotCount: number;
+}
+
 /**
  * Format a number as USD currency.
  */
@@ -41,15 +47,65 @@ function formatCurrency(value: number): string {
   }).format(value);
 }
 
+function suggestionGroupKey(suggestion: HarvestingSuggestion): string {
+  return suggestion.display_label || suggestion.symbol;
+}
+
+function buildSuggestionDisplayMeta(
+  suggestions: HarvestingSuggestion[],
+): SuggestionDisplayMeta[] {
+  const counts = new Map<string, number>();
+  const seen = new Map<string, number>();
+
+  for (const suggestion of suggestions) {
+    const key = suggestionGroupKey(suggestion);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+
+  return suggestions.map((suggestion) => {
+    const key = suggestionGroupKey(suggestion);
+    const lotIndex = (seen.get(key) ?? 0) + 1;
+    seen.set(key, lotIndex);
+    return {
+      suggestion,
+      lotIndex,
+      lotCount: counts.get(key) ?? 1,
+    };
+  });
+}
+
+function getSuggestionDetailText(
+  suggestion: HarvestingSuggestion,
+  lotIndex: number,
+  lotCount: number,
+): string {
+  const lotPrefix = lotCount > 1 ? `Lot ${lotIndex} of ${lotCount}` : "Tax lot";
+  if (suggestion.lot_details) {
+    return lotCount > 1
+      ? `${lotPrefix} • ${suggestion.lot_details}`
+      : suggestion.lot_details;
+  }
+
+  return `${lotPrefix} • Qty ${suggestion.quantity} at ${formatCurrency(
+    suggestion.cost_basis_per_share,
+  )} cost basis`;
+}
+
 /**
  * A single harvesting suggestion card.
  */
 function SuggestionCard({
   suggestion,
+  lotIndex,
+  lotCount,
 }: Readonly<{
   suggestion: HarvestingSuggestion;
+  lotIndex: number;
+  lotCount: number;
 }>) {
   const [expanded, setExpanded] = useState(false);
+  const needsManualReview = Boolean(suggestion.manual_review_required);
+  const detailText = getSuggestionDetailText(suggestion, lotIndex, lotCount);
 
   return (
     <Card
@@ -92,6 +148,14 @@ function SuggestionCard({
                 color="primary"
                 sx={{ height: 20, fontSize: "0.65rem" }}
               />
+              {lotCount > 1 && (
+                <Chip
+                  label={`Lot ${lotIndex}/${lotCount}`}
+                  size="small"
+                  variant="outlined"
+                  sx={{ height: 20, fontSize: "0.65rem" }}
+                />
+              )}
               <Chip
                 label={suggestion.is_long_term ? "Long-Term" : "Short-Term"}
                 size="small"
@@ -112,16 +176,47 @@ function SuggestionCard({
                   }}
                 />
               )}
+              {needsManualReview && (
+                <Chip
+                  icon={<WarnIcon sx={{ fontSize: 12 }} />}
+                  label="Manual review"
+                  size="small"
+                  color="warning"
+                  variant="outlined"
+                  sx={{ height: 20, fontSize: "0.65rem" }}
+                />
+              )}
             </Box>
 
-            {suggestion.lot_details && (
+            {detailText && (
               <Typography
-                variant="caption"
+                variant="body2"
                 color="text.secondary"
                 sx={{ display: "block", mb: 0.5 }}
               >
-                {suggestion.lot_details}
+                {detailText}
               </Typography>
+            )}
+
+            {needsManualReview && suggestion.manual_review_reason && (
+              <Box
+                sx={{
+                  display: "flex",
+                  alignItems: "flex-start",
+                  gap: 0.75,
+                  mb: 0.5,
+                }}
+              >
+                <WarnIcon
+                  sx={{ color: "warning.main", fontSize: 14, mt: 0.1 }}
+                />
+                <Typography
+                  variant="caption"
+                  sx={{ color: "warning.dark", display: "block" }}
+                >
+                  {suggestion.manual_review_reason}
+                </Typography>
+              </Box>
             )}
 
             <Stack direction="row" spacing={3} sx={{ mt: 1 }}>
@@ -296,12 +391,19 @@ export default function HarvestingSuggestions({
     );
   }
 
+  const displayMeta = buildSuggestionDisplayMeta(suggestions);
+
   return (
     <Stack spacing={2}>
-      {suggestions.map((suggestion) => (
+      {displayMeta.map(({ suggestion, lotIndex, lotCount }) => (
         <SuggestionCard
-          key={suggestion.suggestion_id || `${suggestion.symbol}-${suggestion.priority}`}
+          key={
+            suggestion.suggestion_id ||
+            `${suggestion.symbol}-${suggestion.priority}`
+          }
           suggestion={suggestion}
+          lotIndex={lotIndex}
+          lotCount={lotCount}
         />
       ))}
     </Stack>

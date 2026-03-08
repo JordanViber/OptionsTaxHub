@@ -789,6 +789,95 @@ def test_filter_suggestion_tax_lots_skips_split_affected_stock_lots():
     assert any("Skipped automated harvesting suggestions for ASST" in w for w in warnings)
 
 
+def test_build_manual_review_notes_by_symbol_summarizes_unsupported_events():
+    from datetime import date
+    from main import _build_manual_review_notes_by_symbol
+    from models import AssetType, Transaction, TransCode
+
+    transactions = [
+        Transaction(
+            activity_date=date(2026, 2, 6),
+            instrument="ASST",
+            description="Stock Split",
+            trans_code=TransCode.SPR,
+            quantity=400,
+            price=0.0,
+            amount=0.0,
+            asset_type=AssetType.STOCK,
+        ),
+        Transaction(
+            activity_date=date(2026, 2, 7),
+            instrument="ASST",
+            description="Corporate Action",
+            trans_code=TransCode.OCA,
+            quantity=1,
+            price=0.0,
+            amount=0.0,
+            asset_type=AssetType.OPTION,
+        ),
+        Transaction(
+            activity_date=date(2026, 2, 8),
+            instrument="TSLL",
+            description="Option Assignment",
+            trans_code=TransCode.OASGN,
+            quantity=1,
+            price=0.0,
+            amount=0.0,
+            asset_type=AssetType.OPTION,
+        ),
+    ]
+
+    notes = _build_manual_review_notes_by_symbol(transactions)
+
+    assert "ASST" in notes
+    assert "stock split activity" in notes["ASST"]
+    assert "corporate-action adjustments" in notes["ASST"]
+    assert "TSLL" in notes
+    assert "option assignment activity" in notes["TSLL"]
+
+
+def test_apply_manual_review_flags_marks_positions_and_suggestions():
+    from main import _apply_manual_review_flags
+    from models import AssetType, HarvestingSuggestion, Position
+
+    reason = (
+        "Recent stock split activity affected ASST. Verify reported quantities, "
+        "adjusted contracts, and cost basis manually before acting."
+    )
+    positions = [
+        Position(
+            position_id="ASST:stock",
+            symbol="ASST",
+            quantity=5,
+            avg_cost_basis=1.0,
+            total_cost_basis=5.0,
+            asset_type=AssetType.STOCK,
+            tax_lots=[],
+        )
+    ]
+    suggestions = [
+        HarvestingSuggestion(
+            symbol="ASST",
+            suggestion_id="ASST-stock-2026-01-15",
+            display_label="ASST",
+            lot_details="Tax lot opened Jan 15, 2026 at $1.00/share",
+            quantity=5,
+            cost_basis_per_share=1.0,
+            estimated_loss=1.5,
+            tax_savings_estimate=0.3,
+            holding_period_days=10,
+            is_long_term=False,
+        )
+    ]
+
+    _apply_manual_review_flags(positions, suggestions, {"ASST": reason})
+
+    assert positions[0].manual_review_required is True
+    assert positions[0].manual_review_reason == reason
+    assert suggestions[0].manual_review_required is True
+    assert suggestions[0].manual_review_reason == reason
+
+
 
 
 
