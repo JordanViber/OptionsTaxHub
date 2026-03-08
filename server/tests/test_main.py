@@ -1243,8 +1243,9 @@ def test_maybe_parse_supplemental_1099_returns_warning_for_year_mismatch(monkeyp
 
     class DummyUpload:
         filename = "prior.pdf"
+        content_type = "application/pdf"
 
-        async def read(self):
+        async def read(self, size=-1):
             await asyncio.sleep(0)
             return b"pdf"
 
@@ -1275,8 +1276,9 @@ def test_maybe_parse_supplemental_1099_ignores_unparseable_pdf(monkeypatch):
 
     class DummyUpload:
         filename = "broken.pdf"
+        content_type = "application/pdf"
 
-        async def read(self):
+        async def read(self, size=-1):
             await asyncio.sleep(0)
             return b"broken"
 
@@ -1295,7 +1297,52 @@ def test_maybe_parse_supplemental_1099_ignores_unparseable_pdf(monkeypatch):
     ]
 
 
-def test_get_prices_empty_symbols():
+def test_maybe_parse_supplemental_1099_rejects_non_pdf_content_type():
+    import asyncio
+
+    from main import _maybe_parse_supplemental_1099
+
+    class DummyUpload:
+        filename = "document.xlsx"
+        content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+        async def read(self, size=-1):
+            await asyncio.sleep(0)
+            return b"not-a-pdf"
+
+    summary, warnings = asyncio.run(
+        _maybe_parse_supplemental_1099(DummyUpload(), {"CLSK"}, 2024)
+    )
+
+    assert summary is None
+    assert len(warnings) == 1
+    assert "PDF" in warnings[0]
+
+
+def test_maybe_parse_supplemental_1099_rejects_oversized_pdf(monkeypatch):
+    import asyncio
+
+    from main import _maybe_parse_supplemental_1099, _MAX_SUPPLEMENTAL_PDF_BYTES
+
+    class DummyUpload:
+        filename = "huge.pdf"
+        content_type = "application/pdf"
+
+        async def read(self, size=-1):
+            await asyncio.sleep(0)
+            # Return more than the allowed maximum to trigger the size guard
+            return b"x" * (_MAX_SUPPLEMENTAL_PDF_BYTES + 1)
+
+    summary, warnings = asyncio.run(
+        _maybe_parse_supplemental_1099(DummyUpload(), {"CLSK"}, 2024)
+    )
+
+    assert summary is None
+    assert len(warnings) == 1
+    assert "20 MB" in warnings[0]
+
+
+
     """GET /api/prices with empty symbols returns 400."""
     response = client.get("/api/prices?symbols=")
     assert response.status_code == 400

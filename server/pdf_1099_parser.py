@@ -15,7 +15,7 @@ from pypdf import PdfReader
 
 from models import Supplemental1099Summary
 
-_NUMBER = r"[0-9]{1,3}(?:,[0-9]{3})*\.\d{2}"
+_NUMBER = r"(?:-?[0-9]{1,3}(?:,[0-9]{3})*\.\d{2}|\([0-9]{1,3}(?:,[0-9]{3})*\.\d{2}\))"
 _TOTAL_SHORT_TERM_PATTERN = re.compile(
     rf"Total\s+Short-term\s*(?P<proceeds>{_NUMBER})\s*"
     rf"(?P<cost_basis>{_NUMBER})\s*(?P<market_discount>{_NUMBER})\s*"
@@ -38,7 +38,11 @@ _SYMBOL_PATTERN = re.compile(r"/\s*Symbol:\s*(?P<symbol>[A-Z][A-Z0-9.\-]{0,9})\b
 def _parse_money(raw_value: str | None) -> float:
     if not raw_value:
         return 0.0
-    return float(raw_value.replace(",", ""))
+    stripped = raw_value.strip()
+    # Parentheses notation represents a negative number, e.g. (1,234.56) → -1234.56
+    if stripped.startswith("(") and stripped.endswith(")"):
+        return -float(stripped[1:-1].replace(",", ""))
+    return float(stripped.replace(",", ""))
 
 
 def extract_text_from_pdf(pdf_bytes: bytes) -> str:

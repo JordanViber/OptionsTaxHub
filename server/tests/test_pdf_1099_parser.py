@@ -89,3 +89,31 @@ def test_parse_robinhood_1099_pdf_reports_year_mismatch_and_unmatched_symbols(mo
     assert summary.matched_symbols == []
     assert any("not the expected prior year (2024)" in insight for insight in summary.insights)
     assert any("No symbols from the prior-year 1099 directly matched the current CSV" in insight for insight in summary.insights)
+
+
+def test_parse_robinhood_1099_pdf_handles_negative_net_gain(monkeypatch):
+    """Parser should correctly extract negative totals (loss years)."""
+    # Simulate a page where net_gain is negative (parentheses notation from PDF)
+    monkeypatch.setattr(
+        "pdf_1099_parser.extract_text_from_pdf",
+        lambda _pdf_bytes: (
+            "Enclosed is your 2023 Consolidated Tax Statement\n"
+            "Robinhood\n"
+            "Total Short-term 5,000.00 6,200.00 0.00 0.00 (1,200.00)\n"
+            "Total Long-term 2,000.00 2,050.00 0.00 0.00 -50.00\n"
+        ),
+    )
+
+    summary = parse_robinhood_1099_pdf(
+        b"fake-pdf",
+        current_symbols=set(),
+        filename="loss-year.pdf",
+        expected_previous_year=2023,
+    )
+
+    assert summary.short_term_proceeds == pytest.approx(5000.00)
+    assert summary.short_term_cost_basis == pytest.approx(6200.00)
+    assert summary.short_term_net_gain == pytest.approx(-1200.00)
+    assert summary.long_term_proceeds == pytest.approx(2000.00)
+    assert summary.long_term_cost_basis == pytest.approx(2050.00)
+    assert summary.long_term_net_gain == pytest.approx(-50.00)
