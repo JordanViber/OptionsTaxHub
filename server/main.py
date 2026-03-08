@@ -28,6 +28,7 @@ from models import (
     FilingStatus,
     PortfolioAnalysis,
     RealizedSummary,
+    Supplemental1099Summary,
     TaxProfile,
     TransCode,
 )
@@ -43,6 +44,7 @@ from harvesting import (
 from wash_sale import detect_wash_sales, adjust_lots_for_wash_sales
 from price_service import fetch_current_prices, fetch_option_prices
 from ai_advisor import get_ai_suggestions, prepare_positions_for_ai
+from pdf_1099_parser import parse_robinhood_1099_pdf
 from db import (
     save_analysis_history,
     get_analysis_history,
@@ -482,6 +484,51 @@ def _apply_manual_review_flags(
         suggestion.manual_review_reason = reason
 
 
+def _parse_supplemental_1099_summary(
+    pdf_bytes: bytes,
+    filename: str,
+    current_symbols: set[str],
+    expected_previous_year: int,
+) -> Supplemental1099Summary:
+    """Parse an optional Robinhood 1099 PDF into reconciliation context."""
+    return parse_robinhood_1099_pdf(
+        pdf_bytes,
+        current_symbols=current_symbols,
+        filename=filename,
+        expected_previous_year=expected_previous_year,
+    )
+
+
+async def _maybe_parse_supplemental_1099(
+    supplemental_1099: UploadFile | None,
+    current_symbols: set[str],
+    expected_previous_year: int,
+) -> tuple[Supplemental1099Summary | None, list[str]]:
+    """Parse the optional prior-year 1099 PDF and return any user-facing warnings."""
+    if supplemental_1099 is None:
+        return None, []
+
+    try:
+        supplemental_bytes = await supplemental_1099.read()
+        summary = _parse_supplemental_1099_summary(
+            supplemental_bytes,
+            supplemental_1099.filename or "prior-year-1099.pdf",
+            current_symbols,
+            expected_previous_year,
+        )
+    except Exception as exc:
+        logger.warning("Failed to parse supplemental 1099 PDF: %s", exc, exc_info=True)
+        return None, ["Supplemental 1099 PDF could not be parsed and was ignored for this analysis."]
+
+    warnings: list[str] = []
+    if summary.tax_year is not None and summary.tax_year != expected_previous_year:
+        warnings.append(
+            "The supplemental 1099 PDF was parsed successfully, but its tax year does not match the expected prior year for this analysis."
+        )
+
+    return summary, warnings
+
+
 def _apply_live_prices_to_tax_lots(tax_lots: list, all_warnings: list[str]) -> list:
     """Populate stock and option lots with live prices when available."""
     symbols = list({lot.symbol for lot in tax_lots if lot.asset_type == AssetType.STOCK})
@@ -566,6 +613,7 @@ def _filter_suggestion_tax_lots(
 )
 async def analyze_portfolio(
     file: Annotated[UploadFile, File()],
+    supplemental_1099: Annotated[Optional[UploadFile], File()] = None,
     filing_status: Annotated[Optional[str], Query()] = "single",
     estimated_income: Annotated[Optional[float], Query()] = 75000.0,
     tax_year: Annotated[Optional[int], Query()] = 2025,
@@ -612,6 +660,12 @@ async def analyze_portfolio(
     )
 
     all_warnings = list(parse_errors)
+    supplemental_1099_summary, supplemental_1099_warnings = await _maybe_parse_supplemental_1099(
+        supplemental_1099,
+        {lot.symbol for lot in tax_lots},
+        (tax_profile.tax_year or 2025) - 1,
+    )
+    all_warnings.extend(supplemental_1099_warnings)
 
     tax_lots = _apply_live_prices_to_tax_lots(tax_lots, all_warnings)
 
@@ -668,6 +722,7 @@ async def analyze_portfolio(
         wash_sale_flags=wash_sale_flags,
         summary=summary,
         tax_profile=tax_profile,
+        supplemental_1099=supplemental_1099_summary,
         warnings=_summarize_warnings(all_warnings),
     )
 

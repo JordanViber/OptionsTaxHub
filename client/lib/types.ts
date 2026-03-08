@@ -115,6 +115,23 @@ export interface HarvestingSuggestion {
   priority: number;
 }
 
+export interface Supplemental1099Summary {
+  source_filename: string;
+  broker_name: string;
+  tax_year: number | null;
+  short_term_proceeds: number;
+  short_term_cost_basis: number;
+  short_term_wash_sale_disallowed: number;
+  short_term_net_gain: number;
+  long_term_proceeds: number;
+  long_term_cost_basis: number;
+  long_term_wash_sale_disallowed: number;
+  long_term_net_gain: number;
+  referenced_symbols: string[];
+  matched_symbols: string[];
+  insights: string[];
+}
+
 // --- Portfolio Analysis Response ---
 
 // --- Realized Gain/Loss Summary ---
@@ -152,6 +169,7 @@ export interface PortfolioAnalysis {
   wash_sale_flags: WashSaleFlag[];
   summary: PortfolioSummary;
   tax_profile: TaxProfile | null;
+  supplemental_1099?: Supplemental1099Summary | null;
   disclaimer: string;
   errors: string[];
   warnings: string[];

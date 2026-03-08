@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+from pathlib import Path
 
 import main
 from auth import get_current_user, get_current_user_with_token
@@ -424,6 +425,15 @@ def _make_csv(content: str | None = None):
             "MSFT,5,300.00,1500.00,2024-06-01,310.00\n"
         )
     return {"file": ("test.csv", content, "text/csv")}
+
+
+def _make_supplemental_1099_upload() -> tuple[str, bytes, str]:
+    pdf_path = (
+        Path(__file__).resolve().parents[2]
+        / "docs"
+        / "c15f7458-e9d5-4dfb-a985-351df5a36cde.pdf"
+    )
+    return (pdf_path.name, pdf_path.read_bytes(), "application/pdf")
 
 
 def test_analyze_portfolio_success(monkeypatch):
@@ -1099,6 +1109,99 @@ def test_analyze_portfolio_applies_live_option_prices(monkeypatch):
     assert data["positions"][0]["current_price"] == pytest.approx(6.25)
     assert data["positions"][0]["market_value"] == pytest.approx(625.0)
     assert data["positions"][0]["unrealized_pnl"] == pytest.approx(133.0)
+
+
+def test_analyze_portfolio_parses_supplemental_1099_pdf(monkeypatch):
+    from datetime import date
+    import pytest
+    from models import AssetType, PortfolioSummary, Position, TaxLot, Transaction, TransCode
+
+    lot = TaxLot(
+        symbol="CLSK",
+        quantity=1,
+        cost_basis_per_share=10.0,
+        total_cost_basis=10.0,
+        purchase_date=date(2025, 1, 10),
+        current_price=8.0,
+        asset_type=AssetType.STOCK,
+        unrealized_pnl=-2.0,
+        unrealized_pnl_pct=-20.0,
+        holding_period_days=30,
+        is_long_term=False,
+    )
+    position = Position(
+        position_id="CLSK:stock",
+        symbol="CLSK",
+        quantity=1,
+        avg_cost_basis=10.0,
+        total_cost_basis=10.0,
+        current_price=8.0,
+        market_value=8.0,
+        unrealized_pnl=-2.0,
+        unrealized_pnl_pct=-20.0,
+        earliest_purchase_date=date(2025, 1, 10),
+        holding_period_days=30,
+        is_long_term=False,
+        asset_type=AssetType.STOCK,
+        tax_lots=[lot],
+    )
+    summary = PortfolioSummary(
+        total_market_value=8.0,
+        total_cost_basis=10.0,
+        total_unrealized_pnl=-2.0,
+        total_unrealized_pnl_pct=-20.0,
+        total_harvestable_losses=2.0,
+        estimated_tax_savings=0.5,
+        positions_count=1,
+        lots_with_losses=1,
+        lots_with_gains=0,
+        wash_sale_flags_count=0,
+    )
+
+    monkeypatch.setattr(
+        "main.parse_csv",
+        lambda _content: (
+            [lot],
+            [
+                Transaction(
+                    activity_date=date(2025, 1, 10),
+                    instrument="CLSK",
+                    trans_code=TransCode.BUY,
+                    quantity=1,
+                    price=10.0,
+                    amount=-10.0,
+                    asset_type=AssetType.STOCK,
+                )
+            ],
+            [],
+            [],
+        ),
+    )
+    monkeypatch.setattr("main.fetch_current_prices", lambda s, fb=None: ({"CLSK": 8.0}, []))
+    monkeypatch.setattr("main.fetch_option_prices", lambda labels, fb=None: ({}, []))
+    monkeypatch.setattr("main.compute_lot_metrics", lambda lots: lots)
+    monkeypatch.setattr("main.detect_wash_sales", lambda *args, **kwargs: [])
+    monkeypatch.setattr("main.adjust_lots_for_wash_sales", lambda lots, flags: lots)
+    monkeypatch.setattr("main.prepare_positions_for_ai", lambda lots: [])
+    monkeypatch.setattr("main.generate_suggestions", lambda **kwargs: [])
+    monkeypatch.setattr("main.aggregate_positions", lambda lots: [position])
+    monkeypatch.setattr("main.build_portfolio_summary", lambda positions, suggestions, flags: summary)
+    monkeypatch.setattr("main._save_history_best_effort", lambda *args, **kwargs: None)
+
+    response = client.post(
+        "/api/portfolio/analyze?tax_year=2025",
+        files={
+            **_make_csv(),
+            "supplemental_1099": _make_supplemental_1099_upload(),
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["supplemental_1099"]["tax_year"] == 2024
+    assert payload["supplemental_1099"]["broker_name"] == "Robinhood"
+    assert payload["supplemental_1099"]["short_term_wash_sale_disallowed"] == pytest.approx(17409.64)
+    assert "CLSK" in payload["supplemental_1099"]["matched_symbols"]
 
 
 def test_get_prices_empty_symbols():

@@ -13,3 +13,4 @@ google-genai>=1.0.0
 scikit-learn>=1.5.0
 supabase>=2.0.0
 stripe>=11.0.0
+pypdf>=6.0.0

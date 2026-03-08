@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { PortfolioAnalysis } from "../../lib/types";
 
@@ -21,10 +21,11 @@ jest.mock("../../app/context/auth", () => ({
 
 // Mock API hooks
 let mockAnalyzeData: PortfolioAnalysis | null = null;
+const mockAnalyzeMutate = jest.fn();
 
 jest.mock("../../lib/api", () => ({
   useAnalyzePortfolio: () => ({
-    mutate: jest.fn(),
+    mutate: mockAnalyzeMutate,
     isPending: false,
     error: null,
     data: mockAnalyzeData,
@@ -132,6 +133,7 @@ const baseAnalysis: PortfolioAnalysis = {
     state: "CA",
     tax_year: 2025,
   },
+  supplemental_1099: null,
   disclaimer: "test",
   errors: [],
   warnings: [],
@@ -158,6 +160,7 @@ describe("DashboardPage", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockAnalyzeData = null;
+    mockAnalyzeMutate.mockReset();
     mockSessionValue = null;
     // Mock sessionStorage
     Object.defineProperty(globalThis, "sessionStorage", {
@@ -184,6 +187,9 @@ describe("DashboardPage", () => {
 
     await waitFor(() => {
       expect(screen.getByText(/Portfolio Analysis/i)).toBeInTheDocument();
+      expect(
+        screen.getByText(/Previous year's Robinhood 1099 PDF/i),
+      ).toBeInTheDocument();
     });
   });
 
@@ -244,6 +250,43 @@ describe("DashboardPage", () => {
     });
   });
 
+  it("keeps the 1099 panel in sync when a supplemented result is restored", async () => {
+    mockSessionValue = JSON.stringify({
+      ...baseAnalysis,
+      supplemental_1099: {
+        source_filename: "2024-robinhood-1099.pdf",
+        broker_name: "Robinhood",
+        tax_year: 2024,
+        short_term_proceeds: 281823.83,
+        short_term_cost_basis: 264439.89,
+        short_term_wash_sale_disallowed: 17409.64,
+        short_term_net_gain: 34793.58,
+        long_term_proceeds: 108.56,
+        long_term_cost_basis: 141.72,
+        long_term_wash_sale_disallowed: 33.16,
+        long_term_net_gain: 0,
+        referenced_symbols: ["CLSK", "TSLL"],
+        matched_symbols: ["CLSK"],
+        insights: ["Matched prior-year 1099 activity to 1 current symbol(s): CLSK."],
+      },
+    } satisfies PortfolioAnalysis);
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByText("Included in restored result")).toBeInTheDocument();
+      expect(
+        screen.getByText("2024-robinhood-1099.pdf"),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: /Remove 1099 PDF/i }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByText(/Need help with edge-case reconciliation/i),
+      ).not.toBeInTheDocument();
+    });
+  });
+
   it("shows recommended next steps above the detailed tabs", async () => {
     mockAnalyzeData = {
       ...baseAnalysis,
@@ -300,6 +343,121 @@ describe("DashboardPage", () => {
           /Automated harvesting suggestions were skipped for ASST/i,
         ),
       ).toBeInTheDocument();
+      expect(
+        screen.getByText(/Upload your previous year’s Robinhood 1099 PDF/i),
+      ).toBeInTheDocument();
     });
+  });
+
+  it("shows supplemental 1099 insights when the analysis includes them", async () => {
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      supplemental_1099: {
+        source_filename: "2024-1099.pdf",
+        broker_name: "Robinhood",
+        tax_year: 2024,
+        short_term_proceeds: 281823.83,
+        short_term_cost_basis: 264439.89,
+        short_term_wash_sale_disallowed: 17409.64,
+        short_term_net_gain: 34793.58,
+        long_term_proceeds: 108.56,
+        long_term_cost_basis: 141.72,
+        long_term_wash_sale_disallowed: 33.16,
+        long_term_net_gain: 0,
+        referenced_symbols: ["CLSK", "TSLL"],
+        matched_symbols: ["CLSK"],
+        insights: [
+          "Matched prior-year 1099 activity to 1 current symbol(s): CLSK.",
+        ],
+      },
+    };
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Previous-year 1099 supplement applied"),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText("Included in current analysis"),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(/Using Robinhood 1099 PDF for tax year 2024/i),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          /Matched prior-year 1099 activity to 1 current symbol/i,
+        ),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText(/Need help with edge-case reconciliation/i),
+      ).not.toBeInTheDocument();
+      expect(screen.queryByText(/Re-run with 1099/i)).not.toBeInTheDocument();
+    });
+  });
+
+  it("automatically re-analyzes the latest CSV when a 1099 is selected", async () => {
+    const sessionAnalysis: PortfolioAnalysis = {
+      ...baseAnalysis,
+      warnings: [
+        "Skipped automated harvesting suggestions for ASST stock lots because a stock split or corporate action changed the share count. Verify ASST manually before acting on any loss estimate.",
+      ],
+    };
+    mockSessionValue = JSON.stringify(sessionAnalysis);
+
+    const { container } = render(<DashboardPage />, {
+      wrapper: createWrapper(),
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Restored from browser")).toBeInTheDocument();
+    });
+
+    const csvInput = container.querySelector(
+      'input[type="file"][accept=".csv"]',
+    );
+    const pdfInput = container.querySelector(
+      'input[type="file"][accept=".pdf,application/pdf"]',
+    );
+
+    if (!(csvInput instanceof HTMLInputElement)) {
+      throw new TypeError("CSV input not found");
+    }
+
+    if (!(pdfInput instanceof HTMLInputElement)) {
+      throw new TypeError("PDF input not found");
+    }
+
+    fireEvent.change(csvInput, {
+      target: {
+        files: [
+          new File(["symbol,qty\nTSLA,1"], "portfolio.csv", {
+            type: "text/csv",
+          }),
+        ],
+      },
+    });
+
+    await waitFor(() => {
+      expect(mockAnalyzeMutate).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.change(pdfInput, {
+      target: {
+        files: [
+          new File(["pdf"], "supplement.pdf", { type: "application/pdf" }),
+        ],
+      },
+    });
+
+    await waitFor(() => {
+      expect(mockAnalyzeMutate).toHaveBeenCalledTimes(2);
+    });
+
+    expect(mockAnalyzeMutate.mock.calls[1][0]).toMatchObject({
+      file: expect.objectContaining({ name: "portfolio.csv" }),
+      supplemental1099File: expect.objectContaining({ name: "supplement.pdf" }),
+    });
+    expect(screen.queryByText(/Re-run with 1099/i)).not.toBeInTheDocument();
   });
 });

@@ -98,6 +98,7 @@ export function useUploadPortfolio() {
 
 interface AnalyzePortfolioParams {
   file: File;
+  supplemental1099File?: File;
   filingStatus?: FilingStatus;
   estimatedIncome?: number;
   taxYear?: number;
@@ -114,6 +115,9 @@ async function analyzePortfolio(
 ): Promise<PortfolioAnalysis> {
   const formData = new FormData();
   formData.append("file", params.file);
+  if (params.supplemental1099File) {
+    formData.append("supplemental_1099", params.supplemental1099File);
+  }
 
   const queryParams = new URLSearchParams();
   if (params.filingStatus)
