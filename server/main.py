@@ -488,7 +488,7 @@ def _apply_live_prices_to_tax_lots(tax_lots: list, all_warnings: list[str]) -> l
     fallback_prices = {
         lot.symbol: lot.current_price
         for lot in tax_lots
-        if lot.current_price is not None
+        if lot.asset_type == AssetType.STOCK and lot.current_price is not None
     }
     live_prices, price_warnings = fetch_current_prices(symbols, fallback_prices)
     all_warnings.extend(price_warnings)
