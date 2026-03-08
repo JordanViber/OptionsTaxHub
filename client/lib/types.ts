@@ -94,9 +94,9 @@ export interface ReplacementCandidate {
 
 export interface HarvestingSuggestion {
   symbol: string;
-  suggestion_id: string;
-  display_label: string;
-  lot_details: string;
+  suggestion_id?: string;
+  display_label?: string;
+  lot_details?: string;
   manual_review_required?: boolean;
   manual_review_reason?: string;
   action: string;
