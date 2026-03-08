@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+from pathlib import Path
 
 import main
 from auth import get_current_user, get_current_user_with_token
@@ -424,6 +425,15 @@ def _make_csv(content: str | None = None):
             "MSFT,5,300.00,1500.00,2024-06-01,310.00\n"
         )
     return {"file": ("test.csv", content, "text/csv")}
+
+
+def _make_supplemental_1099_upload() -> tuple[str, bytes, str]:
+    pdf_path = (
+        Path(__file__).resolve().parents[2]
+        / "docs"
+        / "c15f7458-e9d5-4dfb-a985-351df5a36cde.pdf"
+    )
+    return (pdf_path.name, pdf_path.read_bytes(), "application/pdf")
 
 
 def test_analyze_portfolio_success(monkeypatch):
@@ -1101,7 +1111,238 @@ def test_analyze_portfolio_applies_live_option_prices(monkeypatch):
     assert data["positions"][0]["unrealized_pnl"] == pytest.approx(133.0)
 
 
-def test_get_prices_empty_symbols():
+def test_analyze_portfolio_parses_supplemental_1099_pdf(monkeypatch):
+    from datetime import date
+    import pytest
+    from models import AssetType, PortfolioSummary, Position, TaxLot, Transaction, TransCode
+
+    lot = TaxLot(
+        symbol="CLSK",
+        quantity=1,
+        cost_basis_per_share=10.0,
+        total_cost_basis=10.0,
+        purchase_date=date(2025, 1, 10),
+        current_price=8.0,
+        asset_type=AssetType.STOCK,
+        unrealized_pnl=-2.0,
+        unrealized_pnl_pct=-20.0,
+        holding_period_days=30,
+        is_long_term=False,
+    )
+    position = Position(
+        position_id="CLSK:stock",
+        symbol="CLSK",
+        quantity=1,
+        avg_cost_basis=10.0,
+        total_cost_basis=10.0,
+        current_price=8.0,
+        market_value=8.0,
+        unrealized_pnl=-2.0,
+        unrealized_pnl_pct=-20.0,
+        earliest_purchase_date=date(2025, 1, 10),
+        holding_period_days=30,
+        is_long_term=False,
+        asset_type=AssetType.STOCK,
+        tax_lots=[lot],
+    )
+    summary = PortfolioSummary(
+        total_market_value=8.0,
+        total_cost_basis=10.0,
+        total_unrealized_pnl=-2.0,
+        total_unrealized_pnl_pct=-20.0,
+        total_harvestable_losses=2.0,
+        estimated_tax_savings=0.5,
+        positions_count=1,
+        lots_with_losses=1,
+        lots_with_gains=0,
+        wash_sale_flags_count=0,
+    )
+
+    monkeypatch.setattr(
+        "main.parse_csv",
+        lambda _content: (
+            [lot],
+            [
+                Transaction(
+                    activity_date=date(2025, 1, 10),
+                    instrument="CLSK",
+                    trans_code=TransCode.BUY,
+                    quantity=1,
+                    price=10.0,
+                    amount=-10.0,
+                    asset_type=AssetType.STOCK,
+                )
+            ],
+            [],
+            [],
+        ),
+    )
+    monkeypatch.setattr("main.fetch_current_prices", lambda s, fb=None: ({"CLSK": 8.0}, []))
+    monkeypatch.setattr("main.fetch_option_prices", lambda labels, fb=None: ({}, []))
+    monkeypatch.setattr("main.compute_lot_metrics", lambda lots: lots)
+    monkeypatch.setattr("main.detect_wash_sales", lambda *args, **kwargs: [])
+    monkeypatch.setattr("main.adjust_lots_for_wash_sales", lambda lots, flags: lots)
+    monkeypatch.setattr("main.prepare_positions_for_ai", lambda lots: [])
+    monkeypatch.setattr("main.generate_suggestions", lambda **kwargs: [])
+    monkeypatch.setattr("main.aggregate_positions", lambda lots: [position])
+    monkeypatch.setattr("main.build_portfolio_summary", lambda positions, suggestions, flags: summary)
+    monkeypatch.setattr("main._save_history_best_effort", lambda *args, **kwargs: None)
+
+    response = client.post(
+        "/api/portfolio/analyze?tax_year=2025",
+        files={
+            **_make_csv(),
+            "supplemental_1099": _make_supplemental_1099_upload(),
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["supplemental_1099"]["tax_year"] == 2024
+    assert payload["supplemental_1099"]["broker_name"] == "Robinhood"
+    assert payload["supplemental_1099"]["short_term_wash_sale_disallowed"] == pytest.approx(17409.64)
+    assert "CLSK" in payload["supplemental_1099"]["matched_symbols"]
+
+
+def test_parse_supplemental_1099_summary_delegates_to_parser(monkeypatch):
+    from main import _parse_supplemental_1099_summary
+    from models import Supplemental1099Summary
+
+    captured: dict[str, object] = {}
+
+    def fake_parser(pdf_bytes, *, current_symbols, filename, expected_previous_year):
+        captured["pdf_bytes"] = pdf_bytes
+        captured["current_symbols"] = current_symbols
+        captured["filename"] = filename
+        captured["expected_previous_year"] = expected_previous_year
+        return Supplemental1099Summary(source_filename=filename, tax_year=expected_previous_year)
+
+    monkeypatch.setattr("main.parse_robinhood_1099_pdf", fake_parser)
+
+    summary = _parse_supplemental_1099_summary(
+        b"pdf-bytes",
+        "prior.pdf",
+        {"CLSK", "TSLL"},
+        2024,
+    )
+
+    assert summary.source_filename == "prior.pdf"
+    assert captured == {
+        "pdf_bytes": b"pdf-bytes",
+        "current_symbols": {"CLSK", "TSLL"},
+        "filename": "prior.pdf",
+        "expected_previous_year": 2024,
+    }
+
+
+def test_maybe_parse_supplemental_1099_returns_warning_for_year_mismatch(monkeypatch):
+    import asyncio
+
+    from main import _maybe_parse_supplemental_1099
+    from models import Supplemental1099Summary
+
+    class DummyUpload:
+        filename = "prior.pdf"
+        content_type = "application/pdf"
+
+        async def read(self, size=-1):
+            await asyncio.sleep(0)
+            return b"pdf"
+
+    monkeypatch.setattr(
+        "main._parse_supplemental_1099_summary",
+        lambda *_args, **_kwargs: Supplemental1099Summary(
+            source_filename="prior.pdf",
+            broker_name="Robinhood",
+            tax_year=2022,
+        ),
+    )
+
+    summary, warnings = asyncio.run(
+        _maybe_parse_supplemental_1099(DummyUpload(), {"CLSK"}, 2024)
+    )
+
+    assert summary is not None
+    assert summary.tax_year == 2022
+    assert warnings == [
+        "The supplemental 1099 PDF was parsed successfully, but its tax year does not match the expected prior year for this analysis."
+    ]
+
+
+def test_maybe_parse_supplemental_1099_ignores_unparseable_pdf(monkeypatch):
+    import asyncio
+
+    from main import _maybe_parse_supplemental_1099
+
+    class DummyUpload:
+        filename = "broken.pdf"
+        content_type = "application/pdf"
+
+        async def read(self, size=-1):
+            await asyncio.sleep(0)
+            return b"broken"
+
+    def fail_parse(*_args, **_kwargs):
+        raise ValueError("bad pdf")
+
+    monkeypatch.setattr("main._parse_supplemental_1099_summary", fail_parse)
+
+    summary, warnings = asyncio.run(
+        _maybe_parse_supplemental_1099(DummyUpload(), {"CLSK"}, 2024)
+    )
+
+    assert summary is None
+    assert warnings == [
+        "Supplemental 1099 PDF could not be parsed and was ignored for this analysis."
+    ]
+
+
+def test_maybe_parse_supplemental_1099_rejects_non_pdf_content_type():
+    import asyncio
+
+    from main import _maybe_parse_supplemental_1099
+
+    class DummyUpload:
+        filename = "document.xlsx"
+        content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+        async def read(self, size=-1):
+            await asyncio.sleep(0)
+            return b"not-a-pdf"
+
+    summary, warnings = asyncio.run(
+        _maybe_parse_supplemental_1099(DummyUpload(), {"CLSK"}, 2024)
+    )
+
+    assert summary is None
+    assert len(warnings) == 1
+    assert "PDF" in warnings[0]
+
+
+def test_maybe_parse_supplemental_1099_rejects_oversized_pdf(monkeypatch):
+    import asyncio
+
+    from main import _maybe_parse_supplemental_1099, _MAX_SUPPLEMENTAL_PDF_BYTES
+
+    class DummyUpload:
+        filename = "huge.pdf"
+        content_type = "application/pdf"
+
+        async def read(self, size=-1):
+            await asyncio.sleep(0)
+            # Return more than the allowed maximum to trigger the size guard
+            return b"x" * (_MAX_SUPPLEMENTAL_PDF_BYTES + 1)
+
+    summary, warnings = asyncio.run(
+        _maybe_parse_supplemental_1099(DummyUpload(), {"CLSK"}, 2024)
+    )
+
+    assert summary is None
+    assert len(warnings) == 1
+    assert "20 MB" in warnings[0]
+
+
+
     """GET /api/prices with empty symbols returns 400."""
     response = client.get("/api/prices?symbols=")
     assert response.status_code == 400

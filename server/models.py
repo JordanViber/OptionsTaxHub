@@ -260,6 +260,25 @@ class HarvestingSuggestion(BaseModel):
     )
 
 
+class Supplemental1099Summary(BaseModel):
+    """Parsed reconciliation context from an optional prior-year Robinhood 1099 PDF."""
+
+    source_filename: str = ""
+    broker_name: str = ""
+    tax_year: Optional[int] = None
+    short_term_proceeds: float = 0.0
+    short_term_cost_basis: float = 0.0
+    short_term_wash_sale_disallowed: float = 0.0
+    short_term_net_gain: float = 0.0
+    long_term_proceeds: float = 0.0
+    long_term_cost_basis: float = 0.0
+    long_term_wash_sale_disallowed: float = 0.0
+    long_term_net_gain: float = 0.0
+    referenced_symbols: list[str] = []
+    matched_symbols: list[str] = []
+    insights: list[str] = []
+
+
 # --- Portfolio Analysis Response ---
 
 
@@ -310,6 +329,7 @@ class PortfolioAnalysis(BaseModel):
     wash_sale_flags: list[WashSaleFlag] = []
     summary: PortfolioSummary = PortfolioSummary()
     tax_profile: Optional[TaxProfile] = None
+    supplemental_1099: Optional[Supplemental1099Summary] = None
     disclaimer: str = (
         "This analysis is for educational and simulation purposes only. "
         "It does not constitute financial, tax, or investment advice. "

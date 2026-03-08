@@ -84,6 +84,15 @@ type DeleteTarget = {
   filename: string;
 };
 
+function formatMoney(value: number): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value);
+}
+
 function buildPositionId(position: Position, index: number): string {
   return (
     position.position_id ??
@@ -324,6 +333,441 @@ function SuggestionsPanel({
   );
 }
 
+function shouldRecommendSupplemental1099(
+  analysis: PortfolioAnalysis | null,
+  selectedSupplemental1099File: File | null,
+): boolean {
+  if (!analysis || analysis.supplemental_1099 || selectedSupplemental1099File) {
+    return false;
+  }
+
+  return (analysis.warnings ?? []).some((warning) =>
+    /assignment|stock split|corporate action|manual verification|Skipped automated harvesting suggestions/i.test(
+      warning,
+    ),
+  );
+}
+
+function Supplemental1099InsightsPanel({
+  summary,
+}: Readonly<{
+  summary: NonNullable<PortfolioAnalysis["supplemental_1099"]>;
+}>) {
+  return (
+    <Box
+      sx={{
+        border: "1px solid",
+        borderColor: "info.light",
+        borderRadius: 2,
+        px: 2,
+        py: 1.75,
+        background:
+          "linear-gradient(180deg, rgba(227,242,253,0.5) 0%, rgba(227,242,253,0.18) 100%)",
+      }}
+    >
+      <Stack spacing={1.25}>
+        <Box>
+          <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+            Previous-year 1099 supplement applied
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            Broker-reported prior-year activity is now included in this result.
+          </Typography>
+        </Box>
+        <Typography variant="body2">
+          Using {summary.broker_name || "broker"} 1099 PDF for tax year{" "}
+          {summary.tax_year ?? "unknown"}.
+        </Typography>
+        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+          <Chip
+            size="small"
+            label={`${summary.matched_symbols.length} matched current symbol${summary.matched_symbols.length === 1 ? "" : "s"}`}
+            color="primary"
+            variant="outlined"
+          />
+          <Chip
+            size="small"
+            label={`${summary.referenced_symbols.length} symbol${summary.referenced_symbols.length === 1 ? "" : "s"} referenced`}
+            variant="outlined"
+          />
+          <Chip
+            size="small"
+            label={`Wash-sale basis carryover ${formatMoney(summary.short_term_wash_sale_disallowed + summary.long_term_wash_sale_disallowed)}`}
+            color="warning"
+            variant="outlined"
+          />
+        </Stack>
+        {summary.insights.length > 0 && (
+          <Box component="ul" sx={{ pl: 2.5, my: 0 }}>
+            {summary.insights.map((insight) => (
+              <Typography component="li" variant="body2" key={insight}>
+                {insight}
+              </Typography>
+            ))}
+          </Box>
+        )}
+      </Stack>
+    </Box>
+  );
+}
+
+function getSupplemental1099HelperText({
+  isApplied,
+  isRestoredAppliedSummary,
+  hasSelectedFile,
+  hasUploadedCsv,
+}: {
+  isApplied: boolean;
+  isRestoredAppliedSummary: boolean;
+  hasSelectedFile: boolean;
+  hasUploadedCsv: boolean;
+}): string {
+  if (isRestoredAppliedSummary) {
+    return "This restored result already includes broker-reported 1099 data. Upload the PDF again only if you want to refresh the analysis with a different file.";
+  }
+
+  if (isApplied) {
+    return "Included in the current analysis to help reconcile assignments, stock splits, renamed tickers, and prior-year wash-sale basis adjustments.";
+  }
+
+  if (hasSelectedFile && hasUploadedCsv) {
+    return "This PDF is being used with your latest CSV analysis. Replace it to automatically refresh the result.";
+  }
+
+  if (hasSelectedFile) {
+    return "This PDF is ready and will be included the next time you analyze a CSV.";
+  }
+
+  return "Helps reconcile assignments, stock splits, renamed tickers, and prior-year wash-sale basis adjustments.";
+}
+
+function getSupplemental1099Status({
+  isApplied,
+  isRestoredAppliedSummary,
+  hasSelectedFile,
+  hasUploadedCsv,
+}: {
+  isApplied: boolean;
+  isRestoredAppliedSummary: boolean;
+  hasSelectedFile: boolean;
+  hasUploadedCsv: boolean;
+}): {
+  label: string;
+  color: "success" | "info" | "default";
+  variant: "filled" | "outlined";
+} {
+  if (isRestoredAppliedSummary) {
+    return {
+      label: "Included in restored result",
+      color: "info",
+      variant: "outlined",
+    };
+  }
+
+  if (isApplied) {
+    return {
+      label: "Included in current analysis",
+      color: "success",
+      variant: "filled",
+    };
+  }
+
+  if (hasSelectedFile && hasUploadedCsv) {
+    return {
+      label: "Auto-applied to latest CSV",
+      color: "info",
+      variant: "outlined",
+    };
+  }
+
+  if (hasSelectedFile) {
+    return {
+      label: "Ready for next analysis",
+      color: "info",
+      variant: "outlined",
+    };
+  }
+
+  return {
+    label: "Optional",
+    color: "default",
+    variant: "outlined",
+  };
+}
+
+function Supplemental1099UploadPanel({
+  selectedFileName,
+  appliedSummary,
+  analysisSource,
+  hasUploadedCsv,
+  canRemoveSupplement,
+  onChooseFile,
+  onClearFile,
+  isPending,
+}: Readonly<{
+  selectedFileName: string | null;
+  appliedSummary: PortfolioAnalysis["supplemental_1099"] | null | undefined;
+  analysisSource: AnalysisSource | null;
+  hasUploadedCsv: boolean;
+  canRemoveSupplement: boolean;
+  onChooseFile: () => void;
+  onClearFile: () => void;
+  isPending: boolean;
+}>) {
+  const displayFileName =
+    selectedFileName ?? appliedSummary?.source_filename ?? null;
+  const isApplied = Boolean(appliedSummary);
+  const hasSelectedFile = Boolean(displayFileName);
+  const isRestoredAppliedSummary =
+    Boolean(appliedSummary) &&
+    !selectedFileName &&
+    (analysisSource === "restored-session" ||
+      analysisSource === "saved-history");
+  const helperText = getSupplemental1099HelperText({
+    isApplied,
+    isRestoredAppliedSummary,
+    hasSelectedFile,
+    hasUploadedCsv,
+  });
+  const status = getSupplemental1099Status({
+    isApplied,
+    isRestoredAppliedSummary,
+    hasSelectedFile,
+    hasUploadedCsv,
+  });
+
+  return (
+    <Box
+      sx={{
+        border: "1px solid",
+        borderColor: isApplied ? "success.light" : "divider",
+        borderRadius: 3,
+        p: 2,
+        background: isApplied
+          ? "linear-gradient(180deg, rgba(232,245,233,0.7) 0%, rgba(232,245,233,0.28) 100%)"
+          : "linear-gradient(180deg, rgba(248,250,252,0.95) 0%, rgba(248,250,252,0.7) 100%)",
+      }}
+    >
+      <Stack spacing={1.5}>
+        <Stack
+          direction={{ xs: "column", md: "row" }}
+          spacing={1.25}
+          justifyContent="space-between"
+          alignItems={{ xs: "flex-start", md: "center" }}
+        >
+          <Box>
+            <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+              Previous year&apos;s Robinhood 1099 PDF
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              {helperText}
+            </Typography>
+          </Box>
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+            <Chip
+              size="small"
+              color={status.color}
+              variant={status.variant}
+              label={status.label}
+            />
+            {displayFileName && (
+              <Chip
+                label={displayFileName}
+                size="small"
+                color="info"
+                variant="outlined"
+              />
+            )}
+          </Stack>
+        </Stack>
+
+        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+          <Button
+            variant={displayFileName ? "outlined" : "contained"}
+            size="small"
+            onClick={onChooseFile}
+            disabled={isPending}
+          >
+            {displayFileName ? "Replace 1099 PDF" : "Add 1099 PDF"}
+          </Button>
+          {canRemoveSupplement && (
+            <Button
+              size="small"
+              color="inherit"
+              onClick={onClearFile}
+              disabled={isPending}
+            >
+              Remove 1099 PDF
+            </Button>
+          )}
+        </Stack>
+      </Stack>
+    </Box>
+  );
+}
+
+function ResultsSection({
+  displayedAnalysis,
+  analysisSource,
+  sourceDisplay,
+  confidenceSummary,
+  recommendedNextSteps,
+  activeTab,
+  setActiveTab,
+  skippedSuggestionSymbols,
+  shouldPrompt1099Supplement,
+}: Readonly<{
+  displayedAnalysis: PortfolioAnalysis;
+  analysisSource: AnalysisSource | null;
+  sourceDisplay: ReturnType<typeof getAnalysisSourceDisplay> | null;
+  confidenceSummary: ReturnType<typeof getConfidenceSummary> | null;
+  recommendedNextSteps: string[];
+  activeTab: number;
+  setActiveTab: (value: number) => void;
+  skippedSuggestionSymbols: string[];
+  shouldPrompt1099Supplement: boolean;
+}>) {
+  return (
+    <>
+      <Box
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          gap: 1,
+          flexWrap: "wrap",
+        }}
+      >
+        {!!displayedAnalysis.tax_profile?.tax_year && (
+          <Chip
+            icon={<CalendarIcon />}
+            label={`Tax Year: ${displayedAnalysis.tax_profile.tax_year}`}
+            size="small"
+            color="primary"
+            variant="outlined"
+          />
+        )}
+        {sourceDisplay && (
+          <Chip
+            label={sourceDisplay.label}
+            size="small"
+            color={sourceDisplay.color}
+            variant="outlined"
+          />
+        )}
+        {confidenceSummary && (
+          <Chip
+            label={confidenceSummary.label}
+            size="small"
+            color={confidenceSummary.severity}
+            variant="filled"
+          />
+        )}
+      </Box>
+
+      {confidenceSummary && (
+        <Alert severity={confidenceSummary.severity} variant="outlined">
+          <AlertTitle>{confidenceSummary.label}</AlertTitle>
+          <Typography
+            variant="body2"
+            sx={{ mb: confidenceSummary.details.length ? 0.5 : 0 }}
+          >
+            {confidenceSummary.summary}
+          </Typography>
+          {analysisSource === "restored-session" && (
+            <Typography variant="caption" sx={{ display: "block", mb: 0.5 }}>
+              This result was restored from browser storage and may not reflect
+              your newest upload. Re-upload the CSV for a fully fresh run.
+            </Typography>
+          )}
+          {analysisSource === "saved-history" && (
+            <Typography variant="caption" sx={{ display: "block", mb: 0.5 }}>
+              This result was loaded from saved history. Re-upload the CSV if
+              you want the latest prices and a new live analysis.
+            </Typography>
+          )}
+          {confidenceSummary.details.length > 0 && (
+            <Box component="ul" sx={{ pl: 2, my: 0 }}>
+              {confidenceSummary.details.map((detail) => (
+                <Typography component="li" variant="caption" key={detail}>
+                  {detail}
+                </Typography>
+              ))}
+            </Box>
+          )}
+        </Alert>
+      )}
+
+      {displayedAnalysis?.supplemental_1099 && (
+        <Supplemental1099InsightsPanel
+          summary={displayedAnalysis.supplemental_1099}
+        />
+      )}
+
+      {shouldPrompt1099Supplement && (
+        <Alert severity="info" variant="outlined">
+          <AlertTitle>Need help with edge-case reconciliation?</AlertTitle>
+          Upload your previous year’s Robinhood 1099 PDF to supplement this
+          analysis. It can improve manual review for assignments, stock splits,
+          renamed tickers, and carryover wash-sale basis.
+        </Alert>
+      )}
+
+      {recommendedNextSteps.length > 0 && (
+        <Alert severity="info" variant="outlined">
+          <AlertTitle>Recommended next steps</AlertTitle>
+          <Box component="ol" sx={{ pl: 2.5, my: 0 }}>
+            {recommendedNextSteps.map((step) => (
+              <Typography component="li" variant="body2" key={step}>
+                {step}
+              </Typography>
+            ))}
+          </Box>
+        </Alert>
+      )}
+
+      <PortfolioSummaryCards summary={displayedAnalysis.summary} />
+
+      {displayedAnalysis.wash_sale_flags.length > 0 && (
+        <WashSaleWarning
+          flags={displayedAnalysis.wash_sale_flags}
+          taxYear={displayedAnalysis.tax_profile?.tax_year}
+        />
+      )}
+
+      <Card>
+        <Tabs
+          value={activeTab}
+          onChange={(_, v) => setActiveTab(v)}
+          sx={{ borderBottom: 1, borderColor: "divider", px: 2 }}
+        >
+          <Tab
+            label={`Suggestions (${displayedAnalysis.suggestions.length})`}
+            id="tab-suggestions"
+          />
+          <Tab
+            label={`Positions (${displayedAnalysis.positions.length})`}
+            id="tab-positions"
+          />
+        </Tabs>
+
+        <CardContent>
+          {activeTab === 0 && (
+            <SuggestionsPanel
+              suggestions={displayedAnalysis.suggestions}
+              skippedSuggestionSymbols={skippedSuggestionSymbols}
+            />
+          )}
+          {activeTab === 1 && (
+            <PositionsTable positions={displayedAnalysis.positions} />
+          )}
+        </CardContent>
+      </Card>
+
+      <TaxDisclaimer />
+    </>
+  );
+}
+
 async function deleteHistoryEntry({
   userId,
   deleteTarget,
@@ -347,6 +791,115 @@ async function deleteHistoryEntry({
   } finally {
     clearDeleteTarget();
   }
+}
+
+async function loadHistoryAnalysis({
+  userId,
+  itemId,
+  filename,
+  closeHistory,
+  setHistoryLoading,
+  setLoadedAnalysis,
+  setAnalysisSource,
+  setActiveTab,
+  setSnackbar,
+}: {
+  userId: string | undefined;
+  itemId: string;
+  filename: string;
+  closeHistory: () => void;
+  setHistoryLoading: (loading: boolean) => void;
+  setLoadedAnalysis: (analysis: PortfolioAnalysis | null) => void;
+  setAnalysisSource: (source: AnalysisSource | null) => void;
+  setActiveTab: (tab: number) => void;
+  setSnackbar: (value: {
+    message: string;
+    severity: "success" | "error" | "info";
+  }) => void;
+}): Promise<void> {
+  if (!userId) {
+    return;
+  }
+
+  closeHistory();
+  setHistoryLoading(true);
+  try {
+    const record = await fetchAnalysisById(itemId);
+    if (record?.result) {
+      setLoadedAnalysis(normalizeAnalysis(record.result));
+      setAnalysisSource("saved-history");
+      setActiveTab(0);
+      setSnackbar({
+        message: `Loaded saved analysis: ${filename}`,
+        severity: "success",
+      });
+      return;
+    }
+
+    setSnackbar({
+      message:
+        "No detailed data stored for this analysis. Re-upload the original CSV to see full results.",
+      severity: "info",
+    });
+  } catch (err) {
+    console.error("Failed to load analysis:", err);
+    setSnackbar({
+      message: "Failed to load saved analysis. Please try again.",
+      severity: "error",
+    });
+  } finally {
+    setHistoryLoading(false);
+  }
+}
+
+function clearCurrentAnalysisView({
+  setLoadedAnalysis,
+  setAnalysisSource,
+}: {
+  setLoadedAnalysis: (analysis: PortfolioAnalysis | null) => void;
+  setAnalysisSource: (source: AnalysisSource | null) => void;
+}) {
+  setLoadedAnalysis(null);
+  setAnalysisSource(null);
+  sessionStorage.removeItem("optionstaxhub-analysis");
+}
+
+function rerunPortfolioAnalysisWithSupplement({
+  csvFile,
+  supplementalFile,
+  clearAnalysis,
+  runPortfolioAnalysis,
+}: {
+  csvFile: File | null;
+  supplementalFile?: File | null;
+  clearAnalysis: () => void;
+  runPortfolioAnalysis: (csvFile: File, supplementalFile?: File | null) => void;
+}) {
+  if (!csvFile) {
+    return;
+  }
+
+  clearAnalysis();
+  runPortfolioAnalysis(csvFile, supplementalFile);
+}
+
+function handleCsvInputChange({
+  event,
+  clearAnalysis,
+  runPortfolioAnalysis,
+}: {
+  event: React.ChangeEvent<HTMLInputElement>;
+  clearAnalysis: () => void;
+  runPortfolioAnalysis: (csvFile: File) => void;
+}) {
+  const file = event.target.files?.[0];
+  if (!file) {
+    return;
+  }
+
+  clearAnalysis();
+  runPortfolioAnalysis(file);
+  event.target.value = "";
 }
 
 // Helper component: render history list or empty/error state
@@ -447,11 +1000,16 @@ function HistoryContent({
 export default function DashboardPage() {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const supplemental1099InputRef = useRef<HTMLInputElement>(null);
   const { user, loading: authLoading, signOut } = useAuth();
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
   const [activeTab, setActiveTab] = useState(0);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [tipJarOpen, setTipJarOpen] = useState(false);
+  const [lastUploadedCsv, setLastUploadedCsv] = useState<File | null>(null);
+  const [supplemental1099File, setSupplemental1099File] = useState<File | null>(
+    null,
+  );
   const [loadedAnalysis, setLoadedAnalysis] =
     useState<PortfolioAnalysis | null>(null);
   const [analysisSource, setAnalysisSource] = useState<AnalysisSource | null>(
@@ -529,31 +1087,89 @@ export default function DashboardPage() {
     fileInputRef.current?.click();
   };
 
+  const runPortfolioAnalysis = (
+    csvFile: File,
+    supplementalFile: File | null = supplemental1099File,
+  ) => {
+    setLastUploadedCsv(csvFile);
+    analyzePortfolio(
+      {
+        file: csvFile,
+        supplemental1099File: supplementalFile ?? undefined,
+        filingStatus: taxProfile?.filing_status || "single",
+        estimatedIncome: taxProfile?.estimated_annual_income || 75000,
+        taxYear: taxProfile?.tax_year || 2025,
+      },
+      {
+        onSuccess: () => {
+          queryClient.invalidateQueries({
+            queryKey: ["portfolio-history", user?.id],
+          });
+        },
+      },
+    );
+  };
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    handleCsvInputChange({
+      event: e,
+      clearAnalysis: () =>
+        clearCurrentAnalysisView({
+          setLoadedAnalysis,
+          setAnalysisSource,
+        }),
+      runPortfolioAnalysis,
+    });
+  };
+
+  const handleSupplemental1099UploadClick = () => {
+    supplemental1099InputRef.current?.click();
+  };
+
+  const handleSupplemental1099Change = (
+    e: React.ChangeEvent<HTMLInputElement>,
+  ) => {
     const file = e.target.files?.[0];
     if (file) {
-      // Clear any previously loaded history analysis + cached state
-      setLoadedAnalysis(null);
-      setAnalysisSource(null);
-      sessionStorage.removeItem("optionstaxhub-analysis");
-      analyzePortfolio(
-        {
-          file,
-          filingStatus: taxProfile?.filing_status || "single",
-          estimatedIncome: taxProfile?.estimated_annual_income || 75000,
-          taxYear: taxProfile?.tax_year || 2025,
-        },
-        {
-          onSuccess: () => {
-            // Refresh history sidebar after successful analysis
-            queryClient.invalidateQueries({
-              queryKey: ["portfolio-history", user?.id],
-            });
-          },
-        },
-      );
-      // Reset file input so the same file can be re-uploaded
-      e.target.value = "";
+      setSupplemental1099File(file);
+      if (lastUploadedCsv) {
+        setSnackbar({
+          message: "Applying your 1099 PDF to the latest CSV analysis…",
+          severity: "info",
+        });
+        rerunPortfolioAnalysisWithSupplement({
+          csvFile: lastUploadedCsv,
+          supplementalFile: file,
+          clearAnalysis: () =>
+            clearCurrentAnalysisView({
+              setLoadedAnalysis,
+              setAnalysisSource,
+            }),
+          runPortfolioAnalysis,
+        });
+      }
+    }
+    e.target.value = "";
+  };
+
+  const handleClearSupplemental1099 = () => {
+    setSupplemental1099File(null);
+    if (lastUploadedCsv && displayedAnalysis?.supplemental_1099) {
+      setSnackbar({
+        message:
+          "Removed the 1099 supplement and refreshed the latest CSV analysis.",
+        severity: "info",
+      });
+      rerunPortfolioAnalysisWithSupplement({
+        csvFile: lastUploadedCsv,
+        supplementalFile: null,
+        clearAnalysis: () =>
+          clearCurrentAnalysisView({
+            setLoadedAnalysis,
+            setAnalysisSource,
+          }),
+        runPortfolioAnalysis,
+      });
     }
   };
 
@@ -580,36 +1196,17 @@ export default function DashboardPage() {
    * the load (or reports an error).
    */
   const handleHistoryItemClick = async (itemId: string, filename: string) => {
-    if (!user?.id) return;
-    // Close drawer immediately so the user sees the dashboard right away
-    setHistoryOpen(false);
-    setHistoryLoading(true);
-    try {
-      const record = await fetchAnalysisById(itemId);
-      if (record?.result) {
-        setLoadedAnalysis(normalizeAnalysis(record.result));
-        setAnalysisSource("saved-history");
-        setActiveTab(0);
-        setSnackbar({
-          message: `Loaded saved analysis: ${filename}`,
-          severity: "success",
-        });
-      } else {
-        setSnackbar({
-          message:
-            "No detailed data stored for this analysis. Re-upload the original CSV to see full results.",
-          severity: "info",
-        });
-      }
-    } catch (err) {
-      console.error("Failed to load analysis:", err);
-      setSnackbar({
-        message: "Failed to load saved analysis. Please try again.",
-        severity: "error",
-      });
-    } finally {
-      setHistoryLoading(false);
-    }
+    await loadHistoryAnalysis({
+      userId: user?.id,
+      itemId,
+      filename,
+      closeHistory: () => setHistoryOpen(false),
+      setHistoryLoading,
+      setLoadedAnalysis,
+      setAnalysisSource,
+      setActiveTab,
+      setSnackbar: (value) => setSnackbar(value),
+    });
   };
 
   /**
@@ -667,6 +1264,10 @@ export default function DashboardPage() {
   const recommendedNextSteps = displayedAnalysis
     ? getRecommendedNextSteps(displayedAnalysis)
     : [];
+  const shouldPrompt1099Supplement = shouldRecommendSupplemental1099(
+    displayedAnalysis,
+    supplemental1099File,
+  );
   const sourceDisplay = analysisSource
     ? getAnalysisSourceDisplay(analysisSource)
     : null;
@@ -944,6 +1545,31 @@ export default function DashboardPage() {
                     Robinhood transaction export or simplified portfolio CSV
                   </Typography>
                 </Box>
+
+                <input
+                  ref={supplemental1099InputRef}
+                  type="file"
+                  accept=".pdf,application/pdf"
+                  onChange={handleSupplemental1099Change}
+                  style={{ display: "none" }}
+                />
+                <Supplemental1099UploadPanel
+                  selectedFileName={supplemental1099File?.name ?? null}
+                  appliedSummary={displayedAnalysis?.supplemental_1099}
+                  analysisSource={analysisSource}
+                  hasUploadedCsv={Boolean(lastUploadedCsv)}
+                  canRemoveSupplement={
+                    analysisSource !== "saved-history" &&
+                    analysisSource !== "restored-session" &&
+                    Boolean(
+                      supplemental1099File ||
+                        (lastUploadedCsv && displayedAnalysis?.supplemental_1099),
+                    )
+                  }
+                  onChooseFile={handleSupplemental1099UploadClick}
+                  onClearFile={handleClearSupplemental1099}
+                  isPending={isPending}
+                />
               </Stack>
             </CardContent>
           </Card>
@@ -968,143 +1594,17 @@ export default function DashboardPage() {
 
           {/* Results — shown ABOVE warnings so actionable info is immediately visible */}
           {hasResults && (
-            <>
-              {/* Tax year chip + summary cards */}
-              <Box
-                sx={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 1,
-                  flexWrap: "wrap",
-                }}
-              >
-                {!!displayedAnalysis.tax_profile?.tax_year && (
-                  <Chip
-                    icon={<CalendarIcon />}
-                    label={`Tax Year: ${displayedAnalysis.tax_profile.tax_year}`}
-                    size="small"
-                    color="primary"
-                    variant="outlined"
-                  />
-                )}
-                {sourceDisplay && (
-                  <Chip
-                    label={sourceDisplay.label}
-                    size="small"
-                    color={sourceDisplay.color}
-                    variant="outlined"
-                  />
-                )}
-                {confidenceSummary && (
-                  <Chip
-                    label={confidenceSummary.label}
-                    size="small"
-                    color={confidenceSummary.severity}
-                    variant="filled"
-                  />
-                )}
-              </Box>
-
-              {confidenceSummary && (
-                <Alert severity={confidenceSummary.severity} variant="outlined">
-                  <AlertTitle>{confidenceSummary.label}</AlertTitle>
-                  <Typography
-                    variant="body2"
-                    sx={{ mb: confidenceSummary.details.length ? 0.5 : 0 }}
-                  >
-                    {confidenceSummary.summary}
-                  </Typography>
-                  {analysisSource === "restored-session" && (
-                    <Typography
-                      variant="caption"
-                      sx={{ display: "block", mb: 0.5 }}
-                    >
-                      This result was restored from browser storage and may not
-                      reflect your newest upload. Re-upload the CSV for a fully
-                      fresh run.
-                    </Typography>
-                  )}
-                  {analysisSource === "saved-history" && (
-                    <Typography
-                      variant="caption"
-                      sx={{ display: "block", mb: 0.5 }}
-                    >
-                      This result was loaded from saved history. Re-upload the
-                      CSV if you want the latest prices and a new live analysis.
-                    </Typography>
-                  )}
-                  {confidenceSummary.details.length > 0 && (
-                    <Box component="ul" sx={{ pl: 2, my: 0 }}>
-                      {confidenceSummary.details.map((detail) => (
-                        <Typography
-                          component="li"
-                          variant="caption"
-                          key={detail}
-                        >
-                          {detail}
-                        </Typography>
-                      ))}
-                    </Box>
-                  )}
-                </Alert>
-              )}
-
-              {recommendedNextSteps.length > 0 && (
-                <Alert severity="info" variant="outlined">
-                  <AlertTitle>Recommended next steps</AlertTitle>
-                  <Box component="ol" sx={{ pl: 2.5, my: 0 }}>
-                    {recommendedNextSteps.map((step) => (
-                      <Typography component="li" variant="body2" key={step}>
-                        {step}
-                      </Typography>
-                    ))}
-                  </Box>
-                </Alert>
-              )}
-
-              <PortfolioSummaryCards summary={displayedAnalysis.summary} />
-
-              {/* Wash-Sale Warnings — grouped by ticker accordion */}
-              {displayedAnalysis.wash_sale_flags.length > 0 && (
-                <WashSaleWarning
-                  flags={displayedAnalysis.wash_sale_flags}
-                  taxYear={displayedAnalysis.tax_profile?.tax_year}
-                />
-              )}
-
-              {/* Tabbed view: Suggestions first (most actionable), then Positions */}
-              <Card>
-                <Tabs
-                  value={activeTab}
-                  onChange={(_, v) => setActiveTab(v)}
-                  sx={{ borderBottom: 1, borderColor: "divider", px: 2 }}
-                >
-                  <Tab
-                    label={`Suggestions (${displayedAnalysis.suggestions.length})`}
-                    id="tab-suggestions"
-                  />
-                  <Tab
-                    label={`Positions (${displayedAnalysis.positions.length})`}
-                    id="tab-positions"
-                  />
-                </Tabs>
-
-                <CardContent>
-                  {activeTab === 0 && (
-                    <SuggestionsPanel
-                      suggestions={displayedAnalysis.suggestions}
-                      skippedSuggestionSymbols={skippedSuggestionSymbols}
-                    />
-                  )}
-                  {activeTab === 1 && (
-                    <PositionsTable positions={displayedAnalysis.positions} />
-                  )}
-                </CardContent>
-              </Card>
-
-              {/* Disclaimer */}
-              <TaxDisclaimer />
-            </>
+            <ResultsSection
+              displayedAnalysis={displayedAnalysis}
+              analysisSource={analysisSource}
+              sourceDisplay={sourceDisplay}
+              confidenceSummary={confidenceSummary}
+              recommendedNextSteps={recommendedNextSteps}
+              activeTab={activeTab}
+              setActiveTab={setActiveTab}
+              skippedSuggestionSymbols={skippedSuggestionSymbols}
+              shouldPrompt1099Supplement={shouldPrompt1099Supplement}
+            />
           )}
 
           {/* Data quality notes — collapsible accordion, shown below results */}
