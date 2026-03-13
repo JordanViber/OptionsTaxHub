@@ -56,6 +56,7 @@ import TaxDisclaimer from "../components/TaxDisclaimer";
 import PortfolioSummaryCards from "../components/PortfolioSummaryCards";
 import PositionsTable from "../components/PositionsTable";
 import HarvestingSuggestions from "../components/HarvestingSuggestions";
+import RobinhoodDocumentHelp from "../components/RobinhoodDocumentHelp";
 import WashSaleWarning from "../components/WashSaleWarning";
 import TipJar from "../components/TipJar";
 import {
@@ -1501,6 +1502,8 @@ export default function DashboardPage() {
                   </Typography>
                 </Box>
 
+                <RobinhoodDocumentHelp />
+
                 {/* Upload area */}
                 <Box
                   sx={{
@@ -1563,7 +1566,7 @@ export default function DashboardPage() {
                     analysisSource !== "restored-session" &&
                     Boolean(
                       supplemental1099File ||
-                        (lastUploadedCsv && displayedAnalysis?.supplemental_1099),
+                      (lastUploadedCsv && displayedAnalysis?.supplemental_1099),
                     )
                   }
                   onChooseFile={handleSupplemental1099UploadClick}

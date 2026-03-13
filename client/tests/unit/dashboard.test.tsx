@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { PortfolioAnalysis } from "../../lib/types";
 
@@ -203,6 +209,39 @@ describe("DashboardPage", () => {
       expect(screen.getByText(/Portfolio Analysis/i)).toBeInTheDocument();
       expect(
         screen.getByText(/Previous year's Robinhood 1099 PDF/i),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("opens Robinhood document help and switches between CSV and PDF guides", async () => {
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: /Show retrieval steps/i }),
+    );
+
+    await waitFor(() => {
+      const dialog = screen.getByRole("dialog");
+      expect(
+        within(dialog).getByText(/Robinhood document retrieval guide/i),
+      ).toBeInTheDocument();
+      expect(
+        within(dialog).getByText(/Robinhood CSV export/i),
+      ).toBeInTheDocument();
+      expect(
+        within(dialog).getByText(/Export the activity as CSV/i),
+      ).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /1099 PDF/i }));
+
+    await waitFor(() => {
+      const dialog = screen.getByRole("dialog");
+      expect(
+        within(dialog).getByText(/Robinhood 1099 PDF/i),
+      ).toBeInTheDocument();
+      expect(
+        within(dialog).getByText(/Find the consolidated 1099/i),
       ).toBeInTheDocument();
     });
   });
@@ -497,7 +536,9 @@ describe("DashboardPage", () => {
 
     await waitFor(() => {
       expect(mockAnalyzeMutate).toHaveBeenCalledTimes(2);
-      expect(screen.getByText("Auto-applied to latest CSV")).toBeInTheDocument();
+      expect(
+        screen.getByText("Auto-applied to latest CSV"),
+      ).toBeInTheDocument();
     });
 
     expect(mockAnalyzeMutate.mock.calls[1][0]).toMatchObject({
@@ -524,7 +565,9 @@ describe("DashboardPage", () => {
         long_term_net_gain: 0,
         referenced_symbols: ["CLSK", "TSLL"],
         matched_symbols: ["CLSK"],
-        insights: ["Matched prior-year 1099 activity to 1 current symbol(s): CLSK."],
+        insights: [
+          "Matched prior-year 1099 activity to 1 current symbol(s): CLSK.",
+        ],
       },
     };
 
@@ -552,7 +595,9 @@ describe("DashboardPage", () => {
 
     await waitFor(() => {
       expect(mockAnalyzeMutate).toHaveBeenCalledTimes(1);
-      expect(screen.getByRole("button", { name: /Remove 1099 PDF/i })).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: /Remove 1099 PDF/i }),
+      ).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("button", { name: /Remove 1099 PDF/i }));
@@ -564,7 +609,9 @@ describe("DashboardPage", () => {
     expect(mockAnalyzeMutate.mock.calls[1][0]).toMatchObject({
       file: expect.objectContaining({ name: "portfolio.csv" }),
     });
-    expect(mockAnalyzeMutate.mock.calls[1][0].supplemental1099File).toBeUndefined();
+    expect(
+      mockAnalyzeMutate.mock.calls[1][0].supplemental1099File,
+    ).toBeUndefined();
   });
 
   it("loads a saved analysis from history and shows saved-history messaging", async () => {
