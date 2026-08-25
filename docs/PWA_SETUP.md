@@ -153,7 +153,7 @@ Current icons are SVG placeholders. To replace with custom designs:
 Add to `.env.local`:
 ```
 NEXT_PUBLIC_VAPID_PUBLIC_KEY=your_public_key_here
-NEXT_PUBLIC_API_URL=http://localhost:8080
+NEXT_PUBLIC_API_URL=http://localhost:8011
 ```
 
 ## Production Checklist

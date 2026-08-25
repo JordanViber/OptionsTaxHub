@@ -24,6 +24,8 @@ cd ../server && pip install -r requirements.txt
 
 ### Running Development Servers
 
+Local ports: frontend **3000**, API **8011**. Production on Render uses the platform `$PORT` for the backend (do not hardcode 8011 there).
+
 ```bash
 # Run both frontend and backend concurrently (from root)
 npm run dev
@@ -33,7 +35,7 @@ npm run dev
 # Terminal 1 - Frontend (http://localhost:3000)
 npm run dev:client
 
-# Terminal 2 - Backend (http://localhost:8080)
+# Terminal 2 - Backend (http://localhost:8011)
 npm run dev:server
 ```
 

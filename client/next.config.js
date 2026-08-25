@@ -1,4 +1,6 @@
 /** @type {import('next').NextConfig} */
+// Canonical local API port is 8011. BACKEND_PORT overrides.
+// Do not use PORT here — Next.js uses PORT for the frontend (3000).
 function localDestination(path) {
   return `http://localhost:${process.env.BACKEND_PORT || 8011}${path}`;
 }

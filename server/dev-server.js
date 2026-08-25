@@ -6,7 +6,35 @@ const serverDir = __dirname;
 const repoRoot = path.resolve(serverDir, "..");
 const isWin = process.platform === "win32";
 const shouldReload = process.argv.includes("--reload");
-const backendPort = process.env.BACKEND_PORT || "8011";
+
+function loadEnvFile(filePath) {
+  if (!fs.existsSync(filePath)) return;
+  const content = fs.readFileSync(filePath, "utf8");
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const eq = line.indexOf("=");
+    if (eq <= 0) continue;
+    const key = line.slice(0, eq).trim();
+    let value = line.slice(eq + 1).trim();
+    if (
+      (value.startsWith("\"") && value.endsWith("\"")) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    if (process.env[key] === undefined) {
+      process.env[key] = value;
+    }
+  }
+}
+
+loadEnvFile(path.join(serverDir, ".env.local"));
+loadEnvFile(path.join(serverDir, ".env"));
+
+// Local API port: BACKEND_PORT, else PORT (env/.env.local), else 8011.
+// Production on Render uses uvicorn --port $PORT and does not run this script.
+const backendPort = process.env.BACKEND_PORT || process.env.PORT || "8011";
 
 function resolvePython() {
   const candidates = [
