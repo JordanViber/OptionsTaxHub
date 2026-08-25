@@ -71,30 +71,28 @@ test.describe("Sign Up Page", () => {
     ).toBeVisible({ timeout: 10000 });
   });
 
-  test("successful sign-up shows confirmation and redirects to sign-in", async ({
+  test("successful sign-up shows a check-email page instead of redirecting to sign-in", async ({
     page,
     browserName,
   }) => {
     // WebKit on Windows doesn't process mocked Supabase auth responses correctly
     test.skip(browserName === "webkit", "WebKit auth mocking limitation");
 
-    // Mock Supabase signUp to succeed
+    // Mock Supabase signUp to succeed without a session (email confirm ON)
     await page.route("**/auth/v1/signup*", (route) =>
       route.fulfill({
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({
-          ...MOCK_SESSION,
-          user: { ...MOCK_USER, email: "newuser@example.com" },
+          user: {
+            ...MOCK_USER,
+            email: "newuser@example.com",
+            email_confirmed_at: null,
+          },
+          session: null,
         }),
       }),
     );
-
-    // Listen for the browser alert()
-    page.on("dialog", async (dialog) => {
-      expect(dialog.message()).toContain("Sign up successful");
-      await dialog.accept();
-    });
 
     await page.getByLabel("Name").fill("New User");
     await page
@@ -105,8 +103,16 @@ test.describe("Sign Up Page", () => {
 
     await page.getByRole("button", { name: "Create Account" }).click();
 
-    // Should redirect to sign-in page
-    await expect(page).toHaveURL(/\/auth\/signin/, { timeout: 15000 });
+    await expect(
+      page.getByRole("heading", { name: "Check your email" }),
+    ).toBeVisible({ timeout: 15000 });
+    await expect(
+      page.getByText(/We sent a confirmation link to newuser@example.com/),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Resend confirmation email" }),
+    ).toBeVisible();
+    await expect(page).not.toHaveURL(/\/auth\/signin/);
   });
 
   test("toggles password visibility for both password fields", async ({
@@ -165,9 +171,6 @@ test.describe("Sign Up Page", () => {
         body: JSON.stringify(MOCK_SESSION),
       });
     });
-
-    // Dismiss alert that follows
-    page.on("dialog", (dialog) => dialog.accept());
 
     await page.getByLabel("Name").fill("New User");
     await page.getByRole("textbox", { name: "Email" }).fill("new@example.com");

@@ -71,6 +71,7 @@ import {
 } from "@/lib/api";
 import FirstRunEmptyState from "../components/FirstRunEmptyState";
 import { useAuth } from "@/app/context/auth";
+import { isEmailConfirmed } from "@/lib/supabase";
 import { useQueryClient } from "@tanstack/react-query";
 import type {
   PortfolioAnalysis,
@@ -996,6 +997,8 @@ export default function DashboardPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const supplemental1099InputRef = useRef<HTMLInputElement>(null);
   const { user, loading: authLoading, signOut } = useAuth();
+  const emailConfirmed = isEmailConfirmed(user);
+  const confirmedUserId = emailConfirmed ? user?.id : undefined;
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
   const [activeTab, setActiveTab] = useState(0);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -1019,8 +1022,8 @@ export default function DashboardPage() {
 
   // Load the user's tax profile for analyze params
   const { data: taxProfile } = useTaxProfile({
-    enabled: !!user,
-    userId: user?.id,
+    enabled: !!confirmedUserId,
+    userId: confirmedUserId,
   });
 
   // Backend health check — shows a banner when the API server is unreachable
@@ -1028,7 +1031,8 @@ export default function DashboardPage() {
     useBackendHealth();
 
   // Load past upload history
-  const { data: history, error: historyError } = usePortfolioHistory(user?.id);
+  const { data: history, error: historyError } =
+    usePortfolioHistory(confirmedUserId);
 
   // Full portfolio analysis mutation
   const {
@@ -1065,17 +1069,17 @@ export default function DashboardPage() {
 
   // --- One-time cleanup: delete orphan history entries without stored result ---
   useEffect(() => {
-    if (user?.id) {
+    if (confirmedUserId) {
       cleanupOrphanHistory()
         .then(() => {
           queryClient.invalidateQueries({
-            queryKey: ["portfolio-history", user?.id],
+            queryKey: ["portfolio-history", confirmedUserId],
           });
         })
         .catch(() => {});
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.id]);
+  }, [confirmedUserId]);
 
   const handleUploadClick = () => {
     fileInputRef.current?.click();
@@ -1220,12 +1224,19 @@ export default function DashboardPage() {
   };
 
   useEffect(() => {
-    if (!authLoading && !user) {
-      router.push("/auth/signin");
+    if (authLoading) {
+      return;
     }
-  }, [authLoading, user, router]);
+    if (!user) {
+      router.push("/auth/signin");
+      return;
+    }
+    if (!emailConfirmed) {
+      router.push("/auth/confirm-email");
+    }
+  }, [authLoading, user, emailConfirmed, router]);
 
-  if (authLoading || !user) {
+  if (authLoading || !user || !emailConfirmed) {
     return (
       <Box
         sx={{

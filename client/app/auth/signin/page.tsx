@@ -18,7 +18,13 @@ import {
 } from "@mui/material";
 import { Visibility, VisibilityOff } from "@mui/icons-material";
 import { useAuth } from "@/app/context/auth";
-import { resetPasswordForEmail } from "@/lib/supabase";
+import {
+  getSession,
+  isEmailConfirmed,
+  isEmailNotConfirmedError,
+  resetPasswordForEmail,
+  resendSignupConfirmation,
+} from "@/lib/supabase";
 import AuthPageShell from "@/app/components/AuthPageShell";
 
 export const dynamic = "force-dynamic";
@@ -32,8 +38,10 @@ export default function SignInPage() {
   const [info, setInfo] = useState("");
   const [loading, setLoading] = useState(false);
   const [resetLoading, setResetLoading] = useState(false);
+  const [resendLoading, setResendLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [resetMode, setResetMode] = useState(false);
+  const [needsConfirmation, setNeedsConfirmation] = useState(false);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -46,17 +54,33 @@ export default function SignInPage() {
     e.preventDefault();
     setError("");
     setInfo("");
+    setNeedsConfirmation(false);
     setLoading(true);
 
     try {
       await signIn(email, password);
+      const session = await getSession();
+      if (session?.user && !isEmailConfirmed(session.user)) {
+        setNeedsConfirmation(true);
+        setError(
+          "Confirm your email before opening the dashboard. We can send another confirmation link.",
+        );
+        return;
+      }
       router.push("/dashboard");
     } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Failed to sign in. Please try again.",
-      );
+      if (isEmailNotConfirmedError(err)) {
+        setNeedsConfirmation(true);
+        setError(
+          "Confirm your email before signing in. We can send another confirmation link.",
+        );
+      } else {
+        setError(
+          err instanceof Error
+            ? err.message
+            : "Failed to sign in. Please try again.",
+        );
+      }
     } finally {
       setLoading(false);
     }
@@ -88,6 +112,28 @@ export default function SignInPage() {
     }
   };
 
+  const handleResendConfirm = async () => {
+    if (!email.trim()) {
+      setError("Enter the email for your account to resend confirmation.");
+      return;
+    }
+    setError("");
+    setInfo("");
+    setResendLoading(true);
+    try {
+      await resendSignupConfirmation(email.trim());
+      setInfo("Another confirmation email is on the way. Check your inbox.");
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Could not resend the confirmation email. Please try again.",
+      );
+    } finally {
+      setResendLoading(false);
+    }
+  };
+
   return (
     <AuthPageShell>
       <Card>
@@ -107,6 +153,25 @@ export default function SignInPage() {
             {error && <Alert severity="error">{error}</Alert>}
             {info && <Alert severity="success">{info}</Alert>}
 
+            {needsConfirmation && !resetMode ? (
+              <Button
+                type="button"
+                variant="outlined"
+                onClick={handleResendConfirm}
+                disabled={loading || resendLoading}
+                sx={{ py: 1.5 }}
+              >
+                {resendLoading ? (
+                  <Stack direction="row" spacing={1} alignItems="center">
+                    <CircularProgress size={20} color="inherit" />
+                    <span>Sending confirmation email…</span>
+                  </Stack>
+                ) : (
+                  "Resend confirmation email"
+                )}
+              </Button>
+            ) : null}
+
             <Box
               component="form"
               onSubmit={resetMode ? handleReset : handleSubmit}
@@ -118,7 +183,7 @@ export default function SignInPage() {
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                disabled={loading || resetLoading}
+                disabled={loading || resetLoading || resendLoading}
                 required
               />
               {!resetMode && (
@@ -153,7 +218,7 @@ export default function SignInPage() {
                 fullWidth
                 variant="contained"
                 type="submit"
-                disabled={loading || resetLoading}
+                disabled={loading || resetLoading || resendLoading}
                 sx={{ py: 1.5 }}
               >
                 {loading || resetLoading ? (
@@ -176,8 +241,9 @@ export default function SignInPage() {
                   setResetMode((prev) => !prev);
                   setError("");
                   setInfo("");
+                  setNeedsConfirmation(false);
                 }}
-                disabled={loading || resetLoading}
+                disabled={loading || resetLoading || resendLoading}
                 sx={{ textTransform: "none" }}
               >
                 {resetMode ? "Back to sign in" : "Forgot password?"}

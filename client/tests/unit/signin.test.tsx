@@ -165,6 +165,68 @@ describe("Sign In Page", () => {
     });
   });
 
+  it("shows a resend-confirm control when the account is unconfirmed", async () => {
+    const unconfirmed = Object.assign(new Error("Email not confirmed"), {
+      code: "email_not_confirmed",
+    });
+    mockSignIn.mockRejectedValue(unconfirmed);
+
+    const { container } = render(<SigninPage />);
+    fireEvent.change(screen.getByLabelText(/Email/i), {
+      target: { value: "new@example.com" },
+    });
+    fireEvent.change(getInput(container, 'input[type="password"]'), {
+      target: { value: "password123" },
+    });
+    fireEvent.submit(getForm(container));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Confirm your email before signing in/),
+      ).toBeInTheDocument();
+    });
+    expect(
+      screen.getByRole("button", { name: /Resend confirmation email/i }),
+    ).toBeInTheDocument();
+    expect(mockPush).not.toHaveBeenCalled();
+  });
+
+  it("resends confirmation from sign-in when the account is unconfirmed", async () => {
+    const { resendSignupConfirmation } = jest.requireMock("@/lib/supabase") as {
+      resendSignupConfirmation: jest.Mock;
+    };
+    resendSignupConfirmation.mockResolvedValue(undefined);
+    const unconfirmed = Object.assign(new Error("Email not confirmed"), {
+      code: "email_not_confirmed",
+    });
+    mockSignIn.mockRejectedValue(unconfirmed);
+
+    const { container } = render(<SigninPage />);
+    fireEvent.change(screen.getByLabelText(/Email/i), {
+      target: { value: "new@example.com" },
+    });
+    fireEvent.change(getInput(container, 'input[type="password"]'), {
+      target: { value: "password123" },
+    });
+    fireEvent.submit(getForm(container));
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: /Resend confirmation email/i }),
+      ).toBeInTheDocument();
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: /Resend confirmation email/i }),
+    );
+
+    await waitFor(() => {
+      expect(resendSignupConfirmation).toHaveBeenCalledWith("new@example.com");
+    });
+    expect(
+      screen.getByText(/Another confirmation email is on the way/),
+    ).toBeInTheDocument();
+  });
+
   it("shows loading state during submission", async () => {
     // Make signIn hang so we can check loading state
     let resolveSignIn: () => void;
