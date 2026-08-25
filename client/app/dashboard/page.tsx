@@ -749,7 +749,10 @@ function ResultsSection({
             />
           )}
           {activeTab === 1 && (
-            <PositionsTable positions={displayedAnalysis.positions} />
+            <PositionsTable
+              positions={displayedAnalysis.positions}
+              washSaleFlags={displayedAnalysis.wash_sale_flags}
+            />
           )}
         </CardContent>
       </Card>

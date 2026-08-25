@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { Fragment, useCallback, useMemo, useState } from "react";
 import {
   Box,
   Chip,
@@ -19,7 +19,7 @@ import {
   ExpandMore as ExpandIcon,
   Warning as WarnIcon,
 } from "@mui/icons-material";
-import type { Position, TaxLot } from "@/lib/types";
+import type { Position, TaxLot, WashSaleFlag } from "@/lib/types";
 
 /**
  * Convert raw holding-period days to a human-readable label.
@@ -35,6 +35,8 @@ function formatHoldingPeriod(days: number): string {
 
 interface PositionsTableProps {
   positions: Position[];
+  /** Realized wash-sale flags from analyze — mapped onto replacement lots. */
+  washSaleFlags?: WashSaleFlag[];
 }
 
 function getPositionRowId(row: Position): string {
@@ -65,6 +67,86 @@ function formatAcquiredDate(iso: string | null | undefined): string {
     day: "numeric",
     year: "numeric",
   });
+}
+
+
+const WASH_SALE_WINDOW_DAYS = 30;
+
+function dateKey(value: string | null | undefined): string {
+  if (!value) return "";
+  const match = /^(\d{4}-\d{2}-\d{2})/.exec(value);
+  return match ? match[1] : value;
+}
+
+function shiftIsoDate(iso: string, days: number): string | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  if (!match) return null;
+  const shifted = new Date(
+    Number(match[1]),
+    Number(match[2]) - 1,
+    Number(match[3]),
+  );
+  shifted.setDate(shifted.getDate() + days);
+  const year = shifted.getFullYear();
+  const month = String(shifted.getMonth() + 1).padStart(2, "0");
+  const day = String(shifted.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+interface LotWashDetails {
+  disallowedLoss: number;
+  basisBump: number;
+  adjustedCostBasis: number | null;
+  saleDate: string | null;
+  repurchaseDate: string | null;
+  windowStart: string | null;
+  windowEnd: string | null;
+}
+
+/**
+ * Map engine wash-sale flags onto a replacement lot.
+ *
+ * The engine adds `wash_sale_disallowed` to the repurchase lot (same symbol +
+ * purchase_date === repurchase_date). Window dates are sale_date ± 30 days.
+ */
+function getLotWashDetails(
+  lot: TaxLot,
+  flags: WashSaleFlag[],
+): LotWashDetails | null {
+  const matching = flags.filter(
+    (flag) =>
+      flag.symbol === lot.symbol &&
+      dateKey(flag.repurchase_date) === dateKey(lot.purchase_date) &&
+      Math.abs(flag.disallowed_loss) >= 0.01,
+  );
+  const lotDisallowed = lot.wash_sale_disallowed ?? 0;
+  if (matching.length === 0 && lotDisallowed < 0.01) {
+    return null;
+  }
+
+  const primary = matching[0];
+  const disallowedLoss =
+    matching.length > 0
+      ? matching.reduce((sum, flag) => sum + flag.disallowed_loss, 0)
+      : lotDisallowed;
+  const saleDate = primary?.sale_date ?? null;
+  const repurchaseDate = primary?.repurchase_date ?? lot.purchase_date;
+  const windowStart = saleDate
+    ? shiftIsoDate(saleDate, -WASH_SALE_WINDOW_DAYS)
+    : null;
+  const windowEnd = saleDate
+    ? shiftIsoDate(saleDate, WASH_SALE_WINDOW_DAYS)
+    : null;
+
+  return {
+    disallowedLoss,
+    basisBump: disallowedLoss,
+    adjustedCostBasis: primary?.adjusted_cost_basis ?? lot.total_cost_basis,
+    saleDate,
+    repurchaseDate,
+    windowStart,
+    windowEnd,
+  };
 }
 
 /**
@@ -123,7 +205,8 @@ function TermChip({ isLong }: Readonly<{ isLong: boolean | null }>) {
 
 export function TaxLotsPanel({
   position,
-}: Readonly<{ position: Position }>) {
+  washSaleFlags = [],
+}: Readonly<{ position: Position; washSaleFlags?: WashSaleFlag[] }>) {
   const lots: TaxLot[] = position.tax_lots ?? [];
 
   return (
@@ -164,52 +247,111 @@ export function TaxLotsPanel({
                 lot.current_price == null
                   ? null
                   : lot.current_price * lot.quantity;
-              const hasWashAdj = (lot.wash_sale_disallowed ?? 0) > 0;
+              const wash = getLotWashDetails(lot, washSaleFlags);
+              const hasWashAdj = wash != null;
               return (
-                <TableRow
+                <Fragment
                   key={`${lot.symbol}-${lot.purchase_date}-${index}`}
-                  data-testid={`tax-lot-${position.symbol}-${index}`}
                 >
-                  <TableCell>{formatAcquiredDate(lot.purchase_date)}</TableCell>
-                  <TableCell align="right">{lot.quantity}</TableCell>
-                  <TableCell align="right">
-                    {formatCurrency(lot.cost_basis_per_share)}
-                  </TableCell>
-                  <TableCell align="right">
-                    {formatCurrency(lot.total_cost_basis)}
-                  </TableCell>
-                  <TableCell align="right">
-                    <Box>
-                      <Typography variant="body2">
-                        {formatCurrency(lotCurrent)}
-                      </Typography>
-                      {lot.current_price != null && (
-                        <Typography variant="caption" color="text.secondary">
-                          {formatCurrency(lot.current_price)}/sh
+                  <TableRow
+                    data-testid={`tax-lot-${position.symbol}-${index}`}
+                  >
+                    <TableCell>{formatAcquiredDate(lot.purchase_date)}</TableCell>
+                    <TableCell align="right">{lot.quantity}</TableCell>
+                    <TableCell align="right">
+                      {formatCurrency(lot.cost_basis_per_share)}
+                    </TableCell>
+                    <TableCell align="right">
+                      {formatCurrency(lot.total_cost_basis)}
+                    </TableCell>
+                    <TableCell align="right">
+                      <Box>
+                        <Typography variant="body2">
+                          {formatCurrency(lotCurrent)}
+                        </Typography>
+                        {lot.current_price != null && (
+                          <Typography variant="caption" color="text.secondary">
+                            {formatCurrency(lot.current_price)}/sh
+                          </Typography>
+                        )}
+                      </Box>
+                    </TableCell>
+                    <TableCell>
+                      <TermChip isLong={lot.is_long_term} />
+                    </TableCell>
+                    <TableCell align="right">
+                      {hasWashAdj ? (
+                        <Tooltip title="Wash-sale disallowed loss added to this lot's cost basis">
+                          <Typography
+                            variant="body2"
+                            sx={{ color: "warning.dark", fontWeight: 600 }}
+                          >
+                            +{formatCurrency(wash.basisBump)}
+                          </Typography>
+                        </Tooltip>
+                      ) : (
+                        <Typography variant="body2" color="text.secondary">
+                          —
                         </Typography>
                       )}
-                    </Box>
-                  </TableCell>
-                  <TableCell>
-                    <TermChip isLong={lot.is_long_term} />
-                  </TableCell>
-                  <TableCell align="right">
-                    {hasWashAdj ? (
-                      <Tooltip title="Wash-sale disallowed loss added to this lot's cost basis">
-                        <Typography
-                          variant="body2"
-                          sx={{ color: "warning.dark", fontWeight: 600 }}
+                    </TableCell>
+                  </TableRow>
+                  {wash && (
+                    <TableRow
+                      data-testid={`tax-lot-wash-${position.symbol}-${index}`}
+                    >
+                      <TableCell
+                        colSpan={7}
+                        sx={{ pt: 0, pb: 1.25, borderBottomColor: "divider" }}
+                      >
+                        <Box
+                          sx={{
+                            display: "flex",
+                            flexWrap: "wrap",
+                            alignItems: "center",
+                            gap: 1,
+                            px: 0.5,
+                            py: 0.75,
+                            borderRadius: 1,
+                            bgcolor: "warning.light",
+                          }}
                         >
-                          +{formatCurrency(lot.wash_sale_disallowed)}
-                        </Typography>
-                      </Tooltip>
-                    ) : (
-                      <Typography variant="body2" color="text.secondary">
-                        —
-                      </Typography>
-                    )}
-                  </TableCell>
-                </TableRow>
+                          <Chip
+                            icon={<WarnIcon sx={{ fontSize: 14 }} />}
+                            label="Wash sale"
+                            size="small"
+                            color="warning"
+                            sx={{ height: 22 }}
+                          />
+                          <Typography variant="caption" sx={{ fontWeight: 600 }}>
+                            Disallowed loss {formatCurrency(wash.disallowedLoss)}
+                          </Typography>
+                          <Typography variant="caption" sx={{ fontWeight: 600 }}>
+                            Replacement-lot basis bump +{formatCurrency(wash.basisBump)}
+                          </Typography>
+                          {wash.windowStart && wash.windowEnd && (
+                            <Typography variant="caption">
+                              30-day window{" "}
+                              {formatAcquiredDate(wash.windowStart)} –{" "}
+                              {formatAcquiredDate(wash.windowEnd)}
+                            </Typography>
+                          )}
+                          {wash.saleDate && (
+                            <Typography
+                              variant="caption"
+                              color="text.secondary"
+                            >
+                              Sold {formatAcquiredDate(wash.saleDate)}
+                              {wash.repurchaseDate
+                                ? ` · replaced ${formatAcquiredDate(wash.repurchaseDate)}`
+                                : ""}
+                            </Typography>
+                          )}
+                        </Box>
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </Fragment>
               );
             })}
           </TableBody>
@@ -405,6 +547,7 @@ function buildColumns(
  */
 export default function PositionsTable({
   positions,
+  washSaleFlags = [],
 }: Readonly<PositionsTableProps>) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
@@ -470,7 +613,12 @@ export default function PositionsTable({
         }}
       />
       <Collapse in={Boolean(expandedPosition)} unmountOnExit>
-        {expandedPosition && <TaxLotsPanel position={expandedPosition} />}
+        {expandedPosition && (
+          <TaxLotsPanel
+            position={expandedPosition}
+            washSaleFlags={washSaleFlags}
+          />
+        )}
       </Collapse>
     </Box>
   );

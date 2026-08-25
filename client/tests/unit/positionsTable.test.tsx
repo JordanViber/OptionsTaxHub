@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import PositionsTable from "../../app/components/PositionsTable";
-import type { Position } from "@/lib/types";
+import type { Position, TaxLot, WashSaleFlag } from "@/lib/types";
 
 // Mock MUI DataGrid to avoid license warnings and simplify testing
 jest.mock("@mui/x-data-grid", () => ({
@@ -806,6 +806,133 @@ describe("PositionsTable", () => {
       expect(screen.getByTestId("tax-lot-DATEBUG-0")).toHaveTextContent(
         "Jan 15, 2024",
       );
+    });
+  });
+
+  describe("Wash-sale details on lot panel", () => {
+    const amdReplacementLot: TaxLot = {
+      symbol: "AMD",
+      quantity: 10,
+      cost_basis_per_share: 155,
+      total_cost_basis: 1550,
+      purchase_date: "2025-07-25",
+      current_price: 130,
+      asset_type: "stock",
+      unrealized_pnl: -250,
+      unrealized_pnl_pct: -16.1,
+      holding_period_days: 20,
+      is_long_term: false,
+      wash_sale_disallowed: 300,
+    };
+
+    const amdOriginalLot: TaxLot = {
+      symbol: "AMD",
+      quantity: 4,
+      cost_basis_per_share: 150,
+      total_cost_basis: 600,
+      purchase_date: "2025-06-01",
+      current_price: 130,
+      asset_type: "stock",
+      unrealized_pnl: -80,
+      unrealized_pnl_pct: -13.3,
+      holding_period_days: 70,
+      is_long_term: false,
+      wash_sale_disallowed: 0,
+    };
+
+    const amdWashFlag: WashSaleFlag = {
+      symbol: "AMD",
+      sale_date: "2025-07-15",
+      sale_quantity: 10,
+      sale_loss: 300,
+      repurchase_date: "2025-07-25",
+      repurchase_quantity: 10,
+      disallowed_loss: 300,
+      adjusted_cost_basis: 1550,
+      explanation:
+        "Wash sale: Sold 10 AMD on 07/15/2025 at a loss of $300.00, then repurchased 10 shares on 07/25/2025.",
+    };
+
+    const amdPosition: Position = {
+      symbol: "AMD",
+      quantity: 14,
+      avg_cost_basis: 153.57,
+      current_price: 130,
+      market_value: 1820,
+      unrealized_pnl: -330,
+      unrealized_pnl_pct: -15.3,
+      holding_period_days: 70,
+      is_long_term: false,
+      wash_sale_risk: false,
+      asset_type: "stock",
+      total_cost_basis: 2150,
+      earliest_purchase_date: "2025-06-01",
+      tax_lots: [amdOriginalLot, amdReplacementLot],
+    };
+
+    it("shows disallowed loss, replacement basis bump, and 30-day window on the replacement lot", () => {
+      render(
+        <PositionsTable positions={[amdPosition]} washSaleFlags={[amdWashFlag]} />,
+      );
+      fireEvent.click(screen.getByTestId("position-row-AMD"));
+
+      expect(screen.getByTestId("tax-lots-panel-AMD")).toBeInTheDocument();
+      expect(screen.queryByTestId("tax-lot-wash-AMD-0")).not.toBeInTheDocument();
+      expect(screen.getByTestId("tax-lot-AMD-0")).toHaveTextContent("—");
+
+      const washRow = screen.getByTestId("tax-lot-wash-AMD-1");
+      expect(washRow).toHaveTextContent("Disallowed loss $300.00");
+      expect(washRow).toHaveTextContent("Replacement-lot basis bump +$300.00");
+      expect(washRow).toHaveTextContent("30-day window Jun 15, 2025");
+      expect(washRow).toHaveTextContent("Aug 14, 2025");
+      expect(washRow).toHaveTextContent("Sold Jul 15, 2025");
+      expect(washRow).toHaveTextContent("replaced Jul 25, 2025");
+      expect(screen.getByTestId("tax-lot-AMD-1")).toHaveTextContent("$300.00");
+    });
+
+    it("keeps a clean lot list when no wash sale is present", () => {
+      const msft: Position = {
+        symbol: "MSFT",
+        quantity: 8,
+        avg_cost_basis: 415,
+        current_price: 420,
+        market_value: 3360,
+        unrealized_pnl: 40,
+        unrealized_pnl_pct: 1.2,
+        holding_period_days: 80,
+        is_long_term: false,
+        wash_sale_risk: false,
+        asset_type: "stock",
+        total_cost_basis: 3320,
+        earliest_purchase_date: "2025-06-02",
+        tax_lots: [
+          {
+            symbol: "MSFT",
+            quantity: 8,
+            cost_basis_per_share: 415,
+            total_cost_basis: 3320,
+            purchase_date: "2025-06-02",
+            current_price: 420,
+            asset_type: "stock",
+            unrealized_pnl: 40,
+            unrealized_pnl_pct: 1.2,
+            holding_period_days: 80,
+            is_long_term: false,
+            wash_sale_disallowed: 0,
+          },
+        ],
+      };
+
+      render(<PositionsTable positions={[msft]} washSaleFlags={[]} />);
+      fireEvent.click(screen.getByTestId("position-row-MSFT"));
+
+      expect(screen.getByTestId("tax-lots-panel-MSFT")).toBeInTheDocument();
+      expect(screen.getByTestId("tax-lot-MSFT-0")).toBeInTheDocument();
+      expect(screen.queryByTestId("tax-lot-wash-MSFT-0")).not.toBeInTheDocument();
+      expect(screen.queryByText(/Disallowed loss/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/30-day window/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/Replacement-lot basis bump/i)).not.toBeInTheDocument();
+      expect(screen.getByTestId("tax-lot-MSFT-0")).toHaveTextContent("Jun 2, 2025");
     });
   });
 });
