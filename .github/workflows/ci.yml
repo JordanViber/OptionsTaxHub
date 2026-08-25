@@ -231,13 +231,13 @@ jobs:
       - name: Start backend server
         run: |
           cd server
-          python -m uvicorn main:app --host 0.0.0.0 --port 8080 > /tmp/backend.log 2>&1 &
+          python -m uvicorn main:app --host 0.0.0.0 --port 8011 > /tmp/backend.log 2>&1 &
           sleep 3
         env:
           PYTHONPATH: ${{ github.workspace }}/server
           DATABASE_URL: sqlite:///test.db
           FRONTEND_URL: http://localhost:3000
-          PORT: 8080
+          PORT: 8011
 
       - name: Build frontend
         run: |
@@ -250,7 +250,7 @@ jobs:
           timeout 30 npm run start > /tmp/frontend.log 2>&1 &
           sleep 5
         env:
-          NEXT_PUBLIC_API_URL: http://localhost:8080
+          NEXT_PUBLIC_API_URL: http://localhost:8011
 
       - name: Run Playwright tests
         continue-on-error: true

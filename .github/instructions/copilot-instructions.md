@@ -19,7 +19,7 @@
 - **DB issues**: Use Supabase MCP to inspect live schema before assuming anything. Run `execute_sql` to check actual column names, constraints, and data.
 - **Bug fixes**: Always verify with Playwright MCP after every fix. Navigate to the affected page, interact with it, confirm the behavior is correct.
 - **Product thinking**: Proactively look for small, low-risk functionality or UX improvements that materially reduce confusion, improve trust, or make the workflow clearer for end users. When the improvement is clearly beneficial, implement it, update tests, and document any important behavior changes.
-- **Ports**: Local backend = **8001**. Port 8080 = blocked by OS on this machine.
+- **Ports**: Local backend = **8011**. Frontend = **3000**. Do not use 8080 or 8001 for the local API.
 - **React Query cache keys**: `useTaxProfile` uses a user-scoped key like `["tax-profile", userId ?? "anonymous"]`. `useSaveTaxProfile` must invalidate that exact same user-scoped key.
 - **Auth guard**: Any React Query hook that calls protected endpoints must use `enabled: !!user` to avoid 401s before auth session is ready.
 - **Supabase project**: ID `vgrlucxqncajjdoaoctq`, region `us-west-2`, URL `https://vgrlucxqncajjdoaoctq.supabase.co`
@@ -54,7 +54,7 @@ OptionsTaxHub/
 
 - Structure: `/client` (Next.js 14, TypeScript, Tailwind CSS v4, Material UI), `/server` (FastAPI + Python 3.9+, uvicorn)
 - Frontend runs on `http://localhost:3000` (default `npm run dev`)
-- Backend runs on `http://localhost:8001` (uvicorn main:app --reload --port 8001)
+- Backend runs on `http://localhost:8011` (uvicorn main:app --reload --port 8011)
 - **IMPORTANT**: Port 8080 is permanently occupied by `svchost.exe` on this machine. Never use port 8080 for local dev.
 - Database: Supabase PostgreSQL + Auth (free tier)
 - API style: REST endpoints, JSON responses, Pydantic models for validation
@@ -111,5 +111,5 @@ cd frontend && npm run dev
 # → http://localhost:3000
 
 # Terminal 2 – Backend
-cd server && uvicorn main:app --reload --port 8001
-# → http://localhost:8001
+cd server && uvicorn main:app --reload --port 8011
+# → http://localhost:8011

@@ -51,7 +51,7 @@ npm start
 python main.py
 ```
 
-Server runs at: `http://localhost:8080`
+Server runs at: `http://localhost:8011`
 
 ---
 
@@ -189,17 +189,17 @@ pytest
 
 ### Port Already in Use
 - **Frontend (3000)**: Check if another Next.js app is running
-- **Backend (8080)**: Kill the process using port 8080
+- **Backend (8011)**: Kill the process using port 8011
 
 **Windows:**
 ```powershell
-netstat -ano | findstr :8080
+netstat -ano | findstr :8011
 taskkill /PID <PID> /F
 ```
 
 **Mac/Linux:**
 ```bash
-lsof -ti:8080 | xargs kill -9
+lsof -ti:8011 | xargs kill -9
 ```
 
 ### Python Module Not Found
@@ -233,12 +233,13 @@ npm install
 DATABASE_URL=postgresql://user:password@localhost:5432/optionstaxhub
 API_KEY_SECRET=your_secret_key_here
 FRONTEND_URL=http://localhost:3000
-PORT=8080
+# Local only. Production on Render injects $PORT.
+PORT=8011
 ```
 
 ### Frontend (client/.env.local)
 ```env
-NEXT_PUBLIC_API_URL=http://localhost:8080
+NEXT_PUBLIC_API_URL=http://localhost:8011
 ```
 
 ---
