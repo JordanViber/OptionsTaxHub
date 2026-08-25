@@ -12,7 +12,7 @@ services:
       - key: DATABASE_URL
         sync: false
       - key: FRONTEND_URL
-        value: https://optionstaxhub.com
+        value: https://options-tax-hub-client-prod.onrender.com
       - key: API_KEY_SECRET
         generateValue: true
       - key: GEMINI_API_KEY
