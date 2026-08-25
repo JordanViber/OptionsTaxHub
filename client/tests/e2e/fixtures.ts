@@ -46,7 +46,22 @@ export const MOCK_ANALYSIS = {
       holding_period_days: 120,
       is_long_term: false,
       asset_type: "stock",
-      tax_lots: [],
+      tax_lots: [
+        {
+          symbol: "AAPL",
+          quantity: 50,
+          cost_basis_per_share: 182.5,
+          total_cost_basis: 9125,
+          purchase_date: "2025-01-15",
+          current_price: 170,
+          asset_type: "stock",
+          unrealized_pnl: -625,
+          unrealized_pnl_pct: -6.85,
+          holding_period_days: 120,
+          is_long_term: false,
+          wash_sale_disallowed: 0,
+        },
+      ],
       wash_sale_risk: true,
     },
     {

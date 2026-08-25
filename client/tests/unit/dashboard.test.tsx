@@ -3,6 +3,16 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { PortfolioAnalysis } from "../../lib/types";
 
 // Mock next/navigation
+jest.mock("next/link", () => {
+  return ({
+    children,
+    href,
+  }: {
+    children: React.ReactNode;
+    href: string;
+  }) => <a href={href}>{children}</a>;
+});
+
 jest.mock("next/navigation", () => ({
   useRouter: () => ({
     push: jest.fn(),
@@ -57,6 +67,10 @@ jest.mock("../../lib/api", () => ({
   fetchAnalysisById: mockFetchAnalysisById,
   cleanupOrphanHistory: mockCleanupOrphanHistory,
   deleteAnalysis: mockDeleteAnalysis,
+  getAnalysisErrorMessage: (error: unknown) =>
+    error instanceof Error ? error.message : "An error occurred",
+  getBackendUnreachableMessage: () =>
+    "The analysis service is not responding. Please try again in a few minutes.",
 }));
 
 // Mock components
@@ -597,5 +611,22 @@ describe("DashboardPage", () => {
         screen.getByText(/Loaded saved analysis: saved.csv/i),
       ).toBeInTheDocument();
     });
+  });
+
+  it("shows first-run empty state before any analysis exists", async () => {
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Get started with your first analysis/i),
+      ).toBeInTheDocument();
+    });
+    expect(screen.getByText(/Export from Robinhood/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: /Download sample CSV/i }),
+    ).toHaveAttribute("href", "/sample-robinhood-transactions.csv");
+    expect(
+      screen.getByText(/Savings estimates use your tax profile/i),
+    ).toBeInTheDocument();
   });
 });

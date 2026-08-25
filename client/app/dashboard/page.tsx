@@ -66,7 +66,10 @@ import {
   fetchAnalysisById,
   cleanupOrphanHistory,
   deleteAnalysis,
+  getAnalysisErrorMessage,
+  getBackendUnreachableMessage,
 } from "@/lib/api";
+import FirstRunEmptyState from "../components/FirstRunEmptyState";
 import { useAuth } from "@/app/context/auth";
 import { useQueryClient } from "@tanstack/react-query";
 import type {
@@ -128,18 +131,6 @@ function getDisplayedAnalysis(
   }
 
   return null;
-}
-
-function getAnalysisErrorMessage(error: unknown): string {
-  if (!(error instanceof Error)) {
-    return "An error occurred";
-  }
-
-  if (/failed to fetch|network|econnrefused/i.test(error.message)) {
-    return "Could not reach the backend server. Make sure it is running on port 8011 (npm run dev:server).";
-  }
-
-  return error.message;
 }
 
 // Helper function: restore analysis from session storage
@@ -1577,10 +1568,8 @@ export default function DashboardPage() {
           {/* Backend health banner — shown when the API server is unreachable */}
           {backendChecked && backendDown && (
             <Alert severity="warning">
-              <AlertTitle>Backend server unreachable</AlertTitle>
-              The API server is not responding on port 8011. Run{" "}
-              <code>npm run dev:server</code> from the project root, or use the{" "}
-              <strong>Server: API</strong> task in VS Code.
+              <AlertTitle>Analysis service unreachable</AlertTitle>
+              {getBackendUnreachableMessage()}
             </Alert>
           )}
 
@@ -1591,6 +1580,9 @@ export default function DashboardPage() {
               <Typography variant="caption">{analysisErrorMessage}</Typography>
             </Alert>
           )}
+
+          {/* First-run guidance when the user has not analyzed a CSV yet */}
+          {!hasResults && !isPending && !error && <FirstRunEmptyState />}
 
           {/* Results — shown ABOVE warnings so actionable info is immediately visible */}
           {hasResults && (

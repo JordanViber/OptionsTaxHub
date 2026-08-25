@@ -431,12 +431,34 @@ export async function deleteAnalysis(analysisId: string): Promise<boolean> {
 }
 
 /**
+ * Map analysis / network failures to an end-user message.
+ * Never mention local ports or developer start commands.
+ */
+export function getAnalysisErrorMessage(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return "An error occurred";
+  }
+
+  if (/failed to fetch|network|econnrefused/i.test(error.message)) {
+    return "Could not reach the analysis service. Please try again in a few minutes.";
+  }
+
+  return error.message;
+}
+
+/**
+ * Production-safe copy when the health check fails.
+ */
+export function getBackendUnreachableMessage(): string {
+  return "The analysis service is not responding. Please try again in a few minutes.";
+}
+
+/**
  * Poll the backend /health endpoint to detect server availability.
  *
- * Uses relative path so the Next.js dev proxy handles routing to port 8011.
- * Refetches every 30 seconds and after a window focus/reconnect.
- * Shows isFetched=true only after the first attempt completes so callers
- * can distinguish "still checking" from "confirmed down".
+ * Uses apiPath so production hits the real backend URL. In local `next dev`,
+ * rewrites proxy /health to the API. Refetches every 30 seconds.
+ * Callers can use isFetched to distinguish "still checking" from "confirmed down".
  */
 export function useBackendHealth() {
   return useQuery({

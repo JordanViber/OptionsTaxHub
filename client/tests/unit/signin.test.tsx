@@ -201,4 +201,72 @@ describe("Sign In Page", () => {
       expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
     });
   });
+
+  it("links back to home", () => {
+    render(<SigninPage />);
+    expect(screen.getByRole("link", { name: /OptionsTaxHub/i })).toHaveAttribute(
+      "href",
+      "/",
+    );
+  });
+
+  it("shows the tax disclaimer", () => {
+    render(<SigninPage />);
+    expect(
+      screen.getByText(/For educational and simulation purposes only/),
+    ).toBeInTheDocument();
+  });
+
+  it("sends a password reset email", async () => {
+    const { resetPasswordForEmail } = jest.requireMock("@/lib/supabase") as {
+      resetPasswordForEmail: jest.Mock;
+    };
+    resetPasswordForEmail.mockResolvedValue(undefined);
+
+    render(<SigninPage />);
+    fireEvent.change(screen.getByLabelText(/Email/i), {
+      target: { value: "test@example.com" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Forgot password/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Send reset link/i }));
+
+    await waitFor(() => {
+      expect(resetPasswordForEmail).toHaveBeenCalledWith("test@example.com");
+    });
+    expect(
+      screen.getByText(/Check your email for a link to set a new password/),
+    ).toBeInTheDocument();
+  });
+
+  it("requires email before sending a reset link", async () => {
+    const { resetPasswordForEmail } = jest.requireMock("@/lib/supabase") as {
+      resetPasswordForEmail: jest.Mock;
+    };
+    resetPasswordForEmail.mockClear();
+
+    render(<SigninPage />);
+    fireEvent.click(screen.getByRole("button", { name: /Forgot password/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Send reset link/i }));
+
+    expect(resetPasswordForEmail).not.toHaveBeenCalled();
+  });
+
+  it("explains that forgot password emails a link to set a new password", () => {
+    render(<SigninPage />);
+    fireEvent.click(screen.getByRole("button", { name: /Forgot password/i }));
+    expect(
+      screen.getByText(/We.ll email you a link to set a new password/i),
+    ).toBeInTheDocument();
+  });
+
+  it("shows a success banner after a completed password reset", async () => {
+    window.history.pushState({}, "", "/auth/signin?reset=success");
+    render(<SigninPage />);
+    expect(
+      await screen.findByText(
+        /Your password was updated. Sign in with your new password./,
+      ),
+    ).toBeInTheDocument();
+    window.history.pushState({}, "", "/");
+  });
 });

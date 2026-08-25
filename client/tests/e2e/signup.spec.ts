@@ -19,16 +19,15 @@ test.describe("Sign Up Page", () => {
   });
 
   test("renders the sign-up form with all fields", async ({ page }) => {
-    await expect(page.getByLabel("First Name")).toBeVisible();
-    await expect(page.getByLabel("Last Name")).toBeVisible();
-    await expect(page.getByLabel("Display Name")).toBeVisible();
+    await expect(page.getByLabel("Name")).toBeVisible();
     await expect(page.getByRole("textbox", { name: "Email" })).toBeVisible();
     await expect(page.locator('input[type="password"]').first()).toBeVisible();
     await expect(page.locator('input[type="password"]').nth(1)).toBeVisible();
     await expect(
       page.getByRole("button", { name: "Create Account" }),
     ).toBeVisible();
-    await expect(page.getByText("Join OptionsTaxHub today")).toBeVisible();
+    await expect(page.getByText(/Join OptionsTaxHub/)).toBeVisible();
+    await expect(page.getByLabel("Provider Type")).toHaveCount(0);
   });
 
   test("shows error when passwords do not match", async ({
@@ -38,8 +37,7 @@ test.describe("Sign Up Page", () => {
     // WebKit on Windows doesn't reliably trigger form onSubmit via button click
     test.skip(browserName === "webkit", "WebKit form submission limitation");
 
-    await page.getByLabel("First Name").fill("John");
-    await page.getByLabel("Last Name").fill("Doe");
+    await page.getByLabel("Name").fill("John Doe");
     await page.getByRole("textbox", { name: "Email" }).fill("john@example.com");
     await page.locator('input[type="password"]').first().fill("password123");
     await page
@@ -61,8 +59,7 @@ test.describe("Sign Up Page", () => {
     // WebKit on Windows doesn't reliably trigger form onSubmit via button click
     test.skip(browserName === "webkit", "WebKit form submission limitation");
 
-    await page.getByLabel("First Name").fill("John");
-    await page.getByLabel("Last Name").fill("Doe");
+    await page.getByLabel("Name").fill("John Doe");
     await page.getByRole("textbox", { name: "Email" }).fill("john@example.com");
     await page.locator('input[type="password"]').first().fill("abc");
     await page.locator('input[type="password"]').nth(1).fill("abc");
@@ -99,8 +96,7 @@ test.describe("Sign Up Page", () => {
       await dialog.accept();
     });
 
-    await page.getByLabel("First Name").fill("New");
-    await page.getByLabel("Last Name").fill("User");
+    await page.getByLabel("Name").fill("New User");
     await page
       .getByRole("textbox", { name: "Email" })
       .fill("newuser@example.com");
@@ -146,20 +142,11 @@ test.describe("Sign Up Page", () => {
     });
   });
 
-  test("phone provider changes helper text", async ({ page }) => {
-    // Default helper is "Optional" for phone field
+  test("home link and tax disclaimer are visible", async ({ page }) => {
+    await expect(page.getByRole("link", { name: /OptionsTaxHub/ })).toBeVisible();
     await expect(
-      page.getByText("Optional", { exact: true }).first(),
+      page.getByText(/For educational and simulation purposes only/),
     ).toBeVisible();
-
-    // Open the Provider Type dropdown (MUI Select) and choose Phone
-    await page.getByRole("combobox", { name: /Provider Type/ }).click();
-    await page.getByRole("option", { name: "Phone" }).click();
-
-    // Now the phone helper text should change
-    await expect(page.getByText("Required for phone sign-up")).toBeVisible({
-      timeout: 3000,
-    });
   });
 
   test("shows loading spinner during submission", async ({
@@ -182,8 +169,7 @@ test.describe("Sign Up Page", () => {
     // Dismiss alert that follows
     page.on("dialog", (dialog) => dialog.accept());
 
-    await page.getByLabel("First Name").fill("New");
-    await page.getByLabel("Last Name").fill("User");
+    await page.getByLabel("Name").fill("New User");
     await page.getByRole("textbox", { name: "Email" }).fill("new@example.com");
     await page.locator('input[type="password"]').first().fill("password123");
     await page.locator('input[type="password"]').nth(1).fill("password123");

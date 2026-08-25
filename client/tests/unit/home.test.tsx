@@ -16,6 +16,16 @@ const getFileInput = (container: HTMLElement) => {
   return element;
 };
 
+jest.mock("next/link", () => {
+  return ({
+    children,
+    href,
+  }: {
+    children: React.ReactNode;
+    href: string;
+  }) => <a href={href}>{children}</a>;
+});
+
 jest.mock("next/navigation", () => ({
   useRouter: () => ({
     push: mockPush,
@@ -58,6 +68,10 @@ jest.mock("../../lib/api", () => ({
   useBackendHealth: () => ({ isError: false, isFetched: true }),
   fetchAnalysisById: jest.fn().mockResolvedValue(null),
   cleanupOrphanHistory: jest.fn().mockResolvedValue(0),
+  getAnalysisErrorMessage: (error: unknown) =>
+    error instanceof Error ? error.message : "An error occurred",
+  getBackendUnreachableMessage: () =>
+    "The analysis service is not responding. Please try again in a few minutes.",
 }));
 
 // Helper to create default auth mock
