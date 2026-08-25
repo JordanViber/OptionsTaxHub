@@ -18,12 +18,8 @@ interface AuthContextType {
   signUp: (
     email: string,
     password: string,
-    profile: {
-      firstName: string;
-      lastName: string;
-      displayName: string;
-      phone: string;
-      providerType: string;
+    profile?: {
+      name?: string;
     },
   ) => Promise<void>;
   signOut: () => Promise<void>;
@@ -76,37 +72,25 @@ export function AuthProvider({ children }: Readonly<{ children: ReactNode }>) {
   const signUp = async (
     email: string,
     password: string,
-    profile: {
-      firstName: string;
-      lastName: string;
-      displayName: string;
-      phone: string;
-      providerType: string;
+    profile?: {
+      name?: string;
     },
   ) => {
+    const name = profile?.name?.trim() ?? "";
+    const [firstName, ...rest] = name.split(/\s+/).filter(Boolean);
+    const lastName = rest.join(" ");
     const metadata = {
-      first_name: profile.firstName,
-      last_name: profile.lastName,
-      full_name: `${profile.firstName} ${profile.lastName}`.trim(),
-      display_name: profile.displayName,
-      phone: profile.phone,
-      provider_type: profile.providerType,
+      first_name: firstName ?? "",
+      last_name: lastName,
+      full_name: name,
+      display_name: name,
     };
 
-    const signUpPayload =
-      profile.providerType === "phone"
-        ? {
-            phone: profile.phone,
-            password,
-            options: { data: metadata },
-          }
-        : {
-            email,
-            password,
-            options: { data: metadata },
-          };
-
-    const { error } = await getSupabaseClient().auth.signUp(signUpPayload);
+    const { error } = await getSupabaseClient().auth.signUp({
+      email,
+      password,
+      options: { data: metadata },
+    });
     if (error) throw error;
   };
 

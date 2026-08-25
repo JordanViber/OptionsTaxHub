@@ -36,6 +36,8 @@ import {
   fetchAnalysisById,
   deleteAnalysis,
   cleanupOrphanHistory,
+  getAnalysisErrorMessage,
+  getBackendUnreachableMessage,
 } from "../../lib/api";
 
 type WrapperProps = { children: React.ReactNode };
@@ -738,6 +740,35 @@ describe("api hooks", () => {
       await waitFor(() => {
         expect(result.current.isError).toBe(true);
       });
+    });
+  });
+
+  describe("getAnalysisErrorMessage", () => {
+    it("returns a generic message for non-Error values", () => {
+      expect(getAnalysisErrorMessage("nope")).toBe("An error occurred");
+    });
+
+    it("hides local developer instructions from network errors", () => {
+      const message = getAnalysisErrorMessage(
+        new Error("Failed to fetch: ECONNREFUSED"),
+      );
+      expect(message).toMatch(/analysis service/i);
+      expect(message.toLowerCase()).not.toContain("8011");
+      expect(message.toLowerCase()).not.toContain("dev:server");
+    });
+
+    it("passes through analysis error messages", () => {
+      expect(getAnalysisErrorMessage(new Error("CSV could not be parsed"))).toBe(
+        "CSV could not be parsed",
+      );
+    });
+  });
+
+  describe("getBackendUnreachableMessage", () => {
+    it("is safe to show in production", () => {
+      const message = getBackendUnreachableMessage();
+      expect(message.toLowerCase()).not.toContain("8011");
+      expect(message.toLowerCase()).not.toContain("dev:server");
     });
   });
 });

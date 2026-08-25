@@ -12,6 +12,7 @@ const mockAuth = {
   signOut: jest.fn(),
   getSession: jest.fn(),
   getUser: jest.fn(),
+  resetPasswordForEmail: jest.fn(),
 };
 
 const mockSupabaseInstance = { auth: mockAuth };
@@ -28,6 +29,7 @@ import {
   signOut,
   getSession,
   getCurrentUser,
+  resetPasswordForEmail,
 } from "../../lib/supabase";
 
 describe("lib/supabase", () => {
@@ -187,6 +189,28 @@ describe("lib/supabase", () => {
       });
 
       await expect(getCurrentUser()).rejects.toThrow("User error");
+    });
+  });
+
+  describe("resetPasswordForEmail", () => {
+    it("calls supabase auth.resetPasswordForEmail", async () => {
+      mockAuth.resetPasswordForEmail.mockResolvedValue({ error: null });
+      await resetPasswordForEmail("test@example.com");
+      expect(mockAuth.resetPasswordForEmail).toHaveBeenCalledWith(
+        "test@example.com",
+        expect.objectContaining({
+          redirectTo: expect.stringContaining("/auth/signin"),
+        }),
+      );
+    });
+
+    it("throws on error", async () => {
+      mockAuth.resetPasswordForEmail.mockResolvedValue({
+        error: new Error("Reset failed"),
+      });
+      await expect(resetPasswordForEmail("a@b.com")).rejects.toThrow(
+        "Reset failed",
+      );
     });
   });
 });

@@ -3,7 +3,6 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import {
-  Container,
   Box,
   Card,
   CardContent,
@@ -16,21 +15,17 @@ import {
   CircularProgress,
   InputAdornment,
   IconButton,
-  MenuItem,
 } from "@mui/material";
 import { Visibility, VisibilityOff } from "@mui/icons-material";
 import { useAuth } from "@/app/context/auth";
+import AuthPageShell from "@/app/components/AuthPageShell";
 
 export const dynamic = "force-dynamic";
 
 export default function SignUpPage() {
   const router = useRouter();
   const { signUp } = useAuth();
-  const [firstName, setFirstName] = useState("");
-  const [lastName, setLastName] = useState("");
-  const [displayName, setDisplayName] = useState("");
-  const [phone, setPhone] = useState("");
-  const [providerType, setProviderType] = useState("email");
+  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -53,29 +48,15 @@ export default function SignUpPage() {
       return;
     }
 
-    if (providerType === "phone" && !phone.trim()) {
-      setError("Phone number is required for phone sign-up");
-      return;
-    }
-
-    if (providerType !== "phone" && !email.trim()) {
-      setError("Email is required for email sign-up");
+    if (!email.trim()) {
+      setError("Email is required");
       return;
     }
 
     setLoading(true);
 
     try {
-      const resolvedDisplayName =
-        displayName.trim() || `${firstName} ${lastName}`.trim();
-      await signUp(email, password, {
-        firstName,
-        lastName,
-        displayName: resolvedDisplayName,
-        phone,
-        providerType,
-      });
-      // Show success message and redirect to sign in
+      await signUp(email, password, { name: name.trim() });
       alert(
         "Sign up successful! Please check your email to confirm your account.",
       );
@@ -92,7 +73,7 @@ export default function SignUpPage() {
   };
 
   return (
-    <Container maxWidth="sm" sx={{ py: 8 }}>
+    <AuthPageShell>
       <Card>
         <CardContent>
           <Stack spacing={3}>
@@ -101,7 +82,7 @@ export default function SignUpPage() {
                 Create Account
               </Typography>
               <Typography variant="body2" color="textSecondary">
-                Join OptionsTaxHub today
+                Join OptionsTaxHub with an email and password
               </Typography>
             </Box>
 
@@ -114,53 +95,11 @@ export default function SignUpPage() {
             >
               <TextField
                 fullWidth
-                label="First Name"
-                value={firstName}
-                onChange={(e) => setFirstName(e.target.value)}
+                label="Name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
                 disabled={loading}
-                required
-              />
-              <TextField
-                fullWidth
-                label="Last Name"
-                value={lastName}
-                onChange={(e) => setLastName(e.target.value)}
-                disabled={loading}
-                required
-              />
-              <TextField
-                fullWidth
-                label="Display Name"
-                value={displayName}
-                onChange={(e) => setDisplayName(e.target.value)}
-                disabled={loading}
-                helperText="Optional (defaults to First + Last Name)"
-              />
-              <TextField
-                fullWidth
-                label="Provider Type"
-                select
-                value={providerType}
-                onChange={(e) => setProviderType(e.target.value)}
-                disabled={loading}
-              >
-                <MenuItem value="email">Email</MenuItem>
-                <MenuItem value="phone">Phone</MenuItem>
-                <MenuItem value="google">Google</MenuItem>
-                <MenuItem value="github">GitHub</MenuItem>
-              </TextField>
-              <TextField
-                fullWidth
-                label="Phone"
-                type="tel"
-                value={phone}
-                onChange={(e) => setPhone(e.target.value)}
-                disabled={loading}
-                helperText={
-                  providerType === "phone"
-                    ? "Required for phone sign-up"
-                    : "Optional"
-                }
+                helperText="Optional — shown on your dashboard"
               />
               <TextField
                 fullWidth
@@ -169,7 +108,7 @@ export default function SignUpPage() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 disabled={loading}
-                required={providerType !== "phone"}
+                required
               />
               <TextField
                 fullWidth
@@ -216,7 +155,9 @@ export default function SignUpPage() {
                               ? "Hide password"
                               : "Show password"
                           }
-                          onClick={() => setShowConfirmPassword((prev) => !prev)}
+                          onClick={() =>
+                            setShowConfirmPassword((prev) => !prev)
+                          }
                           edge="end"
                         >
                           {showConfirmPassword ? (
@@ -259,6 +200,6 @@ export default function SignUpPage() {
           </Stack>
         </CardContent>
       </Card>
-    </Container>
+    </AuthPageShell>
   );
 }

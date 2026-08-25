@@ -24,7 +24,9 @@ import {
   Speed as SpeedIcon,
   AccountBalanceWallet as WalletIcon,
 } from "@mui/icons-material";
+import Link from "next/link";
 import { useAuth } from "@/app/context/auth";
+import TaxDisclaimer from "./components/TaxDisclaimer";
 
 export default function LandingPage() {
   const router = useRouter();
@@ -74,7 +76,7 @@ export default function LandingPage() {
       icon: <WalletIcon sx={{ fontSize: 40, color: "info.main" }} />,
       title: "Tax Savings Estimates",
       description:
-        "See estimated federal and state tax savings based on your filing status, income bracket, and tax year.",
+        "See estimated federal tax savings based on your filing status, income bracket, and tax year. State tax is not included.",
     },
     {
       icon: <SpeedIcon sx={{ fontSize: 40, color: "secondary.main" }} />,
@@ -86,7 +88,7 @@ export default function LandingPage() {
       icon: <SecurityIcon sx={{ fontSize: 40, color: "error.main" }} />,
       title: "Privacy First",
       description:
-        "Your data is processed securely and never stored permanently. CSVs are analyzed in-memory only.",
+        "CSVs are processed to generate your analysis. Results are saved to your account history so you can reopen or delete them. This is not an in-memory-only tool.",
     },
   ];
 
@@ -105,7 +107,8 @@ export default function LandingPage() {
           </Typography>
           <Button
             color="inherit"
-            onClick={() => router.push("/auth/signin")}
+            component={Link}
+            href="/auth/signin"
             sx={{ textTransform: "none", mr: 1 }}
           >
             Sign In
@@ -113,7 +116,8 @@ export default function LandingPage() {
           <Button
             variant="contained"
             color="secondary"
-            onClick={() => router.push("/auth/signup")}
+            component={Link}
+            href="/auth/signup"
             sx={{ textTransform: "none", fontWeight: 600 }}
           >
             Get Started
@@ -179,7 +183,8 @@ export default function LandingPage() {
             <Button
               variant="contained"
               size="large"
-              onClick={() => router.push("/auth/signup")}
+              component={Link}
+              href="/auth/signup"
               sx={{
                 py: 1.5,
                 px: 4,
@@ -196,7 +201,8 @@ export default function LandingPage() {
             <Button
               variant="outlined"
               size="large"
-              onClick={() => router.push("/auth/signin")}
+              component={Link}
+              href="/auth/signin"
               sx={{
                 py: 1.5,
                 px: 4,
@@ -372,7 +378,8 @@ export default function LandingPage() {
           <Button
             variant="contained"
             size="large"
-            onClick={() => router.push("/auth/signup")}
+            component={Link}
+            href="/auth/signup"
             sx={{
               py: 1.5,
               px: 5,
@@ -385,6 +392,11 @@ export default function LandingPage() {
           </Button>
         </Container>
       </Box>
+
+      {/* Visible tax disclaimer — not only the footer caption */}
+      <Container maxWidth="md" sx={{ pb: 4 }}>
+        <TaxDisclaimer />
+      </Container>
 
       {/* Footer */}
       <Box
@@ -401,13 +413,19 @@ export default function LandingPage() {
             &copy; {new Date().getFullYear()} OptionsTaxHub. All rights
             reserved.
           </Typography>
+          <Typography variant="body2" sx={{ mb: 1.5 }}>
+            <Link href="/privacy" style={{ color: "inherit" }}>
+              Privacy
+            </Link>
+          </Typography>
           <Typography
             variant="caption"
             sx={{ display: "block", maxWidth: 500, mx: "auto", lineHeight: 1.5 }}
           >
             This tool is for educational and informational purposes only. It
             does not constitute financial, tax, or legal advice. Consult a
-            qualified professional before making tax decisions.
+            qualified professional before making tax decisions. Analyses are
+            saved to your account history and can be deleted.
           </Typography>
         </Container>
       </Box>

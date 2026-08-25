@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import PositionsTable from "../../app/components/PositionsTable";
 import type { Position } from "@/lib/types";
 
@@ -8,6 +8,7 @@ jest.mock("@mui/x-data-grid", () => ({
     rows,
     columns,
     getRowClassName,
+    onRowClick,
   }: Readonly<Record<string, unknown>>) => {
     const rowsArray = Array.isArray(rows) ? rows : [];
     const columnsArray = Array.isArray(columns) ? columns : [];
@@ -44,6 +45,13 @@ jest.mock("@mui/x-data-grid", () => ({
               data-testid={`position-row-${position.symbol}`}
               className={rowClass}
               data-pnl={position.unrealized_pnl}
+              onClick={() =>
+                (
+                  onRowClick as
+                    | ((params: { row: Position }) => void)
+                    | undefined
+                )?.({ row: position })
+              }
             >
               <div data-testid={`rendered-symbol-${position.symbol}`}>
                 {renderedSymbol}
@@ -686,6 +694,70 @@ describe("PositionsTable", () => {
       expect(loserRow).toHaveClass("loss-row");
       expect(breakevenRow).not.toHaveClass("gain-row");
       expect(breakevenRow).not.toHaveClass("loss-row");
+    });
+  });
+
+  describe("Tax lots detail panel", () => {
+    it("expands lot details when a position row is clicked", () => {
+      const position: Position = {
+        symbol: "AAPL",
+        quantity: 15,
+        avg_cost_basis: 180,
+        current_price: 190,
+        market_value: 2850,
+        unrealized_pnl: 150,
+        unrealized_pnl_pct: 5.5,
+        holding_period_days: 400,
+        is_long_term: true,
+        wash_sale_risk: false,
+        asset_type: "stock",
+        total_cost_basis: 2700,
+        earliest_purchase_date: "2024-07-01",
+        tax_lots: [
+          {
+            symbol: "AAPL",
+            quantity: 10,
+            cost_basis_per_share: 185.5,
+            total_cost_basis: 1855,
+            purchase_date: "2024-07-01",
+            current_price: 190,
+            asset_type: "stock",
+            unrealized_pnl: 45,
+            unrealized_pnl_pct: 2.4,
+            holding_period_days: 400,
+            is_long_term: true,
+            wash_sale_disallowed: 0,
+          },
+          {
+            symbol: "AAPL",
+            quantity: 5,
+            cost_basis_per_share: 172.2,
+            total_cost_basis: 861,
+            purchase_date: "2025-03-10",
+            current_price: 190,
+            asset_type: "stock",
+            unrealized_pnl: 89,
+            unrealized_pnl_pct: 10.3,
+            holding_period_days: 90,
+            is_long_term: false,
+            wash_sale_disallowed: 25.5,
+          },
+        ],
+      };
+
+      render(<PositionsTable positions={[position]} />);
+
+      expect(
+        screen.queryByTestId("tax-lots-panel-AAPL"),
+      ).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId("position-row-AAPL"));
+
+      expect(screen.getByTestId("tax-lots-panel-AAPL")).toBeInTheDocument();
+      expect(screen.getByTestId("tax-lot-AAPL-0")).toHaveTextContent("10");
+      expect(screen.getByTestId("tax-lot-AAPL-1")).toHaveTextContent("$25.50");
+      expect(screen.getAllByText("ST").length).toBeGreaterThan(0);
+      expect(screen.getAllByText("LT").length).toBeGreaterThan(0);
     });
   });
 });

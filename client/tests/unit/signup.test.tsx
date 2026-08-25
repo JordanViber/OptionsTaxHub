@@ -7,6 +7,16 @@ jest.mock("next/navigation", () => ({
   useRouter: jest.fn(),
 }));
 
+jest.mock("next/link", () => {
+  return ({
+    children,
+    href,
+  }: {
+    children: React.ReactNode;
+    href: string;
+  }) => <a href={href}>{children}</a>;
+});
+
 jest.mock("../../app/context/auth", () => ({
   useAuth: jest.fn(),
 }));
@@ -47,35 +57,27 @@ const getForm = (container: HTMLElement) => {
   return element;
 };
 
-// Helper to fill out the signup form with default valid values
 function fillForm(
   container: HTMLElement,
   overrides: Partial<{
-    firstName: string;
-    lastName: string;
+    name: string;
     email: string;
     password: string;
     confirmPassword: string;
   }> = {},
 ) {
   const values = {
-    firstName: "John",
-    lastName: "Doe",
+    name: "John Doe",
     email: "john@example.com",
     password: "password123", // NOSONAR typescript:S2068
     confirmPassword: "password123", // NOSONAR typescript:S2068
     ...overrides,
   };
 
-  fireEvent.change(screen.getByLabelText(/First Name/i), {
-    target: { value: values.firstName },
-  });
-  fireEvent.change(screen.getByLabelText(/Last Name/i), {
-    target: { value: values.lastName },
+  fireEvent.change(screen.getByLabelText(/^Name/i), {
+    target: { value: values.name },
   });
 
-  // Use type="email" selector because getByLabelText(/Email/i) matches both
-  // the MUI Select (provider type showing "Email") AND the email TextField
   const emailInput = getInput(container, 'input[type="email"]');
   fireEvent.change(emailInput, {
     target: { value: values.email },
@@ -117,14 +119,13 @@ describe("Sign Up Page", () => {
     expect(screen.getByText(/Join OptionsTaxHub/i)).toBeInTheDocument();
   });
 
-  it("renders all form fields", () => {
+  it("renders email, password, and optional name fields", () => {
     const { container } = render(<SignupPage />);
-    expect(screen.getByLabelText(/First Name/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/Last Name/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/Display Name/i)).toBeInTheDocument();
-    // Email label collides with MUI Provider Type select showing "Email",
-    // so use type="email" selector instead
+    expect(screen.getByLabelText(/^Name/i)).toBeInTheDocument();
     expect(container.querySelector('input[type="email"]')).toBeInTheDocument();
+    expect(screen.queryByLabelText(/Provider Type/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/^Phone/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/First Name/i)).not.toBeInTheDocument();
   });
 
   it("displays create account button", () => {
@@ -141,6 +142,19 @@ describe("Sign Up Page", () => {
     expect(signInLink).toHaveAttribute("href", "/auth/signin");
   });
 
+  it("links back to home", () => {
+    render(<SignupPage />);
+    const homeLink = screen.getByRole("link", { name: /OptionsTaxHub/i });
+    expect(homeLink).toHaveAttribute("href", "/");
+  });
+
+  it("shows the tax disclaimer", () => {
+    render(<SignupPage />);
+    expect(
+      screen.getByText(/For educational and simulation purposes only/),
+    ).toBeInTheDocument();
+  });
+
   it("toggles password visibility", () => {
     const { container } = render(<SignupPage />);
     const passwordInputs = container.querySelectorAll('input[type="password"]');
@@ -149,7 +163,6 @@ describe("Sign Up Page", () => {
     const toggleButtons = screen.getAllByLabelText(/Show password/i);
     fireEvent.click(toggleButtons[0]);
 
-    // First password should now be text
     expect(passwordInputs[0].getAttribute("type")).toBe("text");
   });
 
@@ -164,13 +177,7 @@ describe("Sign Up Page", () => {
       expect(mockSignUp).toHaveBeenCalledWith(
         "john@example.com",
         "password123", // NOSONAR typescript:S2068
-        {
-          firstName: "John",
-          lastName: "Doe",
-          displayName: "John Doe",
-          phone: "",
-          providerType: "email",
-        },
+        { name: "John Doe" },
       );
     });
 
@@ -210,30 +217,7 @@ describe("Sign Up Page", () => {
     expect(mockSignUp).not.toHaveBeenCalled();
   });
 
-  it("shows error when phone signup without phone number", async () => {
-    const { container } = render(<SignupPage />);
-
-    // Change provider type to phone via the select
-    const providerSelect = screen.getByLabelText(/Provider Type/i);
-    fireEvent.mouseDown(providerSelect);
-    const phoneOption = await screen.findByRole("option", { name: "Phone" });
-    fireEvent.click(phoneOption);
-
-    fillForm(container);
-
-    const form = getForm(container);
-    fireEvent.submit(form);
-
-    await waitFor(() => {
-      expect(
-        screen.getByText("Phone number is required for phone sign-up"),
-      ).toBeInTheDocument();
-    });
-
-    expect(mockSignUp).not.toHaveBeenCalled();
-  });
-
-  it("shows error when email signup without email", async () => {
+  it("shows error when email is missing", async () => {
     const { container } = render(<SignupPage />);
     fillForm(container, { email: "" });
 
@@ -241,9 +225,7 @@ describe("Sign Up Page", () => {
     fireEvent.submit(form);
 
     await waitFor(() => {
-      expect(
-        screen.getByText("Email is required for email sign-up"),
-      ).toBeInTheDocument();
+      expect(screen.getByText("Email is required")).toBeInTheDocument();
     });
 
     expect(mockSignUp).not.toHaveBeenCalled();
@@ -310,63 +292,17 @@ describe("Sign Up Page", () => {
     });
   });
 
-  it("uses custom display name when provided", async () => {
-    const { container } = render(<SignupPage />);
-
-    fillForm(container);
-    fireEvent.change(screen.getByLabelText(/Display Name/i), {
-      target: { value: "CustomName" },
-    });
-
-    const form = getForm(container);
-    fireEvent.submit(form);
-
-    await waitFor(() => {
-      expect(mockSignUp).toHaveBeenCalledWith(
-        expect.any(String),
-        expect.any(String),
-        expect.objectContaining({
-          displayName: "CustomName",
-        }),
-      );
-    });
-  });
-
   it("toggles confirm password visibility", () => {
     const { container } = render(<SignupPage />);
 
-    // Both password fields start as type="password"
     const passwordInputs = getInputs(container, 'input[type="password"]');
     expect(passwordInputs.length).toBe(2);
 
-    // The second toggle button controls confirm password
     const toggleButtons = screen.getAllByLabelText(/Show password/i);
     expect(toggleButtons.length).toBe(2);
 
     fireEvent.click(toggleButtons[1]);
 
-    // Confirm password should now be type="text"
     expect(passwordInputs[1].getAttribute("type")).toBe("text");
-  });
-
-  it("shows phone-specific helperText when provider type is phone", async () => {
-    const { container } = render(<SignupPage />);
-
-    // Default provider type is "email" — phone field shows "Optional"
-    expect(screen.getByText("Optional")).toBeInTheDocument();
-
-    // Switch provider type to phone
-    const providerSelect = screen.getByLabelText(/Provider Type/i);
-    fireEvent.mouseDown(providerSelect);
-    const phoneOption = await screen.findByRole("option", { name: "Phone" });
-    fireEvent.click(phoneOption);
-
-    // Phone field helperText should now show the required message
-    expect(screen.getByText("Required for phone sign-up")).toBeInTheDocument();
-
-    // Type into the phone field to exercise the onChange handler
-    const phoneInput = getInput(container, 'input[type="tel"]');
-    fireEvent.change(phoneInput, { target: { value: "+15551234567" } });
-    expect(phoneInput.value).toBe("+15551234567");
   });
 });

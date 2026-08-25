@@ -68,3 +68,18 @@ export async function getCurrentUser() {
   if (error) throw error;
   return data.user;
 }
+
+/**
+ * Send a password reset email via Supabase.
+ */
+export async function resetPasswordForEmail(email: string) {
+  const redirectTo =
+    typeof window === "undefined"
+      ? undefined
+      : `${window.location.origin}/auth/signin`;
+  const { error } = await getSupabaseClient().auth.resetPasswordForEmail(
+    email,
+    redirectTo ? { redirectTo } : undefined,
+  );
+  if (error) throw error;
+}

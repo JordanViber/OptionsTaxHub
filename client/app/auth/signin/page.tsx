@@ -3,7 +3,6 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import {
-  Container,
   Box,
   Card,
   CardContent,
@@ -19,6 +18,8 @@ import {
 } from "@mui/material";
 import { Visibility, VisibilityOff } from "@mui/icons-material";
 import { useAuth } from "@/app/context/auth";
+import { resetPasswordForEmail } from "@/lib/supabase";
+import AuthPageShell from "@/app/components/AuthPageShell";
 
 export const dynamic = "force-dynamic";
 
@@ -28,12 +29,16 @@ export default function SignInPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [info, setInfo] = useState("");
   const [loading, setLoading] = useState(false);
+  const [resetLoading, setResetLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const [resetMode, setResetMode] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
+    setInfo("");
     setLoading(true);
 
     try {
@@ -50,8 +55,34 @@ export default function SignInPage() {
     }
   };
 
+  const handleReset = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setInfo("");
+
+    if (!email.trim()) {
+      setError("Enter the email for your account to receive a reset link.");
+      return;
+    }
+
+    setResetLoading(true);
+    try {
+      await resetPasswordForEmail(email.trim());
+      setInfo("Check your email for a password reset link.");
+      setResetMode(false);
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Could not send a reset email. Please try again.",
+      );
+    } finally {
+      setResetLoading(false);
+    }
+  };
+
   return (
-    <Container maxWidth="sm" sx={{ py: 8 }}>
+    <AuthPageShell>
       <Card>
         <CardContent>
           <Stack spacing={3}>
@@ -65,10 +96,11 @@ export default function SignInPage() {
             </Box>
 
             {error && <Alert severity="error">{error}</Alert>}
+            {info && <Alert severity="success">{info}</Alert>}
 
             <Box
               component="form"
-              onSubmit={handleSubmit}
+              onSubmit={resetMode ? handleReset : handleSubmit}
               sx={{ display: "flex", flexDirection: "column", gap: 2 }}
             >
               <TextField
@@ -77,56 +109,75 @@ export default function SignInPage() {
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                disabled={loading}
+                disabled={loading || resetLoading}
                 required
               />
-              <TextField
-                fullWidth
-                label="Password"
-                type={showPassword ? "text" : "password"}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                disabled={loading}
-                required
-                slotProps={{
-                  input: {
-                    endAdornment: (
-                      <InputAdornment position="end">
-                        <IconButton
-                          aria-label={
-                            showPassword ? "Hide password" : "Show password"
-                          }
-                          onClick={() => setShowPassword((prev) => !prev)}
-                          edge="end"
-                        >
-                          {showPassword ? <VisibilityOff /> : <Visibility />}
-                        </IconButton>
-                      </InputAdornment>
-                    ),
-                  },
-                }}
-              />
+              {!resetMode && (
+                <TextField
+                  fullWidth
+                  label="Password"
+                  type={showPassword ? "text" : "password"}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  disabled={loading}
+                  required
+                  slotProps={{
+                    input: {
+                      endAdornment: (
+                        <InputAdornment position="end">
+                          <IconButton
+                            aria-label={
+                              showPassword ? "Hide password" : "Show password"
+                            }
+                            onClick={() => setShowPassword((prev) => !prev)}
+                            edge="end"
+                          >
+                            {showPassword ? <VisibilityOff /> : <Visibility />}
+                          </IconButton>
+                        </InputAdornment>
+                      ),
+                    },
+                  }}
+                />
+              )}
               <Button
                 fullWidth
                 variant="contained"
                 type="submit"
-                disabled={loading}
+                disabled={loading || resetLoading}
                 sx={{ py: 1.5 }}
               >
-                {loading ? (
+                {loading || resetLoading ? (
                   <Stack direction="row" spacing={1} alignItems="center">
                     <CircularProgress size={20} color="inherit" />
-                    <span>Signing in…</span>
+                    <span>
+                      {resetMode ? "Sending reset link…" : "Signing in…"}
+                    </span>
                   </Stack>
+                ) : resetMode ? (
+                  "Send reset link"
                 ) : (
                   "Sign In"
                 )}
+              </Button>
+              <Button
+                type="button"
+                variant="text"
+                onClick={() => {
+                  setResetMode((prev) => !prev);
+                  setError("");
+                  setInfo("");
+                }}
+                disabled={loading || resetLoading}
+                sx={{ textTransform: "none" }}
+              >
+                {resetMode ? "Back to sign in" : "Forgot password?"}
               </Button>
             </Box>
 
             <Box sx={{ textAlign: "center" }}>
               <Typography variant="body2">
-                Don't have an account?{" "}
+                Don&apos;t have an account?{" "}
                 <MuiLink href="/auth/signup" sx={{ cursor: "pointer" }}>
                   Sign up
                 </MuiLink>
@@ -135,6 +186,6 @@ export default function SignInPage() {
           </Stack>
         </CardContent>
       </Card>
-    </Container>
+    </AuthPageShell>
   );
 }

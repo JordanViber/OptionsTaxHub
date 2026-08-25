@@ -62,4 +62,20 @@ jest.mock("@/lib/supabase", () => ({
   signUp: jest.fn(() => Promise.resolve({ user: { id: "test-id" } })),
   signOut: jest.fn(() => Promise.resolve()),
   getCurrentUser: jest.fn(() => Promise.resolve({ id: "test-user-id" })),
+  resetPasswordForEmail: jest.fn(() => Promise.resolve()),
 }));
+
+jest.mock("next/link", () => {
+  const React = require("react");
+  return React.forwardRef(
+    (
+      {
+        children,
+        href,
+        ...rest
+      }: { children?: React.ReactNode; href: string; [key: string]: unknown },
+      ref: React.Ref<HTMLAnchorElement>,
+    ) =>
+      React.createElement("a", { href, ref, ...rest }, children),
+  );
+});

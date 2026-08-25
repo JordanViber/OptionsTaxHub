@@ -8,6 +8,16 @@ jest.mock("next/navigation", () => ({
   useRouter: () => ({ push: mockPush }),
 }));
 
+jest.mock("next/link", () => {
+  return ({
+    children,
+    href,
+  }: {
+    children: React.ReactNode;
+    href: string;
+  }) => <a href={href}>{children}</a>;
+});
+
 jest.mock("../../app/context/auth", () => ({
   useAuth: () => mockUseAuth(),
 }));
@@ -127,5 +137,43 @@ describe("LandingPage", () => {
     expect(
       screen.getByText("Free to use — No credit card required"),
     ).toBeInTheDocument();
+  });
+
+  it("uses real links for Sign In and Get Started", () => {
+    mockUseAuth.mockReturnValue({ user: null, loading: false });
+    renderWithClient(<LandingPage />);
+
+    const signIn = screen.getAllByRole("link", { name: "Sign In" });
+    expect(signIn.length).toBeGreaterThan(0);
+    expect(signIn[0]).toHaveAttribute("href", "/auth/signin");
+    expect(screen.getByRole("link", { name: "Get Started" })).toHaveAttribute(
+      "href",
+      "/auth/signup",
+    );
+    expect(
+      screen.getByRole("link", { name: "Create Free Account" }),
+    ).toHaveAttribute("href", "/auth/signup");
+  });
+
+  it("does not claim in-memory-only storage or state tax savings", () => {
+    mockUseAuth.mockReturnValue({ user: null, loading: false });
+    renderWithClient(<LandingPage />);
+
+    expect(screen.queryByText(/in-memory only/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/never stored permanently/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/federal and state tax savings/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/State tax is not included/i)).toBeInTheDocument();
+    expect(
+      screen.getAllByText(/saved to your account history/i).length,
+    ).toBeGreaterThan(0);
+  });
+
+  it("links to the privacy page", () => {
+    mockUseAuth.mockReturnValue({ user: null, loading: false });
+    renderWithClient(<LandingPage />);
+    expect(screen.getByRole("link", { name: "Privacy" })).toHaveAttribute(
+      "href",
+      "/privacy",
+    );
   });
 });

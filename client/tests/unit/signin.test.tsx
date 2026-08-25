@@ -7,6 +7,16 @@ jest.mock("next/navigation", () => ({
   useRouter: jest.fn(),
 }));
 
+jest.mock("next/link", () => {
+  return ({
+    children,
+    href,
+  }: {
+    children: React.ReactNode;
+    href: string;
+  }) => <a href={href}>{children}</a>;
+});
+
 jest.mock("../../app/context/auth", () => ({
   useAuth: jest.fn(),
 }));
@@ -200,5 +210,54 @@ describe("Sign In Page", () => {
     await waitFor(() => {
       expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
     });
+  });
+
+  it("links back to home", () => {
+    render(<SigninPage />);
+    expect(screen.getByRole("link", { name: /OptionsTaxHub/i })).toHaveAttribute(
+      "href",
+      "/",
+    );
+  });
+
+  it("shows the tax disclaimer", () => {
+    render(<SigninPage />);
+    expect(
+      screen.getByText(/For educational and simulation purposes only/),
+    ).toBeInTheDocument();
+  });
+
+  it("sends a password reset email", async () => {
+    const { resetPasswordForEmail } = jest.requireMock("@/lib/supabase") as {
+      resetPasswordForEmail: jest.Mock;
+    };
+    resetPasswordForEmail.mockResolvedValue(undefined);
+
+    render(<SigninPage />);
+    fireEvent.change(screen.getByLabelText(/Email/i), {
+      target: { value: "test@example.com" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Forgot password/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Send reset link/i }));
+
+    await waitFor(() => {
+      expect(resetPasswordForEmail).toHaveBeenCalledWith("test@example.com");
+    });
+    expect(
+      screen.getByText(/Check your email for a password reset link/),
+    ).toBeInTheDocument();
+  });
+
+  it("requires email before sending a reset link", async () => {
+    const { resetPasswordForEmail } = jest.requireMock("@/lib/supabase") as {
+      resetPasswordForEmail: jest.Mock;
+    };
+    resetPasswordForEmail.mockClear();
+
+    render(<SigninPage />);
+    fireEvent.click(screen.getByRole("button", { name: /Forgot password/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Send reset link/i }));
+
+    expect(resetPasswordForEmail).not.toHaveBeenCalled();
   });
 });

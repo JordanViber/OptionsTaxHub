@@ -164,11 +164,7 @@ describe("Auth Context", () => {
 
     await act(async () => {
       await result.current.signUp("test@example.com", "password123", {
-        firstName: "John",
-        lastName: "Doe",
-        displayName: "JD",
-        phone: "",
-        providerType: "email",
+        name: "John Doe",
       });
     });
 
@@ -180,15 +176,13 @@ describe("Auth Context", () => {
           first_name: "John",
           last_name: "Doe",
           full_name: "John Doe",
-          display_name: "JD",
-          phone: "",
-          provider_type: "email",
+          display_name: "John Doe",
         },
       },
     });
   });
 
-  it("signUp with phone uses phone field instead of email", async () => {
+  it("signUp without a name still sends email metadata", async () => {
     mockSignUp.mockResolvedValue({ error: null });
 
     const { result } = renderHook(() => useAuth(), { wrapper: createWrapper });
@@ -198,24 +192,19 @@ describe("Auth Context", () => {
     });
 
     await act(async () => {
-      await result.current.signUp("", "password123", {
-        // NOSONAR typescript:S2068
-        firstName: "Jane",
-        lastName: "Doe",
-        displayName: "Jane",
-        phone: "+15551234567",
-        providerType: "phone",
-      });
+      await result.current.signUp("jane@example.com", "password123");
     });
 
     expect(mockSignUp).toHaveBeenCalledWith({
-      phone: "+15551234567",
+      email: "jane@example.com",
       password: "password123", // NOSONAR typescript:S2068 — test value, not a real credential
       options: {
-        data: expect.objectContaining({
-          provider_type: "phone",
-          phone: "+15551234567",
-        }),
+        data: {
+          first_name: "",
+          last_name: "",
+          full_name: "",
+          display_name: "",
+        },
       },
     });
   });
@@ -233,11 +222,7 @@ describe("Auth Context", () => {
     await expect(
       act(async () => {
         await result.current.signUp("dup@example.com", "password123", {
-          firstName: "A",
-          lastName: "B",
-          displayName: "AB",
-          phone: "",
-          providerType: "email",
+          name: "A B",
         });
       }),
     ).rejects.toThrow("Email already registered");
