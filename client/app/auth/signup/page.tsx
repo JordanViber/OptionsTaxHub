@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import {
   Box,
   Card,
@@ -19,24 +18,29 @@ import {
 import { Visibility, VisibilityOff } from "@mui/icons-material";
 import { useAuth } from "@/app/context/auth";
 import AuthPageShell from "@/app/components/AuthPageShell";
+import CheckEmailCard from "@/app/components/CheckEmailCard";
+import { resendSignupConfirmation } from "@/lib/supabase";
 
 export const dynamic = "force-dynamic";
 
 export default function SignUpPage() {
-  const router = useRouter();
   const { signUp } = useAuth();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
+  const [info, setInfo] = useState("");
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [pendingEmail, setPendingEmail] = useState("");
+  const [resendLoading, setResendLoading] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
+    setInfo("");
 
     if (password !== confirmPassword) {
       setError("Passwords do not match");
@@ -56,11 +60,9 @@ export default function SignUpPage() {
     setLoading(true);
 
     try {
-      await signUp(email, password, { name: name.trim() });
-      alert(
-        "Sign up successful! Please check your email to confirm your account.",
-      );
-      router.push("/auth/signin");
+      const address = email.trim();
+      await signUp(address, password, { name: name.trim() });
+      setPendingEmail(address);
     } catch (err) {
       setError(
         err instanceof Error
@@ -72,134 +74,165 @@ export default function SignUpPage() {
     }
   };
 
+  const handleResend = async () => {
+    if (!pendingEmail) {
+      return;
+    }
+    setError("");
+    setInfo("");
+    setResendLoading(true);
+    try {
+      await resendSignupConfirmation(pendingEmail);
+      setInfo("Another confirmation email is on the way. Check your inbox.");
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Could not resend the confirmation email. Please try again.",
+      );
+    } finally {
+      setResendLoading(false);
+    }
+  };
+
   return (
     <AuthPageShell>
-      <Card>
-        <CardContent>
-          <Stack spacing={3}>
-            <Box>
-              <Typography variant="h4" sx={{ mb: 1, fontWeight: 700 }}>
-                Create Account
-              </Typography>
-              <Typography variant="body2" color="textSecondary">
-                Join OptionsTaxHub with an email and password
-              </Typography>
-            </Box>
+      {pendingEmail ? (
+        <CheckEmailCard
+          email={pendingEmail}
+          onResend={handleResend}
+          resendLoading={resendLoading}
+          info={info}
+          error={error}
+        />
+      ) : (
+        <Card>
+          <CardContent>
+            <Stack spacing={3}>
+              <Box>
+                <Typography variant="h4" sx={{ mb: 1, fontWeight: 700 }}>
+                  Create Account
+                </Typography>
+                <Typography variant="body2" color="textSecondary">
+                  Join OptionsTaxHub with an email and password
+                </Typography>
+              </Box>
 
-            {error && <Alert severity="error">{error}</Alert>}
+              {error && <Alert severity="error">{error}</Alert>}
 
-            <Box
-              component="form"
-              onSubmit={handleSubmit}
-              sx={{ display: "flex", flexDirection: "column", gap: 2 }}
-            >
-              <TextField
-                fullWidth
-                label="Name"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                disabled={loading}
-                helperText="Optional — shown on your dashboard"
-              />
-              <TextField
-                fullWidth
-                label="Email"
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                disabled={loading}
-                required
-              />
-              <TextField
-                fullWidth
-                label="Password"
-                type={showPassword ? "text" : "password"}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                disabled={loading}
-                required
-                helperText="At least 6 characters"
-                slotProps={{
-                  input: {
-                    endAdornment: (
-                      <InputAdornment position="end">
-                        <IconButton
-                          aria-label={
-                            showPassword ? "Hide password" : "Show password"
-                          }
-                          onClick={() => setShowPassword((prev) => !prev)}
-                          edge="end"
-                        >
-                          {showPassword ? <VisibilityOff /> : <Visibility />}
-                        </IconButton>
-                      </InputAdornment>
-                    ),
-                  },
-                }}
-              />
-              <TextField
-                fullWidth
-                label="Confirm Password"
-                type={showConfirmPassword ? "text" : "password"}
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-                disabled={loading}
-                required
-                slotProps={{
-                  input: {
-                    endAdornment: (
-                      <InputAdornment position="end">
-                        <IconButton
-                          aria-label={
-                            showConfirmPassword
-                              ? "Hide password"
-                              : "Show password"
-                          }
-                          onClick={() =>
-                            setShowConfirmPassword((prev) => !prev)
-                          }
-                          edge="end"
-                        >
-                          {showConfirmPassword ? (
-                            <VisibilityOff />
-                          ) : (
-                            <Visibility />
-                          )}
-                        </IconButton>
-                      </InputAdornment>
-                    ),
-                  },
-                }}
-              />
-              <Button
-                fullWidth
-                variant="contained"
-                type="submit"
-                disabled={loading}
-                sx={{ py: 1.5 }}
+              <Box
+                component="form"
+                onSubmit={handleSubmit}
+                sx={{ display: "flex", flexDirection: "column", gap: 2 }}
               >
-                {loading ? (
-                  <Stack direction="row" spacing={1} alignItems="center">
-                    <CircularProgress size={20} color="inherit" />
-                    <span>Creating account…</span>
-                  </Stack>
-                ) : (
-                  "Create Account"
-                )}
-              </Button>
-            </Box>
+                <TextField
+                  fullWidth
+                  label="Name"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  disabled={loading}
+                  helperText="Optional — shown on your dashboard"
+                />
+                <TextField
+                  fullWidth
+                  label="Email"
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  disabled={loading}
+                  required
+                />
+                <TextField
+                  fullWidth
+                  label="Password"
+                  type={showPassword ? "text" : "password"}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  disabled={loading}
+                  required
+                  helperText="At least 6 characters"
+                  slotProps={{
+                    input: {
+                      endAdornment: (
+                        <InputAdornment position="end">
+                          <IconButton
+                            aria-label={
+                              showPassword ? "Hide password" : "Show password"
+                            }
+                            onClick={() => setShowPassword((prev) => !prev)}
+                            edge="end"
+                          >
+                            {showPassword ? <VisibilityOff /> : <Visibility />}
+                          </IconButton>
+                        </InputAdornment>
+                      ),
+                    },
+                  }}
+                />
+                <TextField
+                  fullWidth
+                  label="Confirm Password"
+                  type={showConfirmPassword ? "text" : "password"}
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  disabled={loading}
+                  required
+                  slotProps={{
+                    input: {
+                      endAdornment: (
+                        <InputAdornment position="end">
+                          <IconButton
+                            aria-label={
+                              showConfirmPassword
+                                ? "Hide password"
+                                : "Show password"
+                            }
+                            onClick={() =>
+                              setShowConfirmPassword((prev) => !prev)
+                            }
+                            edge="end"
+                          >
+                            {showConfirmPassword ? (
+                              <VisibilityOff />
+                            ) : (
+                              <Visibility />
+                            )}
+                          </IconButton>
+                        </InputAdornment>
+                      ),
+                    },
+                  }}
+                />
+                <Button
+                  fullWidth
+                  variant="contained"
+                  type="submit"
+                  disabled={loading}
+                  sx={{ py: 1.5 }}
+                >
+                  {loading ? (
+                    <Stack direction="row" spacing={1} alignItems="center">
+                      <CircularProgress size={20} color="inherit" />
+                      <span>Creating account…</span>
+                    </Stack>
+                  ) : (
+                    "Create Account"
+                  )}
+                </Button>
+              </Box>
 
-            <Box sx={{ textAlign: "center" }}>
-              <Typography variant="body2">
-                Already have an account?{" "}
-                <MuiLink href="/auth/signin" sx={{ cursor: "pointer" }}>
-                  Sign in
-                </MuiLink>
-              </Typography>
-            </Box>
-          </Stack>
-        </CardContent>
-      </Card>
+              <Box sx={{ textAlign: "center" }}>
+                <Typography variant="body2">
+                  Already have an account?{" "}
+                  <MuiLink href="/auth/signin" sx={{ cursor: "pointer" }}>
+                    Sign in
+                  </MuiLink>
+                </Typography>
+              </Box>
+            </Stack>
+          </CardContent>
+        </Card>
+      )}
     </AuthPageShell>
   );
 }

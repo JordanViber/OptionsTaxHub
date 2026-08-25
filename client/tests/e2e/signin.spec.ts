@@ -152,4 +152,47 @@ test.describe("Sign In Page", () => {
       timeout: 10000,
     });
   });
+  test("unconfirmed sign-in shows a resend confirmation control", async ({
+    page,
+    browserName,
+  }) => {
+    test.skip(browserName === "webkit", "WebKit auth mocking limitation");
+
+    await page.route("**/auth/v1/token*", (route) =>
+      route.fulfill({
+        status: 400,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: "invalid_grant",
+          error_code: "email_not_confirmed",
+          error_description: "Email not confirmed",
+          msg: "Email not confirmed",
+          code: "email_not_confirmed",
+        }),
+      }),
+    );
+    await page.route("**/auth/v1/resend*", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({}),
+      }),
+    );
+
+    await page.getByLabel("Email").fill("new@example.com");
+    await page.locator('input[type="password"]').fill("password123");
+    await page.getByRole("button", { name: "Sign In" }).click();
+
+    await expect(
+      page.getByText(/Confirm your email before signing in/),
+    ).toBeVisible({ timeout: 10000 });
+    await expect(
+      page.getByRole("button", { name: "Resend confirmation email" }),
+    ).toBeVisible();
+
+    await page.getByRole("button", { name: "Resend confirmation email" }).click();
+    await expect(
+      page.getByText(/Another confirmation email is on the way/),
+    ).toBeVisible({ timeout: 10000 });
+  });
 });
