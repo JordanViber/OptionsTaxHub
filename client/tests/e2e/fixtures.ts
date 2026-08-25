@@ -13,6 +13,7 @@ import path from "node:path";
 export const MOCK_USER = {
   id: "test-user-123",
   email: "test@optionstaxhub.com",
+  email_confirmed_at: "2025-01-01T00:00:00Z",
   user_metadata: {
     display_name: "Test User",
     first_name: "Test",
@@ -286,6 +287,7 @@ export async function injectMockSession(page: Page) {
       user: {
         id: "test-user-123",
         email: "test@optionstaxhub.com",
+        email_confirmed_at: "2025-01-01T00:00:00Z",
         user_metadata: {
           display_name: "Test User",
           first_name: "Test",

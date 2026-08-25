@@ -80,7 +80,9 @@ const createAuthMock = (
   loading: boolean = false,
   signOut?: any,
 ) => ({
-  user,
+  user: user
+    ? { email_confirmed_at: "2025-01-01T00:00:00Z", ...user }
+    : null,
   loading,
   signOut: signOut || jest.fn(),
 });

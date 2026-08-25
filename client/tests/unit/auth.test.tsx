@@ -21,6 +21,7 @@ const mockSupabaseClient = {
 
 jest.mock("@/lib/supabase", () => ({
   getSupabaseClient: () => mockSupabaseClient,
+  getEmailConfirmRedirectTo: () => "http://localhost/auth/confirm-email",
 }));
 
 // Import AFTER mock is set up
@@ -178,6 +179,7 @@ describe("Auth Context", () => {
           full_name: "John Doe",
           display_name: "John Doe",
         },
+        emailRedirectTo: "http://localhost/auth/confirm-email",
       },
     });
   });
@@ -205,6 +207,7 @@ describe("Auth Context", () => {
           full_name: "",
           display_name: "",
         },
+        emailRedirectTo: "http://localhost/auth/confirm-email",
       },
     });
   });

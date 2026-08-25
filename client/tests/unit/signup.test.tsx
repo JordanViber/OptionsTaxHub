@@ -95,7 +95,6 @@ function fillForm(
 describe("Sign Up Page", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    globalThis.alert = jest.fn();
     (useRouter as jest.Mock).mockReturnValue({
       push: mockPush,
     });
@@ -166,7 +165,7 @@ describe("Sign Up Page", () => {
     expect(passwordInputs[0].getAttribute("type")).toBe("text");
   });
 
-  it("submits form successfully and redirects", async () => {
+  it("shows a check-email page after signup instead of redirecting to sign-in", async () => {
     const { container } = render(<SignupPage />);
     fillForm(container);
 
@@ -182,9 +181,48 @@ describe("Sign Up Page", () => {
     });
 
     await waitFor(() => {
-      expect(globalThis.alert).toHaveBeenCalled();
-      expect(mockPush).toHaveBeenCalledWith("/auth/signin");
+      expect(
+        screen.getByRole("heading", { name: /Check your email/i }),
+      ).toBeInTheDocument();
     });
+    expect(
+      screen.getByText(/We sent a confirmation link to john@example.com/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Resend confirmation email/i }),
+    ).toBeInTheDocument();
+    expect(mockPush).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole("heading", { name: /Create Account/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("resends the signup confirmation email from the check-email page", async () => {
+    const { resendSignupConfirmation } = jest.requireMock("@/lib/supabase") as {
+      resendSignupConfirmation: jest.Mock;
+    };
+    resendSignupConfirmation.mockResolvedValue(undefined);
+
+    const { container } = render(<SignupPage />);
+    fillForm(container);
+    fireEvent.submit(getForm(container));
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: /Resend confirmation email/i }),
+      ).toBeInTheDocument();
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Resend confirmation email/i }),
+    );
+
+    await waitFor(() => {
+      expect(resendSignupConfirmation).toHaveBeenCalledWith("john@example.com");
+    });
+    expect(
+      screen.getByText(/Another confirmation email is on the way/),
+    ).toBeInTheDocument();
   });
 
   it("shows error when passwords do not match", async () => {

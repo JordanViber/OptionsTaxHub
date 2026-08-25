@@ -9,7 +9,10 @@ import {
   ReactNode,
 } from "react";
 import { User } from "@supabase/supabase-js";
-import { getSupabaseClient } from "@/lib/supabase";
+import {
+  getEmailConfirmRedirectTo,
+  getSupabaseClient,
+} from "@/lib/supabase";
 
 interface AuthContextType {
   user: User | null;
@@ -85,11 +88,15 @@ export function AuthProvider({ children }: Readonly<{ children: ReactNode }>) {
       full_name: name,
       display_name: name,
     };
+    const emailRedirectTo = getEmailConfirmRedirectTo();
 
     const { error } = await getSupabaseClient().auth.signUp({
       email,
       password,
-      options: { data: metadata },
+      options: {
+        data: metadata,
+        ...(emailRedirectTo ? { emailRedirectTo } : {}),
+      },
     });
     if (error) throw error;
   };

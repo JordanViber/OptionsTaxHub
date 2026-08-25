@@ -13,20 +13,26 @@ jest.mock("next/link", () => {
   }) => <a href={href}>{children}</a>;
 });
 
+const mockPush = jest.fn();
 jest.mock("next/navigation", () => ({
   useRouter: () => ({
-    push: jest.fn(),
+    push: mockPush,
   }),
 }));
 
 // Mock auth context
 const mockSignOut = jest.fn();
+const mockAuthState = {
+  user: {
+    id: "test-user",
+    email: "test@example.com",
+    email_confirmed_at: "2025-01-01T00:00:00Z" as string | null,
+  },
+  loading: false,
+  signOut: mockSignOut,
+};
 jest.mock("../../app/context/auth", () => ({
-  useAuth: () => ({
-    user: { id: "test-user", email: "test@example.com" },
-    loading: false,
-    signOut: mockSignOut,
-  }),
+  useAuth: () => mockAuthState,
 }));
 
 // Mock API hooks
@@ -183,6 +189,8 @@ describe("DashboardPage", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockAuthState.user.email_confirmed_at = "2025-01-01T00:00:00Z";
+    mockAuthState.loading = false;
     mockAnalyzeData = null;
     mockHistoryData = [];
     mockAnalyzeMutate.mockReset();
@@ -629,4 +637,15 @@ describe("DashboardPage", () => {
       screen.getByText(/Savings estimates use your tax profile/i),
     ).toBeInTheDocument();
   });
+
+  it("redirects unconfirmed users away from the dashboard", async () => {
+    mockAuthState.user.email_confirmed_at = null;
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(mockPush).toHaveBeenCalledWith("/auth/confirm-email");
+    });
+    expect(screen.queryByText(/Portfolio Analysis/i)).not.toBeInTheDocument();
+  });
+
 });

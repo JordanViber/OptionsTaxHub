@@ -16,6 +16,8 @@ const mockAuth = {
   updateUser: jest.fn(),
   exchangeCodeForSession: jest.fn(),
   verifyOtp: jest.fn(),
+  resend: jest.fn(),
+  setSession: jest.fn(),
 };
 
 const mockSupabaseInstance = { auth: mockAuth };
@@ -36,6 +38,11 @@ import {
   updatePassword,
   establishRecoverySession,
   getPasswordResetRedirectTo,
+  getEmailConfirmRedirectTo,
+  resendSignupConfirmation,
+  consumeEmailConfirmLink,
+  isEmailConfirmed,
+  isEmailNotConfirmedError,
 } from "../../lib/supabase";
 
 describe("lib/supabase", () => {
@@ -95,6 +102,9 @@ describe("lib/supabase", () => {
       expect(mockAuth.signUp).toHaveBeenCalledWith({
         email: "test@example.com",
         password: "password123", // NOSONAR typescript:S2068
+        options: {
+          emailRedirectTo: `${window.location.origin}/auth/confirm-email`,
+        },
       });
       expect(result).toEqual(fakeData);
     });
@@ -316,4 +326,161 @@ describe("lib/supabase", () => {
       await expect(establishRecoverySession()).rejects.toThrow("otp_expired");
     });
   });
+  describe("getEmailConfirmRedirectTo", () => {
+    it("points at /auth/confirm-email on the current origin, not a hardcoded localhost", () => {
+      const redirectTo = getEmailConfirmRedirectTo();
+      expect(redirectTo).toBe(
+        `${window.location.origin}/auth/confirm-email`,
+      );
+      expect(redirectTo).not.toMatch(/localhost:3000/);
+      expect(redirectTo).toContain(window.location.origin);
+    });
+  });
+
+  describe("isEmailConfirmed", () => {
+    it("is true only when email_confirmed_at is set", () => {
+      expect(isEmailConfirmed(null)).toBe(false);
+      expect(isEmailConfirmed({ email_confirmed_at: null })).toBe(false);
+      expect(
+        isEmailConfirmed({ email_confirmed_at: "2026-01-01T00:00:00Z" }),
+      ).toBe(true);
+    });
+  });
+
+  describe("isEmailNotConfirmedError", () => {
+    it("detects supabase email_not_confirmed errors", () => {
+      expect(
+        isEmailNotConfirmedError(
+          Object.assign(new Error("Email not confirmed"), {
+            code: "email_not_confirmed",
+          }),
+        ),
+      ).toBe(true);
+      expect(isEmailNotConfirmedError("email_not_confirmed")).toBe(true);
+      expect(isEmailNotConfirmedError(new Error("Invalid login"))).toBe(false);
+      expect(isEmailNotConfirmedError(null)).toBe(false);
+    });
+  });
+
+  describe("resendSignupConfirmation", () => {
+    it("resends a signup email with emailRedirectTo from the current origin", async () => {
+      mockAuth.resend.mockResolvedValue({ error: null });
+      await resendSignupConfirmation("test@example.com");
+      expect(mockAuth.resend).toHaveBeenCalledWith({
+        type: "signup",
+        email: "test@example.com",
+        options: {
+          emailRedirectTo: `${window.location.origin}/auth/confirm-email`,
+        },
+      });
+    });
+
+    it("throws on error", async () => {
+      mockAuth.resend.mockResolvedValue({
+        error: new Error("Resend failed"),
+      });
+      await expect(resendSignupConfirmation("a@b.com")).rejects.toThrow(
+        "Resend failed",
+      );
+    });
+  });
+
+  describe("consumeEmailConfirmLink", () => {
+    it("exchanges a PKCE code from the URL", async () => {
+      window.history.pushState({}, "", "/auth/confirm-email?code=pkce-code");
+      mockAuth.exchangeCodeForSession.mockResolvedValue({ error: null });
+      mockAuth.getSession.mockResolvedValue({
+        data: {
+          session: {
+            access_token: "tok",
+            user: { email_confirmed_at: "2026-01-01T00:00:00Z" },
+          },
+        },
+        error: null,
+      });
+
+      const result = await consumeEmailConfirmLink();
+      expect(mockAuth.exchangeCodeForSession).toHaveBeenCalledWith("pkce-code");
+      expect(result.consumedLink).toBe(true);
+      expect(result.session?.user.email_confirmed_at).toBeTruthy();
+    });
+
+    it("verifies a token_hash signup link", async () => {
+      window.history.pushState(
+        {},
+        "",
+        "/auth/confirm-email?token_hash=hash-token&type=signup",
+      );
+      mockAuth.verifyOtp.mockResolvedValue({ error: null });
+      mockAuth.getSession.mockResolvedValue({
+        data: {
+          session: {
+            access_token: "tok",
+            user: { email_confirmed_at: "2026-01-01T00:00:00Z" },
+          },
+        },
+        error: null,
+      });
+
+      const result = await consumeEmailConfirmLink();
+      expect(mockAuth.verifyOtp).toHaveBeenCalledWith({
+        token_hash: "hash-token",
+        type: "signup",
+      });
+      expect(result.consumedLink).toBe(true);
+    });
+
+
+    it("establishes a session from hash tokens", async () => {
+      window.location.hash =
+        "#access_token=hash-access&refresh_token=hash-refresh&type=signup";
+      mockAuth.setSession.mockResolvedValue({ error: null });
+      mockAuth.getSession.mockResolvedValue({
+        data: {
+          session: {
+            access_token: "hash-access",
+            user: { email_confirmed_at: "2026-01-01T00:00:00Z" },
+          },
+        },
+        error: null,
+      });
+
+      const result = await consumeEmailConfirmLink();
+      expect(mockAuth.setSession).toHaveBeenCalledWith({
+        access_token: "hash-access",
+        refresh_token: "hash-refresh",
+      });
+      expect(result.consumedLink).toBe(true);
+    });
+
+    it("returns a check-email state when there is no link and no session", async () => {
+      mockAuth.getSession.mockResolvedValue({
+        data: { session: null },
+        error: null,
+      });
+      const result = await consumeEmailConfirmLink();
+      expect(result.consumedLink).toBe(false);
+      expect(result.session).toBeNull();
+      expect(mockAuth.exchangeCodeForSession).not.toHaveBeenCalled();
+    });
+
+    it("throws when the hash contains an expired-link error", async () => {
+      window.location.hash =
+        "#error=access_denied&error_code=otp_expired&error_description=Email+link+is+invalid+or+has+expired";
+      await expect(consumeEmailConfirmLink()).rejects.toThrow(
+        /invalid or has expired/i,
+      );
+    });
+
+    it("throws when a confirmation link was consumed but no session exists", async () => {
+      window.history.pushState({}, "", "/auth/confirm-email?code=bad-code");
+      mockAuth.exchangeCodeForSession.mockResolvedValue({ error: null });
+      mockAuth.getSession.mockResolvedValue({
+        data: { session: null },
+        error: null,
+      });
+      await expect(consumeEmailConfirmLink()).rejects.toThrow("otp_expired");
+    });
+  });
+
 });
