@@ -6,7 +6,7 @@ import NextLink from "next/link";
 import TaxDisclaimer from "./TaxDisclaimer";
 
 /**
- * Shared chrome for sign-in and sign-up: home link + tax disclaimer.
+ * Shared chrome for sign-in, sign-up, and password reset: home link + tax disclaimer.
  */
 export default function AuthPageShell({
   children,

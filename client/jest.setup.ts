@@ -55,6 +55,9 @@ jest.mock("@/lib/supabase", () => ({
       onAuthStateChange: jest.fn(() => ({
         data: { subscription: { unsubscribe: jest.fn() } },
       })),
+      updateUser: jest.fn(() => Promise.resolve({ data: {}, error: null })),
+      exchangeCodeForSession: jest.fn(() => Promise.resolve({ error: null })),
+      verifyOtp: jest.fn(() => Promise.resolve({ error: null })),
     },
   })),
   getSession: jest.fn(() => Promise.resolve(mockSession)),
@@ -63,6 +66,9 @@ jest.mock("@/lib/supabase", () => ({
   signOut: jest.fn(() => Promise.resolve()),
   getCurrentUser: jest.fn(() => Promise.resolve({ id: "test-user-id" })),
   resetPasswordForEmail: jest.fn(() => Promise.resolve()),
+  updatePassword: jest.fn(() => Promise.resolve()),
+  establishRecoverySession: jest.fn(() => Promise.resolve()),
+  getPasswordResetRedirectTo: jest.fn(() => "http://localhost/auth/reset-password"),
 }));
 
 jest.mock("next/link", () => {

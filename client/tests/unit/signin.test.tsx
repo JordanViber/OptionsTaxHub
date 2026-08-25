@@ -7,16 +7,6 @@ jest.mock("next/navigation", () => ({
   useRouter: jest.fn(),
 }));
 
-jest.mock("next/link", () => {
-  return ({
-    children,
-    href,
-  }: {
-    children: React.ReactNode;
-    href: string;
-  }) => <a href={href}>{children}</a>;
-});
-
 jest.mock("../../app/context/auth", () => ({
   useAuth: jest.fn(),
 }));
@@ -244,7 +234,7 @@ describe("Sign In Page", () => {
       expect(resetPasswordForEmail).toHaveBeenCalledWith("test@example.com");
     });
     expect(
-      screen.getByText(/Check your email for a password reset link/),
+      screen.getByText(/Check your email for a link to set a new password/),
     ).toBeInTheDocument();
   });
 
@@ -259,5 +249,24 @@ describe("Sign In Page", () => {
     fireEvent.click(screen.getByRole("button", { name: /Send reset link/i }));
 
     expect(resetPasswordForEmail).not.toHaveBeenCalled();
+  });
+
+  it("explains that forgot password emails a link to set a new password", () => {
+    render(<SigninPage />);
+    fireEvent.click(screen.getByRole("button", { name: /Forgot password/i }));
+    expect(
+      screen.getByText(/We.ll email you a link to set a new password/i),
+    ).toBeInTheDocument();
+  });
+
+  it("shows a success banner after a completed password reset", async () => {
+    window.history.pushState({}, "", "/auth/signin?reset=success");
+    render(<SigninPage />);
+    expect(
+      await screen.findByText(
+        /Your password was updated. Sign in with your new password./,
+      ),
+    ).toBeInTheDocument();
+    window.history.pushState({}, "", "/");
   });
 });

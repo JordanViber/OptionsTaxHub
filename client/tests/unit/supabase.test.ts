@@ -13,6 +13,9 @@ const mockAuth = {
   getSession: jest.fn(),
   getUser: jest.fn(),
   resetPasswordForEmail: jest.fn(),
+  updateUser: jest.fn(),
+  exchangeCodeForSession: jest.fn(),
+  verifyOtp: jest.fn(),
 };
 
 const mockSupabaseInstance = { auth: mockAuth };
@@ -30,11 +33,16 @@ import {
   getSession,
   getCurrentUser,
   resetPasswordForEmail,
+  updatePassword,
+  establishRecoverySession,
+  getPasswordResetRedirectTo,
 } from "../../lib/supabase";
 
 describe("lib/supabase", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    window.history.pushState({}, "", "/");
+    window.location.hash = "";
   });
 
   describe("getSupabaseClient", () => {
@@ -193,14 +201,17 @@ describe("lib/supabase", () => {
   });
 
   describe("resetPasswordForEmail", () => {
-    it("calls supabase auth.resetPasswordForEmail", async () => {
+    it("sends recovery email with redirectTo /auth/reset-password", async () => {
       mockAuth.resetPasswordForEmail.mockResolvedValue({ error: null });
       await resetPasswordForEmail("test@example.com");
       expect(mockAuth.resetPasswordForEmail).toHaveBeenCalledWith(
         "test@example.com",
         expect.objectContaining({
-          redirectTo: expect.stringContaining("/auth/signin"),
+          redirectTo: expect.stringMatching(/\/auth\/reset-password$/),
         }),
+      );
+      expect(mockAuth.resetPasswordForEmail.mock.calls[0][1].redirectTo).not.toMatch(
+        /\/auth\/signin/,
       );
     });
 
@@ -211,6 +222,98 @@ describe("lib/supabase", () => {
       await expect(resetPasswordForEmail("a@b.com")).rejects.toThrow(
         "Reset failed",
       );
+    });
+  });
+
+  describe("getPasswordResetRedirectTo", () => {
+    it("points at the reset-password route on the current origin", () => {
+      expect(getPasswordResetRedirectTo()).toBe(
+        `${window.location.origin}/auth/reset-password`,
+      );
+    });
+  });
+
+  describe("updatePassword", () => {
+    it("calls supabase auth.updateUser with the new password", async () => {
+      const fakeData = { user: { id: "1" } };
+      mockAuth.updateUser.mockResolvedValue({ data: fakeData, error: null });
+      const result = await updatePassword("new-pass-123"); // NOSONAR typescript:S2068
+      expect(mockAuth.updateUser).toHaveBeenCalledWith({
+        password: "new-pass-123", // NOSONAR typescript:S2068
+      });
+      expect(result).toEqual(fakeData);
+    });
+
+    it("throws on error", async () => {
+      mockAuth.updateUser.mockResolvedValue({
+        data: null,
+        error: new Error("Password too weak"),
+      });
+      await expect(updatePassword("123")).rejects.toThrow("Password too weak");
+    });
+  });
+
+  describe("establishRecoverySession", () => {
+    it("exchanges a PKCE code from the URL", async () => {
+      window.history.pushState(
+        {},
+        "",
+        "/auth/reset-password?code=pkce-recovery-code",
+      );
+      mockAuth.exchangeCodeForSession.mockResolvedValue({ error: null });
+      mockAuth.getSession.mockResolvedValue({
+        data: { session: { access_token: "tok" } },
+        error: null,
+      });
+
+      await establishRecoverySession();
+      expect(mockAuth.exchangeCodeForSession).toHaveBeenCalledWith(
+        "pkce-recovery-code",
+      );
+    });
+
+    it("verifies a token_hash recovery link", async () => {
+      window.history.pushState(
+        {},
+        "",
+        "/auth/reset-password?token_hash=hash-token&type=recovery",
+      );
+      mockAuth.verifyOtp.mockResolvedValue({ error: null });
+      mockAuth.getSession.mockResolvedValue({
+        data: { session: { access_token: "tok" } },
+        error: null,
+      });
+
+      await establishRecoverySession();
+      expect(mockAuth.verifyOtp).toHaveBeenCalledWith({
+        token_hash: "hash-token",
+        type: "recovery",
+      });
+    });
+
+    it("uses an existing PASSWORD_RECOVERY session", async () => {
+      mockAuth.getSession.mockResolvedValue({
+        data: { session: { access_token: "tok" } },
+        error: null,
+      });
+      await establishRecoverySession();
+      expect(mockAuth.exchangeCodeForSession).not.toHaveBeenCalled();
+    });
+
+    it("throws when the hash contains an expired-link error", async () => {
+      window.location.hash =
+        "#error=access_denied&error_code=otp_expired&error_description=Email+link+is+invalid+or+has+expired";
+      await expect(establishRecoverySession()).rejects.toThrow(
+        /invalid or has expired/i,
+      );
+    });
+
+    it("throws when there is no recovery session", async () => {
+      mockAuth.getSession.mockResolvedValue({
+        data: { session: null },
+        error: null,
+      });
+      await expect(establishRecoverySession()).rejects.toThrow("otp_expired");
     });
   });
 });

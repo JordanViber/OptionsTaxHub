@@ -55,7 +55,10 @@ function formatCurrency(value: number | null | undefined): string {
 
 function formatAcquiredDate(iso: string | null | undefined): string {
   if (!iso) return "—";
-  const parsed = new Date(iso);
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  const parsed = match
+    ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]))
+    : new Date(iso);
   if (Number.isNaN(parsed.getTime())) return iso;
   return parsed.toLocaleDateString("en-US", {
     month: "short",

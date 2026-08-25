@@ -758,6 +758,54 @@ describe("PositionsTable", () => {
       expect(screen.getByTestId("tax-lot-AAPL-1")).toHaveTextContent("$25.50");
       expect(screen.getAllByText("ST").length).toBeGreaterThan(0);
       expect(screen.getAllByText("LT").length).toBeGreaterThan(0);
+      expect(screen.getByTestId("tax-lot-AAPL-0")).toHaveTextContent("Jul 1, 2024");
+    });
+
+    it("formats YYYY-MM-DD lot dates as local calendar dates, not UTC midnight", () => {
+      const position: Position = {
+        symbol: "DATEBUG",
+        quantity: 1,
+        avg_cost_basis: 10,
+        current_price: 12,
+        market_value: 12,
+        unrealized_pnl: 2,
+        unrealized_pnl_pct: 20,
+        holding_period_days: 10,
+        is_long_term: false,
+        wash_sale_risk: false,
+        asset_type: "stock",
+        total_cost_basis: 10,
+        earliest_purchase_date: "2024-01-15",
+        tax_lots: [
+          {
+            symbol: "DATEBUG",
+            quantity: 1,
+            cost_basis_per_share: 10,
+            total_cost_basis: 10,
+            purchase_date: "2024-01-15",
+            current_price: 12,
+            asset_type: "stock",
+            unrealized_pnl: 2,
+            unrealized_pnl_pct: 20,
+            holding_period_days: 10,
+            is_long_term: false,
+            wash_sale_disallowed: 0,
+          },
+        ],
+      };
+
+      render(<PositionsTable positions={[position]} />);
+      fireEvent.click(screen.getByTestId("position-row-DATEBUG"));
+
+      const expected = new Date(2024, 0, 15).toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      });
+      expect(expected).toBe("Jan 15, 2024");
+      expect(screen.getByTestId("tax-lot-DATEBUG-0")).toHaveTextContent(
+        "Jan 15, 2024",
+      );
     });
   });
 });

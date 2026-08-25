@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Box,
@@ -35,6 +35,13 @@ export default function SignInPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [resetMode, setResetMode] = useState(false);
 
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("reset") === "success") {
+      setInfo("Your password was updated. Sign in with your new password.");
+    }
+  }, []);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
@@ -68,7 +75,7 @@ export default function SignInPage() {
     setResetLoading(true);
     try {
       await resetPasswordForEmail(email.trim());
-      setInfo("Check your email for a password reset link.");
+      setInfo("Check your email for a link to set a new password.");
       setResetMode(false);
     } catch (err) {
       setError(
@@ -91,7 +98,9 @@ export default function SignInPage() {
                 Sign In
               </Typography>
               <Typography variant="body2" color="textSecondary">
-                Welcome back to OptionsTaxHub
+                {resetMode
+                  ? "We'll email you a link to set a new password."
+                  : "Welcome back to OptionsTaxHub"}
               </Typography>
             </Box>
 
