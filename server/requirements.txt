@@ -14,5 +14,3 @@ scikit-learn>=1.8.0
 supabase>=2.29.0
 stripe>=11.6.0
 pypdf>=6.10.2
-
-reportlab>=4.2.0
