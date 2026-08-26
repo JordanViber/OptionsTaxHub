@@ -71,6 +71,7 @@ import {
 } from "@/lib/api";
 import FirstRunEmptyState from "../components/FirstRunEmptyState";
 import Supplemental1099InsightsPanel from "../components/Supplemental1099InsightsPanel";
+import YearClosePacketPanel from "../components/YearClosePacketPanel";
 import { useAuth } from "@/app/context/auth";
 import { isEmailConfirmed } from "@/lib/supabase";
 import { useQueryClient } from "@tanstack/react-query";
@@ -621,6 +622,8 @@ function ResultsSection({
           summary={displayedAnalysis.supplemental_1099}
         />
       )}
+
+      <YearClosePacketPanel analysis={displayedAnalysis} />
 
       {shouldPrompt1099Supplement && (
         <Alert severity="info" variant="outlined">

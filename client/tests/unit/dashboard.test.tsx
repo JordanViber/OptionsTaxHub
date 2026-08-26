@@ -118,6 +118,7 @@ jest.mock("../../app/components/TipJar", () => ({
 import DashboardPage from "../../app/dashboard/page";
 
 const baseAnalysis: PortfolioAnalysis = {
+  analysis_id: "analysis-test-1",
   positions: [],
   tax_lots: [],
   suggestions: [
@@ -430,6 +431,14 @@ describe("DashboardPage", () => {
     render(<DashboardPage />, { wrapper: createWrapper() });
 
     await waitFor(() => {
+      expect(screen.getByTestId("year-close-packet-panel")).toBeInTheDocument();
+      expect(screen.getByTestId("year-close-packet-panel")).toHaveTextContent(
+        "Year-close packet",
+      );
+      expect(screen.getByTestId("year-close-packet-panel")).toHaveTextContent(
+        "$49",
+      );
+      expect(screen.getByText(/Positions \(/i)).toBeInTheDocument();
       expect(
         screen.getByText("Previous-year 1099 supplement applied"),
       ).toBeInTheDocument();

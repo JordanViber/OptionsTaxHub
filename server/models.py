@@ -330,6 +330,7 @@ class PortfolioAnalysis(BaseModel):
     summary: PortfolioSummary = PortfolioSummary()
     tax_profile: Optional[TaxProfile] = None
     supplemental_1099: Optional[Supplemental1099Summary] = None
+    analysis_id: Optional[str] = None
     disclaimer: str = (
         "This analysis is for educational and simulation purposes only. "
         "It does not constitute financial, tax, or investment advice. "
