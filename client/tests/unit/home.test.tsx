@@ -56,6 +56,9 @@ jest.mock(
 jest.mock("../../app/components/WashSaleWarning", () => ({ flags }: any) => (
   <div data-testid="wash-sale-warning">{flags.length} flags</div>
 ));
+jest.mock("../../app/components/YearClosePacketPanel", () => () => (
+  <div data-testid="year-close-packet-panel">Year-close packet — $49</div>
+));
 
 jest.mock("../../app/context/auth", () => ({
   useAuth: () => mockUseAuth(),

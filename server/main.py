@@ -3,6 +3,7 @@ import logging
 import re
 from collections import defaultdict
 from pathlib import Path
+import uuid
 from typing import Annotated, Optional
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
@@ -13,7 +14,8 @@ SERVER_DIR = Path(__file__).resolve().parent
 load_dotenv(SERVER_DIR / ".env.local")
 load_dotenv(SERVER_DIR / ".env")
 
-from fastapi import FastAPI, File, UploadFile, Query, HTTPException, Depends
+from fastapi import FastAPI, File, UploadFile, Query, HTTPException, Depends, Request
+from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
 import io
@@ -31,6 +33,22 @@ from models import (
     Supplemental1099Summary,
     TaxProfile,
     TransCode,
+)
+from year_close_packet import (
+    PACKET_AMOUNT_CENTS,
+    PACKET_METADATA_PRODUCT,
+    PACKET_PRODUCT_NAME,
+    build_packet_payload,
+    get_payload,
+    is_packet_paid,
+    mark_paid,
+    packet_checkout_line_items,
+    packet_requires_test_stripe,
+    remember_analysis,
+    render_packet_pdf,
+    resolve_packet_stripe_secret_key,
+    session_grants_packet,
+    upsert_payload,
 )
 from csv_parser import parse_csv, RealizedEvent
 from tax_engine import get_tax_brackets_summary
@@ -746,6 +764,7 @@ async def analyze_portfolio(
         realized_events, tax_profile.tax_year
     )
 
+    analysis_id = str(uuid.uuid4())
     result = PortfolioAnalysis(
         positions=positions,
         tax_lots=tax_lots,
@@ -754,7 +773,13 @@ async def analyze_portfolio(
         summary=summary,
         tax_profile=tax_profile,
         supplemental_1099=supplemental_1099_summary,
+        analysis_id=analysis_id,
         warnings=_summarize_warnings(all_warnings),
+    )
+    remember_analysis(
+        analysis_id,
+        user_id,
+        result.model_dump(mode="json") if hasattr(result, "model_dump") else dict(result),
     )
 
     # Save analysis to history for authenticated user
@@ -1039,6 +1064,270 @@ async def create_tip_checkout(tip: TipRequest):
     except stripe.StripeError as e:
         logger.error(f"Stripe checkout error: {e}")
         raise HTTPException(status_code=502, detail="Failed to create checkout session")
+
+
+# --- Year-close packet ($49 one-time, not a tip, not a subscription) ---
+
+
+class PacketCheckoutRequest(BaseModel):
+    analysis_id: str
+    analysis: Optional[dict] = None
+
+
+class PacketConfirmRequest(BaseModel):
+    analysis_id: str
+    session_id: str
+    analysis: Optional[dict] = None
+
+
+class PacketDownloadRequest(BaseModel):
+    analysis_id: str
+    session_id: Optional[str] = None
+    analysis: Optional[dict] = None
+
+
+def _configure_packet_stripe() -> str:
+    """Set stripe.api_key for the year-close packet. Staging is TEST-only."""
+    key, reason = resolve_packet_stripe_secret_key(STRIPE_SECRET_KEY)
+    if not key:
+        if reason == "refused_live_key":
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Year-close packet checkout on staging/local requires Stripe TEST "
+                    "keys. Set STRIPE_SECRET_KEY_TEST to an sk_test_ key "
+                    "(do not use live keys for this accept path)."
+                ),
+            )
+        raise HTTPException(status_code=503, detail="Stripe is not configured")
+    stripe.api_key = key
+    return key
+
+
+def _grant_packet_from_session(session, analysis_id: str, user_id: str = "") -> bool:
+    if not session_grants_packet(session, analysis_id):
+        return False
+    mark_paid(analysis_id, getattr(session, "id", "") or "", user_id=user_id)
+    return True
+
+
+def _payload_for_download(analysis_id: str, user_id: str, analysis: Optional[dict]):
+    rec = upsert_payload(analysis_id, user_id, analysis)
+    payload = rec.get("payload") if rec else None
+    if payload:
+        return payload
+    if analysis:
+        return build_packet_payload(analysis, analysis_id=analysis_id)
+    stored = get_payload(analysis_id)
+    if stored:
+        return stored
+    raise HTTPException(
+        status_code=404,
+        detail="No year-close packet snapshot found for this analysis.",
+    )
+
+
+@app.post(
+    "/api/year-close-packet/checkout",
+    responses={
+        400: {"description": "Missing analysis_id"},
+        502: {"description": "Stripe checkout session creation failed"},
+        503: {"description": "Stripe TEST keys required or Stripe is not configured"},
+    },
+)
+async def create_year_close_packet_checkout(
+    body: PacketCheckoutRequest,
+    user_id: Annotated[str, Depends(get_current_user)],
+):
+    """Create a NEW Stripe Checkout Session for the $49 Year-close packet.
+
+    Does not reuse /api/tips/checkout or TipJar price IDs.
+    Staging / local always uses Stripe TEST keys (never live).
+    """
+    analysis_id = (body.analysis_id or "").strip()
+    if not analysis_id:
+        raise HTTPException(status_code=400, detail="analysis_id is required")
+
+    upsert_payload(analysis_id, user_id, body.analysis)
+    _configure_packet_stripe()
+
+    success_url = (
+        f"{FRONTEND_URL}/dashboard?packet_session={{CHECKOUT_SESSION_ID}}"
+        f"&packet_analysis={analysis_id}"
+    )
+    cancel_url = f"{FRONTEND_URL}/dashboard?packet_canceled=1"
+
+    try:
+        session = stripe.checkout.Session.create(
+            mode="payment",
+            line_items=packet_checkout_line_items(),
+            success_url=success_url,
+            cancel_url=cancel_url,
+            metadata={
+                "product": PACKET_METADATA_PRODUCT,
+                "analysis_id": analysis_id,
+                "user_id": user_id,
+            },
+        )
+        return {
+            "checkout_url": session.url,
+            "session_id": session.id,
+            "product": PACKET_PRODUCT_NAME,
+            "amount": PACKET_AMOUNT_CENTS,
+            "stripe_mode": "test" if packet_requires_test_stripe() else "live",
+        }
+    except stripe.StripeError as e:
+        logger.error(f"Year-close packet checkout error: {e}")
+        raise HTTPException(status_code=502, detail="Failed to create checkout session")
+
+
+@app.post("/api/year-close-packet/confirm")
+async def confirm_year_close_packet(
+    body: PacketConfirmRequest,
+    user_id: Annotated[str, Depends(get_current_user)],
+):
+    """Unlock download after Stripe Checkout returns to staging (session_id)."""
+    analysis_id = (body.analysis_id or "").strip()
+    session_id = (body.session_id or "").strip()
+    if not analysis_id or not session_id:
+        raise HTTPException(status_code=400, detail="analysis_id and session_id are required")
+
+    upsert_payload(analysis_id, user_id, body.analysis)
+    _configure_packet_stripe()
+
+    try:
+        session = stripe.checkout.Session.retrieve(session_id)
+    except stripe.StripeError as e:
+        logger.error(f"Year-close packet session retrieve error: {e}")
+        raise HTTPException(status_code=502, detail="Failed to verify checkout session")
+
+    if not _grant_packet_from_session(session, analysis_id, user_id=user_id):
+        raise HTTPException(
+            status_code=403,
+            detail="Checkout session does not unlock the year-close packet.",
+        )
+    return {
+        "paid": True,
+        "product": PACKET_PRODUCT_NAME,
+        "analysis_id": analysis_id,
+    }
+
+
+@app.post("/api/year-close-packet/webhook")
+async def year_close_packet_webhook(request: Request):
+    """Mark packet paid on checkout.session.completed. Tips never match product metadata."""
+    payload = await request.body()
+    event_type = ""
+    session_obj = None
+    webhook_secret = os.environ.get("STRIPE_WEBHOOK_SECRET") or ""
+    sig = request.headers.get("stripe-signature")
+
+    if webhook_secret and sig:
+        try:
+            event = stripe.Webhook.construct_event(payload, sig, webhook_secret)
+            event_type = event.get("type") if isinstance(event, dict) else getattr(event, "type", "")
+            data = event.get("data") if isinstance(event, dict) else getattr(event, "data", None)
+            session_obj = (data or {}).get("object") if isinstance(data, dict) else getattr(data, "object", None)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid Stripe webhook signature")
+    else:
+        try:
+            event = json.loads(payload.decode("utf-8") or "{}")
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid webhook payload")
+        event_type = event.get("type") or ""
+        session_obj = (event.get("data") or {}).get("object")
+
+    if event_type != "checkout.session.completed":
+        return {"received": True, "granted": False}
+
+    metadata = {}
+    if isinstance(session_obj, dict):
+        metadata = session_obj.get("metadata") or {}
+    elif session_obj is not None:
+        metadata = getattr(session_obj, "metadata", None) or {}
+    analysis_id = str((metadata or {}).get("analysis_id") or "")
+    if not analysis_id:
+        return {"received": True, "granted": False}
+
+    granted = session_grants_packet(session_obj, analysis_id)
+    if granted:
+        session_id = ""
+        if isinstance(session_obj, dict):
+            session_id = session_obj.get("id") or ""
+        else:
+            session_id = getattr(session_obj, "id", "") or ""
+        mark_paid(analysis_id, session_id)
+    return {"received": True, "granted": granted}
+
+
+def _authorized_packet_download(analysis_id: str, session_id: Optional[str], user_id: str) -> None:
+    if is_packet_paid(analysis_id):
+        return
+    if not session_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Year-close packet download requires payment.",
+        )
+    _configure_packet_stripe()
+    try:
+        session = stripe.checkout.Session.retrieve(session_id)
+    except stripe.StripeError:
+        raise HTTPException(status_code=403, detail="Year-close packet download requires payment.")
+    if not _grant_packet_from_session(session, analysis_id, user_id=user_id):
+        raise HTTPException(
+            status_code=403,
+            detail="Year-close packet download requires payment.",
+        )
+
+
+@app.get("/api/year-close-packet/download")
+async def download_year_close_packet_get(
+    analysis_id: Annotated[str, Query()],
+    user_id: Annotated[str, Depends(get_current_user)],
+    session_id: Annotated[Optional[str], Query()] = None,
+):
+    """Download the paid packet PDF. Unpaid requests are 403."""
+    analysis_id = (analysis_id or "").strip()
+    if not analysis_id:
+        raise HTTPException(status_code=400, detail="analysis_id is required")
+    _authorized_packet_download(analysis_id, session_id, user_id)
+    payload = get_payload(analysis_id)
+    if not payload:
+        raise HTTPException(
+            status_code=404,
+            detail="No year-close packet snapshot found for this analysis.",
+        )
+    pdf_bytes = render_packet_pdf(payload)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": 'attachment; filename="year-close-packet.pdf"'
+        },
+    )
+
+
+@app.post("/api/year-close-packet/download")
+async def download_year_close_packet_post(
+    body: PacketDownloadRequest,
+    user_id: Annotated[str, Depends(get_current_user)],
+):
+    """Download the paid packet PDF, rebuilding from analysis JSON if needed."""
+    analysis_id = (body.analysis_id or "").strip()
+    if not analysis_id:
+        raise HTTPException(status_code=400, detail="analysis_id is required")
+    _authorized_packet_download(analysis_id, body.session_id, user_id)
+    payload = _payload_for_download(analysis_id, user_id, body.analysis)
+    pdf_bytes = render_packet_pdf(payload)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": 'attachment; filename="year-close-packet.pdf"'
+        },
+    )
+
 
 @app.post("/push/subscribe")
 async def subscribe_to_push(subscription: PushSubscription):

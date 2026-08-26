@@ -118,6 +118,7 @@ jest.mock("../../app/components/TipJar", () => ({
 import DashboardPage from "../../app/dashboard/page";
 
 const baseAnalysis: PortfolioAnalysis = {
+  analysis_id: "analysis-test-1",
   positions: [],
   tax_lots: [],
   suggestions: [
@@ -430,6 +431,14 @@ describe("DashboardPage", () => {
     render(<DashboardPage />, { wrapper: createWrapper() });
 
     await waitFor(() => {
+      expect(screen.getByTestId("year-close-packet-panel")).toBeInTheDocument();
+      expect(screen.getByTestId("year-close-packet-panel")).toHaveTextContent(
+        "Year-close packet",
+      );
+      expect(screen.getByTestId("year-close-packet-panel")).toHaveTextContent(
+        "$49",
+      );
+      expect(screen.getByText(/Positions \(/i)).toBeInTheDocument();
       expect(
         screen.getByText("Previous-year 1099 supplement applied"),
       ).toBeInTheDocument();
@@ -701,6 +710,42 @@ describe("DashboardPage", () => {
       expect(
         screen.queryByText(/Using Robinhood 1099 PDF for tax year 2024/i),
       ).not.toBeInTheDocument();
+    });
+  });
+
+  it("shows year-close packet $49 after analysis while lots stay visible unpaid", async () => {
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      wash_sale_flags: [
+        {
+          symbol: "AMD",
+          sale_date: "2025-07-15",
+          sale_quantity: 10,
+          sale_loss: 300,
+          repurchase_date: "2025-07-25",
+          repurchase_quantity: 10,
+          disallowed_loss: 300,
+          adjusted_cost_basis: 1550,
+          explanation: "Wash sale",
+        },
+      ],
+    };
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("year-close-packet-panel")).toBeInTheDocument();
+      expect(screen.getByTestId("year-close-packet-panel")).toHaveTextContent(
+        "Year-close packet",
+      );
+      expect(screen.getByTestId("year-close-packet-panel")).toHaveTextContent(
+        "$49",
+      );
+      expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /Download/i })).toBeInTheDocument();
+      expect(screen.getByText(/Positions \(/i)).toBeInTheDocument();
+      expect(screen.getByTestId("positions-table")).toBeInTheDocument();
+      expect(screen.getByTestId("wash-sale-warning")).toBeInTheDocument();
     });
   });
 
