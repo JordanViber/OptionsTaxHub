@@ -1203,7 +1203,125 @@ def test_analyze_portfolio_parses_supplemental_1099_pdf(monkeypatch):
     assert payload["supplemental_1099"]["short_term_proceeds"] == pytest.approx(281823.83)
     assert payload["supplemental_1099"]["short_term_wash_sale_disallowed"] == pytest.approx(17409.64)
     assert payload["supplemental_1099"]["long_term_wash_sale_disallowed"] == pytest.approx(33.16)
+    assert (
+        payload["supplemental_1099"]["short_term_wash_sale_disallowed"]
+        + payload["supplemental_1099"]["long_term_wash_sale_disallowed"]
+    ) == pytest.approx(17442.80)
     assert "CLSK" in payload["supplemental_1099"]["matched_symbols"]
+
+
+def _stub_analyze_for_1099(monkeypatch):
+    from datetime import date
+    from models import AssetType, PortfolioSummary, Position, TaxLot, Transaction, TransCode
+
+    lot = TaxLot(
+        symbol="CLSK",
+        quantity=1,
+        cost_basis_per_share=10.0,
+        total_cost_basis=10.0,
+        purchase_date=date(2025, 1, 10),
+        current_price=8.0,
+        asset_type=AssetType.STOCK,
+        unrealized_pnl=-2.0,
+        unrealized_pnl_pct=-20.0,
+        holding_period_days=30,
+        is_long_term=False,
+    )
+    position = Position(
+        position_id="CLSK:stock",
+        symbol="CLSK",
+        quantity=1,
+        avg_cost_basis=10.0,
+        total_cost_basis=10.0,
+        current_price=8.0,
+        market_value=8.0,
+        unrealized_pnl=-2.0,
+        unrealized_pnl_pct=-20.0,
+        earliest_purchase_date=date(2025, 1, 10),
+        holding_period_days=30,
+        is_long_term=False,
+        asset_type=AssetType.STOCK,
+        tax_lots=[lot],
+    )
+    summary = PortfolioSummary(
+        total_market_value=8.0,
+        total_cost_basis=10.0,
+        total_unrealized_pnl=-2.0,
+        total_unrealized_pnl_pct=-20.0,
+        total_harvestable_losses=2.0,
+        estimated_tax_savings=0.5,
+        positions_count=1,
+        lots_with_losses=1,
+        lots_with_gains=0,
+        wash_sale_flags_count=0,
+    )
+    monkeypatch.setattr(
+        "main.parse_csv",
+        lambda _content: (
+            [lot],
+            [
+                Transaction(
+                    activity_date=date(2025, 1, 10),
+                    instrument="CLSK",
+                    trans_code=TransCode.BUY,
+                    quantity=1,
+                    price=10.0,
+                    amount=-10.0,
+                    asset_type=AssetType.STOCK,
+                )
+            ],
+            [],
+            [],
+        ),
+    )
+    monkeypatch.setattr("main.fetch_current_prices", lambda s, fb=None: ({"CLSK": 8.0}, []))
+    monkeypatch.setattr("main.fetch_option_prices", lambda labels, fb=None: ({}, []))
+    monkeypatch.setattr("main.compute_lot_metrics", lambda lots: lots)
+    monkeypatch.setattr("main.detect_wash_sales", lambda *args, **kwargs: [])
+    monkeypatch.setattr("main.adjust_lots_for_wash_sales", lambda lots, flags: lots)
+    monkeypatch.setattr("main.prepare_positions_for_ai", lambda lots: [])
+    monkeypatch.setattr("main.generate_suggestions", lambda **kwargs: [])
+    monkeypatch.setattr("main.aggregate_positions", lambda lots: [position])
+    monkeypatch.setattr("main.build_portfolio_summary", lambda positions, suggestions, flags: summary)
+    monkeypatch.setattr("main._save_history_best_effort", lambda *args, **kwargs: None)
+
+
+def test_analyze_portfolio_non_pdf_1099_still_analyzes_csv(monkeypatch):
+    _stub_analyze_for_1099(monkeypatch)
+
+    response = client.post(
+        "/api/portfolio/analyze?tax_year=2025",
+        files={
+            **_make_csv(),
+            "supplemental_1099": ("notes.txt", b"not a pdf", "text/plain"),
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["supplemental_1099"] is None
+    assert len(payload["positions"]) == 1
+    assert payload["positions"][0]["symbol"] == "CLSK"
+    assert any("PDF" in warning for warning in payload["warnings"])
+    assert payload["summary"]["positions_count"] == 1
+
+
+def test_analyze_portfolio_unreadable_1099_still_analyzes_csv(monkeypatch):
+    _stub_analyze_for_1099(monkeypatch)
+
+    response = client.post(
+        "/api/portfolio/analyze?tax_year=2025",
+        files={
+            **_make_csv(),
+            "supplemental_1099": ("fake.pdf", b"this is just text renamed as a pdf", "application/pdf"),
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["supplemental_1099"] is None
+    assert len(payload["positions"]) == 1
+    assert any("could not be parsed" in warning for warning in payload["warnings"])
 
 
 def test_parse_supplemental_1099_summary_delegates_to_parser(monkeypatch):

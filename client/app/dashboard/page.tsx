@@ -71,6 +71,7 @@ import {
 } from "@/lib/api";
 import FirstRunEmptyState from "../components/FirstRunEmptyState";
 import Supplemental1099InsightsPanel from "../components/Supplemental1099InsightsPanel";
+import { supplemental1099Warnings as getSupplemental1099Warnings } from "@/lib/supplemental1099";
 import { useAuth } from "@/app/context/auth";
 import { isEmailConfirmed } from "@/lib/supabase";
 import { useQueryClient } from "@tanstack/react-query";
@@ -324,10 +325,6 @@ function shouldRecommendSupplemental1099(
   return Boolean(
     analysis && !analysis.supplemental_1099 && !selectedSupplemental1099File,
   );
-}
-
-function getSupplemental1099Warnings(warnings: string[] | undefined): string[] {
-  return (warnings ?? []).filter((warning) => /1099|supplemental/i.test(warning));
 }
 
 function getSupplemental1099HelperText({

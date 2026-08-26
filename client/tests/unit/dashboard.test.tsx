@@ -434,8 +434,9 @@ describe("DashboardPage", () => {
         screen.getByText("Previous-year 1099 supplement applied"),
       ).toBeInTheDocument();
       expect(
-        screen.getByText(/reconciliation context, not a rebuild of lots/i),
-      ).toBeInTheDocument();
+        screen.getAllByText(/reconciliation context, not a rebuild of lots/i)
+          .length,
+      ).toBeGreaterThan(0);
       expect(
         screen.getByText("Included in current analysis"),
       ).toBeInTheDocument();
