@@ -70,6 +70,7 @@ import {
   getBackendUnreachableMessage,
 } from "@/lib/api";
 import FirstRunEmptyState from "../components/FirstRunEmptyState";
+import Supplemental1099InsightsPanel from "../components/Supplemental1099InsightsPanel";
 import { useAuth } from "@/app/context/auth";
 import { isEmailConfirmed } from "@/lib/supabase";
 import { useQueryClient } from "@tanstack/react-query";
@@ -87,15 +88,6 @@ type DeleteTarget = {
   id: string;
   filename: string;
 };
-
-function formatMoney(value: number): string {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(value);
-}
 
 function buildPositionId(position: Position, index: number): string {
   return (
@@ -329,78 +321,13 @@ function shouldRecommendSupplemental1099(
   analysis: PortfolioAnalysis | null,
   selectedSupplemental1099File: File | null,
 ): boolean {
-  if (!analysis || analysis.supplemental_1099 || selectedSupplemental1099File) {
-    return false;
-  }
-
-  return (analysis.warnings ?? []).some((warning) =>
-    /assignment|stock split|corporate action|manual verification|Skipped automated harvesting suggestions/i.test(
-      warning,
-    ),
+  return Boolean(
+    analysis && !analysis.supplemental_1099 && !selectedSupplemental1099File,
   );
 }
 
-function Supplemental1099InsightsPanel({
-  summary,
-}: Readonly<{
-  summary: NonNullable<PortfolioAnalysis["supplemental_1099"]>;
-}>) {
-  return (
-    <Box
-      sx={{
-        border: "1px solid",
-        borderColor: "info.light",
-        borderRadius: 2,
-        px: 2,
-        py: 1.75,
-        background:
-          "linear-gradient(180deg, rgba(227,242,253,0.5) 0%, rgba(227,242,253,0.18) 100%)",
-      }}
-    >
-      <Stack spacing={1.25}>
-        <Box>
-          <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-            Previous-year 1099 supplement applied
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            Broker-reported prior-year activity is now included in this result.
-          </Typography>
-        </Box>
-        <Typography variant="body2">
-          Using {summary.broker_name || "broker"} 1099 PDF for tax year{" "}
-          {summary.tax_year ?? "unknown"}.
-        </Typography>
-        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-          <Chip
-            size="small"
-            label={`${summary.matched_symbols.length} matched current symbol${summary.matched_symbols.length === 1 ? "" : "s"}`}
-            color="primary"
-            variant="outlined"
-          />
-          <Chip
-            size="small"
-            label={`${summary.referenced_symbols.length} symbol${summary.referenced_symbols.length === 1 ? "" : "s"} referenced`}
-            variant="outlined"
-          />
-          <Chip
-            size="small"
-            label={`Wash-sale basis carryover ${formatMoney(summary.short_term_wash_sale_disallowed + summary.long_term_wash_sale_disallowed)}`}
-            color="warning"
-            variant="outlined"
-          />
-        </Stack>
-        {summary.insights.length > 0 && (
-          <Box component="ul" sx={{ pl: 2.5, my: 0 }}>
-            {summary.insights.map((insight) => (
-              <Typography component="li" variant="body2" key={insight}>
-                {insight}
-              </Typography>
-            ))}
-          </Box>
-        )}
-      </Stack>
-    </Box>
-  );
+function getSupplemental1099Warnings(warnings: string[] | undefined): string[] {
+  return (warnings ?? []).filter((warning) => /1099|supplemental/i.test(warning));
 }
 
 function getSupplemental1099HelperText({
@@ -415,22 +342,22 @@ function getSupplemental1099HelperText({
   hasUploadedCsv: boolean;
 }): string {
   if (isRestoredAppliedSummary) {
-    return "This restored result already includes broker-reported 1099 data. Upload the PDF again only if you want to refresh the analysis with a different file.";
+    return "This restored result already includes last year’s broker 1099 as reconciliation context, not a rebuild of lots. Upload the PDF again only if you want to refresh it.";
   }
 
   if (isApplied) {
-    return "Included in the current analysis to help reconcile assignments, stock splits, renamed tickers, and prior-year wash-sale basis adjustments.";
+    return "Included as reconciliation context from last year’s broker 1099 (totals only), not a rebuild of lots.";
   }
 
   if (hasSelectedFile && hasUploadedCsv) {
-    return "This PDF is being used with your latest CSV analysis. Replace it to automatically refresh the result.";
+    return "This PDF is being used with your latest CSV as reconciliation context, not a rebuild of lots. Replace it to automatically refresh the result.";
   }
 
   if (hasSelectedFile) {
-    return "This PDF is ready and will be included the next time you analyze a CSV.";
+    return "This PDF is ready and will be included the next time you analyze a CSV as reconciliation context, not a rebuild of lots.";
   }
 
-  return "Helps reconcile assignments, stock splits, renamed tickers, and prior-year wash-sale basis adjustments.";
+  return "Optional last year’s broker 1099 for reconciliation context — not a rebuild of lots.";
 }
 
 function getSupplemental1099Status({
@@ -697,10 +624,9 @@ function ResultsSection({
 
       {shouldPrompt1099Supplement && (
         <Alert severity="info" variant="outlined">
-          <AlertTitle>Need help with edge-case reconciliation?</AlertTitle>
-          Upload your previous year’s Robinhood 1099 PDF to supplement this
-          analysis. It can improve manual review for assignments, stock splits,
-          renamed tickers, and carryover wash-sale basis.
+          <AlertTitle>Optional prior-year 1099</AlertTitle>
+          Upload your previous year’s Robinhood 1099 PDF for reconciliation
+          context — not a rebuild of lots. We show broker-reported totals only.
         </Alert>
       )}
 
@@ -1273,6 +1199,9 @@ export default function DashboardPage() {
     displayedAnalysis,
     supplemental1099File,
   );
+  const supplemental1099Warnings = getSupplemental1099Warnings(
+    displayedAnalysis?.warnings,
+  );
   const sourceDisplay = analysisSource
     ? getAnalysisSourceDisplay(analysisSource)
     : null;
@@ -1575,6 +1504,22 @@ export default function DashboardPage() {
                   onClearFile={handleClearSupplemental1099}
                   isPending={isPending}
                 />
+                {supplemental1099Warnings.length > 0 && (
+                  <Alert severity="warning">
+                    <AlertTitle>Prior-year 1099 warning</AlertTitle>
+                    {supplemental1099Warnings.map((warning) => (
+                      <Typography key={warning} variant="body2">
+                        {warning}
+                      </Typography>
+                    ))}
+                    {!displayedAnalysis?.supplemental_1099 && (
+                      <Typography variant="body2">
+                        CSV analysis still completed. The 1099 was not used to
+                        rebuild lots.
+                      </Typography>
+                    )}
+                  </Alert>
+                )}
               </Stack>
             </CardContent>
           </Card>
