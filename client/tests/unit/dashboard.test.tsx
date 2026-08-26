@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { PortfolioAnalysis } from "../../lib/types";
+import type { PortfolioAnalysis, Supplemental1099Summary } from "../../lib/types";
 
 // Mock next/navigation
 jest.mock("next/link", () => {
@@ -169,6 +169,25 @@ const baseAnalysis: PortfolioAnalysis = {
   warnings: [],
 };
 
+const baseSupplemental1099: Supplemental1099Summary = {
+  source_filename: "2024-1099.pdf",
+  broker_name: "Robinhood",
+  tax_year: 2024,
+  short_term_proceeds: 281823.83,
+  short_term_cost_basis: 264439.89,
+  short_term_wash_sale_disallowed: 17409.64,
+  short_term_net_gain: 34793.58,
+  long_term_proceeds: 108.56,
+  long_term_cost_basis: 141.72,
+  long_term_wash_sale_disallowed: 33.16,
+  long_term_net_gain: 0,
+  referenced_symbols: ["CLSK", "TSLL"],
+  matched_symbols: ["CLSK"],
+  insights: [
+    "Matched prior-year 1099 activity to 1 current symbol(s): CLSK.",
+  ],
+};
+
 const createWrapper = () => {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -290,22 +309,8 @@ describe("DashboardPage", () => {
     mockSessionValue = JSON.stringify({
       ...baseAnalysis,
       supplemental_1099: {
+        ...baseSupplemental1099,
         source_filename: "2024-robinhood-1099.pdf",
-        broker_name: "Robinhood",
-        tax_year: 2024,
-        short_term_proceeds: 281823.83,
-        short_term_cost_basis: 264439.89,
-        short_term_wash_sale_disallowed: 17409.64,
-        short_term_net_gain: 34793.58,
-        long_term_proceeds: 108.56,
-        long_term_cost_basis: 141.72,
-        long_term_wash_sale_disallowed: 33.16,
-        long_term_net_gain: 0,
-        referenced_symbols: ["CLSK", "TSLL"],
-        matched_symbols: ["CLSK"],
-        insights: [
-          "Matched prior-year 1099 activity to 1 current symbol(s): CLSK.",
-        ],
       },
     } satisfies PortfolioAnalysis);
 
@@ -419,24 +424,7 @@ describe("DashboardPage", () => {
   it("shows supplemental 1099 insights when the analysis includes them", async () => {
     mockAnalyzeData = {
       ...baseAnalysis,
-      supplemental_1099: {
-        source_filename: "2024-1099.pdf",
-        broker_name: "Robinhood",
-        tax_year: 2024,
-        short_term_proceeds: 281823.83,
-        short_term_cost_basis: 264439.89,
-        short_term_wash_sale_disallowed: 17409.64,
-        short_term_net_gain: 34793.58,
-        long_term_proceeds: 108.56,
-        long_term_cost_basis: 141.72,
-        long_term_wash_sale_disallowed: 33.16,
-        long_term_net_gain: 0,
-        referenced_symbols: ["CLSK", "TSLL"],
-        matched_symbols: ["CLSK"],
-        insights: [
-          "Matched prior-year 1099 activity to 1 current symbol(s): CLSK.",
-        ],
-      },
+      supplemental_1099: baseSupplemental1099,
     };
 
     render(<DashboardPage />, { wrapper: createWrapper() });
@@ -446,14 +434,30 @@ describe("DashboardPage", () => {
         screen.getByText("Previous-year 1099 supplement applied"),
       ).toBeInTheDocument();
       expect(
+        screen.getByText(/reconciliation context, not a rebuild of lots/i),
+      ).toBeInTheDocument();
+      expect(
         screen.getByText("Included in current analysis"),
       ).toBeInTheDocument();
       expect(
         screen.getByText(/Using Robinhood 1099 PDF for tax year 2024/i),
       ).toBeInTheDocument();
+      expect(screen.getByText(/Short-term proceeds/i)).toBeInTheDocument();
+      expect(screen.getByText("$281,823.83")).toBeInTheDocument();
+      expect(screen.getByText(/Long-term proceeds/i)).toBeInTheDocument();
+      expect(screen.getAllByText("$17,442.80").length).toBeGreaterThan(0);
       expect(
         screen.getByText(
           /Matched prior-year 1099 activity to 1 current symbol/i,
+        ),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(/Robinhood 1099 uses settlement date/i),
+      ).toBeInTheDocument();
+      expect(screen.getByText(/SPX 12\/31/i)).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          /Options and credit-spread wash-sale treatment can differ from the broker 1099/i,
         ),
       ).toBeInTheDocument();
       expect(
@@ -532,22 +536,7 @@ describe("DashboardPage", () => {
   it("removes an applied 1099 and refreshes the latest CSV analysis without it", async () => {
     mockAnalyzeData = {
       ...baseAnalysis,
-      supplemental_1099: {
-        source_filename: "2024-1099.pdf",
-        broker_name: "Robinhood",
-        tax_year: 2024,
-        short_term_proceeds: 281823.83,
-        short_term_cost_basis: 264439.89,
-        short_term_wash_sale_disallowed: 17409.64,
-        short_term_net_gain: 34793.58,
-        long_term_proceeds: 108.56,
-        long_term_cost_basis: 141.72,
-        long_term_wash_sale_disallowed: 33.16,
-        long_term_net_gain: 0,
-        referenced_symbols: ["CLSK", "TSLL"],
-        matched_symbols: ["CLSK"],
-        insights: ["Matched prior-year 1099 activity to 1 current symbol(s): CLSK."],
-      },
+      supplemental_1099: baseSupplemental1099,
     };
 
     const { container } = render(<DashboardPage />, {
@@ -634,8 +623,85 @@ describe("DashboardPage", () => {
       screen.getByRole("link", { name: /Download sample CSV/i }),
     ).toHaveAttribute("href", "/sample-robinhood-transactions.csv");
     expect(
+      screen.getByText(/Optionally attach last year's Robinhood 1099 PDF/i),
+    ).toBeInTheDocument();
+    expect(
       screen.getByText(/Savings estimates use your tax profile/i),
     ).toBeInTheDocument();
+  });
+
+
+  it("prompts for an optional prior-year 1099 after first-run when none is attached", async () => {
+    mockAnalyzeData = baseAnalysis;
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByText("Optional prior-year 1099")).toBeInTheDocument();
+      expect(
+        screen.getByText(/Upload your previous year’s Robinhood 1099 PDF/i),
+      ).toBeInTheDocument();
+      expect(
+        screen.getAllByText(/not a rebuild of lots/i).length,
+      ).toBeGreaterThan(0);
+    });
+  });
+
+  it("shows a clear 1099 warning while still displaying CSV results", async () => {
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      warnings: [
+        "Supplemental 1099 PDF could not be parsed and was ignored for this analysis.",
+      ],
+    };
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByText("Prior-year 1099 warning")).toBeInTheDocument();
+      expect(
+        screen.getAllByText(
+          /Supplemental 1099 PDF could not be parsed and was ignored/i,
+        ).length,
+      ).toBeGreaterThan(0);
+      expect(
+        screen.getByText(/CSV analysis still completed/i),
+      ).toBeInTheDocument();
+      expect(screen.getByTestId("portfolio-summary-cards")).toBeInTheDocument();
+    });
+  });
+
+  it("keeps a year-mismatched 1099 visible instead of treating it as the expected year", async () => {
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      supplemental_1099: {
+        ...baseSupplemental1099,
+        tax_year: 2023,
+        insights: [
+          "The supplemental Robinhood 1099 is for tax year 2023, not the expected prior year (2024).",
+        ],
+      },
+      warnings: [
+        "The supplemental 1099 PDF was parsed successfully, but its tax year does not match the expected prior year for this analysis.",
+      ],
+    };
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Using Robinhood 1099 PDF for tax year 2023/i),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(/not the expected prior year \(2024\)/i),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText("Prior-year 1099 warning"),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText(/Using Robinhood 1099 PDF for tax year 2024/i),
+      ).not.toBeInTheDocument();
+    });
   });
 
   it("redirects unconfirmed users away from the dashboard", async () => {
