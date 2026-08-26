@@ -43,9 +43,13 @@ export default function FirstRunEmptyState() {
               <Typography component="li" variant="body2" sx={{ mb: 0.5 }}>
                 In Robinhood, open <strong>Account → Reports/Statements</strong>
               </Typography>
-              <Typography component="li" variant="body2">
+              <Typography component="li" variant="body2" sx={{ mb: 0.5 }}>
                 Export your <strong>transactions CSV</strong>, then upload it
                 above
+              </Typography>
+              <Typography component="li" variant="body2">
+                Optionally attach last year&apos;s Robinhood 1099 PDF next to the
+                CSV for reconciliation context — not a rebuild of lots
               </Typography>
             </Box>
           </Box>

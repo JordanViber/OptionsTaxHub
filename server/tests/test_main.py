@@ -1200,7 +1200,9 @@ def test_analyze_portfolio_parses_supplemental_1099_pdf(monkeypatch):
     payload = response.json()
     assert payload["supplemental_1099"]["tax_year"] == 2024
     assert payload["supplemental_1099"]["broker_name"] == "Robinhood"
+    assert payload["supplemental_1099"]["short_term_proceeds"] == pytest.approx(281823.83)
     assert payload["supplemental_1099"]["short_term_wash_sale_disallowed"] == pytest.approx(17409.64)
+    assert payload["supplemental_1099"]["long_term_wash_sale_disallowed"] == pytest.approx(33.16)
     assert "CLSK" in payload["supplemental_1099"]["matched_symbols"]
 
 
@@ -1342,7 +1344,69 @@ def test_maybe_parse_supplemental_1099_rejects_oversized_pdf(monkeypatch):
     assert "20 MB" in warnings[0]
 
 
+def test_maybe_parse_supplemental_1099_ignores_empty_pdf(monkeypatch):
+    import asyncio
 
+    from main import _maybe_parse_supplemental_1099
+    from models import Supplemental1099Summary
+
+    class DummyUpload:
+        filename = "empty.pdf"
+        content_type = "application/pdf"
+
+        async def read(self, size=-1):
+            await asyncio.sleep(0)
+            return b"%PDF-1.4 empty"
+
+    monkeypatch.setattr(
+        "main._parse_supplemental_1099_summary",
+        lambda *_args, **_kwargs: Supplemental1099Summary(source_filename="empty.pdf"),
+    )
+
+    summary, warnings = asyncio.run(
+        _maybe_parse_supplemental_1099(DummyUpload(), {"CLSK"}, 2024)
+    )
+
+    assert summary is None
+    assert warnings == [
+        "Supplemental 1099 PDF could not be parsed and was ignored for this analysis."
+    ]
+
+
+def test_maybe_parse_supplemental_1099_accepts_pdf_filename_without_content_type(monkeypatch):
+    import asyncio
+
+    from main import _maybe_parse_supplemental_1099
+    from models import Supplemental1099Summary
+
+    class DummyUpload:
+        filename = "prior-year.pdf"
+        content_type = ""
+
+        async def read(self, size=-1):
+            await asyncio.sleep(0)
+            return b"%PDF-1.4"
+
+    monkeypatch.setattr(
+        "main._parse_supplemental_1099_summary",
+        lambda *_args, **_kwargs: Supplemental1099Summary(
+            source_filename="prior-year.pdf",
+            broker_name="Robinhood",
+            tax_year=2024,
+            short_term_proceeds=100.0,
+        ),
+    )
+
+    summary, warnings = asyncio.run(
+        _maybe_parse_supplemental_1099(DummyUpload(), {"CLSK"}, 2024)
+    )
+
+    assert summary is not None
+    assert summary.tax_year == 2024
+    assert warnings == []
+
+
+def test_get_prices_empty_symbols():
     """GET /api/prices with empty symbols returns 400."""
     response = client.get("/api/prices?symbols=")
     assert response.status_code == 400

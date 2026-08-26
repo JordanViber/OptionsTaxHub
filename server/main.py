@@ -501,6 +501,27 @@ def _parse_supplemental_1099_summary(
 
 
 
+def _is_pdf_upload(supplemental_1099: UploadFile) -> bool:
+    """True when the optional 1099 looks like a PDF by content type or filename."""
+    content_type = (supplemental_1099.content_type or "").lower()
+    filename = (supplemental_1099.filename or "").lower()
+    return "pdf" in content_type or filename.endswith(".pdf")
+
+
+def _is_empty_supplemental_summary(summary: Supplemental1099Summary) -> bool:
+    """True when the parser returned no usable 1099 totals or tax year."""
+    return (
+        summary.tax_year is None
+        and summary.short_term_proceeds == 0
+        and summary.long_term_proceeds == 0
+        and summary.short_term_cost_basis == 0
+        and summary.long_term_cost_basis == 0
+        and summary.short_term_wash_sale_disallowed == 0
+        and summary.long_term_wash_sale_disallowed == 0
+        and not summary.referenced_symbols
+    )
+
+
 async def _maybe_parse_supplemental_1099(
     supplemental_1099: UploadFile | None,
     current_symbols: set[str],
@@ -510,8 +531,7 @@ async def _maybe_parse_supplemental_1099(
     if supplemental_1099 is None:
         return None, []
 
-    content_type = supplemental_1099.content_type or ""
-    if "pdf" not in content_type.lower():
+    if not _is_pdf_upload(supplemental_1099):
         return None, ["Supplemental 1099 must be a PDF file (received unsupported content type)."]
 
     try:
@@ -526,6 +546,9 @@ async def _maybe_parse_supplemental_1099(
         )
     except Exception as exc:
         logger.warning("Failed to parse supplemental 1099 PDF: %s", exc, exc_info=True)
+        return None, ["Supplemental 1099 PDF could not be parsed and was ignored for this analysis."]
+
+    if _is_empty_supplemental_summary(summary):
         return None, ["Supplemental 1099 PDF could not be parsed and was ignored for this analysis."]
 
     warnings: list[str] = []
