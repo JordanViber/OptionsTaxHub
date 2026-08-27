@@ -168,6 +168,16 @@ describe("LandingPage", () => {
     ).toBeGreaterThan(0);
   });
 
+  it("does not render a card field on the marketing home page", () => {
+    mockUseAuth.mockReturnValue({ user: null, loading: false });
+    const { container } = renderWithClient(<LandingPage />);
+    expect(container.querySelector("input[autocomplete='cc-number']")).toBeNull();
+    expect(container.querySelector("input[autocomplete='cc-csc']")).toBeNull();
+    expect(container.querySelector("input[name='cardNumber']")).toBeNull();
+    expect(screen.queryByLabelText(/card number/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Year-close packet/i)).not.toBeInTheDocument();
+  });
+
   it("links to the privacy page", () => {
     mockUseAuth.mockReturnValue({ user: null, loading: false });
     renderWithClient(<LandingPage />);
@@ -175,5 +185,15 @@ describe("LandingPage", () => {
       "href",
       "/privacy",
     );
+  });
+
+  it("has no card field on the marketing home page", () => {
+    mockUseAuth.mockReturnValue({ user: null, loading: false });
+    const { container } = renderWithClient(<LandingPage />);
+    expect(container.querySelector("input[type='password']")).toBeNull();
+    expect(container.querySelector("input[name='cardnumber']")).toBeNull();
+    expect(container.querySelector("input[autocomplete='cc-number']")).toBeNull();
+    expect(screen.queryByLabelText(/card number/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("Year-close packet — $49")).not.toBeInTheDocument();
   });
 });

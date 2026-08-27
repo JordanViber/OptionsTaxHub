@@ -170,6 +170,7 @@ export interface PortfolioAnalysis {
   summary: PortfolioSummary;
   tax_profile: TaxProfile | null;
   supplemental_1099?: Supplemental1099Summary | null;
+  analysis_id?: string | null;
   disclaimer: string;
   errors: string[];
   warnings: string[];
