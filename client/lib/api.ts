@@ -104,6 +104,99 @@ interface AnalyzePortfolioParams {
   taxYear?: number;
 }
 
+const OBJECT_OBJECT_MESSAGE = "[object Object]";
+
+function isErrorRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Reject empty strings and the JS default object stringification. */
+function usableErrorText(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed === OBJECT_OBJECT_MESSAGE) return null;
+  return trimmed;
+}
+
+function messageFromFastApiItem(item: unknown): string | null {
+  const asText = usableErrorText(item);
+  if (asText) return asText;
+  if (!isErrorRecord(item)) return null;
+  return (
+    usableErrorText(item.msg) ||
+    usableErrorText(item.message) ||
+    usableErrorText(item.detail)
+  );
+}
+
+/**
+ * Pull a user-facing string out of a FastAPI / JSON error body.
+ * Handles `detail` as a string, `{message}`, or validation `[{msg}]`.
+ */
+function messageFromApiErrorBody(body: unknown): string | null {
+  if (body == null) return null;
+
+  const asText = usableErrorText(body);
+  if (asText) return asText;
+
+  if (Array.isArray(body)) {
+    const parts = body
+      .map((item) => messageFromFastApiItem(item))
+      .filter((part): part is string => part != null);
+    return parts.length > 0 ? parts.join("; ") : null;
+  }
+
+  if (!isErrorRecord(body)) return null;
+
+  if (body.detail !== undefined) {
+    const fromDetail = messageFromApiErrorBody(body.detail);
+    if (fromDetail) return fromDetail;
+  }
+
+  return (
+    usableErrorText(body.message) ||
+    usableErrorText(body.msg) ||
+    messageFromApiErrorBody(body.errors)
+  );
+}
+
+function analysisFailureFallback(status: number, statusText: string): string {
+  const fromStatus = usableErrorText(statusText);
+  if (fromStatus) return `Analysis failed: ${fromStatus}`;
+  return `Analysis failed (${status})`;
+}
+
+function toFiniteNumber(value: unknown): number | null {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed || /^(undefined|null|nan)$/i.test(trimmed)) return null;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function analyzePortfolioPath(params: AnalyzePortfolioParams): string {
+  const queryParams = new URLSearchParams();
+  if (typeof params.filingStatus === "string") {
+    const status = params.filingStatus.trim();
+    if (status && !/^(undefined|null|nan)$/i.test(status)) {
+      queryParams.set("filing_status", status);
+    }
+  }
+  const income = toFiniteNumber(params.estimatedIncome);
+  if (income != null && income >= 0) {
+    queryParams.set("estimated_income", String(income));
+  }
+  const year = toFiniteNumber(params.taxYear);
+  if (year != null && Number.isInteger(year) && year >= 2024 && year <= 2026) {
+    queryParams.set("tax_year", String(year));
+  }
+  const qs = queryParams.toString();
+  return qs ? `/api/portfolio/analyze?${qs}` : `/api/portfolio/analyze`;
+}
+
 /**
  * Upload CSV and get full portfolio analysis with tax-loss harvesting suggestions.
  *
@@ -119,14 +212,7 @@ async function analyzePortfolio(
     formData.append("supplemental_1099", params.supplemental1099File);
   }
 
-  const queryParams = new URLSearchParams();
-  if (params.filingStatus)
-    queryParams.set("filing_status", params.filingStatus);
-  if (params.estimatedIncome)
-    queryParams.set("estimated_income", params.estimatedIncome.toString());
-  if (params.taxYear) queryParams.set("tax_year", params.taxYear.toString());
-
-  const url = apiPath(`/api/portfolio/analyze?${queryParams.toString()}`);
+  const url = apiPath(analyzePortfolioPath(params));
   const headers = await getAuthHeaders();
 
   // Don't set Content-Type for FormData (browser will set it with boundary)
@@ -142,11 +228,10 @@ async function analyzePortfolio(
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => null);
-    const message =
-      errorData?.detail?.message ||
-      errorData?.detail ||
-      `Analysis failed: ${response.statusText}`;
-    throw new Error(message);
+    throw new Error(
+      messageFromApiErrorBody(errorData) ||
+        analysisFailureFallback(response.status, response.statusText),
+    );
   }
 
   return response.json();
@@ -433,17 +518,25 @@ export async function deleteAnalysis(analysisId: string): Promise<boolean> {
 /**
  * Map analysis / network failures to an end-user message.
  * Never mention local ports or developer start commands.
+ * Never surface the JS default `[object Object]` stringification.
  */
 export function getAnalysisErrorMessage(error: unknown): string {
-  if (!(error instanceof Error)) {
-    return "An error occurred";
+  if (error instanceof Error) {
+    const fromMessage = usableErrorText(error.message);
+    if (fromMessage) {
+      if (/failed to fetch|network|econnrefused/i.test(fromMessage)) {
+        return "Could not reach the analysis service. Please try again in a few minutes.";
+      }
+      return fromMessage;
+    }
+    const fromCause = messageFromApiErrorBody(error.cause);
+    if (fromCause) return fromCause;
+  } else if (isErrorRecord(error) || Array.isArray(error)) {
+    const fromBody = messageFromApiErrorBody(error);
+    if (fromBody) return fromBody;
   }
 
-  if (/failed to fetch|network|econnrefused/i.test(error.message)) {
-    return "Could not reach the analysis service. Please try again in a few minutes.";
-  }
-
-  return error.message;
+  return "An error occurred";
 }
 
 /**

@@ -416,6 +416,15 @@ def test_tip_checkout_stripe_error(monkeypatch):
 # ---------- Portfolio Analysis Endpoint ----------
 
 
+SAMPLE_CSV_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "client"
+    / "public"
+    / "sample-robinhood-transactions.csv"
+)
+ROBINHOOD_CLEAN_PATH = Path(__file__).parent / "fixtures" / "robinhood_clean.csv"
+
+
 def _make_csv(content: str | None = None):
     """Helper to create a CSV upload payload."""
     if content is None:
@@ -425,6 +434,17 @@ def _make_csv(content: str | None = None):
             "MSFT,5,300.00,1500.00,2024-06-01,310.00\n"
         )
     return {"file": ("test.csv", content, "text/csv")}
+
+
+def _stub_analyze_network(monkeypatch):
+    """Stub live prices, AI, and history so analyze can run without network I/O."""
+    monkeypatch.setattr(
+        "main.fetch_current_prices",
+        lambda symbols, fb=None: ({s.upper(): 100.0 for s in symbols}, []),
+    )
+    monkeypatch.setattr("main.fetch_option_prices", lambda labels, fb=None: ({}, []))
+    monkeypatch.setattr("main.prepare_positions_for_ai", lambda lots: [])
+    monkeypatch.setattr("main._save_history_best_effort", lambda *args, **kwargs: None)
 
 
 def _make_supplemental_1099_upload() -> tuple[str, bytes, str]:
@@ -494,6 +514,91 @@ def test_analyze_portfolio_empty_csv(monkeypatch):
     detail = response.json()["detail"]
     assert "Could not parse" in detail["message"]
     assert "No valid rows" in detail["errors"]
+
+
+def test_analyze_public_sample_csv_succeeds(monkeypatch):
+    """The in-app sample CSV must analyze without mocking parse_csv."""
+    _stub_analyze_network(monkeypatch)
+    csv_bytes = SAMPLE_CSV_PATH.read_bytes()
+
+    response = client.post(
+        "/api/portfolio/analyze?filing_status=single&estimated_income=75000&tax_year=2025",
+        files={"file": ("sample-robinhood-transactions.csv", csv_bytes, "text/csv")},
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()
+    symbols = {position["symbol"] for position in data["positions"]}
+    assert "AAPL" in symbols
+    assert "MSFT" in symbols
+    amd_flags = [flag for flag in data["wash_sale_flags"] if flag["symbol"] == "AMD"]
+    assert len(amd_flags) == 1
+    assert amd_flags[0]["disallowed_loss"] == 300.0
+
+
+def test_analyze_robinhood_style_csv_succeeds(monkeypatch):
+    """A Robinhood-format transaction CSV analyzes into open positions."""
+    _stub_analyze_network(monkeypatch)
+    csv_bytes = ROBINHOOD_CLEAN_PATH.read_bytes()
+
+    response = client.post(
+        "/api/portfolio/analyze",
+        files={"file": ("robinhood_clean.csv", csv_bytes, "text/csv")},
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["positions"]
+    symbols = {position["symbol"] for position in data["positions"]}
+    assert "AAPL" in symbols
+    assert "MSFT" in symbols
+
+
+def test_analyze_invalid_tax_year_does_not_500(monkeypatch):
+    """Out-of-range tax_year must not fail analysis (sample CSV uses saved profile)."""
+    _stub_analyze_network(monkeypatch)
+    csv_bytes = ROBINHOOD_CLEAN_PATH.read_bytes()
+
+    response = client.post(
+        "/api/portfolio/analyze?tax_year=2023",
+        files={"file": ("robinhood_clean.csv", csv_bytes, "text/csv")},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["tax_profile"]["tax_year"] == 2025
+
+
+def test_analyze_unparseable_profile_query_params_do_not_422(monkeypatch):
+    """JS undefined tokens in tax profile query params must not 422 analyze."""
+    _stub_analyze_network(monkeypatch)
+    csv_bytes = SAMPLE_CSV_PATH.read_bytes()
+
+    response = client.post(
+        "/api/portfolio/analyze?filing_status=undefined&estimated_income=undefined&tax_year=undefined",
+        files={"file": ("sample-robinhood-transactions.csv", csv_bytes, "text/csv")},
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["tax_profile"]["tax_year"] == 2025
+    assert data["tax_profile"]["filing_status"] == "single"
+    assert data["positions"]
+
+
+def test_analyze_unexpected_error_returns_string_message(monkeypatch):
+    """Unhandled analyze failures return a string message, never a bare object."""
+    def _boom(_content):
+        raise RuntimeError("lot matcher exploded")
+
+    monkeypatch.setattr("main.parse_csv", _boom)
+
+    response = client.post("/api/portfolio/analyze", files=_make_csv())
+    assert response.status_code == 500
+    detail = response.json()["detail"]
+    assert isinstance(detail, dict)
+    assert "Analysis failed" in detail["message"]
+    assert "lot matcher exploded" in detail["errors"]
+    assert "[object Object]" not in str(detail)
 
 
 def test_analyze_portfolio_invalid_filing_status(monkeypatch):

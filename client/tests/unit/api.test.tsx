@@ -278,6 +278,41 @@ describe("api hooks", () => {
       expect(call[0]).toContain("tax_year=2025");
     });
 
+    it("omits unusable taxYear and estimatedIncome so FastAPI does not 422", async () => {
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          positions: [],
+          suggestions: [],
+          wash_sale_flags: [],
+          summary: {},
+        }),
+      } as Response);
+
+      const file = new File(["content"], "test.csv", { type: "text/csv" });
+      const wrapper = createWrapper();
+      const { result } = renderHook(() => useAnalyzePortfolio(), { wrapper });
+
+      await act(async () => {
+        result.current.mutate({
+          file,
+          filingStatus: "undefined" as never,
+          estimatedIncome: Number.NaN,
+          taxYear: "undefined" as never,
+        });
+      });
+
+      await waitFor(() => {
+        expect(result.current.isSuccess).toBe(true);
+      });
+
+      const url = String((globalThis.fetch as jest.Mock).mock.calls[0][0]);
+      expect(url).not.toContain("tax_year=undefined");
+      expect(url).not.toContain("estimated_income=undefined");
+      expect(url).not.toContain("filing_status=undefined");
+      expect(url).not.toMatch(/tax_year=/);
+    });
+
     it("attaches a supplemental 1099 PDF when provided", async () => {
       globalThis.fetch = jest.fn().mockResolvedValue({
         ok: true,
@@ -322,13 +357,87 @@ describe("api hooks", () => {
         json: async () => ({ detail: "Invalid CSV format" }),
       } as Response);
 
-      render(<AnalyzeComponent file={file} />, { wrapper: createWrapper() });
+      const wrapper = createWrapper();
+      const { result } = renderHook(() => useAnalyzePortfolio(), { wrapper });
 
-      fireEvent.click(screen.getByText("Analyze"));
+      await act(async () => {
+        result.current.mutate({ file });
+      });
 
       await waitFor(() => {
-        expect(screen.getByText("error")).toBeInTheDocument();
+        expect(result.current.isError).toBe(true);
       });
+      expect(result.current.error).toBeInstanceOf(Error);
+      expect(result.current.error?.message).toBe("Invalid CSV format");
+      expect(result.current.error?.message).not.toContain("[object Object]");
+    });
+
+    it("surfaces FastAPI validation arrays as a string, never [object Object]", async () => {
+      const file = new File(["content"], "test.csv", { type: "text/csv" });
+
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: false,
+        status: 422,
+        statusText: "Unprocessable Entity",
+        json: async () => ({
+          detail: [
+            {
+              type: "missing",
+              loc: ["body", "file"],
+              msg: "Field required",
+              input: null,
+            },
+          ],
+        }),
+      } as Response);
+
+      const wrapper = createWrapper();
+      const { result } = renderHook(() => useAnalyzePortfolio(), { wrapper });
+
+      await act(async () => {
+        result.current.mutate({ file });
+      });
+
+      await waitFor(() => {
+        expect(result.current.isError).toBe(true);
+      });
+      const message = result.current.error?.message ?? "";
+      expect(message).toBe("Field required");
+      expect(message).not.toMatch(/\[object Object\]/i);
+      expect(getAnalysisErrorMessage(result.current.error)).toBe("Field required");
+    });
+
+    it("uses detail.message when the 400 body is a FastAPI object", async () => {
+      const file = new File(["content"], "test.csv", { type: "text/csv" });
+
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: false,
+        status: 400,
+        statusText: "Bad Request",
+        json: async () => ({
+          detail: {
+            message: "Could not parse any positions from the CSV file.",
+            errors: ["Unrecognized CSV format"],
+          },
+        }),
+      } as Response);
+
+      const wrapper = createWrapper();
+      const { result } = renderHook(() => useAnalyzePortfolio(), { wrapper });
+
+      await act(async () => {
+        result.current.mutate({ file });
+      });
+
+      await waitFor(() => {
+        expect(result.current.isError).toBe(true);
+      });
+      expect(result.current.error?.message).toBe(
+        "Could not parse any positions from the CSV file.",
+      );
+      expect(getAnalysisErrorMessage(result.current.error)).not.toContain(
+        "[object Object]",
+      );
     });
   });
 
@@ -652,12 +761,20 @@ describe("api hooks", () => {
         json: async () => ({ detail: { message: "Field-level error detail" } }),
       } as Response);
 
-      render(<AnalyzeComponent file={file} />, { wrapper: createWrapper() });
-      fireEvent.click(screen.getByText("Analyze"));
+      const wrapper = createWrapper();
+      const { result } = renderHook(() => useAnalyzePortfolio(), { wrapper });
+
+      await act(async () => {
+        result.current.mutate({ file });
+      });
 
       await waitFor(() => {
-        expect(screen.getByText("error")).toBeInTheDocument();
+        expect(result.current.isError).toBe(true);
       });
+      expect(result.current.error?.message).toBe("Field-level error detail");
+      expect(getAnalysisErrorMessage(result.current.error)).toBe(
+        "Field-level error detail",
+      );
     });
 
     it("falls back to statusText message when json parsing fails", async () => {
@@ -761,6 +878,35 @@ describe("api hooks", () => {
       expect(getAnalysisErrorMessage(new Error("CSV could not be parsed"))).toBe(
         "CSV could not be parsed",
       );
+    });
+
+    it("never surfaces [object Object] from a stringified error object", () => {
+      const message = getAnalysisErrorMessage(new Error("[object Object]"));
+      expect(message).toBe("An error occurred");
+      expect(message).not.toMatch(/\[object Object\]/i);
+    });
+
+    it("extracts FastAPI validation detail arrays", () => {
+      const message = getAnalysisErrorMessage({
+        detail: [
+          {
+            type: "int_parsing",
+            loc: ["query", "tax_year"],
+            msg: "Input should be a valid integer, unable to parse string as an integer",
+            input: "undefined",
+          },
+        ],
+      });
+      expect(message).toMatch(/valid integer/i);
+      expect(message).not.toMatch(/\[object Object\]/i);
+    });
+
+    it("uses detail.errors when the body has no message field", () => {
+      const message = getAnalysisErrorMessage({
+        detail: { errors: ["Unrecognized CSV format"] },
+      });
+      expect(message).toBe("Unrecognized CSV format");
+      expect(message).not.toMatch(/\[object Object\]/i);
     });
   });
 
