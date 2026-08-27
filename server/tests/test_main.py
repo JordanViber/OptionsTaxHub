@@ -539,6 +539,11 @@ def test_analyze_public_sample_csv_succeeds(monkeypatch):
     assert amd_flags[0]["disallowed_loss"] == 300.0
     assert amd_flags[0]["sale_date"] == "2026-07-15"
     assert amd_flags[0]["repurchase_date"] == "2026-07-24"
+    flag_symbols = {flag["symbol"] for flag in data["wash_sale_flags"]}
+    assert flag_symbols == {"AMD", "NVDA", "TSLA"}
+    assert data["summary"]["wash_sale_flags_count"] == 3
+    assert data["summary"]["total_harvestable_losses"] > 0
+    assert data["suggestions"]
     amd_lots = [
         lot
         for position in data["positions"]

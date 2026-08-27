@@ -116,6 +116,18 @@ describe("LandingPage", () => {
     ).toBeInTheDocument();
   });
 
+  it("preview shows the 2026 sample harvest and wash-sale counts", () => {
+    mockUseAuth.mockReturnValue({ user: null, loading: false });
+
+    renderWithClient(<LandingPage />);
+
+    expect(screen.getByText("$2,086")).toBeInTheDocument();
+    expect(screen.getByText("3 wash sales")).toBeInTheDocument();
+    expect(screen.getByText("NVDA")).toBeInTheDocument();
+    expect(screen.getByText("META")).toBeInTheDocument();
+    expect(screen.getByText(/Federal harvest still on the table/i)).toBeInTheDocument();
+  });
+
   it("sample and CSV CTAs go to the desk with the right intent", () => {
     mockUseAuth.mockReturnValue({ user: null, loading: false });
 

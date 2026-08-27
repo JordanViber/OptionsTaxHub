@@ -68,6 +68,7 @@ class TestWashSaleLotFlagsFromCsv:
     def test_public_sample_csv_flags_amd_for_tax_year_2026(self):
         lots, flags = _lots_and_flags(PUBLIC_SAMPLE, tax_year=2026)
 
+        assert {flag.symbol for flag in flags} == {"AMD", "NVDA", "TSLA"}
         amd_flags = [flag for flag in flags if flag.symbol == "AMD"]
         assert len(amd_flags) == 1
         assert amd_flags[0].disallowed_loss == 300.0
