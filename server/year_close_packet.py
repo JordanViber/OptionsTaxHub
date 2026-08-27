@@ -397,82 +397,161 @@ def resolve_packet_stripe_secret_key(primary_key: str | None) -> tuple[str | Non
     return primary, "live"
 
 
-def _plain_mapping(value: Any) -> dict[str, Any] | None:
-    """Best-effort dict from dicts, StripeObject.to_dict(), or .items()."""
-    if value is None:
+def _stripe_object_field(obj: Any, key: str) -> Any:
+    """Read a field from a StripeObject-like retrieve result, dict, or namespace.
+
+    Tries getattr, dict-style get, then to_dict_recursive/to_dict when present.
+    Does not assume the object is a dict.
+    """
+    if obj is None:
         return None
-    if isinstance(value, dict):
-        return value
-    to_dict = getattr(value, "to_dict", None)
-    if callable(to_dict):
+
+    values: list[Any] = []
+
+    try:
+        val = getattr(obj, key, None)
+        if val is not None and not callable(val):
+            values.append(val)
+    except Exception:
+        pass
+
+    getter = getattr(obj, "get", None)
+    if callable(getter):
         try:
-            converted = to_dict()
-            if isinstance(converted, dict):
-                return converted
+            val = getter(key)
+            if val is not None:
+                values.append(val)
         except Exception:
             pass
+    if isinstance(obj, dict):
+        val = obj.get(key)
+        if val is not None:
+            values.append(val)
+
+    for method_name in ("to_dict_recursive", "to_dict"):
+        method = getattr(obj, method_name, None)
+        if not callable(method):
+            continue
+        try:
+            dumped = method()
+        except Exception:
+            continue
+        if isinstance(dumped, dict):
+            val = dumped.get(key)
+            if val is not None:
+                values.append(val)
+
+    for val in values:
+        if val not in (None, "", {}):
+            return val
+    return values[0] if values else None
+
+
+def _plain_mapping(value: Any) -> dict[str, Any]:
+    """Best-effort dict from dicts, attribute objects, get(), or to_dict*."""
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return dict(value)
+
+    for method_name in ("to_dict_recursive", "to_dict"):
+        method = getattr(value, method_name, None)
+        if not callable(method):
+            continue
+        try:
+            dumped = method()
+        except Exception:
+            dumped = None
+        if isinstance(dumped, dict):
+            return dict(dumped)
+
+    getter = getattr(value, "get", None)
+    out: dict[str, Any] = {}
+    known_keys = ("product", "analysis_id", "packet_analysis", "user_id", "tier")
+    if callable(getter):
+        for key in known_keys:
+            try:
+                item = getter(key)
+            except Exception:
+                item = None
+            if item is not None:
+                out[key] = item
+        if out:
+            return out
+
     items = getattr(value, "items", None)
     if callable(items):
         try:
-            return dict(items())
+            return {k: v for k, v in items()}
         except Exception:
             pass
-    return None
 
+    try:
+        converted = dict(value)
+        if converted:
+            return converted
+    except Exception:
+        pass
 
-def _session_attr(session: Any, name: str) -> Any:
-    """Read a field off dict, SimpleNamespace, or StripeObject-like retrieve."""
-    if session is None:
-        return None
-    if isinstance(session, dict):
-        return session.get(name)
-    value = getattr(session, name, None)
-    if value is not None:
-        return value
-    mapping = _plain_mapping(session)
-    if mapping is not None:
-        return mapping.get(name)
-    return None
+    for key in known_keys:
+        try:
+            item = getattr(value, key, None)
+        except Exception:
+            item = None
+        if item is not None and not callable(item):
+            out[key] = item
+    return out
 
 
 def _session_metadata(session: Any) -> dict[str, str]:
-    """Metadata from a real Stripe retrieve object, not only dict/SimpleNamespace.
-
-    stripe>=13 StripeObject is not a dict, has no .items()/.get(), and dict()
-    raises. Empty metadata here made product look unset and 403'd paid TEST
-    Checkout sessions.
-    """
-    raw = _session_attr(session, "metadata")
+    """Metadata from StripeObject-like retrieve results, dicts, or namespaces."""
+    raw = _stripe_object_field(session, "metadata")
     mapping = _plain_mapping(raw)
-    if mapping is None and raw is not None:
-        out: dict[str, str] = {}
-        for key in ("product", "analysis_id", "packet_analysis", "user_id"):
-            val = getattr(raw, key, None)
-            if val is not None:
-                out[key] = str(val)
-        return out
-    if not mapping:
-        return {}
     return {str(k): str(v) for k, v in mapping.items() if v is not None}
 
 
 def packet_session_id(session: Any) -> str:
-    return str(_session_attr(session, "id") or "")
+    return str(_stripe_object_field(session, "id") or "")
 
 
 def packet_analysis_id_from_session(session: Any, *fallbacks: str) -> str:
-    """Canonical analysis id: session metadata first, then caller fallbacks."""
+    """Canonical analysis id: session metadata first, then caller fallbacks.
+
+    Client analysis_id may be missing or the local-analysis placeholder; those
+    must not win over session.metadata.analysis_id or packet_analysis.
+    """
     metadata = _session_metadata(session)
-    candidates = [
-        metadata.get("analysis_id") or "",
-        metadata.get("packet_analysis") or "",
-        *fallbacks,
-    ]
-    for value in candidates:
+    for value in (metadata.get("analysis_id"), metadata.get("packet_analysis")):
         text = str(value or "").strip()
         if text:
             return text
-    return ""
+
+    preferred: list[str] = []
+    last_resort: list[str] = []
+    for value in fallbacks:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        if text.lower() == "local-analysis":
+            last_resort.append(text)
+        else:
+            preferred.append(text)
+    if preferred:
+        return preferred[0]
+    return last_resort[0] if last_resort else ""
+
+
+def packet_session_log_fields(session: Any, analysis_id: str = "") -> dict[str, Any]:
+    """Non-secret fields for grant/reject logs."""
+    metadata = _session_metadata(session)
+    amount = _coerce_amount_cents(_stripe_object_field(session, "amount_total"))
+    return {
+        "product": str(metadata.get("product") or "") or "-",
+        "payment_status": str(_stripe_object_field(session, "payment_status") or "") or "-",
+        "status": str(_stripe_object_field(session, "status") or "") or "-",
+        "amount": amount if amount is not None else "-",
+        "analysis_id": packet_analysis_id_from_session(session, analysis_id) or "-",
+    }
 
 
 def _coerce_amount_cents(amount: Any) -> Optional[int]:
@@ -491,39 +570,46 @@ def session_grants_packet(session: Any, analysis_id: str = "") -> bool:
 
     Session metadata.analysis_id (or packet_analysis) is canonical; a client
     analysis_id of local-analysis / missing must not 403 a paid TEST session.
-    Sandbox Checkout may be status=complete while payment_status is not
-    exactly paid.
+    Grant when payment_status is paid OR (status is complete AND amount_total
+    is 4900 if present).
     """
     if session is None:
         return False
     metadata = _session_metadata(session)
     product = str(metadata.get("product") or "")
-    session_analysis = packet_analysis_id_from_session(session, analysis_id)
-    payment_status = str(_session_attr(session, "payment_status") or "").lower()
-    status = str(_session_attr(session, "status") or "").lower()
-    amount = _session_attr(session, "amount_total")
-    amount_cents = _coerce_amount_cents(amount)
+    session_analysis = str(metadata.get("analysis_id") or "").strip()
+    client_id = str(analysis_id or "").strip()
+    payment_status = str(_stripe_object_field(session, "payment_status") or "").lower()
+    status = str(_stripe_object_field(session, "status") or "").lower()
+    amount_cents = _coerce_amount_cents(_stripe_object_field(session, "amount_total"))
 
     paid_ok = payment_status in ("paid", "no_payment_required")
     amount_is_packet = amount_cents == PACKET_AMOUNT_CENTS
-    complete_ok = status == "complete" and (
-        amount_cents is None or amount_is_packet
-    )
+    complete_ok = status == "complete" and (amount_cents is None or amount_is_packet)
     amount_ok = amount_cents is None or amount_is_packet
+    mismatch = (
+        bool(client_id)
+        and client_id.lower() != "local-analysis"
+        and bool(session_analysis)
+        and session_analysis.lower() != "local-analysis"
+        and client_id != session_analysis
+    )
     granted = (
         product == PACKET_METADATA_PRODUCT
         and amount_ok
         and (paid_ok or complete_ok)
+        and not mismatch
     )
     if not granted:
+        fields = packet_session_log_fields(session, analysis_id)
         logger.info(
             "year-close packet session rejected product=%s payment_status=%s "
             "status=%s amount=%s analysis_id=%s",
-            product or "-",
-            payment_status or "-",
-            status or "-",
-            amount_cents if amount_cents is not None else "-",
-            session_analysis or "-",
+            fields["product"],
+            fields["payment_status"],
+            fields["status"],
+            fields["amount"],
+            fields["analysis_id"],
         )
     return granted
 

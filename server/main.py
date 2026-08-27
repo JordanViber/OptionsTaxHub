@@ -46,6 +46,7 @@ from year_close_packet import (
     packet_checkout_line_items,
     packet_requires_test_stripe,
     packet_session_id,
+    packet_session_log_fields,
     remember_analysis,
     render_packet_pdf,
     resolve_packet_stripe_secret_key,
@@ -1188,6 +1189,7 @@ async def create_year_close_packet_checkout(
 async def confirm_year_close_packet(
     body: PacketConfirmRequest,
     user_id: Annotated[str, Depends(get_current_user)],
+    packet_analysis: Annotated[Optional[str], Query()] = None,
 ):
     """Unlock download after Stripe Checkout returns to staging (session_id)."""
     session_id = (body.session_id or "").strip()
@@ -1203,11 +1205,16 @@ async def confirm_year_close_packet(
         raise HTTPException(status_code=502, detail="Failed to verify checkout session")
 
     # Session metadata is canonical. Client analysis_id is optional and may be
-    # local-analysis after reload; success URL packet_analysis is a fallback.
+    # local-analysis after reload; packet_analysis query/body is a fallback.
+    nested_id = ""
+    if isinstance(body.analysis, dict):
+        nested_id = str(body.analysis.get("analysis_id") or "")
     analysis_id = packet_analysis_id_from_session(
         session,
+        packet_analysis or "",
         body.packet_analysis or "",
         body.analysis_id or "",
+        nested_id,
     )
     if not analysis_id:
         raise HTTPException(status_code=400, detail="analysis_id is required")
@@ -1215,9 +1222,15 @@ async def confirm_year_close_packet(
     upsert_payload(analysis_id, user_id, body.analysis)
 
     if not _grant_packet_from_session(session, analysis_id, user_id=user_id):
+        fields = packet_session_log_fields(session, analysis_id)
         logger.info(
-            "year-close packet confirm 403 session_present=1 analysis_id=%s",
-            analysis_id,
+            "year-close packet confirm 403 product=%s payment_status=%s "
+            "status=%s amount=%s analysis_id=%s",
+            fields["product"],
+            fields["payment_status"],
+            fields["status"],
+            fields["amount"],
+            fields["analysis_id"],
         )
         raise HTTPException(
             status_code=403,

@@ -11,8 +11,6 @@ from pypdf import PdfReader
 
 import main
 from auth import get_current_user, get_current_user_with_token
-from stripe import StripeObject
-
 from year_close_packet import (
     OPTIONS_WASH_SALE_FAQ,
     PACKET_AMOUNT_CENTS,
@@ -113,11 +111,40 @@ class FakeCheckoutSession:
         self.amount_total = PACKET_AMOUNT_CENTS
         self.metadata = kwargs.get("metadata") or {}
 
+
+class StripeObjectLike:
+    """Attribute-access fake of a Stripe retrieve result; not a dict."""
+
+    def __init__(self, **fields):
+        data = {}
+        for key, value in fields.items():
+            if isinstance(value, dict):
+                value = StripeObjectLike(**value)
+            data[key] = value
+            object.__setattr__(self, key, value)
+        object.__setattr__(self, "_data", data)
+
+    def __iter__(self):
+        raise TypeError("StripeObjectLike is not a dict")
+
+    def get(self, key, default=None):
+        return self._data.get(key, default)
+
+    def to_dict(self):
+        return {
+            key: (value.to_dict() if isinstance(value, StripeObjectLike) else value)
+            for key, value in self._data.items()
+        }
+
+    def to_dict_recursive(self):
+        return self.to_dict()
+
+
 def _stripe_object_session(**fields):
-    """Real stripe.checkout.Session.retrieve shape (StripeObject, not dict)."""
-    payload = {"object": "checkout.session", "id": "cs_test_retrieve"}
+    """StripeObject-like retrieve result: attributes, not a plain dict."""
+    payload = {"id": "cs_test_retrieve"}
     payload.update(fields)
-    return StripeObject.construct_from(payload, "sk_test")
+    return StripeObjectLike(**payload)
 
 
 def test_payload_and_pdf_contain_1099_totals_amd_and_faqs():
@@ -499,10 +526,10 @@ def test_confirm_packet_analysis_when_client_analysis_id_missing(monkeypatch):
 
     confirm = client.post(
         "/api/year-close-packet/confirm",
+        params={"packet_analysis": "analysis-sample-1"},
         json={
             "session_id": "cs_test_paid_packet_analysis",
-            "packet_analysis": "analysis-sample-1",
-            "analysis": SAMPLE_ANALYSIS,
+            "analysis": {k: v for k, v in SAMPLE_ANALYSIS.items() if k != "analysis_id"},
         },
     )
     assert confirm.status_code == 200, confirm.text
