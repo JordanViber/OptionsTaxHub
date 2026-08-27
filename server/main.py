@@ -22,7 +22,7 @@ import io
 import json
 from typing import List, Dict, Any
 from pywebpush import webpush, WebPushException
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from auth import get_current_user, enforce_ownership
 from models import (
@@ -195,6 +195,101 @@ def validate_user_id(user_id: Optional[str]) -> None:
             status_code=400,
             detail="Invalid user_id format. Must be UUID or alphanumeric string (max 64 chars)."
         )
+
+
+def _decode_csv_upload(contents: bytes) -> str:
+    """Decode uploaded CSV bytes (UTF-8 with BOM, UTF-8, or Windows-1252)."""
+    for encoding in ("utf-8-sig", "utf-8", "cp1252"):
+        try:
+            return contents.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    raise HTTPException(
+        status_code=400,
+        detail={
+            "message": "Could not read the CSV file. Export a UTF-8 CSV from Robinhood and try again.",
+            "errors": ["Unable to decode the uploaded file"],
+        },
+    )
+
+
+_INVALID_QUERY_TOKENS = frozenset({"", "undefined", "null", "nan", "none"})
+
+
+def _query_token(value: object) -> Optional[str]:
+    """Normalize a query value, dropping JS/JSON empty tokens."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        if value != value:  # NaN
+            return None
+        return str(int(value)) if value.is_integer() else str(value)
+    text = str(value).strip()
+    if not text or text.lower() in _INVALID_QUERY_TOKENS:
+        return None
+    return text
+
+
+def _coerce_int_query(value: object, default: int) -> int:
+    token = _query_token(value)
+    if token is None:
+        return default
+    try:
+        return int(token)
+    except ValueError:
+        try:
+            return int(float(token))
+        except ValueError:
+            return default
+
+
+def _coerce_float_query(value: object, default: float) -> float:
+    token = _query_token(value)
+    if token is None:
+        return default
+    try:
+        parsed = float(token)
+    except ValueError:
+        return default
+    if parsed != parsed:  # NaN
+        return default
+    return parsed
+
+
+def _tax_profile_from_query(
+    filing_status: Optional[str],
+    estimated_income: object,
+    tax_year: object,
+) -> TaxProfile:
+    """Build a TaxProfile, falling back to defaults when query values are invalid.
+
+    Invalid filing status, tax year, or income must not 422/500 the analyze
+    endpoint (the in-app sample CSV uses the user's saved profile params).
+    """
+    status_token = _query_token(filing_status)
+    try:
+        fs = FilingStatus(status_token) if status_token else FilingStatus.SINGLE
+    except ValueError:
+        fs = FilingStatus.SINGLE
+
+    year = _coerce_int_query(tax_year, 2025)
+    if year < 2024 or year > 2026:
+        year = 2025
+
+    income = _coerce_float_query(estimated_income, 75000.0)
+    if income < 0:
+        income = 75000.0
+
+    try:
+        return TaxProfile(
+            filing_status=fs,
+            estimated_annual_income=income,
+            tax_year=year,
+        )
+    except ValidationError:
+        return TaxProfile()
 
 @app.get("/health")
 async def health():
@@ -666,8 +761,8 @@ async def analyze_portfolio(
     file: Annotated[UploadFile, File()],
     supplemental_1099: Annotated[Optional[UploadFile], File()] = None,
     filing_status: Annotated[Optional[str], Query()] = "single",
-    estimated_income: Annotated[Optional[float], Query()] = 75000.0,
-    tax_year: Annotated[Optional[int], Query()] = 2025,
+    estimated_income: Annotated[Optional[str], Query()] = None,
+    tax_year: Annotated[Optional[str], Query()] = None,
     user_id: Annotated[str, Depends(get_current_user)] = "",
 ):
     """
@@ -685,9 +780,43 @@ async def analyze_portfolio(
     # Validate user_id format if provided
     validate_user_id(user_id)
 
-    # Read and parse CSV
     contents = await file.read()
-    tax_lots, transactions, parse_errors, realized_events = parse_csv(contents.decode("utf-8"))
+    try:
+        return await _run_portfolio_analysis(
+            contents,
+            filename=file.filename or "upload.csv",
+            supplemental_1099=supplemental_1099,
+            filing_status=filing_status,
+            estimated_income=estimated_income,
+            tax_year=tax_year,
+            user_id=user_id,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Portfolio analysis failed")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": "Analysis failed while processing the CSV. Please try again.",
+                "errors": [str(exc)],
+            },
+        ) from exc
+
+
+async def _run_portfolio_analysis(
+    contents: bytes,
+    *,
+    filename: str,
+    supplemental_1099: Optional[UploadFile],
+    filing_status: Optional[str],
+    estimated_income: object,
+    tax_year: object,
+    user_id: str,
+) -> PortfolioAnalysis:
+    """Parse the CSV and run tax, wash-sale, and harvesting analysis."""
+    csv_text = _decode_csv_upload(contents)
+    tax_lots, transactions, parse_errors, realized_events = parse_csv(csv_text)
 
     if not tax_lots and not transactions:
         raise HTTPException(
@@ -698,17 +827,7 @@ async def analyze_portfolio(
             },
         )
 
-    # Build tax profile from query params.
-    try:
-        fs = FilingStatus(filing_status)
-    except ValueError:
-        fs = FilingStatus.SINGLE
-
-    tax_profile = TaxProfile(
-        filing_status=fs,
-        estimated_annual_income=estimated_income or 75000.0,
-        tax_year=tax_year or 2025,
-    )
+    tax_profile = _tax_profile_from_query(filing_status, estimated_income, tax_year)
 
     all_warnings = list(parse_errors)
     supplemental_1099_summary, supplemental_1099_warnings = await _maybe_parse_supplemental_1099(
@@ -785,7 +904,7 @@ async def analyze_portfolio(
     )
 
     # Save analysis to history for authenticated user
-    _save_history_best_effort(user_id, file.filename or "upload.csv", summary, result)
+    _save_history_best_effort(user_id, filename, summary, result)
 
     return result
 
