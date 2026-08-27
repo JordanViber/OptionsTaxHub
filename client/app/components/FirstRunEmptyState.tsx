@@ -20,7 +20,13 @@ import NextLink from "next/link";
 /**
  * First-run guidance shown on the dashboard before any analysis exists.
  */
-export default function FirstRunEmptyState() {
+export default function FirstRunEmptyState({
+  onLoadSample,
+  settingsHref = "/settings",
+}: Readonly<{
+  onLoadSample?: () => void;
+  settingsHref?: string;
+}>) {
   return (
     <Card variant="outlined">
       <CardContent>
@@ -32,6 +38,7 @@ export default function FirstRunEmptyState() {
             <Typography variant="body2" color="text.secondary">
               Upload a Robinhood transactions CSV to see open positions, tax
               lots, wash-sale flags, and federal tax-loss harvesting estimates.
+              Or open the 2026 sample — no account required.
             </Typography>
           </Box>
 
@@ -48,7 +55,7 @@ export default function FirstRunEmptyState() {
                 above
               </Typography>
               <Typography component="li" variant="body2">
-                Optionally attach last year&apos;s Robinhood 1099 PDF next to the
+                Optionally attach last year's Robinhood 1099 PDF next to the
                 CSV for reconciliation context — not a rebuild of lots
               </Typography>
             </Box>
@@ -60,6 +67,15 @@ export default function FirstRunEmptyState() {
             flexWrap="wrap"
             useFlexGap
           >
+            {onLoadSample && (
+              <Button
+                variant="contained"
+                onClick={onLoadSample}
+                sx={{ textTransform: "none" }}
+              >
+                Open the 2026 sample
+              </Button>
+            )}
             <Button
               component="a"
               href="/sample-robinhood-transactions.csv"
@@ -72,7 +88,7 @@ export default function FirstRunEmptyState() {
             </Button>
             <Button
               component={NextLink}
-              href="/settings"
+              href={settingsHref}
               variant="text"
               startIcon={<SettingsIcon />}
               sx={{ textTransform: "none" }}
@@ -84,10 +100,11 @@ export default function FirstRunEmptyState() {
           <Alert severity="info" variant="outlined">
             <AlertTitle>Savings estimates use your tax profile</AlertTitle>
             Filing status, estimated income, and tax year in{" "}
-            <MuiLink component={NextLink} href="/settings">
+            <MuiLink component={NextLink} href={settingsHref}>
               the Settings page
             </MuiLink>{" "}
             drive the federal tax-savings estimate. State tax is not calculated.
+            Sign in to keep that profile on the next device.
           </Alert>
         </Stack>
       </CardContent>

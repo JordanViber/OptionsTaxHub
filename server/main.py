@@ -24,7 +24,7 @@ from typing import List, Dict, Any
 from pywebpush import webpush, WebPushException
 from pydantic import BaseModel, ValidationError
 
-from auth import get_current_user, enforce_ownership
+from auth import get_current_user, get_optional_user, enforce_ownership
 from models import (
     AssetType,
     FilingStatus,
@@ -182,7 +182,7 @@ def validate_user_id(user_id: Optional[str]) -> None:
     Accepts UUID format (with or without hyphens) or alphanumeric strings up to 64 chars.
     Raises HTTPException if invalid.
     """
-    if user_id is None:
+    if not user_id:
         return
 
     # Allow UUID format (8-4-4-4-12 hex digits with optional hyphens)
@@ -361,6 +361,8 @@ def _save_history_best_effort(
     result: PortfolioAnalysis,
 ) -> None:
     """Save analysis to history (best-effort, non-blocking)."""
+    if not user_id:
+        return
     try:
         # Use mode="json" to convert date/datetime objects to ISO strings
         # so the dict is JSON-serializable for the JSONB column.
@@ -763,7 +765,7 @@ async def analyze_portfolio(
     filing_status: Annotated[Optional[str], Query()] = "single",
     estimated_income: Annotated[Optional[str], Query()] = None,
     tax_year: Annotated[Optional[str], Query()] = None,
-    user_id: Annotated[str, Depends(get_current_user)] = "",
+    user_id: Annotated[str, Depends(get_optional_user)] = "",
 ):
     """
     Full portfolio analysis with tax-loss harvesting suggestions.
@@ -772,8 +774,8 @@ async def analyze_portfolio(
     fetches live prices, runs tax engine, detects wash sales, and generates
     AI-powered harvesting suggestions.
 
-    **Authentication Required**: Must provide valid Supabase JWT token in Authorization header.
-    User ID is automatically extracted from the token.
+    Authentication is optional. With a valid Supabase JWT the analysis is saved
+    to the user's history. Guests still get a full analysis; it is not persisted.
 
     DISCLAIMER: For educational/simulation purposes only — not financial or tax advice.
     """

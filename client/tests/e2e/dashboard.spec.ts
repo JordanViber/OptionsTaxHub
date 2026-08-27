@@ -169,10 +169,10 @@ test.describe("Dashboard UI Fixes", () => {
   // --- Fix 6: Upload history sidebar ---
   test("history drawer opens and shows past uploads", async ({ page }) => {
     // Click the History button in the AppBar
-    await page.click("text=History");
+    await page.click("text=Saved runs");
 
-    // Drawer should open with "Upload History" heading
-    await expect(page.getByText("Upload History")).toBeVisible({
+    // Drawer should open with "Saved runs" heading
+    await expect(page.getByRole("heading", { name: "Saved runs" })).toBeVisible({
       timeout: 3000,
     });
 
@@ -204,14 +204,14 @@ test.describe("Dashboard UI Fixes", () => {
       timeout: 10000,
     });
 
-    // Open history drawer
-    await page.click("text=History");
-    await expect(page.getByText("Upload History")).toBeVisible({
+    // Open saved runs drawer
+    await page.getByRole("button", { name: "Saved runs" }).click();
+    await expect(page.getByRole("heading", { name: "Saved runs" })).toBeVisible({
       timeout: 3000,
     });
 
     // Should show empty state text
-    await expect(page.getByText("No past uploads yet")).toBeVisible();
+    await expect(page.getByText("No saved runs yet")).toBeVisible();
   });
 
   test("new upload appears in history after analysis", async ({ page }) => {
@@ -241,9 +241,9 @@ test.describe("Dashboard UI Fixes", () => {
     // Upload CSV
     await uploadTestCsv(page);
 
-    // Open history drawer
-    await page.click("text=History");
-    await expect(page.getByText("Upload History")).toBeVisible({
+    // Open saved runs drawer
+    await page.getByRole("button", { name: "Saved runs" }).click();
+    await expect(page.getByRole("heading", { name: "Saved runs" })).toBeVisible({
       timeout: 3000,
     });
 
@@ -293,7 +293,7 @@ test.describe("Dashboard Upload & Results", () => {
 
   test("upload area is clickable and opens file dialog", async ({ page }) => {
     // The upload area has role="button"
-    const uploadArea = page.getByRole("button", { name: /Click to upload CSV/i });
+    const uploadArea = page.locator('label[for="desk-csv-input"]');
     await expect(uploadArea).toBeVisible();
   });
 

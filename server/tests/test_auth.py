@@ -245,6 +245,22 @@ class TestGetCurrentUser:
 
 
 # ---------------------------------------------------------------------------
+# get_optional_user
+# ---------------------------------------------------------------------------
+
+class TestGetOptionalUser:
+    def test_no_credentials_returns_empty_string(self):
+        assert auth.get_optional_user(credentials=None) == ""
+
+    def test_valid_token_returns_user_id(self, monkeypatch):
+        secret = "test-secret-key"
+        monkeypatch.setenv("SUPABASE_JWT_SECRET", secret)
+        token = make_hs256_token({"sub": "user-opt"}, secret)
+        creds = make_credentials(token)
+        assert auth.get_optional_user(credentials=creds) == "user-opt"
+
+
+# ---------------------------------------------------------------------------
 # get_current_user_with_token
 # ---------------------------------------------------------------------------
 

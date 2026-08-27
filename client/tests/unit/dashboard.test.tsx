@@ -605,7 +605,7 @@ describe("DashboardPage", () => {
 
     render(<DashboardPage />, { wrapper: createWrapper() });
 
-    fireEvent.click(screen.getAllByRole("button", { name: /History/i })[0]);
+    fireEvent.click(screen.getAllByRole("button", { name: /Saved runs/i })[0]);
     fireEvent.click(await screen.findByText("saved.csv"));
 
     await waitFor(() => {

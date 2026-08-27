@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 const mockPush = jest.fn();
@@ -7,16 +7,6 @@ const mockUseAuth = jest.fn();
 jest.mock("next/navigation", () => ({
   useRouter: () => ({ push: mockPush }),
 }));
-
-jest.mock("next/link", () => {
-  return ({
-    children,
-    href,
-  }: {
-    children: React.ReactNode;
-    href: string;
-  }) => <a href={href}>{children}</a>;
-});
 
 jest.mock("../../app/context/auth", () => ({
   useAuth: () => mockUseAuth(),
@@ -40,6 +30,7 @@ describe("LandingPage", () => {
   beforeEach(() => {
     mockPush.mockClear();
     mockUseAuth.mockReset();
+    sessionStorage.clear();
   });
 
   it("renders nothing while auth is loading", () => {
@@ -47,7 +38,6 @@ describe("LandingPage", () => {
 
     const { container } = renderWithClient(<LandingPage />);
 
-    // Should render null during loading
     expect(container.firstChild).toBeNull();
   });
 
@@ -68,55 +58,52 @@ describe("LandingPage", () => {
     renderWithClient(<LandingPage />);
 
     expect(
-      screen.getByText(/Smart Tax Optimization/),
+      screen.getByText(/Keep more of what you trade/),
     ).toBeInTheDocument();
     expect(
-      screen.getByText(/for Options Traders/),
+      screen.getByText(/year-end tax desk/i),
     ).toBeInTheDocument();
   });
 
-  it("renders navigation with Sign In and Get Started buttons", () => {
+  it("renders navigation with Sign In and Open desk", () => {
     mockUseAuth.mockReturnValue({ user: null, loading: false });
 
     renderWithClient(<LandingPage />);
 
-    // There are two Sign In buttons (nav + hero), so use getAllByText
-    expect(screen.getAllByText("Sign In")).toHaveLength(2);
-    expect(screen.getByText("Get Started")).toBeInTheDocument();
+    expect(screen.getAllByText("Sign In").length).toBeGreaterThan(0);
+    expect(screen.getByText("Open desk")).toBeInTheDocument();
   });
 
-  it("renders all six feature cards", () => {
+  it("renders feature columns", () => {
     mockUseAuth.mockReturnValue({ user: null, loading: false });
 
     renderWithClient(<LandingPage />);
 
-    expect(screen.getByText("CSV Upload & Analysis")).toBeInTheDocument();
-    expect(screen.getByText("Tax-Loss Harvesting")).toBeInTheDocument();
-    expect(screen.getByText("Wash-Sale Detection")).toBeInTheDocument();
-    expect(screen.getByText("Tax Savings Estimates")).toBeInTheDocument();
-    expect(screen.getByText("Instant Results")).toBeInTheDocument();
-    expect(screen.getByText("Privacy First")).toBeInTheDocument();
+    expect(screen.getByText("Harvest queue")).toBeInTheDocument();
+    expect(screen.getByText("Wash-sale radar")).toBeInTheDocument();
+    expect(screen.getByText("Lot ledger")).toBeInTheDocument();
   });
 
-  it("renders How It Works section with 3 steps", () => {
+  it("renders How the desk works with 3 steps", () => {
     mockUseAuth.mockReturnValue({ user: null, loading: false });
 
     renderWithClient(<LandingPage />);
 
-    expect(screen.getByText("How It Works")).toBeInTheDocument();
-    expect(screen.getByText("Create your free account")).toBeInTheDocument();
-    expect(screen.getByText("Upload your CSV export")).toBeInTheDocument();
-    expect(screen.getByText("Get instant tax insights")).toBeInTheDocument();
+    expect(screen.getByText("How the desk works")).toBeInTheDocument();
+    expect(screen.getByText("Drop a CSV")).toBeInTheDocument();
+    expect(screen.getByText("Read the desk")).toBeInTheDocument();
+    expect(screen.getByText("Take the packet")).toBeInTheDocument();
   });
 
-  it("renders CTA section", () => {
+  it("renders optional account section", () => {
     mockUseAuth.mockReturnValue({ user: null, loading: false });
 
     renderWithClient(<LandingPage />);
 
     expect(
-      screen.getByText("Ready to Optimize Your Taxes?"),
+      screen.getByText(/Sign in for the year that follows you/),
     ).toBeInTheDocument();
+    expect(screen.getByText("Saved runs")).toBeInTheDocument();
   });
 
   it("renders footer with disclaimer", () => {
@@ -129,30 +116,32 @@ describe("LandingPage", () => {
     ).toBeInTheDocument();
   });
 
-  it("renders free badge chip", () => {
+  it("sample and CSV CTAs go to the desk with the right intent", () => {
     mockUseAuth.mockReturnValue({ user: null, loading: false });
 
     renderWithClient(<LandingPage />);
 
-    expect(
-      screen.getByText("Free to use — No credit card required"),
-    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open the 2026 sample" }));
+    expect(sessionStorage.getItem("oth-load-sample")).toBe("1");
+    expect(mockPush).toHaveBeenCalledWith("/dashboard");
+
+    mockPush.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "I have a CSV" }));
+    expect(sessionStorage.getItem("oth-upload-intent")).toBe("1");
+    expect(mockPush).toHaveBeenCalledWith("/dashboard");
   });
 
-  it("uses real links for Sign In and Get Started", () => {
+  it("uses real links for Sign In and Open desk", () => {
     mockUseAuth.mockReturnValue({ user: null, loading: false });
     renderWithClient(<LandingPage />);
 
-    const signIn = screen.getAllByRole("link", { name: "Sign In" });
+    const signIn = screen.getAllByRole("link", { name: /Sign In/i });
     expect(signIn.length).toBeGreaterThan(0);
     expect(signIn[0]).toHaveAttribute("href", "/auth/signin");
-    expect(screen.getByRole("link", { name: "Get Started" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Open desk" })).toHaveAttribute(
       "href",
-      "/auth/signup",
+      "/dashboard",
     );
-    expect(
-      screen.getByRole("link", { name: "Create Free Account" }),
-    ).toHaveAttribute("href", "/auth/signup");
   });
 
   it("does not claim in-memory-only storage or state tax savings", () => {
@@ -175,7 +164,7 @@ describe("LandingPage", () => {
     expect(container.querySelector("input[autocomplete='cc-csc']")).toBeNull();
     expect(container.querySelector("input[name='cardNumber']")).toBeNull();
     expect(screen.queryByLabelText(/card number/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Year-close packet/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("Year-close packet — $49")).not.toBeInTheDocument();
   });
 
   it("links to the privacy page", () => {

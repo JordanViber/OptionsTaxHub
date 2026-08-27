@@ -171,8 +171,8 @@ function SuggestionCard({
                   sx={{
                     height: 20,
                     fontSize: "0.65rem",
-                    backgroundColor: "#e3f2fd",
-                    color: "#1565c0",
+                    backgroundColor: "rgba(122, 158, 132, 0.18)",
+                    color: "#7a9e84",
                   }}
                 />
               )}

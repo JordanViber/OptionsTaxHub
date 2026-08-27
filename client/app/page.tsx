@@ -3,30 +3,19 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
-  AppBar,
-  Toolbar,
-  Container,
   Box,
   Button,
+  Container,
   Stack,
   Typography,
-  Card,
-  CardContent,
-  Grid,
-  Chip,
 } from "@mui/material";
-import {
-  Dashboard as DashboardIcon,
-  TrendingDown as HarvestIcon,
-  Warning as WashSaleIcon,
-  CloudUpload as UploadIcon,
-  Security as SecurityIcon,
-  Speed as SpeedIcon,
-  AccountBalanceWallet as WalletIcon,
-} from "@mui/icons-material";
 import Link from "next/link";
 import { useAuth } from "@/app/context/auth";
 import TaxDisclaimer from "./components/TaxDisclaimer";
+import Wordmark from "./components/Wordmark";
+import DeskPreview from "./components/DeskPreview";
+
+const UPLOAD_INTENT_KEY = "oth-upload-intent";
 
 export default function LandingPage() {
   const router = useRouter();
@@ -37,398 +26,413 @@ export default function LandingPage() {
     setMounted(true);
   }, []);
 
-  // If already authenticated, redirect to dashboard
   useEffect(() => {
     if (!loading && user) {
       router.push("/dashboard");
     }
   }, [loading, user, router]);
 
-  // Prevent hydration mismatch
   if (!mounted) return null;
-
-  // Show nothing while checking auth (brief flash prevention)
   if (loading) return null;
-
-  // If user is authenticated, show nothing while redirecting
   if (user) return null;
 
-  const features = [
-    {
-      icon: <UploadIcon sx={{ fontSize: 40, color: "primary.main" }} />,
-      title: "CSV Upload & Analysis",
-      description:
-        "Upload your Robinhood transaction exports and get instant portfolio analysis with detailed position breakdowns.",
-    },
-    {
-      icon: <HarvestIcon sx={{ fontSize: 40, color: "success.main" }} />,
-      title: "Tax-Loss Harvesting",
-      description:
-        "Identify positions with unrealized losses and get smart suggestions to harvest tax savings before year-end.",
-    },
-    {
-      icon: <WashSaleIcon sx={{ fontSize: 40, color: "warning.main" }} />,
-      title: "Wash-Sale Detection",
-      description:
-        "Automatically flag potential wash-sale rule violations so you can avoid costly IRS penalties.",
-    },
-    {
-      icon: <WalletIcon sx={{ fontSize: 40, color: "info.main" }} />,
-      title: "Tax Savings Estimates",
-      description:
-        "See estimated federal tax savings based on your filing status, income bracket, and tax year. State tax is not included.",
-    },
-    {
-      icon: <SpeedIcon sx={{ fontSize: 40, color: "secondary.main" }} />,
-      title: "Instant Results",
-      description:
-        "Get portfolio analysis in seconds. No waiting, no complex setup — just upload and go.",
-    },
-    {
-      icon: <SecurityIcon sx={{ fontSize: 40, color: "error.main" }} />,
-      title: "Privacy First",
-      description:
-        "CSVs are processed to generate your analysis. Results are saved to your account history so you can reopen or delete them. This is not an in-memory-only tool.",
-    },
-  ];
+  const openSample = () => {
+    try {
+      sessionStorage.setItem("oth-load-sample", "1");
+    } catch {
+      // ignore
+    }
+    router.push("/dashboard");
+  };
+
+  const openCsv = () => {
+    try {
+      sessionStorage.setItem(UPLOAD_INTENT_KEY, "1");
+    } catch {
+      // ignore
+    }
+    router.push("/dashboard");
+  };
 
   return (
-    <Box sx={{ minHeight: "100vh", bgcolor: "background.default" }}>
-      {/* Navigation */}
-      <AppBar position="static" elevation={0}>
-        <Toolbar sx={{ px: { xs: 2, sm: 3 } }}>
-          <DashboardIcon sx={{ mr: 1 }} />
-          <Typography
-            variant="h6"
-            component="div"
-            sx={{ flexGrow: 1, fontWeight: 700 }}
-          >
-            OptionsTaxHub
-          </Typography>
+    <Box
+      sx={{
+        minHeight: "100vh",
+        bgcolor: "background.default",
+        color: "text.primary",
+        position: "relative",
+        overflow: "hidden",
+      }}
+    >
+      <Box
+        className="desk-grid"
+        sx={{
+          pointerEvents: "none",
+          position: "absolute",
+          inset: 0,
+          opacity: 0.6,
+        }}
+      />
+      <Box
+        className="grain"
+        sx={{
+          pointerEvents: "none",
+          position: "absolute",
+          inset: 0,
+          opacity: 0.7,
+        }}
+      />
+
+      <Box
+        component="header"
+        sx={{
+          position: "relative",
+          zIndex: 30,
+          mx: "auto",
+          maxWidth: 1152,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 2,
+          px: 2.5,
+          py: 2.5,
+        }}
+      >
+        <Wordmark />
+        <Stack direction="row" spacing={1} alignItems="center">
           <Button
-            color="inherit"
             component={Link}
-            href="/auth/signin"
-            sx={{ textTransform: "none", mr: 1 }}
+            href="/dashboard"
+            variant="outlined"
+            size="small"
           >
+            Open desk
+          </Button>
+          <Button component={Link} href="/auth/signin" size="small">
             Sign In
           </Button>
-          <Button
-            variant="contained"
-            color="secondary"
-            component={Link}
-            href="/auth/signup"
-            sx={{ textTransform: "none", fontWeight: 600 }}
-          >
-            Get Started
-          </Button>
-        </Toolbar>
-      </AppBar>
-
-      {/* Hero Section */}
-      <Box
-        sx={{
-          background: "linear-gradient(135deg, #1565c0 0%, #0d47a1 100%)",
-          color: "white",
-          py: { xs: 8, md: 12 },
-          px: 2,
-          textAlign: "center",
-        }}
-      >
-        <Container maxWidth="md">
-          <Chip
-            label="Free to use — No credit card required"
-            sx={{
-              mb: 3,
-              bgcolor: "rgba(255,255,255,0.15)",
-              color: "white",
-              fontWeight: 600,
-              fontSize: "0.85rem",
-            }}
-          />
-          <Typography
-            variant="h2"
-            sx={{
-              fontWeight: 800,
-              mb: 2,
-              fontSize: { xs: "2rem", sm: "2.75rem", md: "3.5rem" },
-              lineHeight: 1.2,
-            }}
-          >
-            Smart Tax Optimization
-            <br />
-            for Options Traders
-          </Typography>
-          <Typography
-            variant="h6"
-            sx={{
-              mb: 4,
-              opacity: 0.9,
-              maxWidth: 600,
-              mx: "auto",
-              fontWeight: 400,
-              fontSize: { xs: "1rem", sm: "1.15rem" },
-              lineHeight: 1.6,
-            }}
-          >
-            Upload your portfolio, identify tax-loss harvesting opportunities,
-            detect wash-sale violations, and estimate your savings — all in
-            seconds.
-          </Typography>
-          <Stack
-            direction={{ xs: "column", sm: "row" }}
-            spacing={2}
-            justifyContent="center"
-          >
-            <Button
-              variant="contained"
-              size="large"
-              component={Link}
-              href="/auth/signup"
-              sx={{
-                py: 1.5,
-                px: 4,
-                fontSize: "1.1rem",
-                fontWeight: 700,
-                textTransform: "none",
-                bgcolor: "white",
-                color: "primary.dark",
-                "&:hover": { bgcolor: "grey.100" },
-              }}
-            >
-              Create Free Account
-            </Button>
-            <Button
-              variant="outlined"
-              size="large"
-              component={Link}
-              href="/auth/signin"
-              sx={{
-                py: 1.5,
-                px: 4,
-                fontSize: "1.1rem",
-                fontWeight: 700,
-                textTransform: "none",
-                borderColor: "rgba(255,255,255,0.5)",
-                color: "white",
-                "&:hover": {
-                  borderColor: "white",
-                  bgcolor: "rgba(255,255,255,0.1)",
-                },
-              }}
-            >
-              Sign In
-            </Button>
-          </Stack>
-        </Container>
+        </Stack>
       </Box>
 
-      {/* Features Grid */}
-      <Container maxWidth="lg" sx={{ py: { xs: 6, md: 10 } }}>
-        <Typography
-          variant="h4"
+      <Container
+        maxWidth="lg"
+        sx={{ position: "relative", zIndex: 10, pt: { xs: 4, md: 8 }, pb: 10 }}
+      >
+        <Box
           sx={{
-            textAlign: "center",
-            fontWeight: 700,
-            mb: 1,
-            fontSize: { xs: "1.5rem", md: "2rem" },
+            display: "grid",
+            gap: { xs: 6, lg: 8 },
+            gridTemplateColumns: { lg: "1.05fr 0.95fr" },
+            alignItems: "center",
           }}
         >
-          Everything You Need for Tax-Smart Trading
-        </Typography>
-        <Typography
-          variant="body1"
-          color="text.secondary"
-          sx={{ textAlign: "center", mb: 6, maxWidth: 600, mx: "auto" }}
-        >
-          Built for DIY retail investors who want to maximize after-tax returns
-          without the complexity.
-        </Typography>
-        <Grid container spacing={3}>
-          {features.map((feature) => (
-            <Grid size={{ xs: 12, sm: 6, md: 4 }} key={feature.title}>
-              <Card
-                sx={{
-                  height: "100%",
-                  transition: "transform 0.2s, box-shadow 0.2s",
-                  "&:hover": {
-                    transform: "translateY(-4px)",
-                    boxShadow: 6,
-                  },
-                }}
+          <Box>
+            <Typography
+              sx={{
+                fontFamily: "var(--font-mono), 'IBM Plex Mono', monospace",
+                fontSize: 11,
+                letterSpacing: "0.22em",
+                textTransform: "uppercase",
+                color: "text.secondary",
+              }}
+            >
+              Tax year 2026 · FIFO · Wash-sale window 30d
+            </Typography>
+            <Typography
+              variant="h1"
+              sx={{
+                mt: 2,
+                fontSize: { xs: "2.6rem", sm: "3.6rem", md: "4.25rem" },
+                lineHeight: 1.05,
+              }}
+            >
+              Keep more of what you trade.
+            </Typography>
+            <Typography
+              sx={{
+                mt: 2.5,
+                maxWidth: 560,
+                fontSize: { xs: "1.05rem", sm: "1.15rem" },
+                color: "text.secondary",
+                lineHeight: 1.65,
+              }}
+            >
+              OptionsTaxHub is a year-end tax desk: upload a brokerage CSV, see
+              harvestable lots, catch wash-sale traps, and know the federal
+              dollars still on the table — before December 31. State tax is not
+              included.
+            </Typography>
+            <Stack
+              direction={{ xs: "column", sm: "row" }}
+              spacing={1.5}
+              sx={{ mt: 4 }}
+            >
+              <Button
+                variant="contained"
+                size="large"
+                onClick={openSample}
+                sx={{ py: 1.5, px: 3, fontWeight: 700 }}
               >
-                <CardContent sx={{ p: 3 }}>
-                  <Box sx={{ mb: 2 }}>{feature.icon}</Box>
-                  <Typography
-                    variant="h6"
-                    sx={{ fontWeight: 700, mb: 1, fontSize: "1.1rem" }}
-                  >
-                    {feature.title}
-                  </Typography>
-                  <Typography
-                    variant="body2"
-                    color="text.secondary"
-                    sx={{ lineHeight: 1.6 }}
-                  >
-                    {feature.description}
-                  </Typography>
-                </CardContent>
-              </Card>
-            </Grid>
-          ))}
-        </Grid>
+                Open the 2026 sample
+              </Button>
+              <Button
+                variant="outlined"
+                size="large"
+                onClick={openCsv}
+                sx={{ py: 1.5, px: 3, fontWeight: 700 }}
+              >
+                I have a CSV
+              </Button>
+            </Stack>
+            <Typography
+              variant="body2"
+              sx={{ mt: 2, color: "text.secondary", opacity: 0.85 }}
+            >
+              Sample loads instantly. Sign in only if you want tax year and
+              saved runs waiting on the next device.
+            </Typography>
+          </Box>
+          <DeskPreview />
+        </Box>
       </Container>
 
-      {/* How It Works */}
-      <Box sx={{ bgcolor: "grey.50", py: { xs: 6, md: 10 }, px: 2 }}>
-        <Container maxWidth="md">
-          <Typography
-            variant="h4"
-            sx={{
-              textAlign: "center",
-              fontWeight: 700,
-              mb: 6,
-              fontSize: { xs: "1.5rem", md: "2rem" },
-            }}
-          >
-            How It Works
-          </Typography>
-          <Stack spacing={4}>
-            {[
-              {
-                step: "1",
-                title: "Create your free account",
-                desc: "Sign up in seconds with just an email and password.",
-              },
-              {
-                step: "2",
-                title: "Upload your CSV export",
-                desc: "Export your transaction history from Robinhood (or use our simplified format) and upload the CSV.",
-              },
-              {
-                step: "3",
-                title: "Get instant tax insights",
-                desc: "See your portfolio breakdown, harvesting suggestions, wash-sale warnings, and estimated tax savings immediately.",
-              },
-            ].map((item) => (
-              <Stack
-                key={item.step}
-                direction="row"
-                spacing={3}
-                alignItems="flex-start"
-              >
-                <Box
-                  sx={{
-                    width: 48,
-                    height: 48,
-                    borderRadius: "50%",
-                    bgcolor: "primary.main",
-                    color: "white",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    fontWeight: 800,
-                    fontSize: "1.25rem",
-                    flexShrink: 0,
-                  }}
-                >
-                  {item.step}
-                </Box>
-                <Box>
-                  <Typography variant="h6" sx={{ fontWeight: 700, mb: 0.5 }}>
-                    {item.title}
-                  </Typography>
-                  <Typography variant="body1" color="text.secondary">
-                    {item.desc}
-                  </Typography>
-                </Box>
-              </Stack>
-            ))}
-          </Stack>
-        </Container>
-      </Box>
-
-      {/* CTA Section */}
       <Box
         sx={{
-          py: { xs: 6, md: 10 },
-          px: 2,
-          textAlign: "center",
+          position: "relative",
+          zIndex: 10,
+          borderTop: "1px solid",
+          borderBottom: "1px solid",
+          borderColor: "divider",
+          bgcolor: "rgba(18,20,26,0.4)",
         }}
       >
-        <Container maxWidth="sm">
-          <Typography
-            variant="h4"
+        <Container maxWidth="lg" sx={{ py: 6 }}>
+          <Box
             sx={{
-              fontWeight: 700,
-              mb: 2,
-              fontSize: { xs: "1.5rem", md: "2rem" },
+              display: "grid",
+              gap: 4,
+              gridTemplateColumns: { sm: "repeat(3, 1fr)" },
             }}
           >
-            Ready to Optimize Your Taxes?
-          </Typography>
-          <Typography
-            variant="body1"
-            color="text.secondary"
-            sx={{ mb: 4, lineHeight: 1.6 }}
-          >
-            Join OptionsTaxHub today and start identifying tax-loss harvesting
-            opportunities in your portfolio.
-          </Typography>
-          <Button
-            variant="contained"
-            size="large"
-            component={Link}
-            href="/auth/signup"
-            sx={{
-              py: 1.5,
-              px: 5,
-              fontSize: "1.1rem",
-              fontWeight: 700,
-              textTransform: "none",
-            }}
-          >
-            Get Started — It&apos;s Free
-          </Button>
+            <Feature
+              title="Harvest queue"
+              body="Losing lots ranked by federal savings at your bracket. Short-term first. Wash-sale risk called out before you click."
+            />
+            <Feature
+              title="Wash-sale radar"
+              body="Same-symbol buys inside 30 days get grouped by ticker with disallowed loss and the basis bump on the replacement lot."
+            />
+            <Feature
+              title="Lot ledger"
+              body="FIFO tax lots under every position. Holding period in English. ST / LT. Expand a row — every lot, not a spreadsheet dump."
+            />
+          </Box>
         </Container>
       </Box>
 
-      {/* Visible tax disclaimer — not only the footer caption */}
-      <Container maxWidth="md" sx={{ pb: 4 }}>
+      <Container
+        maxWidth="lg"
+        sx={{ position: "relative", zIndex: 10, py: 8 }}
+      >
+        <Typography
+          sx={{
+            fontFamily: "var(--font-mono), 'IBM Plex Mono', monospace",
+            fontSize: 11,
+            letterSpacing: "0.22em",
+            textTransform: "uppercase",
+            color: "text.secondary",
+          }}
+        >
+          How the desk works
+        </Typography>
+        <Typography
+          variant="h2"
+          sx={{ mt: 1.5, maxWidth: 640, fontSize: { xs: "1.75rem", md: "2.25rem" } }}
+        >
+          Three moves. Then you know what to sell.
+        </Typography>
+        <Box
+          component="ol"
+          sx={{
+            mt: 5,
+            p: 0,
+            m: 0,
+            listStyle: "none",
+            display: "grid",
+            gap: 3,
+            gridTemplateColumns: { md: "repeat(3, 1fr)" },
+          }}
+        >
+          {[
+            {
+              n: "01",
+              t: "Drop a CSV",
+              d: "Robinhood transaction export, or our 2026 sample. Parsed into FIFO lots in seconds.",
+            },
+            {
+              n: "02",
+              t: "Read the desk",
+              d: "One number at the top: federal harvest still available. Then the queue, the wash sales, the ledger.",
+            },
+            {
+              n: "03",
+              t: "Take the packet",
+              d: "1099 vs CSV wash lots and settlement-date FAQ on the desk. $49 unlocks the CPA PDF for that tax year.",
+            },
+          ].map((step) => (
+            <Box
+              component="li"
+              key={step.n}
+              className="hairline"
+              sx={{ borderRadius: 3, bgcolor: "background.paper", px: 2.5, py: 3 }}
+            >
+              <Typography
+                sx={{
+                  fontFamily: "var(--font-mono), 'IBM Plex Mono', monospace",
+                  fontSize: 12,
+                  color: "text.secondary",
+                }}
+              >
+                {step.n}
+              </Typography>
+              <Typography variant="h5" sx={{ mt: 1.5 }}>
+                {step.t}
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                {step.d}
+              </Typography>
+            </Box>
+          ))}
+        </Box>
+      </Container>
+
+      <Box
+        sx={{
+          position: "relative",
+          zIndex: 10,
+          borderTop: "1px solid",
+          borderColor: "divider",
+          bgcolor: "rgba(18,20,26,0.3)",
+        }}
+      >
+        <Container maxWidth="lg" sx={{ py: 8 }}>
+          <Typography
+            sx={{
+              fontFamily: "var(--font-mono), 'IBM Plex Mono', monospace",
+              fontSize: 11,
+              letterSpacing: "0.22em",
+              textTransform: "uppercase",
+              color: "text.secondary",
+            }}
+          >
+            Optional account
+          </Typography>
+          <Stack
+            direction={{ xs: "column", lg: "row" }}
+            justifyContent="space-between"
+            alignItems={{ lg: "flex-end" }}
+            spacing={3}
+            sx={{ mt: 1.5 }}
+          >
+            <Typography
+              variant="h2"
+              sx={{ maxWidth: 640, fontSize: { xs: "1.75rem", md: "2.25rem" } }}
+            >
+              Sign in for the year that follows you — not a velvet rope.
+            </Typography>
+            <Button variant="outlined" component={Link} href="/auth/signin">
+              See what's kept
+            </Button>
+          </Stack>
+          <Box
+            sx={{
+              mt: 5,
+              display: "grid",
+              gap: 4,
+              gridTemplateColumns: { sm: "repeat(3, 1fr)" },
+            }}
+          >
+            <Feature
+              title="Tax year travels"
+              body="Filing status, income, state, and TY 2024–2026 sync to your account. Switch years without retyping the profile."
+            />
+            <Feature
+              title="Saved runs"
+              body="Named past analyses reopen without the original file. Harvest, wash sales, and packet unlocks follow the tax year. Analyses are saved to your account history so you can reopen or delete them."
+            />
+            <Feature
+              title="Last year’s book"
+              body="2025 next to 2026. Come back in December and pick up the run you already reconciled."
+            />
+          </Box>
+        </Container>
+      </Box>
+
+      <Container maxWidth="md" sx={{ position: "relative", zIndex: 10, py: 4 }}>
         <TaxDisclaimer />
       </Container>
 
-      {/* Footer */}
       <Box
+        component="footer"
         sx={{
-          bgcolor: "grey.900",
-          color: "grey.400",
+          position: "relative",
+          zIndex: 10,
+          borderTop: "1px solid",
+          borderColor: "divider",
           py: 4,
-          px: 2,
-          textAlign: "center",
+          px: 2.5,
         }}
       >
-        <Container maxWidth="md">
-          <Typography variant="body2" sx={{ mb: 1 }}>
-            &copy; {new Date().getFullYear()} OptionsTaxHub. All rights
-            reserved.
-          </Typography>
-          <Typography variant="body2" sx={{ mb: 1.5 }}>
+        <Container
+          maxWidth="lg"
+          sx={{
+            display: "flex",
+            flexDirection: { xs: "column", sm: "row" },
+            justifyContent: "space-between",
+            gap: 3,
+          }}
+        >
+          <Box sx={{ maxWidth: 520 }}>
+            <Wordmark />
+            <Typography
+              variant="caption"
+              sx={{ display: "block", mt: 2, color: "text.secondary", lineHeight: 1.6 }}
+            >
+              This tool is for educational and informational purposes only. It
+              does not constitute financial, tax, or legal advice. Consult a
+              qualified professional before making tax decisions. Analyses are
+              saved to your account history and can be deleted.
+            </Typography>
+          </Box>
+          <Stack direction="row" spacing={3} sx={{ color: "text.secondary" }}>
             <Link href="/privacy" style={{ color: "inherit" }}>
               Privacy
             </Link>
-          </Typography>
-          <Typography
-            variant="caption"
-            sx={{ display: "block", maxWidth: 500, mx: "auto", lineHeight: 1.5 }}
-          >
-            This tool is for educational and informational purposes only. It
-            does not constitute financial, tax, or legal advice. Consult a
-            qualified professional before making tax decisions. Analyses are
-            saved to your account history and can be deleted.
-          </Typography>
+            <Link href="/auth/signin" style={{ color: "inherit" }}>
+              Sign in
+            </Link>
+            <Link href="/dashboard" style={{ color: "inherit" }}>
+              Desk
+            </Link>
+          </Stack>
         </Container>
       </Box>
+    </Box>
+  );
+}
+
+function Feature({
+  title,
+  body,
+}: Readonly<{ title: string; body: string }>) {
+  return (
+    <Box>
+      <Typography variant="h6" sx={{ fontWeight: 700, mb: 1 }}>
+        {title}
+      </Typography>
+      <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.65 }}>
+        {body}
+      </Typography>
     </Box>
   );
 }

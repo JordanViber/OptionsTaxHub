@@ -142,12 +142,17 @@ describe("Home page", () => {
     expect(screen.getByRole("progressbar")).toBeInTheDocument();
   });
 
-  it("redirects to landing page when unauthenticated", () => {
+  it("renders the desk for guests instead of bouncing to sign-in", () => {
     setupMocks(createAuthMock(null, false));
 
     renderWithClient(<Home />);
 
-    expect(mockPush).toHaveBeenCalledWith("/auth/signin");
+    expect(mockPush).not.toHaveBeenCalledWith("/auth/signin");
+    expect(screen.getByText("Portfolio Analysis")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Sign In" })).toHaveAttribute(
+      "href",
+      "/auth/signin",
+    );
   });
 
   it("uses display_name when available", () => {
@@ -235,7 +240,7 @@ describe("Home page", () => {
     expect(screen.getByText("Account")).toBeInTheDocument();
   });
 
-  it("triggers file input click when upload area is clicked", () => {
+  it("associates the upload label with the hidden CSV input", () => {
     setupMocks(
       createAuthMock(
         {
@@ -248,12 +253,12 @@ describe("Home page", () => {
 
     const { container } = renderWithClient(<Home />);
     const fileInput = getFileInput(container);
-    const clickSpy = jest.spyOn(fileInput, "click");
 
-    // Click on the text in the upload area
-    fireEvent.click(screen.getByText("Click to upload CSV"));
-
-    expect(clickSpy).toHaveBeenCalled();
+    expect(fileInput).toHaveAttribute("id", "desk-csv-input");
+    expect(screen.getByText("Click to upload CSV").closest("label")).toHaveAttribute(
+      "for",
+      "desk-csv-input",
+    );
   });
 
   it("calls analyzePortfolio when file input changes", () => {

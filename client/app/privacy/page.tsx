@@ -9,7 +9,7 @@ import {
   Toolbar,
   Typography,
 } from "@mui/material";
-import { Dashboard as DashboardIcon } from "@mui/icons-material";
+import Wordmark from "../components/Wordmark";
 import NextLink from "next/link";
 import TaxDisclaimer from "../components/TaxDisclaimer";
 
@@ -18,20 +18,7 @@ export default function PrivacyPage() {
     <Box sx={{ minHeight: "100vh", bgcolor: "background.default" }}>
       <AppBar position="static" elevation={0}>
         <Toolbar>
-          <MuiLink
-            component={NextLink}
-            href="/"
-            underline="none"
-            color="inherit"
-            sx={{
-              display: "inline-flex",
-              alignItems: "center",
-              fontWeight: 700,
-            }}
-          >
-            <DashboardIcon sx={{ mr: 1 }} />
-            OptionsTaxHub
-          </MuiLink>
+          <Wordmark />
         </Toolbar>
       </AppBar>
 
