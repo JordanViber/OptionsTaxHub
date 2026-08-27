@@ -11,6 +11,8 @@ from pypdf import PdfReader
 
 import main
 from auth import get_current_user, get_current_user_with_token
+from stripe import StripeObject
+
 from year_close_packet import (
     OPTIONS_WASH_SALE_FAQ,
     PACKET_AMOUNT_CENTS,
@@ -110,6 +112,12 @@ class FakeCheckoutSession:
         self.payment_status = "unpaid"
         self.amount_total = PACKET_AMOUNT_CENTS
         self.metadata = kwargs.get("metadata") or {}
+
+def _stripe_object_session(**fields):
+    """Real stripe.checkout.Session.retrieve shape (StripeObject, not dict)."""
+    payload = {"object": "checkout.session", "id": "cs_test_retrieve"}
+    payload.update(fields)
+    return StripeObject.construct_from(payload, "sk_test")
 
 
 def test_payload_and_pdf_contain_1099_totals_amd_and_faqs():
@@ -424,3 +432,141 @@ def test_checkout_stripe_error_is_502(monkeypatch):
         json={"analysis_id": "analysis-sample-1", "analysis": SAMPLE_ANALYSIS},
     )
     assert response.status_code == 502
+
+
+def test_session_grants_packet_reads_stripe_object_not_only_dict():
+    """Mira FAIL: retrieve returned StripeObject; dict-only metadata read 403'd paid TEST."""
+    session = _stripe_object_session(
+        payment_status="paid",
+        status="complete",
+        amount_total=4900,
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": "analysis-sample-1",
+        },
+    )
+    assert not isinstance(session, dict)
+    assert not isinstance(session.metadata, dict)
+    assert session_grants_packet(session, "analysis-sample-1") is True
+    # Client restored analysis_id may be local-analysis; session metadata is canonical.
+    assert session_grants_packet(session, "local-analysis") is True
+    assert session_grants_packet(session, "") is True
+
+
+def test_session_grants_packet_complete_status_without_exact_paid():
+    """Sandbox Checkout can be status=complete while payment_status is not paid."""
+    session = _stripe_object_session(
+        payment_status="unpaid",
+        status="complete",
+        amount_total=4900,
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": "analysis-sample-1",
+        },
+    )
+    assert session_grants_packet(session, "analysis-sample-1") is True
+    missing_payment = _stripe_object_session(
+        status="complete",
+        amount_total=4900,
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": "analysis-sample-1",
+        },
+    )
+    assert session_grants_packet(missing_payment, "analysis-sample-1") is True
+
+
+def test_confirm_packet_analysis_when_client_analysis_id_missing(monkeypatch):
+    """Success URL has packet_analysis; client analysis_id is optional / local-analysis."""
+    _test_stripe_env(monkeypatch)
+    main.remember_analysis("analysis-sample-1", "test-user-123", SAMPLE_ANALYSIS)
+
+    paid_session = _stripe_object_session(
+        id="cs_test_paid_packet_analysis",
+        payment_status="unpaid",
+        status="complete",
+        amount_total=4900,
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": "analysis-sample-1",
+        },
+    )
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda session_id, **_kwargs: paid_session,
+    )
+
+    confirm = client.post(
+        "/api/year-close-packet/confirm",
+        json={
+            "session_id": "cs_test_paid_packet_analysis",
+            "packet_analysis": "analysis-sample-1",
+            "analysis": SAMPLE_ANALYSIS,
+        },
+    )
+    assert confirm.status_code == 200, confirm.text
+    assert confirm.json()["paid"] is True
+    assert confirm.json()["analysis_id"] == "analysis-sample-1"
+
+    paid = client.get(
+        "/api/year-close-packet/download",
+        params={
+            "analysis_id": "analysis-sample-1",
+            "session_id": "cs_test_paid_packet_analysis",
+        },
+    )
+    assert paid.status_code == 200
+    assert "year-close-packet.pdf" in paid.headers.get("content-disposition", "")
+
+
+def test_confirm_uses_session_analysis_id_when_client_sends_local_analysis(monkeypatch):
+    _test_stripe_env(monkeypatch)
+    main.remember_analysis("analysis-sample-1", "test-user-123", SAMPLE_ANALYSIS)
+
+    paid_session = _stripe_object_session(
+        id="cs_test_paid_local",
+        payment_status="paid",
+        status="complete",
+        amount_total=4900,
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": "analysis-sample-1",
+        },
+    )
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda session_id, **_kwargs: paid_session,
+    )
+
+    confirm = client.post(
+        "/api/year-close-packet/confirm",
+        json={
+            "analysis_id": "local-analysis",
+            "session_id": "cs_test_paid_local",
+            "analysis": SAMPLE_ANALYSIS,
+        },
+    )
+    assert confirm.status_code == 200, confirm.text
+    assert confirm.json()["analysis_id"] == "analysis-sample-1"
+
+
+def test_three_dollar_stripe_object_tip_does_not_unlock():
+    tip = _stripe_object_session(
+        payment_status="paid",
+        status="complete",
+        amount_total=300,
+        metadata={"product": "tip", "tier": "coffee"},
+    )
+    assert session_grants_packet(tip, "analysis-sample-1") is False
+    wrong_amount = _stripe_object_session(
+        payment_status="paid",
+        status="complete",
+        amount_total=300,
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": "analysis-sample-1",
+        },
+    )
+    assert session_grants_packet(wrong_amount, "analysis-sample-1") is False

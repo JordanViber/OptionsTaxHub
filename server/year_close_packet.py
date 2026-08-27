@@ -8,9 +8,12 @@ This is a reconciliation packet, not a filed Form 8949 and not a rebuild of lots
 
 from __future__ import annotations
 
+import logging
 import os
 from io import BytesIO
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 PACKET_AMOUNT_CENTS = 4900
 PACKET_PRODUCT_NAME = "Year-close packet"
@@ -394,46 +397,135 @@ def resolve_packet_stripe_secret_key(primary_key: str | None) -> tuple[str | Non
     return primary, "live"
 
 
-def session_grants_packet(session: Any, analysis_id: str) -> bool:
-    """True only for a paid Year-close packet session for this analysis.
+def _plain_mapping(value: Any) -> dict[str, Any] | None:
+    """Best-effort dict from dicts, StripeObject.to_dict(), or .items()."""
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return value
+    to_dict = getattr(value, "to_dict", None)
+    if callable(to_dict):
+        try:
+            converted = to_dict()
+            if isinstance(converted, dict):
+                return converted
+        except Exception:
+            pass
+    items = getattr(value, "items", None)
+    if callable(items):
+        try:
+            return dict(items())
+        except Exception:
+            pass
+    return None
+
+
+def _session_attr(session: Any, name: str) -> Any:
+    """Read a field off dict, SimpleNamespace, or StripeObject-like retrieve."""
+    if session is None:
+        return None
+    if isinstance(session, dict):
+        return session.get(name)
+    value = getattr(session, name, None)
+    if value is not None:
+        return value
+    mapping = _plain_mapping(session)
+    if mapping is not None:
+        return mapping.get(name)
+    return None
+
+
+def _session_metadata(session: Any) -> dict[str, str]:
+    """Metadata from a real Stripe retrieve object, not only dict/SimpleNamespace.
+
+    stripe>=13 StripeObject is not a dict, has no .items()/.get(), and dict()
+    raises. Empty metadata here made product look unset and 403'd paid TEST
+    Checkout sessions.
+    """
+    raw = _session_attr(session, "metadata")
+    mapping = _plain_mapping(raw)
+    if mapping is None and raw is not None:
+        out: dict[str, str] = {}
+        for key in ("product", "analysis_id", "packet_analysis", "user_id"):
+            val = getattr(raw, key, None)
+            if val is not None:
+                out[key] = str(val)
+        return out
+    if not mapping:
+        return {}
+    return {str(k): str(v) for k, v in mapping.items() if v is not None}
+
+
+def packet_session_id(session: Any) -> str:
+    return str(_session_attr(session, "id") or "")
+
+
+def packet_analysis_id_from_session(session: Any, *fallbacks: str) -> str:
+    """Canonical analysis id: session metadata first, then caller fallbacks."""
+    metadata = _session_metadata(session)
+    candidates = [
+        metadata.get("analysis_id") or "",
+        metadata.get("packet_analysis") or "",
+        *fallbacks,
+    ]
+    for value in candidates:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _coerce_amount_cents(amount: Any) -> Optional[int]:
+    if amount is None or amount == "":
+        return None
+    try:
+        return int(amount)
+    except (TypeError, ValueError):
+        return None
+
+
+def session_grants_packet(session: Any, analysis_id: str = "") -> bool:
+    """True only for a paid Year-close packet session.
 
     TipJar sessions (Coffee/Lunch/Generous, $3/$10/$25) never grant this.
+
+    Session metadata.analysis_id (or packet_analysis) is canonical; a client
+    analysis_id of local-analysis / missing must not 403 a paid TEST session.
+    Sandbox Checkout may be status=complete while payment_status is not
+    exactly paid.
     """
     if session is None:
         return False
     metadata = _session_metadata(session)
     product = str(metadata.get("product") or "")
-    session_analysis = str(metadata.get("analysis_id") or "")
-    if product != PACKET_METADATA_PRODUCT:
-        return False
-    if analysis_id and session_analysis and session_analysis != analysis_id:
-        return False
-    payment_status = str(getattr(session, "payment_status", "") or "").lower()
-    if payment_status not in ("paid", "no_payment_required"):
-        if isinstance(session, dict):
-            payment_status = str(session.get("payment_status") or "").lower()
-        if payment_status not in ("paid", "no_payment_required"):
-            return False
-    amount = getattr(session, "amount_total", None)
-    if amount is None and isinstance(session, dict):
-        amount = session.get("amount_total")
-    if amount is not None and int(amount) != PACKET_AMOUNT_CENTS:
-        return False
-    return True
+    session_analysis = packet_analysis_id_from_session(session, analysis_id)
+    payment_status = str(_session_attr(session, "payment_status") or "").lower()
+    status = str(_session_attr(session, "status") or "").lower()
+    amount = _session_attr(session, "amount_total")
+    amount_cents = _coerce_amount_cents(amount)
 
-
-def _session_metadata(session: Any) -> dict[str, str]:
-    metadata = getattr(session, "metadata", None)
-    if metadata is None and isinstance(session, dict):
-        metadata = session.get("metadata")
-    if not metadata:
-        return {}
-    if isinstance(metadata, dict):
-        return {str(k): str(v) for k, v in metadata.items()}
-    try:
-        return {str(k): str(v) for k, v in dict(metadata).items()}
-    except Exception:
-        return {}
+    paid_ok = payment_status in ("paid", "no_payment_required")
+    amount_is_packet = amount_cents == PACKET_AMOUNT_CENTS
+    complete_ok = status == "complete" and (
+        amount_cents is None or amount_is_packet
+    )
+    amount_ok = amount_cents is None or amount_is_packet
+    granted = (
+        product == PACKET_METADATA_PRODUCT
+        and amount_ok
+        and (paid_ok or complete_ok)
+    )
+    if not granted:
+        logger.info(
+            "year-close packet session rejected product=%s payment_status=%s "
+            "status=%s amount=%s analysis_id=%s",
+            product or "-",
+            payment_status or "-",
+            status or "-",
+            amount_cents if amount_cents is not None else "-",
+            session_analysis or "-",
+        )
+    return granted
 
 
 def packet_checkout_line_items() -> list[dict[str, Any]]:
