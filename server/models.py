@@ -181,7 +181,7 @@ class TaxProfile(BaseModel):
         default=75000.0, ge=0, description="Estimated total annual income (W-2 + other)"
     )
     state: str = Field(default="", description="US state abbreviation for state tax rate")
-    tax_year: int = Field(default=2025, ge=2024, le=2026)
+    tax_year: int = Field(default=2026, ge=2024, le=2026)
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

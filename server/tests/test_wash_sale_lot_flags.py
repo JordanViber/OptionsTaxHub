@@ -65,13 +65,14 @@ class TestWashSaleLotFlagsFromCsv:
         assert lots
         assert all(lot.wash_sale_disallowed == 0 for lot in lots)
 
-    def test_public_sample_csv_flags_amd_for_tax_year_2025(self):
-        lots, flags = _lots_and_flags(PUBLIC_SAMPLE, tax_year=2025)
+    def test_public_sample_csv_flags_amd_for_tax_year_2026(self):
+        lots, flags = _lots_and_flags(PUBLIC_SAMPLE, tax_year=2026)
 
         amd_flags = [flag for flag in flags if flag.symbol == "AMD"]
         assert len(amd_flags) == 1
         assert amd_flags[0].disallowed_loss == 300.0
-        assert amd_flags[0].repurchase_date == date(2025, 7, 25)
+        assert amd_flags[0].sale_date == date(2026, 7, 15)
+        assert amd_flags[0].repurchase_date == date(2026, 7, 24)
 
         washed = [
             lot
@@ -79,8 +80,16 @@ class TestWashSaleLotFlagsFromCsv:
             if lot.symbol == "AMD" and lot.wash_sale_disallowed > 0
         ]
         assert len(washed) == 1
-        assert washed[0].purchase_date == date(2025, 7, 25)
+        assert washed[0].purchase_date == date(2026, 7, 24)
+        assert washed[0].wash_sale_disallowed == 300.0
 
         aapl_lots = [lot for lot in lots if lot.symbol == "AAPL"]
         assert aapl_lots
         assert all(lot.wash_sale_disallowed == 0 for lot in aapl_lots)
+
+        years = [lot.purchase_date.year for lot in lots]
+        assert years.count(2026) > len(years) / 2
+        assert all(year in (2025, 2026) for year in years)
+        prior_year_lots = [lot for lot in lots if lot.purchase_date.year < 2026]
+        assert prior_year_lots
+        assert all(lot.quantity > 0 for lot in prior_year_lots)

@@ -39,7 +39,7 @@ export default function SettingsPage() {
   const [filingStatus, setFilingStatus] = useState<FilingStatus>("single");
   const [estimatedIncome, setEstimatedIncome] = useState<string>("75,000");
   const [state, setState] = useState<string>("");
-  const [taxYear, setTaxYear] = useState<number>(2025);
+  const [taxYear, setTaxYear] = useState<number>(2026);
   const [showSuccess, setShowSuccess] = useState(false);
 
   /** Format a number string with thousands commas, stripping anything non-numeric. */
@@ -74,7 +74,7 @@ export default function SettingsPage() {
         ),
       );
       setState(profile.state || "");
-      setTaxYear(profile.tax_year || 2025);
+      setTaxYear(profile.tax_year || 2026);
     }
   }, [profile]);
 

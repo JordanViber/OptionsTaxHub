@@ -274,9 +274,9 @@ def _tax_profile_from_query(
     except ValueError:
         fs = FilingStatus.SINGLE
 
-    year = _coerce_int_query(tax_year, 2025)
+    year = _coerce_int_query(tax_year, 2026)
     if year < 2024 or year > 2026:
-        year = 2025
+        year = 2026
 
     income = _coerce_float_query(estimated_income, 75000.0)
     if income < 0:
@@ -833,7 +833,7 @@ async def _run_portfolio_analysis(
     supplemental_1099_summary, supplemental_1099_warnings = await _maybe_parse_supplemental_1099(
         supplemental_1099,
         {lot.symbol for lot in tax_lots},
-        (tax_profile.tax_year or 2025) - 1,
+        (tax_profile.tax_year or 2026) - 1,
     )
     all_warnings.extend(supplemental_1099_warnings)
 
@@ -1032,7 +1032,7 @@ async def get_prices(
 
 @app.get("/api/tax-brackets")
 async def get_tax_brackets(
-    year: Annotated[int, Query(ge=2024, le=2026)] = 2025,
+    year: Annotated[int, Query(ge=2024, le=2026)] = 2026,
     filing_status: Annotated[str, Query()] = "single",
     income: Annotated[float, Query(ge=0)] = 75000.0,
 ):
