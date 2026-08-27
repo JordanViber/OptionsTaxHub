@@ -42,8 +42,10 @@ from year_close_packet import (
     get_payload,
     is_packet_paid,
     mark_paid,
+    packet_analysis_id_from_session,
     packet_checkout_line_items,
     packet_requires_test_stripe,
+    packet_session_id,
     remember_analysis,
     render_packet_pdf,
     resolve_packet_stripe_secret_key,
@@ -1075,8 +1077,9 @@ class PacketCheckoutRequest(BaseModel):
 
 
 class PacketConfirmRequest(BaseModel):
-    analysis_id: str
     session_id: str
+    analysis_id: Optional[str] = None
+    packet_analysis: Optional[str] = None
     analysis: Optional[dict] = None
 
 
@@ -1107,7 +1110,7 @@ def _configure_packet_stripe() -> str:
 def _grant_packet_from_session(session, analysis_id: str, user_id: str = "") -> bool:
     if not session_grants_packet(session, analysis_id):
         return False
-    mark_paid(analysis_id, getattr(session, "id", "") or "", user_id=user_id)
+    mark_paid(analysis_id, packet_session_id(session), user_id=user_id)
     return True
 
 
@@ -1187,12 +1190,10 @@ async def confirm_year_close_packet(
     user_id: Annotated[str, Depends(get_current_user)],
 ):
     """Unlock download after Stripe Checkout returns to staging (session_id)."""
-    analysis_id = (body.analysis_id or "").strip()
     session_id = (body.session_id or "").strip()
-    if not analysis_id or not session_id:
-        raise HTTPException(status_code=400, detail="analysis_id and session_id are required")
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id is required")
 
-    upsert_payload(analysis_id, user_id, body.analysis)
     _configure_packet_stripe()
 
     try:
@@ -1201,7 +1202,23 @@ async def confirm_year_close_packet(
         logger.error(f"Year-close packet session retrieve error: {e}")
         raise HTTPException(status_code=502, detail="Failed to verify checkout session")
 
+    # Session metadata is canonical. Client analysis_id is optional and may be
+    # local-analysis after reload; success URL packet_analysis is a fallback.
+    analysis_id = packet_analysis_id_from_session(
+        session,
+        body.packet_analysis or "",
+        body.analysis_id or "",
+    )
+    if not analysis_id:
+        raise HTTPException(status_code=400, detail="analysis_id is required")
+
+    upsert_payload(analysis_id, user_id, body.analysis)
+
     if not _grant_packet_from_session(session, analysis_id, user_id=user_id):
+        logger.info(
+            "year-close packet confirm 403 session_present=1 analysis_id=%s",
+            analysis_id,
+        )
         raise HTTPException(
             status_code=403,
             detail="Checkout session does not unlock the year-close packet.",
@@ -1241,23 +1258,13 @@ async def year_close_packet_webhook(request: Request):
     if event_type != "checkout.session.completed":
         return {"received": True, "granted": False}
 
-    metadata = {}
-    if isinstance(session_obj, dict):
-        metadata = session_obj.get("metadata") or {}
-    elif session_obj is not None:
-        metadata = getattr(session_obj, "metadata", None) or {}
-    analysis_id = str((metadata or {}).get("analysis_id") or "")
+    analysis_id = packet_analysis_id_from_session(session_obj)
     if not analysis_id:
         return {"received": True, "granted": False}
 
     granted = session_grants_packet(session_obj, analysis_id)
     if granted:
-        session_id = ""
-        if isinstance(session_obj, dict):
-            session_id = session_obj.get("id") or ""
-        else:
-            session_id = getattr(session_obj, "id", "") or ""
-        mark_paid(analysis_id, session_id)
+        mark_paid(analysis_id, packet_session_id(session_obj))
     return {"received": True, "granted": granted}
 
 
