@@ -20,7 +20,7 @@ test.describe("Sign In Page", () => {
     await expect(page.getByLabel("Email")).toBeVisible();
     await expect(page.locator('input[type="password"]')).toBeVisible();
     await expect(page.getByRole("button", { name: "Sign In" })).toBeVisible();
-    await expect(page.getByText("Welcome back to OptionsTaxHub")).toBeVisible();
+    await expect(page.getByText(/Welcome back/)).toBeVisible();
   });
 
   test("successful sign-in redirects to dashboard", async ({

@@ -319,7 +319,7 @@ export async function goToAuthenticatedHome(page: Page) {
  * Upload the test CSV and wait for Portfolio Value card to appear.
  */
 export async function uploadTestCsv(page: Page) {
-  const fileInput = page.locator('input[type="file"]');
+  const fileInput = page.locator("#desk-csv-input");
   const csvPath = path.resolve(__dirname, "../../../test.csv");
   await fileInput.setInputFiles(csvPath);
   await expect(page.getByText("Portfolio Value")).toBeVisible({

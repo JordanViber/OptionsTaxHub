@@ -2,7 +2,7 @@ from fastapi.testclient import TestClient
 from pathlib import Path
 
 import main
-from auth import get_current_user, get_current_user_with_token
+from auth import get_current_user, get_current_user_with_token, get_optional_user
 
 
 # Mock authentication: return test user ID for all authenticated endpoints
@@ -17,6 +17,7 @@ def mock_get_current_user_with_token() -> tuple[str, str]:
 
 # Override the authentication dependencies
 main.app.dependency_overrides[get_current_user] = mock_get_current_user
+main.app.dependency_overrides[get_optional_user] = mock_get_current_user
 main.app.dependency_overrides[get_current_user_with_token] = mock_get_current_user_with_token
 
 client = TestClient(main.app)
@@ -696,6 +697,39 @@ def test_analyze_portfolio_saves_history(monkeypatch):
 
     assert response.status_code == 200
     assert save_called["value"] is True
+
+
+def test_analyze_portfolio_allows_unauthenticated(monkeypatch):
+    """Guests can analyze a CSV; the run is not written to history."""
+    _stub_analyze_network(monkeypatch)
+    captured_user_ids: list[str] = []
+
+    def capture_save(user_id, filename, summary, result):
+        captured_user_ids.append(user_id)
+
+    monkeypatch.setattr("main._save_history_best_effort", capture_save)
+    sample_path = (
+        Path(__file__).resolve().parents[2]
+        / "client"
+        / "public"
+        / "sample-robinhood-transactions.csv"
+    )
+    main.app.dependency_overrides.pop(get_optional_user, None)
+    try:
+        response = client.post(
+            "/api/portfolio/analyze",
+            files={"file": (sample_path.name, sample_path.read_bytes(), "text/csv")},
+        )
+        assert response.status_code == 200
+        assert "positions" in response.json()
+        assert captured_user_ids == [""]
+    finally:
+        main.app.dependency_overrides[get_optional_user] = mock_get_current_user
+
+
+def test_save_history_best_effort_skips_anonymous():
+    """Anonymous analyses are not persisted."""
+    main._save_history_best_effort("", "guest.csv", None, None)
 
 
 def test_analyze_portfolio_ai_failure_adds_warning(monkeypatch):

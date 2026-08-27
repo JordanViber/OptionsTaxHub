@@ -59,7 +59,7 @@ function MetricCard({
             sx={{
               p: 1,
               borderRadius: 2,
-              backgroundColor: `${color}15`,
+              backgroundColor: `${color}22`,
               color,
               display: "flex",
               alignItems: "center",
@@ -99,7 +99,7 @@ function MetricCard({
  * Realized gain/loss breakdown card.
  */
 function RealizedCard({ realized }: Readonly<{ realized: RealizedSummary }>) {
-  const netColor = realized.total_net >= 0 ? "#2e7d32" : "#d32f2f";
+  const netColor = realized.total_net >= 0 ? "#7a9e84" : "#c46a58";
   const netSign = realized.total_net >= 0 ? "+" : "";
   const stSign = realized.net_st >= 0 ? "+" : "";
   const ltSign = realized.net_lt >= 0 ? "+" : "";
@@ -112,7 +112,7 @@ function RealizedCard({ realized }: Readonly<{ realized: RealizedSummary }>) {
             sx={{
               p: 1,
               borderRadius: 2,
-              backgroundColor: `${netColor}15`,
+              backgroundColor: `${netColor}22`,
               color: netColor,
               display: "flex",
               alignItems: "center",
@@ -154,7 +154,7 @@ function RealizedCard({ realized }: Readonly<{ realized: RealizedSummary }>) {
                 ST:{" "}
                 <strong
                   style={{
-                    color: realized.net_st >= 0 ? "#2e7d32" : "#d32f2f",
+                    color: realized.net_st >= 0 ? "#7a9e84" : "#c46a58",
                   }}
                 >
                   {stSign}
@@ -165,7 +165,7 @@ function RealizedCard({ realized }: Readonly<{ realized: RealizedSummary }>) {
                 LT:{" "}
                 <strong
                   style={{
-                    color: realized.net_lt >= 0 ? "#2e7d32" : "#d32f2f",
+                    color: realized.net_lt >= 0 ? "#7a9e84" : "#c46a58",
                   }}
                 >
                   {ltSign}
@@ -181,68 +181,94 @@ function RealizedCard({ realized }: Readonly<{ realized: RealizedSummary }>) {
 }
 
 /**
- * Portfolio summary cards — displayed at top of dashboard after analysis.
- *
- * Shows: Net Open Position Value, Unrealized P&L, Harvestable Losses, Est. Tax Savings,
- * and (when available) the realized gain/loss breakdown for the analysis tax year.
+ * Portfolio summary — harvest number is the hero, then supporting metrics.
  */
 export default function PortfolioSummaryCards({
   summary,
 }: Readonly<PortfolioSummaryCardsProps>) {
-  const pnlColor = summary.total_unrealized_pnl >= 0 ? "#2e7d32" : "#d32f2f";
+  const pnlColor = summary.total_unrealized_pnl >= 0 ? "#7a9e84" : "#c46a58";
   const pnlSign = summary.total_unrealized_pnl >= 0 ? "+" : "";
   const hasRealized = !!summary.realized_summary;
-  const md = hasRealized ? 2 : 3;
+  const savingsColor =
+    summary.wash_sale_flags_count > 0 ? "#c4a36a" : "#7a9e84";
 
   return (
-    <Grid container spacing={2}>
-      <Grid size={{ xs: 12, sm: 6, md }}>
-        <MetricCard
-          title="Net Open Position Value"
-          value={formatCurrency(summary.total_market_value)}
-          subtitle={`${summary.positions_count} open positions — excludes cash and account equity adjustments`}
-          icon={<PortfolioIcon />}
-          color="#1976d2"
-        />
-      </Grid>
-      <Grid size={{ xs: 12, sm: 6, md }}>
-        <MetricCard
-          title="Unrealized P&L"
-          value={`${pnlSign}${formatCurrency(summary.total_unrealized_pnl)}`}
-          subtitle={`${pnlSign}${summary.total_unrealized_pnl_pct.toFixed(1)}%`}
-          icon={summary.total_unrealized_pnl >= 0 ? <GainIcon /> : <LossIcon />}
-          color={pnlColor}
-        />
-      </Grid>
-      <Grid size={{ xs: 12, sm: 6, md }}>
-        <MetricCard
-          title="Harvestable Losses"
-          value={formatCurrency(summary.total_harvestable_losses)}
-          subtitle={`${summary.lots_with_losses} lots with losses`}
-          icon={<LossIcon />}
-          color="#d32f2f"
-        />
-      </Grid>
-      <Grid size={{ xs: 12, sm: 6, md }}>
-        <MetricCard
-          title="Est. Tax Savings"
-          value={formatCurrency(summary.estimated_tax_savings)}
-          subtitle={
-            summary.wash_sale_flags_count > 0
+    <Box sx={{ display: "grid", gap: 2 }}>
+      <Card>
+        <CardContent sx={{ px: { xs: 2.5, sm: 3.5 }, py: { xs: 2.5, sm: 3 } }}>
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            sx={{
+              fontWeight: 600,
+              textTransform: "uppercase",
+              letterSpacing: 1.4,
+              fontFamily: "var(--font-mono), 'IBM Plex Mono', monospace",
+            }}
+          >
+            Est. Tax Savings
+          </Typography>
+          <Typography
+            sx={{
+              mt: 1,
+              fontFamily: "var(--font-display), Fraunces, Georgia, serif",
+              fontSize: { xs: "2.6rem", sm: "3.4rem" },
+              fontWeight: 600,
+              letterSpacing: "-0.03em",
+              lineHeight: 1,
+              color: savingsColor,
+            }}
+          >
+            {formatCurrency(summary.estimated_tax_savings)}
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 1.5 }}>
+            Federal harvest still available from{" "}
+            {formatCurrency(summary.total_harvestable_losses)} of losing lots.
+          </Typography>
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
+            {summary.wash_sale_flags_count > 0
               ? `${summary.wash_sale_flags_count} wash-sale warning(s)`
-              : "From harvesting losses"
-          }
-          icon={
-            summary.wash_sale_flags_count > 0 ? <WarnIcon /> : <SavingsIcon />
-          }
-          color={summary.wash_sale_flags_count > 0 ? "#f57f17" : "#2e7d32"}
-        />
-      </Grid>
-      {hasRealized && summary.realized_summary && (
-        <Grid size={{ xs: 12, sm: 12, md: 4 }}>
-          <RealizedCard realized={summary.realized_summary} />
+              : "From harvesting losses"}
+          </Typography>
+        </CardContent>
+      </Card>
+
+      <Grid container spacing={2}>
+        <Grid size={{ xs: 12, sm: 6, md: hasRealized ? 3 : 4 }}>
+          <MetricCard
+            title="Net Open Position Value"
+            value={formatCurrency(summary.total_market_value)}
+            subtitle={`${summary.positions_count} open positions — excludes cash and account equity adjustments`}
+            icon={<PortfolioIcon />}
+            color="#d8d2c6"
+          />
         </Grid>
-      )}
-    </Grid>
+        <Grid size={{ xs: 12, sm: 6, md: hasRealized ? 3 : 4 }}>
+          <MetricCard
+            title="Unrealized P&L"
+            value={`${pnlSign}${formatCurrency(summary.total_unrealized_pnl)}`}
+            subtitle={`${pnlSign}${summary.total_unrealized_pnl_pct.toFixed(1)}%`}
+            icon={
+              summary.total_unrealized_pnl >= 0 ? <GainIcon /> : <LossIcon />
+            }
+            color={pnlColor}
+          />
+        </Grid>
+        <Grid size={{ xs: 12, sm: 6, md: hasRealized ? 3 : 4 }}>
+          <MetricCard
+            title="Harvestable Losses"
+            value={formatCurrency(summary.total_harvestable_losses)}
+            subtitle={`${summary.lots_with_losses} lots with losses`}
+            icon={<LossIcon />}
+            color="#c46a58"
+          />
+        </Grid>
+        {hasRealized && summary.realized_summary && (
+          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+            <RealizedCard realized={summary.realized_summary} />
+          </Grid>
+        )}
+      </Grid>
+    </Box>
   );
 }

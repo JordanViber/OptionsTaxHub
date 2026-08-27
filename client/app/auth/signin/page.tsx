@@ -48,6 +48,14 @@ export default function SignInPage() {
     if (params.get("reset") === "success") {
       setInfo("Your password was updated. Sign in with your new password.");
     }
+    const reason = params.get("reason");
+    if (reason === "runs") {
+      setInfo("Sign in to open saved runs on this and the next device.");
+    } else if (reason === "profile") {
+      setInfo(
+        "Sign in to keep filing status, income, and tax year with your account.",
+      );
+    }
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -146,7 +154,7 @@ export default function SignInPage() {
               <Typography variant="body2" color="textSecondary">
                 {resetMode
                   ? "We'll email you a link to set a new password."
-                  : "Welcome back to OptionsTaxHub"}
+                  : "Welcome back. Saved runs and tax year travel with this account."}
               </Typography>
             </Box>
 
