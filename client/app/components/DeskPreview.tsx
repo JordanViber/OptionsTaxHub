@@ -3,17 +3,20 @@
 import { Box, Chip, Stack, Typography } from "@mui/material";
 
 const rows = [
-  { label: "AMD 100c 7/24", meta: "2 ctr · $1,840", pnl: "−$612", loss: true },
-  { label: "NVDA", meta: "12 sh · $1,428", pnl: "−$384", loss: true },
-  { label: "AAPL 190c 6/18", meta: "1 ctr · $620", pnl: "+$94", loss: false },
-  { label: "MSFT", meta: "8 sh · $3,360", pnl: "+$188", loss: false },
-  { label: "META", meta: "4 sh · $2,040", pnl: "−$126", loss: true },
-  { label: "SPY 520p 3/21", meta: "1 ctr · $410", pnl: "−$205", loss: true },
+  { label: "NVDA", meta: "52 sh · $11,856", pnl: "−$9,768", loss: true },
+  { label: "META", meta: "4 sh · $2,284", pnl: "−$596", loss: true },
+  { label: "SPY", meta: "4 sh · $3,084", pnl: "−$196", loss: true },
+  { label: "TSLA", meta: "4 sh · $1,420", pnl: "−$40", loss: true },
+  { label: "MSFT", meta: "10 sh · $5,050", pnl: "+$890", loss: false },
+  { label: "AAPL", meta: "15 sh · $4,725", pnl: "+$2,009", loss: false },
 ];
 
 /**
- * Static landing preview of the desk — harvest number + sample rows.
- * Not live analysis; the 2026 sample CSV is the real path.
+ * Static landing preview of the 2026 sample desk.
+ *
+ * Hero dollars and wash-sale count must match analyze of
+ * /sample-robinhood-transactions.csv at guest defaults (single, $75k, TY 2026)
+ * using the snapshot quotes in server/tests/test_sample_preview_honesty.py.
  */
 export default function DeskPreview() {
   return (
@@ -57,7 +60,7 @@ export default function DeskPreview() {
               lineHeight: 1,
             }}
           >
-            $2,140
+            $2,086
           </Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75 }}>
             Federal harvest still on the table
