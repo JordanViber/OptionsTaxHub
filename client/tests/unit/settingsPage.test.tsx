@@ -366,7 +366,7 @@ describe("SettingsPage", () => {
           filing_status: "single",
           estimated_annual_income: 75000,
           state: "",
-          tax_year: 2025,
+          tax_year: 2026,
         }),
         expect.any(Object),
       );

@@ -1025,7 +1025,7 @@ export default function DashboardPage() {
         supplemental1099File: supplementalFile ?? undefined,
         filingStatus: taxProfile?.filing_status || "single",
         estimatedIncome: taxProfile?.estimated_annual_income || 75000,
-        taxYear: taxProfile?.tax_year || 2025,
+        taxYear: taxProfile?.tax_year || 2026,
       },
       {
         onSuccess: () => {

@@ -341,6 +341,7 @@ def test_get_tax_profile_returns_default_when_not_found(monkeypatch):
     assert data["user_id"] == "test-user-123"  # From mock JWT
     assert data["estimated_annual_income"] == 75000
     assert data["filing_status"] == "single"
+    assert data["tax_year"] == 2026
 
 
 # ---------- Tip / Donation Endpoints ----------
@@ -522,18 +523,30 @@ def test_analyze_public_sample_csv_succeeds(monkeypatch):
     csv_bytes = SAMPLE_CSV_PATH.read_bytes()
 
     response = client.post(
-        "/api/portfolio/analyze?filing_status=single&estimated_income=75000&tax_year=2025",
+        "/api/portfolio/analyze?filing_status=single&estimated_income=75000&tax_year=2026",
         files={"file": ("sample-robinhood-transactions.csv", csv_bytes, "text/csv")},
     )
 
     assert response.status_code == 200, response.text
     data = response.json()
+    assert data["tax_profile"]["tax_year"] == 2026
     symbols = {position["symbol"] for position in data["positions"]}
     assert "AAPL" in symbols
     assert "MSFT" in symbols
     amd_flags = [flag for flag in data["wash_sale_flags"] if flag["symbol"] == "AMD"]
     assert len(amd_flags) == 1
     assert amd_flags[0]["disallowed_loss"] == 300.0
+    assert amd_flags[0]["sale_date"] == "2026-07-15"
+    assert amd_flags[0]["repurchase_date"] == "2026-07-24"
+    amd_lots = [
+        lot
+        for position in data["positions"]
+        if position["symbol"] == "AMD"
+        for lot in position["tax_lots"]
+        if lot["wash_sale_disallowed"] > 0
+    ]
+    assert len(amd_lots) == 1
+    assert amd_lots[0]["wash_sale_disallowed"] == 300.0
 
 
 def test_analyze_robinhood_style_csv_succeeds(monkeypatch):
@@ -565,7 +578,7 @@ def test_analyze_invalid_tax_year_does_not_500(monkeypatch):
     )
 
     assert response.status_code == 200, response.text
-    assert response.json()["tax_profile"]["tax_year"] == 2025
+    assert response.json()["tax_profile"]["tax_year"] == 2026
 
 
 def test_analyze_unparseable_profile_query_params_do_not_422(monkeypatch):
@@ -580,7 +593,7 @@ def test_analyze_unparseable_profile_query_params_do_not_422(monkeypatch):
 
     assert response.status_code == 200, response.text
     data = response.json()
-    assert data["tax_profile"]["tax_year"] == 2025
+    assert data["tax_profile"]["tax_year"] == 2026
     assert data["tax_profile"]["filing_status"] == "single"
     assert data["positions"]
 
