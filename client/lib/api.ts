@@ -314,7 +314,7 @@ function normalizeTaxProfile(profile: TaxProfile): TaxProfile {
   return {
     ...profile,
     estimated_annual_income: Number(profile.estimated_annual_income ?? 75000),
-    tax_year: Number(profile.tax_year ?? 2025),
+    tax_year: Number(profile.tax_year ?? 2026),
     state: profile.state ?? "",
     filing_status: profile.filing_status ?? "single",
   };
