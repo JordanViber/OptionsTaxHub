@@ -76,6 +76,7 @@ import Supplemental1099InsightsPanel from "../components/Supplemental1099Insight
 import YearClosePacketPanel from "../components/YearClosePacketPanel";
 import { useAuth } from "@/app/context/auth";
 import { isEmailConfirmed } from "@/lib/supabase";
+import { beginGuestPersist, endGuestPersist } from "@/lib/guest-persist-lock";
 import { useQueryClient } from "@tanstack/react-query";
 import type {
   PortfolioAnalysis,
@@ -89,7 +90,6 @@ const UPLOAD_INTENT_KEY = "oth-upload-intent";
 const LOAD_SAMPLE_KEY = "oth-load-sample";
 const GUEST_UNSAVED_KEY = "oth-guest-unsaved";
 const GUEST_UNSAVED_FILENAME_KEY = "oth-guest-unsaved-filename";
-const GUEST_PERSIST_LOCK_KEY = "oth-guest-persist-lock";
 
 type AnalysisSource = "fresh-upload" | "saved-history" | "restored-session";
 
@@ -1215,19 +1215,14 @@ export default function DashboardPage() {
     }
 
     const persistKey = analysis.analysis_id || filename;
-    try {
-      if (sessionStorage.getItem(GUEST_PERSIST_LOCK_KEY) === persistKey) {
-        return undefined;
-      }
-      sessionStorage.setItem(GUEST_PERSIST_LOCK_KEY, persistKey);
-    } catch {
-      // still attempt persist
+    if (!beginGuestPersist(persistKey)) {
+      return undefined;
     }
 
     void persistGuestAnalysis(analysis, filename)
       .then((saved) => {
+        endGuestPersist(persistKey);
         try {
-          sessionStorage.removeItem(GUEST_PERSIST_LOCK_KEY);
           if (saved) {
             sessionStorage.removeItem(GUEST_UNSAVED_KEY);
             sessionStorage.removeItem(GUEST_UNSAVED_FILENAME_KEY);
@@ -1242,11 +1237,7 @@ export default function DashboardPage() {
         }
       })
       .catch(() => {
-        try {
-          sessionStorage.removeItem(GUEST_PERSIST_LOCK_KEY);
-        } catch {
-          // ignore
-        }
+        endGuestPersist(persistKey);
       });
     return undefined;
   }, [confirmedUserId, queryClient]);

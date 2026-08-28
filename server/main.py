@@ -2,6 +2,7 @@ import os
 import logging
 import re
 import time
+import ipaddress
 from collections import defaultdict
 from pathlib import Path
 import uuid
@@ -96,6 +97,7 @@ _MAX_SUPPLEMENTAL_PDF_BYTES = 20 * 1024 * 1024  # 20 MB: max size for supplement
 _MAX_GUEST_CSV_BYTES = 5 * 1024 * 1024  # 5 MB: unauthenticated analyze must not file.read() unbounded
 _GUEST_ANALYZE_WINDOW_SECONDS = 60 * 60
 _GUEST_ANALYZE_MAX_PER_WINDOW = 10
+_GUEST_ANALYZE_MAX_BUCKETS = 4096
 _guest_analyze_hits: dict[str, list[float]] = defaultdict(list)
 
 @asynccontextmanager
@@ -190,20 +192,61 @@ def reset_guest_analyze_quota() -> None:
     _guest_analyze_hits.clear()
 
 
+def _is_trusted_proxy_peer(host: str) -> bool:
+    """True when the TCP peer is a local/private hop that may set forwarding headers."""
+    if not host:
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return bool(ip.is_private or ip.is_loopback or ip.is_link_local)
+
+
 def _client_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        first = forwarded.split(",")[0].strip()
-        if first:
-            return first
-    if request.client and request.client.host:
-        return request.client.host
-    return "unknown"
+    """
+    Identify the guest for analyze quota.
+
+    The socket address is always the source of truth for untrusted peers.
+    X-Forwarded-For is only read when the immediate TCP peer is a private,
+    loopback, or link-local proxy (Render/nginx). The last hop is used
+    because clients can prepend spoofed values; a trusted proxy appends.
+    """
+    socket_ip = request.client.host if request.client and request.client.host else ""
+    if _is_trusted_proxy_peer(socket_ip):
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            hops = [hop.strip() for hop in forwarded.split(",") if hop.strip()]
+            if hops:
+                return hops[-1]
+    return socket_ip or "unknown"
+
+
+def _prune_guest_analyze_hits(now: float) -> None:
+    """Drop stale quota buckets and cap the map so unique IPs cannot grow memory unbounded."""
+    stale_keys = [
+        key
+        for key, stamps in list(_guest_analyze_hits.items())
+        if not stamps or now - max(stamps) >= _GUEST_ANALYZE_WINDOW_SECONDS
+    ]
+    for key in stale_keys:
+        _guest_analyze_hits.pop(key, None)
+
+    overflow = len(_guest_analyze_hits) - _GUEST_ANALYZE_MAX_BUCKETS
+    if overflow <= 0:
+        return
+    oldest = sorted(
+        _guest_analyze_hits.items(),
+        key=lambda item: max(item[1]) if item[1] else 0.0,
+    )[:overflow]
+    for key, _stamps in oldest:
+        _guest_analyze_hits.pop(key, None)
 
 
 def _enforce_guest_analyze_quota(request: Request) -> None:
     """Simple per-IP quota so anonymous analyze cannot be used as a free compute pump."""
     now = time.time()
+    _prune_guest_analyze_hits(now)
     key = _client_ip(request)
     hits = _guest_analyze_hits[key]
     hits[:] = [stamp for stamp in hits if now - stamp < _GUEST_ANALYZE_WINDOW_SECONDS]
