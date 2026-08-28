@@ -27,6 +27,8 @@ import type { HarvestingSuggestion } from "@/lib/types";
 
 interface HarvestingSuggestionsProps {
   suggestions: HarvestingSuggestion[];
+  lotsWithLosses?: number;
+  locked?: boolean;
 }
 
 interface SuggestionDisplayMeta {
@@ -463,6 +465,18 @@ function SuggestionCard({
   );
 }
 
+export function getHarvestEmptyCopy(lotsWithLosses = 0): string {
+  if (lotsWithLosses > 0) {
+    return (
+      "Open lots with unrealized losses were found, but none are recommended " +
+      "to sell right now. They may sit inside a 30-day wash-sale window, or " +
+      "this year's realized losses already exceed the extra $3,000 this return can use."
+    );
+  }
+  return "No tax-loss harvesting opportunities found. No open lots currently show an unrealized loss.";
+}
+
+
 /**
  * Tax-loss harvesting suggestions panel.
  *
@@ -472,7 +486,27 @@ function SuggestionCard({
  */
 export default function HarvestingSuggestions({
   suggestions,
+  lotsWithLosses = 0,
+  locked = false,
 }: Readonly<HarvestingSuggestionsProps>) {
+  if (locked) {
+    const lossLots = lotsWithLosses || suggestions.length;
+    return (
+      <Card variant="outlined" data-testid="harvest-packet-preview">
+        <CardContent>
+          <Typography variant="subtitle1" sx={{ fontWeight: 700, mb: 1 }}>
+            Harvest plan is in the $49 packet
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            {lossLots > 0
+              ? `${lossLots} open lot${lossLots === 1 ? "" : "s"} show an unrealized loss. Pay $49 for lot-level sell instructions, replacements, and the CPA PDF.`
+              : "Pay $49 to unlock lot-level harvest instructions, wash-sale detail, and the year-close PDF."}
+          </Typography>
+        </CardContent>
+      </Card>
+    );
+  }
+
   if (suggestions.length === 0) {
     return (
       <Card variant="outlined">
@@ -482,8 +516,7 @@ export default function HarvestingSuggestions({
             color="text.secondary"
             sx={{ textAlign: "center", py: 3 }}
           >
-            No tax-loss harvesting opportunities found. All positions are
-            currently at a gain.
+            {getHarvestEmptyCopy(lotsWithLosses)}
           </Typography>
         </CardContent>
       </Card>

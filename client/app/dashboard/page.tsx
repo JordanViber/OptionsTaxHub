@@ -73,7 +73,9 @@ import {
 } from "@/lib/api";
 import FirstRunEmptyState from "../components/FirstRunEmptyState";
 import Supplemental1099InsightsPanel from "../components/Supplemental1099InsightsPanel";
-import YearClosePacketPanel from "../components/YearClosePacketPanel";
+import YearClosePacketPanel, {
+  isYearClosePacketPaid,
+} from "../components/YearClosePacketPanel";
 import { useAuth } from "@/app/context/auth";
 import { isEmailConfirmed } from "@/lib/supabase";
 import { beginGuestPersist, endGuestPersist } from "@/lib/guest-persist-lock";
@@ -250,9 +252,18 @@ function getConfidenceSummary(analysis: PortfolioAnalysis): {
   };
 }
 
-function getRecommendedNextSteps(analysis: PortfolioAnalysis): string[] {
+function getRecommendedNextSteps(
+  analysis: PortfolioAnalysis,
+  packetUnlocked = true,
+): string[] {
   const steps: string[] = [];
 
+  if (!packetUnlocked) {
+    steps.push(
+      "This preview shows headline numbers only. Pay $49 to unlock harvest instructions, wash-sale events, tax-lot detail, and the CPA PDF.",
+    );
+    return steps;
+  }
   if (analysis.suggestions.length > 0) {
     steps.push(
       `Start with the ${analysis.suggestions.length} harvesting suggestion${analysis.suggestions.length === 1 ? "" : "s"} shown below.`,
@@ -306,9 +317,13 @@ function getSkippedSuggestionSymbolsForAnalysis(
 function SuggestionsPanel({
   suggestions,
   skippedSuggestionSymbols,
+  lotsWithLosses,
+  locked,
 }: Readonly<{
   suggestions: PortfolioAnalysis["suggestions"];
   skippedSuggestionSymbols: string[];
+  lotsWithLosses: number;
+  locked: boolean;
 }>) {
   return (
     <Stack spacing={2}>
@@ -321,7 +336,11 @@ function SuggestionsPanel({
           before acting.
         </Alert>
       )}
-      <HarvestingSuggestions suggestions={suggestions} />
+      <HarvestingSuggestions
+        suggestions={suggestions}
+        lotsWithLosses={lotsWithLosses}
+        locked={locked}
+      />
     </Stack>
   );
 }
@@ -545,6 +564,8 @@ function ResultsSection({
   skippedSuggestionSymbols,
   shouldPrompt1099Supplement,
   guest,
+  packetUnlocked,
+  onPacketPaidChange,
 }: Readonly<{
   displayedAnalysis: PortfolioAnalysis;
   analysisSource: AnalysisSource | null;
@@ -556,6 +577,8 @@ function ResultsSection({
   skippedSuggestionSymbols: string[];
   shouldPrompt1099Supplement: boolean;
   guest?: boolean;
+  packetUnlocked: boolean;
+  onPacketPaidChange?: (paid: boolean) => void;
 }>) {
   return (
     <>
@@ -648,7 +671,10 @@ function ResultsSection({
         />
       )}
 
-      <YearClosePacketPanel analysis={displayedAnalysis} />
+      <YearClosePacketPanel
+        analysis={displayedAnalysis}
+        onPaidChange={onPacketPaidChange}
+      />
 
       {shouldPrompt1099Supplement && (
         <Alert severity="info" variant="outlined">
@@ -677,6 +703,7 @@ function ResultsSection({
         <WashSaleWarning
           flags={displayedAnalysis.wash_sale_flags}
           taxYear={displayedAnalysis.tax_profile?.tax_year}
+          locked={!packetUnlocked}
         />
       )}
 
@@ -701,12 +728,17 @@ function ResultsSection({
             <SuggestionsPanel
               suggestions={displayedAnalysis.suggestions}
               skippedSuggestionSymbols={skippedSuggestionSymbols}
+              lotsWithLosses={
+                displayedAnalysis.summary?.lots_with_losses ?? 0
+              }
+              locked={!packetUnlocked}
             />
           )}
           {activeTab === 1 && (
             <PositionsTable
               positions={displayedAnalysis.positions}
               washSaleFlags={displayedAnalysis.wash_sale_flags}
+              lotDetailsUnlocked={packetUnlocked}
             />
           )}
         </CardContent>
@@ -977,6 +1009,8 @@ export default function DashboardPage() {
   const [heldAnalysis, setHeldAnalysis] = useState<PortfolioAnalysis | null>(
     null,
   );
+  const [isSampleRun, setIsSampleRun] = useState(false);
+  const [packetPaid, setPacketPaid] = useState(false);
   const queryClient = useQueryClient();
 
   // Load the user's tax profile for analyze params
@@ -1031,6 +1065,16 @@ export default function DashboardPage() {
   const displayedAnalysis = getDisplayedAnalysis(loadedAnalysis, analysis);
   const skippedSuggestionSymbols =
     getSkippedSuggestionSymbolsForAnalysis(displayedAnalysis);
+
+  useEffect(() => {
+    const analysisId = displayedAnalysis?.analysis_id || "local-analysis";
+    if (!displayedAnalysis) {
+      setPacketPaid(false);
+      return;
+    }
+    setPacketPaid(isYearClosePacketPaid(analysisId));
+  }, [displayedAnalysis?.analysis_id, displayedAnalysis]);
+
   useEffect(() => {
     if (displayedAnalysis) {
       saveAnalysisToStorage(displayedAnalysis);
@@ -1085,6 +1129,10 @@ export default function DashboardPage() {
     csvFile: File,
     supplementalFile: File | null = supplemental1099File,
   ) => {
+    const sample =
+      csvFile.name === "sample-robinhood-transactions.csv";
+    setIsSampleRun(sample);
+    setPacketPaid(false);
     setLastUploadedCsv(csvFile);
     analyzePortfolio(
       {
@@ -1412,8 +1460,9 @@ export default function DashboardPage() {
   const confidenceSummary = displayedAnalysis
     ? getConfidenceSummary(displayedAnalysis)
     : null;
+  const packetUnlocked = isSampleRun || packetPaid;
   const recommendedNextSteps = displayedAnalysis
-    ? getRecommendedNextSteps(displayedAnalysis)
+    ? getRecommendedNextSteps(displayedAnalysis, packetUnlocked)
     : [];
   const shouldPrompt1099Supplement = shouldRecommendSupplemental1099(
     displayedAnalysis,
@@ -1844,6 +1893,8 @@ export default function DashboardPage() {
               skippedSuggestionSymbols={skippedSuggestionSymbols}
               shouldPrompt1099Supplement={shouldPrompt1099Supplement}
               guest={!user}
+              packetUnlocked={packetUnlocked}
+              onPacketPaidChange={setPacketPaid}
             />
           )}
 

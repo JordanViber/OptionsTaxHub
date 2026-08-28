@@ -37,6 +37,8 @@ interface PositionsTableProps {
   positions: Position[];
   /** Realized wash-sale flags from analyze — mapped onto replacement lots. */
   washSaleFlags?: WashSaleFlag[];
+  /** When false, hide lot drill-in (packet preview). */
+  lotDetailsUnlocked?: boolean;
 }
 
 function getPositionRowId(row: Position): string {
@@ -551,13 +553,17 @@ function buildColumns(
 export default function PositionsTable({
   positions,
   washSaleFlags = [],
+  lotDetailsUnlocked = true,
 }: Readonly<PositionsTableProps>) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const togglePosition = useCallback((position: Position) => {
+    if (!lotDetailsUnlocked) {
+      return;
+    }
     const rowId = getPositionRowId(position);
     setExpandedId((current) => (current === rowId ? null : rowId));
-  }, []);
+  }, [lotDetailsUnlocked]);
 
   const columns = useMemo(
     () => buildColumns(expandedId, togglePosition),
@@ -578,7 +584,7 @@ export default function PositionsTable({
         rows={positions}
         columns={columns}
         getRowId={(row) => getPositionRowId(row)}
-        onRowClick={handleRowClick}
+        onRowClick={lotDetailsUnlocked ? handleRowClick : undefined}
         initialState={{
           sorting: {
             sortModel: [{ field: "unrealized_pnl", sort: "asc" }],
@@ -598,7 +604,7 @@ export default function PositionsTable({
             overflow: "hidden",
           },
           "& .MuiDataGrid-row": {
-            cursor: "pointer",
+            cursor: lotDetailsUnlocked ? "pointer" : "default",
             "&:hover": { backgroundColor: "action.hover" },
           },
           "& .loss-row": {

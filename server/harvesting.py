@@ -464,9 +464,10 @@ def generate_suggestions(
     Intelligence features:
     - Caps harvesting to offset realized gains + $3,000 IRS excess loss deduction,
       so users don't over-harvest losses beyond what provides immediate tax benefit.
-    - Excludes positions with wash-sale risk (recent purchases within 30 days)
-      since selling would trigger IRS wash-sale rule and disallow the loss.
-    - Ranks by tax savings (highest first) and only recommends what's needed.
+    - Flags positions with wash-sale risk (recent purchases within 30 days)
+      instead of hiding them, so the desk does not pretend losing lots are at a gain.
+    - Ranks by tax savings (highest first) and only recommends selling clean lots
+      up to the harvest target.
 
     Args:
         tax_lots: Computed tax lots with P&L and holding period.
@@ -546,14 +547,22 @@ def generate_suggestions(
 
     # Sort clean candidates by tax savings (highest first)
     clean_candidates.sort(key=lambda s: s.tax_savings_estimate, reverse=True)
+    risky_candidates.sort(key=lambda s: s.tax_savings_estimate, reverse=True)
 
-    # Smart cap: only recommend enough to reach the harvest target
-    cumulative_loss = 0.0
-    for suggestion in clean_candidates:
-        cumulative_loss += suggestion.estimated_loss
-        suggestions.append(suggestion)
-        if cumulative_loss >= harvest_target > 0:
-            break
+    # Smart cap: only *recommend selling* enough clean lots to reach the
+    # harvest target. Wash-sale-risky losing lots are still returned so the
+    # desk does not pretend those positions are at a gain.
+    if harvest_target > 0:
+        cumulative_loss = 0.0
+        for suggestion in clean_candidates:
+            cumulative_loss += suggestion.estimated_loss
+            suggestions.append(suggestion)
+            if cumulative_loss >= harvest_target:
+                break
+    else:
+        suggestions.extend(clean_candidates)
+
+    suggestions.extend(risky_candidates)
 
     # Assign priority rankings
     for idx, suggestion in enumerate(suggestions):
@@ -628,8 +637,12 @@ def build_portfolio_summary(
         (total_unrealized_pnl / total_cost_basis * 100) if total_cost_basis > 0 else 0
     )
 
-    total_harvestable = sum(s.estimated_loss for s in suggestions)
-    total_tax_savings = sum(s.tax_savings_estimate for s in suggestions)
+    total_harvestable = sum(
+        s.estimated_loss for s in suggestions if not s.wash_sale_risk
+    )
+    total_tax_savings = sum(
+        s.tax_savings_estimate for s in suggestions if not s.wash_sale_risk
+    )
 
     lots_with_losses = 0
     lots_with_gains = 0

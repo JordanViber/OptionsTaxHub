@@ -222,7 +222,15 @@ describe("DashboardPage", () => {
     // Mock sessionStorage
     Object.defineProperty(globalThis, "sessionStorage", {
       value: {
-        getItem: jest.fn(() => mockSessionValue),
+        getItem: jest.fn((key: string) => {
+          if (
+            typeof key === "string" &&
+            key.startsWith("optionstaxhub-packet-paid:")
+          ) {
+            return "cs_test_dashboard";
+          }
+          return mockSessionValue;
+        }),
         setItem: jest.fn(),
         removeItem: jest.fn(),
         clear: jest.fn(),

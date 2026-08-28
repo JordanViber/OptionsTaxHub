@@ -34,6 +34,36 @@ describe("HarvestingSuggestions", () => {
     expect(
       screen.getByText(/No tax-loss harvesting opportunities found/),
     ).toBeInTheDocument();
+    expect(
+      screen.getByText(/No open lots currently show an unrealized loss/),
+    ).toBeInTheDocument();
+  });
+
+  it("does not claim all positions are at a gain when losing lots exist", () => {
+    render(<HarvestingSuggestions suggestions={[]} lotsWithLosses={3} />);
+
+    expect(
+      screen.getByText(/Open lots with unrealized losses were found/),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/All positions are currently at a gain/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows packet preview instead of sell recipes when locked", () => {
+    render(
+      <HarvestingSuggestions
+        suggestions={[baseSuggestion]}
+        lotsWithLosses={1}
+        locked
+      />,
+    );
+
+    expect(screen.getByTestId("harvest-packet-preview")).toBeInTheDocument();
+    expect(screen.queryByText("Sell to harvest")).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/Pay \$49 for lot-level sell instructions/),
+    ).toBeInTheDocument();
   });
 
   it("renders suggestion cards for each suggestion", () => {
