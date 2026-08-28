@@ -271,7 +271,7 @@ export default function PortfolioSummaryCards({
           <MetricCard
             title="Net Open Position Value"
             value={formatCurrency(summary.total_market_value)}
-            subtitle={`${summary.positions_count} open positions — excludes cash and account equity adjustments`}
+            subtitle={`${summary.positions_count} open positions — short options count as liabilities; excludes cash`}
             icon={<PortfolioIcon />}
             color="#d8d2c6"
           />

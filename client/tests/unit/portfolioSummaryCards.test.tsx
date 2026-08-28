@@ -36,7 +36,7 @@ describe("PortfolioSummaryCards", () => {
 
     expect(
       screen.getByText(
-        "5 open positions — excludes cash and account equity adjustments",
+        "5 open positions — short options count as liabilities; excludes cash",
       ),
     ).toBeInTheDocument();
   });

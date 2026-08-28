@@ -210,6 +210,7 @@ class TestTransactionsToTaxLots:
         assert lots[0].symbol == "AAPL"
         assert lots[0].quantity == 10
         assert lots[0].cost_basis_per_share == pytest.approx(150.0)
+        assert lots[0].current_price == pytest.approx(150.0)
 
     def test_sell_closes_fifo(self):
         from models import Transaction, TransCode, AssetType
