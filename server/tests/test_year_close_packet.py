@@ -16,9 +16,11 @@ from stripe import StripeObject
 from year_close_packet import (
     OPTIONS_WASH_SALE_FAQ,
     PACKET_AMOUNT_CENTS,
+    PACKET_CHECKOUT_DESCRIPTION,
+    PACKET_CHECKOUT_NAME,
+    PACKET_CHECKOUT_SUBMIT_MESSAGE,
     PACKET_DISCLAIMER,
     PACKET_METADATA_PRODUCT,
-    PACKET_PRODUCT_NAME,
     PACKET_STORE,
     SETTLEMENT_DATE_FAQ,
     build_packet_payload,
@@ -179,7 +181,10 @@ def test_checkout_session_is_4900_cents_year_close_packet_not_tips(monkeypatch):
     line_items = captured["line_items"]
     price_data = line_items[0]["price_data"]
     assert price_data["unit_amount"] == 4900
-    assert price_data["product_data"]["name"] == "Year-close packet"
+    assert price_data["product_data"]["name"] == PACKET_CHECKOUT_NAME
+    assert price_data["product_data"]["description"] == PACKET_CHECKOUT_DESCRIPTION
+    assert "CPA" in price_data["product_data"]["description"]
+    assert captured["custom_text"]["submit"]["message"] == PACKET_CHECKOUT_SUBMIT_MESSAGE
     assert captured["mode"] == "payment"
     assert captured["metadata"]["product"] == PACKET_METADATA_PRODUCT
     # Must not reuse TipJar price IDs

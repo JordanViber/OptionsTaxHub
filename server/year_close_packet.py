@@ -19,6 +19,19 @@ logger = logging.getLogger(__name__)
 PACKET_AMOUNT_CENTS = 4900
 PACKET_PRODUCT_NAME = "Year-close packet"
 PACKET_METADATA_PRODUCT = "year_close_packet"
+# Stripe Checkout left-rail copy. Name stays recognizable; description sells
+# the download so the $49 page is not a blank "Year-close packet" label.
+PACKET_CHECKOUT_NAME = "Year-close packet — ready for your CPA"
+PACKET_CHECKOUT_DESCRIPTION = (
+    "Walk into tax season with this run already organized: wash-sale flags on "
+    "replacement lots, harvesting opportunities with estimated tax savings, "
+    "lot-level P&L, and a printable reconciliation you can send your CPA. "
+    "One-time $49. Instant PDF when you return. Not a filed Form 8949 — a "
+    "working packet for this analysis."
+)
+PACKET_CHECKOUT_SUBMIT_MESSAGE = (
+    "One payment. Your year-close packet unlocks the moment you return to OptionsTaxHub."
+)
 
 PACKET_DISCLAIMER = (
     "This is a reconciliation packet, not a filed Form 8949 and not a rebuild of lots."
@@ -624,8 +637,16 @@ def packet_checkout_line_items() -> list[dict[str, Any]]:
             "price_data": {
                 "currency": "usd",
                 "unit_amount": PACKET_AMOUNT_CENTS,
-                "product_data": {"name": PACKET_PRODUCT_NAME},
+                "product_data": {
+                    "name": PACKET_CHECKOUT_NAME,
+                    "description": PACKET_CHECKOUT_DESCRIPTION,
+                },
             },
             "quantity": 1,
         }
     ]
+
+
+def packet_checkout_custom_text() -> dict[str, Any]:
+    """Copy shown near the Stripe Pay button (right rail)."""
+    return {"submit": {"message": PACKET_CHECKOUT_SUBMIT_MESSAGE}}

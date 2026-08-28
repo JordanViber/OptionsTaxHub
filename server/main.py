@@ -46,6 +46,7 @@ from year_close_packet import (
     is_packet_paid,
     mark_paid,
     packet_analysis_id_from_session,
+    packet_checkout_custom_text,
     packet_checkout_line_items,
     packet_requires_test_stripe,
     packet_session_id,
@@ -1417,6 +1418,7 @@ async def create_year_close_packet_checkout(
         session = stripe.checkout.Session.create(
             mode="payment",
             line_items=packet_checkout_line_items(),
+            custom_text=packet_checkout_custom_text(),
             success_url=success_url,
             cancel_url=cancel_url,
             metadata={
