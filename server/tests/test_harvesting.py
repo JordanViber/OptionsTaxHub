@@ -548,8 +548,8 @@ class TestGenerateSuggestions:
         assert suggestions[0].display_label == "TSLA 3/20/2026 Put $375.00"
         assert "Option lot opened" in suggestions[0].lot_details
 
-    def test_wash_sale_risk_excluded(self):
-        """Lots with prospective wash-sale risk should not appear in main suggestions."""
+    def test_wash_sale_risk_still_listed(self):
+        """Lots with prospective wash-sale risk still appear, flagged, not hidden."""
         purchase_date = date.today() - timedelta(days=10)
         lots = [_lot(symbol="AAPL", cost_basis=150.0, current_price=140.0,
                      purchase_date=purchase_date)]
@@ -563,8 +563,9 @@ class TestGenerateSuggestions:
             transactions=txns,
             tax_profile=_profile(),
         )
-        # Should be empty because of wash-sale risk
-        assert len(suggestions) == 0
+        assert len(suggestions) == 1
+        assert suggestions[0].wash_sale_risk is True
+        assert "Wash-sale risk" in suggestions[0].wash_sale_explanation
 
     def test_ranked_by_tax_savings(self):
         lots = [

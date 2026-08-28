@@ -546,14 +546,22 @@ def generate_suggestions(
 
     # Sort clean candidates by tax savings (highest first)
     clean_candidates.sort(key=lambda s: s.tax_savings_estimate, reverse=True)
+    risky_candidates.sort(key=lambda s: s.tax_savings_estimate, reverse=True)
 
-    # Smart cap: only recommend enough to reach the harvest target
-    cumulative_loss = 0.0
-    for suggestion in clean_candidates:
-        cumulative_loss += suggestion.estimated_loss
-        suggestions.append(suggestion)
-        if cumulative_loss >= harvest_target > 0:
-            break
+    # Smart cap: only *recommend selling* enough clean lots to reach the
+    # harvest target. Wash-sale-risky losing lots are still returned so the
+    # desk does not pretend those positions are at a gain.
+    if harvest_target > 0:
+        cumulative_loss = 0.0
+        for suggestion in clean_candidates:
+            cumulative_loss += suggestion.estimated_loss
+            suggestions.append(suggestion)
+            if cumulative_loss >= harvest_target:
+                break
+    else:
+        suggestions.extend(clean_candidates)
+
+    suggestions.extend(risky_candidates)
 
     # Assign priority rankings
     for idx, suggestion in enumerate(suggestions):

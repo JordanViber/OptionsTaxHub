@@ -40,6 +40,11 @@ function paidStorageKey(analysisId: string): string {
   return `optionstaxhub-packet-paid:${analysisId}`;
 }
 
+export function isYearClosePacketPaid(analysisId: string): boolean {
+  const stored = readSessionItem(paidStorageKey(analysisId));
+  return Boolean(stored && stored.startsWith("cs_"));
+}
+
 function readSessionItem(key: string): string | null {
   try {
     return sessionStorage.getItem(key);
@@ -123,7 +128,11 @@ function triggerPdfDownload(blob: Blob): void {
 
 export default function YearClosePacketPanel({
   analysis,
-}: Readonly<{ analysis: PortfolioAnalysis }>) {
+  onPaidChange,
+}: Readonly<{
+  analysis: PortfolioAnalysis;
+  onPaidChange?: (paid: boolean) => void;
+}>) {
   const analysisId = analysis.analysis_id || "local-analysis";
   const [busy, setBusy] = useState<"pay" | "download" | "confirm" | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -150,6 +159,7 @@ export default function YearClosePacketPanel({
     if (stored && stored.startsWith("cs_")) {
       setPaid(true);
       setSessionId(stored);
+      onPaidChange?.(true);
     }
 
     const params = new URLSearchParams(window.location.search);
@@ -183,6 +193,7 @@ export default function YearClosePacketPanel({
           }
           setPaid(true);
           writeSessionItem(paidStorageKey(analysisId), sid);
+          onPaidChange?.(true);
           stripPacketQueryParams();
         } catch (err) {
           setError(err instanceof Error ? err.message : "Could not confirm payment.");
@@ -287,7 +298,8 @@ export default function YearClosePacketPanel({
           </Typography>
           <Typography variant="body2" color="text.secondary">
             {YEAR_CLOSE_PACKET_COPY} One-time payment — not a subscription and
-            not a tip.
+            not a tip. Unlocks lot-level harvest instructions, wash-sale
+            events, tax-lot detail, and the downloadable PDF.
           </Typography>
         </Box>
         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
