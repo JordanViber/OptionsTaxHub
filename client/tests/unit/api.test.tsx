@@ -36,6 +36,7 @@ import {
   fetchAnalysisById,
   deleteAnalysis,
   cleanupOrphanHistory,
+  persistGuestAnalysis,
   getAnalysisErrorMessage,
   getBackendUnreachableMessage,
 } from "../../lib/api";
@@ -755,6 +756,50 @@ describe("api hooks", () => {
       expect(call[0]).toContain("/api/portfolio/history/cleanup");
       expect(call[1].method).toBe("DELETE");
       expect(call[1].headers.Authorization).toBe("Bearer mock-jwt-token");
+    });
+
+    it("persistGuestAnalysis posts the guest snapshot to history", async () => {
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ id: "hist-1" }),
+      } as Response);
+
+      const saved = await persistGuestAnalysis(
+        {
+          analysis_id: "guest-1",
+          positions: [],
+          tax_lots: [],
+          suggestions: [],
+          wash_sale_flags: [],
+          summary: {
+            total_market_value: 0,
+            total_cost_basis: 0,
+            total_unrealized_pnl: 0,
+            total_unrealized_pnl_pct: 0,
+            total_harvestable_losses: 0,
+            estimated_tax_savings: 0,
+            positions_count: 0,
+            lots_with_losses: 0,
+            lots_with_gains: 0,
+            wash_sale_flags_count: 0,
+          },
+          tax_profile: null,
+          disclaimer: "",
+          errors: [],
+          warnings: [],
+        },
+        "sample-robinhood-transactions.csv",
+      );
+
+      expect(saved).toBe(true);
+      const call = (globalThis.fetch as jest.Mock).mock.calls[0];
+      expect(call[0]).toContain("/api/portfolio/history");
+      expect(call[1].method).toBe("POST");
+      expect(call[1].headers.Authorization).toBe("Bearer mock-jwt-token");
+      expect(JSON.parse(call[1].body)).toMatchObject({
+        filename: "sample-robinhood-transactions.csv",
+        analysis: { analysis_id: "guest-1" },
+      });
     });
 
     it("throws Authentication error when session is null", async () => {

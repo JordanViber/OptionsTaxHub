@@ -73,6 +73,7 @@ jest.mock("../../lib/api", () => ({
   fetchAnalysisById: mockFetchAnalysisById,
   cleanupOrphanHistory: mockCleanupOrphanHistory,
   deleteAnalysis: mockDeleteAnalysis,
+  persistGuestAnalysis: jest.fn(() => Promise.resolve(true)),
   getAnalysisErrorMessage: (error: unknown) =>
     error instanceof Error ? error.message : "An error occurred",
   getBackendUnreachableMessage: () =>

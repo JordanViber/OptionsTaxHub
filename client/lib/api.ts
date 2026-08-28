@@ -529,6 +529,25 @@ export async function deleteAnalysis(analysisId: string): Promise<boolean> {
 }
 
 /**
+ * Save a guest desk run into the signed-in user's history.
+ *
+ * Guest analyze only keeps the result in sessionStorage. After sign-in the
+ * dashboard posts that snapshot so it appears in Saved runs.
+ */
+export async function persistGuestAnalysis(
+  analysis: PortfolioAnalysis,
+  filename = "guest-run.csv",
+): Promise<boolean> {
+  const headers = await getAuthHeaders();
+  const response = await fetch(apiPath("/api/portfolio/history"), {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ filename, analysis }),
+  });
+  return response.ok;
+}
+
+/**
  * Map analysis / network failures to an end-user message.
  * Never mention local ports or developer start commands.
  * Never surface the JS default `[object Object]` stringification.
