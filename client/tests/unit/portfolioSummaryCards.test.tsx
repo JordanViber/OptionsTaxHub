@@ -112,7 +112,7 @@ describe("PortfolioSummaryCards", () => {
     );
 
     expect(screen.getByText("Open losses to review")).toBeInTheDocument();
-    expect(screen.getByText("$4,280")).toBeInTheDocument();
+    expect(screen.getAllByText("$4,280")).toHaveLength(2);
     expect(screen.queryByText("Est. Tax Savings")).not.toBeInTheDocument();
   });
 
