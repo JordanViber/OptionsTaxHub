@@ -31,9 +31,57 @@ const API_URL = !_RAW_API_URL || _isLocalhost ? "" : _RAW_API_URL;
 export const YEAR_CLOSE_PACKET_TITLE = "Year-close packet — $49";
 export const YEAR_CLOSE_PACKET_COPY =
   "This is a reconciliation packet, not a filed Form 8949 and not a rebuild of lots.";
+export const PACKET_CHECKOUT_INFLIGHT_KEY =
+  "optionstaxhub-packet-checkout-inflight";
+export const PACKET_CHECKOUT_CANCELED_COPY =
+  "Checkout was closed without payment. Pay $49 when you are ready.";
 
 function paidStorageKey(analysisId: string): string {
   return `optionstaxhub-packet-paid:${analysisId}`;
+}
+
+function readSessionItem(key: string): string | null {
+  try {
+    return sessionStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeSessionItem(key: string, value: string): void {
+  try {
+    sessionStorage.setItem(key, value);
+  } catch {
+    // ignore quota / private-mode failures
+  }
+}
+
+function clearSessionItem(key: string): void {
+  try {
+    sessionStorage.removeItem(key);
+  } catch {
+    // ignore
+  }
+}
+
+function stripPacketQueryParams(): void {
+  try {
+    const url = new URL(window.location.href);
+    if (
+      !url.searchParams.has("packet_canceled") &&
+      !url.searchParams.has("packet_session") &&
+      !url.searchParams.has("packet_analysis")
+    ) {
+      return;
+    }
+    url.searchParams.delete("packet_canceled");
+    url.searchParams.delete("packet_session");
+    url.searchParams.delete("packet_analysis");
+    const next = `${url.pathname}${url.search}${url.hash}`;
+    window.history.replaceState(window.history.state, "", next);
+  } catch {
+    // ignore
+  }
 }
 
 async function authHeaders(): Promise<HeadersInit> {
@@ -79,11 +127,26 @@ export default function YearClosePacketPanel({
   const analysisId = analysis.analysis_id || "local-analysis";
   const [busy, setBusy] = useState<"pay" | "download" | "confirm" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [canceledNotice, setCanceledNotice] = useState(false);
   const [paid, setPaid] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
 
+  // Same-tab Stripe redirect leaves this page in back-forward cache with
+  // busy="pay". Closing checkout (or Back) restores that spinning button.
   useEffect(() => {
-    const stored = sessionStorage.getItem(paidStorageKey(analysisId));
+    const releasePaySpinner = () => {
+      setBusy((current) => (current === "pay" ? null : current));
+      clearSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY);
+    };
+    const onPageShow = () => {
+      releasePaySpinner();
+    };
+    window.addEventListener("pageshow", onPageShow);
+    return () => window.removeEventListener("pageshow", onPageShow);
+  }, []);
+
+  useEffect(() => {
+    const stored = readSessionItem(paidStorageKey(analysisId));
     if (stored && stored.startsWith("cs_")) {
       setPaid(true);
       setSessionId(stored);
@@ -91,47 +154,58 @@ export default function YearClosePacketPanel({
 
     const params = new URLSearchParams(window.location.search);
     const sid = params.get("packet_session");
-    if (!sid) {
+    const canceled = params.get("packet_canceled") === "1";
+    const inflight = readSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY) === analysisId;
+
+    if (sid) {
+      clearSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY);
+      setCanceledNotice(false);
+      setSessionId(sid);
+      setBusy("confirm");
+      setError(null);
+      void (async () => {
+        try {
+          const headers = await authHeaders();
+          const response = await fetch(`${API_URL}/api/year-close-packet/confirm`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              analysis_id: analysisId,
+              session_id: sid,
+              analysis: compactAnalysis(analysis),
+            }),
+          });
+          if (!response.ok) {
+            const errData = await response.json().catch(() => null);
+            throw new Error(
+              errData?.detail || "Could not confirm packet payment.",
+            );
+          }
+          setPaid(true);
+          writeSessionItem(paidStorageKey(analysisId), sid);
+          stripPacketQueryParams();
+        } catch (err) {
+          setError(err instanceof Error ? err.message : "Could not confirm payment.");
+        } finally {
+          setBusy(null);
+        }
+      })();
       return;
     }
-    setSessionId(sid);
-    setBusy("confirm");
-    setError(null);
-    void (async () => {
-      try {
-        const headers = await authHeaders();
-        const response = await fetch(`${API_URL}/api/year-close-packet/confirm`, {
-          method: "POST",
-          headers,
-          body: JSON.stringify({
-            analysis_id: analysisId,
-            session_id: sid,
-            analysis: compactAnalysis(analysis),
-          }),
-        });
-        if (!response.ok) {
-          const errData = await response.json().catch(() => null);
-          throw new Error(
-            errData?.detail || "Could not confirm packet payment.",
-          );
-        }
-        setPaid(true);
-        try {
-          sessionStorage.setItem(paidStorageKey(analysisId), sid);
-        } catch {
-          // ignore
-        }
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Could not confirm payment.");
-      } finally {
-        setBusy(null);
-      }
-    })();
+
+    if (canceled || inflight) {
+      clearSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY);
+      setBusy(null);
+      setCanceledNotice(true);
+      stripPacketQueryParams();
+    }
   }, [analysis, analysisId]);
 
   const handlePay = async () => {
     setBusy("pay");
     setError(null);
+    setCanceledNotice(false);
+    writeSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY, analysisId);
     try {
       const headers = await authHeaders();
       const response = await fetch(`${API_URL}/api/year-close-packet/checkout`, {
@@ -147,8 +221,17 @@ export default function YearClosePacketPanel({
         throw new Error(errData?.detail || "Failed to start checkout.");
       }
       const data = await response.json();
-      globalThis.location.href = data.checkout_url;
+      if (typeof data?.checkout_url !== "string" || data.checkout_url.length === 0) {
+        throw new Error("Checkout did not return a payment link.");
+      }
+      try {
+        globalThis.location.href = data.checkout_url;
+      } catch {
+        // jsdom rejects in-page navigation. A real browser unloads this
+        // page instead; busy stays "pay" until pageshow / remount.
+      }
     } catch (err) {
+      clearSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY);
       setError(err instanceof Error ? err.message : "Failed to start checkout.");
       setBusy(null);
     }
@@ -238,6 +321,15 @@ export default function YearClosePacketPanel({
             Download
           </Button>
         </Stack>
+        {canceledNotice && !error && (
+          <Alert
+            severity="info"
+            role="status"
+            data-testid="packet-checkout-canceled"
+          >
+            {PACKET_CHECKOUT_CANCELED_COPY}
+          </Alert>
+        )}
         {error && (
           <Alert severity="error" role="alert">
             {error}
