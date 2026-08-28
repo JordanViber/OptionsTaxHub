@@ -1,6 +1,9 @@
+import { StrictMode } from "react";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import Home from "../../app/dashboard/page";
+import { persistGuestAnalysis } from "../../lib/api";
+import { resetGuestPersistInFlight } from "../../lib/guest-persist-lock";
 
 const mockPush = jest.fn();
 const mockUseAuth = jest.fn();
@@ -71,6 +74,7 @@ jest.mock("../../lib/api", () => ({
   useBackendHealth: () => ({ isError: false, isFetched: true }),
   fetchAnalysisById: jest.fn().mockResolvedValue(null),
   cleanupOrphanHistory: jest.fn().mockResolvedValue(0),
+  persistGuestAnalysis: jest.fn(() => Promise.resolve(true)),
   getAnalysisErrorMessage: (error: unknown) =>
     error instanceof Error ? error.message : "An error occurred",
   getBackendUnreachableMessage: () =>
@@ -124,14 +128,44 @@ const createWrapper = () => {
 const renderWithClient = (ui: React.ReactElement) =>
   render(ui, { wrapper: createWrapper() });
 
+const sampleAnalysis = {
+  analysis_id: "guest-sample-1",
+  positions: [{ symbol: "AAPL" }],
+  tax_lots: [],
+  suggestions: [],
+  wash_sale_flags: [],
+  summary: { total_market_value: 1000, positions_count: 1 },
+  tax_profile: null,
+  disclaimer: "",
+  warnings: [],
+  errors: [],
+};
+
+function mockSampleCsvFetch() {
+  globalThis.fetch = jest.fn().mockResolvedValue({
+    ok: true,
+    blob: async () => new Blob(["symbol,qty\nAAPL,1"], { type: "text/csv" }),
+  }) as typeof fetch;
+}
+
 describe("Home page", () => {
+  let originalFetch: typeof globalThis.fetch;
+
   beforeEach(() => {
     mockPush.mockClear();
     mockUseAuth.mockReset();
     mockUseAnalyzePortfolio.mockReset();
     mockUseTaxProfile.mockReset();
     mockUsePortfolioHistory.mockReset();
+    (persistGuestAnalysis as jest.Mock).mockClear();
+    (persistGuestAnalysis as jest.Mock).mockResolvedValue(true);
+    resetGuestPersistInFlight();
     sessionStorage.clear();
+    originalFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
   });
 
   it("renders loading state when auth is loading", () => {
@@ -492,6 +526,155 @@ describe("Home page", () => {
 
     await waitFor(() => {
       expect(screen.queryByText("Sign Out")).not.toBeInTheDocument();
+    });
+  });
+
+  it("loads the landing sample through analyze under Strict Mode", async () => {
+    const mutate = jest.fn();
+    setupMocks(createAuthMock(null, false), createAnalyzeMock({ mutate }));
+    sessionStorage.setItem("oth-load-sample", "1");
+    mockSampleCsvFetch();
+
+    render(
+      <StrictMode>
+        <Home />
+      </StrictMode>,
+      { wrapper: createWrapper() },
+    );
+
+    await waitFor(() => {
+      expect(mutate).toHaveBeenCalled();
+    });
+    expect(mutate.mock.calls[0][0].file.name).toBe(
+      "sample-robinhood-transactions.csv",
+    );
+    expect(sessionStorage.getItem("oth-load-sample")).toBeNull();
+  });
+
+  it("sets lastUploadedCsv after the landing sample so a 1099 rerun is not null", async () => {
+    const mutate = jest.fn();
+    setupMocks(createAuthMock(null, false), createAnalyzeMock({ mutate }));
+    sessionStorage.setItem("oth-load-sample", "1");
+    mockSampleCsvFetch();
+
+    const { container } = renderWithClient(<Home />);
+
+    await waitFor(() => {
+      expect(mutate).toHaveBeenCalledTimes(1);
+    });
+
+    const pdfInput = container.querySelector(
+      'input[type="file"][accept=".pdf,application/pdf"]',
+    );
+    if (!(pdfInput instanceof HTMLInputElement)) {
+      throw new TypeError("PDF input not found");
+    }
+
+    fireEvent.change(pdfInput, {
+      target: {
+        files: [
+          new File(["pdf"], "supplement.pdf", { type: "application/pdf" }),
+        ],
+      },
+    });
+
+    await waitFor(() => {
+      expect(mutate).toHaveBeenCalledTimes(2);
+    });
+    expect(mutate.mock.calls[1][0]).toMatchObject({
+      file: expect.objectContaining({
+        name: "sample-robinhood-transactions.csv",
+      }),
+      supplemental1099File: expect.objectContaining({
+        name: "supplement.pdf",
+      }),
+    });
+  });
+
+  it("lets keyboard users Tab/Enter/Space to upload CSV", () => {
+    setupMocks(createAuthMock(null, false));
+    const clickSpy = jest
+      .spyOn(HTMLInputElement.prototype, "click")
+      .mockImplementation(() => {});
+
+    const { container } = renderWithClient(<Home />);
+    const dropzone = screen.getByTestId("csv-dropzone");
+
+    expect(dropzone).toHaveAttribute("tabindex", "0");
+    expect(dropzone).toHaveAttribute("role", "button");
+    expect(container.querySelector("#desk-csv-input")).toHaveAttribute(
+      "tabindex",
+      "-1",
+    );
+
+    dropzone.focus();
+    fireEvent.keyDown(dropzone, { key: "Enter" });
+    fireEvent.keyDown(dropzone, { key: " " });
+
+    expect(clickSpy).toHaveBeenCalled();
+    clickSpy.mockRestore();
+  });
+
+  it("persists a guest run after sign-in", async () => {
+    sessionStorage.setItem(
+      "optionstaxhub-analysis",
+      JSON.stringify(sampleAnalysis),
+    );
+    sessionStorage.setItem("oth-guest-unsaved", "1");
+    sessionStorage.setItem(
+      "oth-guest-unsaved-filename",
+      "sample-robinhood-transactions.csv",
+    );
+    setupMocks(
+      createAuthMock(
+        {
+          id: "user-1",
+          email: "signed-in@example.com",
+          email_confirmed_at: "2025-01-01T00:00:00Z",
+        },
+        false,
+      ),
+    );
+
+    renderWithClient(<Home />);
+
+    await waitFor(() => {
+      expect(persistGuestAnalysis).toHaveBeenCalledWith(
+        expect.objectContaining({ analysis_id: "guest-sample-1" }),
+        "sample-robinhood-transactions.csv",
+      );
+    });
+  });
+
+  it("retries guest persist even if a leftover sessionStorage lock is present", async () => {
+    sessionStorage.setItem(
+      "optionstaxhub-analysis",
+      JSON.stringify(sampleAnalysis),
+    );
+    sessionStorage.setItem("oth-guest-unsaved", "1");
+    sessionStorage.setItem(
+      "oth-guest-unsaved-filename",
+      "sample-robinhood-transactions.csv",
+    );
+    sessionStorage.setItem("oth-guest-persist-lock", "guest-sample-1");
+    setupMocks(
+      createAuthMock(
+        {
+          id: "user-1",
+          email: "signed-in@example.com",
+          email_confirmed_at: "2025-01-01T00:00:00Z",
+        },
+        false,
+      ),
+    );
+
+    renderWithClient(<Home />);
+
+    await waitFor(() => {
+      expect(persistGuestAnalysis).toHaveBeenCalledWith(
+        expect.objectContaining({ analysis_id: "guest-sample-1" }),
+        "sample-robinhood-transactions.csv",
+      );
     });
   });
 });

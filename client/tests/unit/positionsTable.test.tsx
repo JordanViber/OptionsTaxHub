@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { fireEvent, render, screen } from "@testing-library/react";
 import PositionsTable from "../../app/components/PositionsTable";
 import type { Position, TaxLot, WashSaleFlag } from "@/lib/types";
@@ -287,6 +289,16 @@ describe("PositionsTable", () => {
 
       expect(row).not.toHaveClass("loss-row");
       expect(row).not.toHaveClass("gain-row");
+    });
+
+    it("does not use light fills against cream text on lot or gain/loss rows", () => {
+      const source = readFileSync(
+        join(__dirname, "../../app/components/PositionsTable.tsx"),
+        "utf8",
+      );
+      expect(source).not.toContain("#ffebee");
+      expect(source).not.toContain("#e8f5e9");
+      expect(source).not.toContain("grey.50");
     });
 
     it("applies no class for null P&L", () => {

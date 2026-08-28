@@ -67,6 +67,7 @@ import {
   fetchAnalysisById,
   cleanupOrphanHistory,
   deleteAnalysis,
+  persistGuestAnalysis,
   getAnalysisErrorMessage,
   getBackendUnreachableMessage,
 } from "@/lib/api";
@@ -75,6 +76,7 @@ import Supplemental1099InsightsPanel from "../components/Supplemental1099Insight
 import YearClosePacketPanel from "../components/YearClosePacketPanel";
 import { useAuth } from "@/app/context/auth";
 import { isEmailConfirmed } from "@/lib/supabase";
+import { beginGuestPersist, endGuestPersist } from "@/lib/guest-persist-lock";
 import { useQueryClient } from "@tanstack/react-query";
 import type {
   PortfolioAnalysis,
@@ -86,6 +88,8 @@ export const dynamic = "force-dynamic";
 
 const UPLOAD_INTENT_KEY = "oth-upload-intent";
 const LOAD_SAMPLE_KEY = "oth-load-sample";
+const GUEST_UNSAVED_KEY = "oth-guest-unsaved";
+const GUEST_UNSAVED_FILENAME_KEY = "oth-guest-unsaved-filename";
 
 type AnalysisSource = "fresh-upload" | "saved-history" | "restored-session";
 
@@ -1093,6 +1097,17 @@ export default function DashboardPage() {
       {
         onSuccess: () => {
           setForceEmpty(false);
+          if (!confirmedUserId) {
+            try {
+              sessionStorage.setItem(GUEST_UNSAVED_KEY, "1");
+              sessionStorage.setItem(
+                GUEST_UNSAVED_FILENAME_KEY,
+                csvFile.name || "guest-run.csv",
+              );
+            } catch {
+              // ignore
+            }
+          }
           queryClient.invalidateQueries({
             queryKey: ["portfolio-history", user?.id],
           });
@@ -1132,9 +1147,6 @@ export default function DashboardPage() {
     let wantsSample = false;
     try {
       wantsSample = sessionStorage.getItem(LOAD_SAMPLE_KEY) === "1";
-      if (wantsSample) {
-        sessionStorage.removeItem(LOAD_SAMPLE_KEY);
-      }
     } catch {
       wantsSample = false;
     }
@@ -1155,14 +1167,24 @@ export default function DashboardPage() {
         if (cancelled) {
           return;
         }
-        analyzePortfolio({
-          file,
-          filingStatus: taxProfile?.filing_status || "single",
-          estimatedIncome: taxProfile?.estimated_annual_income || 75000,
-          taxYear: taxProfile?.tax_year || 2026,
+        try {
+          sessionStorage.removeItem(LOAD_SAMPLE_KEY);
+        } catch {
+          // ignore
+        }
+        clearCurrentAnalysisView({
+          setLoadedAnalysis,
+          setAnalysisSource,
         });
+        setForceEmpty(false);
+        runPortfolioAnalysis(file);
       } catch {
-        // Sample fetch failed; the empty desk still offers the button.
+        if (!cancelled) {
+          setSnackbar({
+            message: "Could not load the sample CSV.",
+            severity: "error",
+          });
+        }
       }
     })();
 
@@ -1171,6 +1193,54 @@ export default function DashboardPage() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!confirmedUserId) {
+      return undefined;
+    }
+    let filename = "guest-run.csv";
+    try {
+      if (sessionStorage.getItem(GUEST_UNSAVED_KEY) !== "1") {
+        return undefined;
+      }
+      filename =
+        sessionStorage.getItem(GUEST_UNSAVED_FILENAME_KEY) || "guest-run.csv";
+    } catch {
+      return undefined;
+    }
+
+    const analysis = restoreAnalysisFromStorage();
+    if (!analysis) {
+      return undefined;
+    }
+
+    const persistKey = analysis.analysis_id || filename;
+    if (!beginGuestPersist(persistKey)) {
+      return undefined;
+    }
+
+    void persistGuestAnalysis(analysis, filename)
+      .then((saved) => {
+        endGuestPersist(persistKey);
+        try {
+          if (saved) {
+            sessionStorage.removeItem(GUEST_UNSAVED_KEY);
+            sessionStorage.removeItem(GUEST_UNSAVED_FILENAME_KEY);
+          }
+        } catch {
+          // ignore
+        }
+        if (saved) {
+          queryClient.invalidateQueries({
+            queryKey: ["portfolio-history", confirmedUserId],
+          });
+        }
+      })
+      .catch(() => {
+        endGuestPersist(persistKey);
+      });
+    return undefined;
+  }, [confirmedUserId, queryClient]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setForceEmpty(false);
@@ -1614,11 +1684,25 @@ export default function DashboardPage() {
                   className="file-input-hidden"
                   type="file"
                   accept=".csv"
+                  tabIndex={-1}
                   onChange={handleFileChange}
                 />
                 <Box
                   component="label"
                   htmlFor={isPending ? undefined : "desk-csv-input"}
+                  data-testid="csv-dropzone"
+                  role="button"
+                  tabIndex={isPending ? -1 : 0}
+                  aria-label="Upload CSV"
+                  onKeyDown={(event) => {
+                    if (isPending) {
+                      return;
+                    }
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      fileInputRef.current?.click();
+                    }
+                  }}
                   sx={{
                     border: "1px dashed",
                     borderColor: isPending ? "divider" : "primary.main",
@@ -1638,6 +1722,11 @@ export default function DashboardPage() {
                           backgroundColor: "action.hover",
                           borderColor: "primary.light",
                         },
+                    "&:focus-visible": {
+                      outline: "2px solid",
+                      outlineColor: "primary.main",
+                      outlineOffset: 2,
+                    },
                   }}
                 >
                   <CloudUploadIcon
