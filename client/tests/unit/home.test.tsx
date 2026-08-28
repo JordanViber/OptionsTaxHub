@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import Home from "../../app/dashboard/page";
 import { persistGuestAnalysis } from "../../lib/api";
+import { resetGuestPersistInFlight } from "../../lib/guest-persist-lock";
 
 const mockPush = jest.fn();
 const mockUseAuth = jest.fn();
@@ -158,6 +159,7 @@ describe("Home page", () => {
     mockUsePortfolioHistory.mockReset();
     (persistGuestAnalysis as jest.Mock).mockClear();
     (persistGuestAnalysis as jest.Mock).mockResolvedValue(true);
+    resetGuestPersistInFlight();
     sessionStorage.clear();
     originalFetch = globalThis.fetch;
   });
@@ -623,6 +625,38 @@ describe("Home page", () => {
       "oth-guest-unsaved-filename",
       "sample-robinhood-transactions.csv",
     );
+    setupMocks(
+      createAuthMock(
+        {
+          id: "user-1",
+          email: "signed-in@example.com",
+          email_confirmed_at: "2025-01-01T00:00:00Z",
+        },
+        false,
+      ),
+    );
+
+    renderWithClient(<Home />);
+
+    await waitFor(() => {
+      expect(persistGuestAnalysis).toHaveBeenCalledWith(
+        expect.objectContaining({ analysis_id: "guest-sample-1" }),
+        "sample-robinhood-transactions.csv",
+      );
+    });
+  });
+
+  it("retries guest persist even if a leftover sessionStorage lock is present", async () => {
+    sessionStorage.setItem(
+      "optionstaxhub-analysis",
+      JSON.stringify(sampleAnalysis),
+    );
+    sessionStorage.setItem("oth-guest-unsaved", "1");
+    sessionStorage.setItem(
+      "oth-guest-unsaved-filename",
+      "sample-robinhood-transactions.csv",
+    );
+    sessionStorage.setItem("oth-guest-persist-lock", "guest-sample-1");
     setupMocks(
       createAuthMock(
         {

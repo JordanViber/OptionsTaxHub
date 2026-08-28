@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 from pathlib import Path
+from types import SimpleNamespace
 
 import main
 from auth import get_current_user, get_current_user_with_token, get_optional_user
@@ -794,6 +795,71 @@ def test_guest_analyze_quota_returns_429(monkeypatch):
     assert second.status_code == 200
     assert third.status_code == 429
     assert "too many guest analyses" in third.json()["detail"].lower()
+
+
+def test_client_ip_ignores_spoofed_forwarded_for_from_public_peer():
+    """Public TCP peers cannot rotate X-Forwarded-For to mint a new quota bucket."""
+    request = SimpleNamespace(
+        client=SimpleNamespace(host="8.8.8.8"),
+        headers={"x-forwarded-for": "1.2.3.4"},
+    )
+    assert main._client_ip(request) == "8.8.8.8"
+
+
+def test_client_ip_uses_last_forwarded_hop_from_private_proxy():
+    """A trusted proxy's appended hop is the client; prepended spoofed values are ignored."""
+    request = SimpleNamespace(
+        client=SimpleNamespace(host="10.8.0.3"),
+        headers={"x-forwarded-for": "8.8.8.8, 1.1.1.1"},
+    )
+    assert main._client_ip(request) == "1.1.1.1"
+
+
+def test_guest_analyze_quota_ignores_rotating_forwarded_for(monkeypatch):
+    """TestClient is not a trusted proxy, so rotating X-Forwarded-For still 429s."""
+    _stub_analyze_network(monkeypatch)
+    monkeypatch.setattr(main, "_GUEST_ANALYZE_MAX_PER_WINDOW", 2)
+    sample_path = (
+        Path(__file__).resolve().parents[2]
+        / "client"
+        / "public"
+        / "sample-robinhood-transactions.csv"
+    )
+    csv_bytes = sample_path.read_bytes()
+    main.app.dependency_overrides.pop(get_optional_user, None)
+    try:
+        statuses = []
+        for spoofed in ("1.1.1.1", "2.2.2.2", "3.3.3.3"):
+            response = client.post(
+                "/api/portfolio/analyze",
+                files={"file": (sample_path.name, csv_bytes, "text/csv")},
+                headers={"X-Forwarded-For": spoofed},
+            )
+            statuses.append(response.status_code)
+    finally:
+        main.app.dependency_overrides[get_optional_user] = mock_get_current_user
+
+    assert statuses == [200, 200, 429]
+
+
+def test_guest_analyze_quota_prunes_stale_buckets():
+    now = 1_000_000.0
+    main._guest_analyze_hits["old"] = [now - 60 * 60 - 1]
+    main._guest_analyze_hits["fresh"] = [now - 10]
+    main._prune_guest_analyze_hits(now)
+    assert "old" not in main._guest_analyze_hits
+    assert "fresh" in main._guest_analyze_hits
+
+
+def test_guest_analyze_quota_caps_bucket_count(monkeypatch):
+    monkeypatch.setattr(main, "_GUEST_ANALYZE_MAX_BUCKETS", 2)
+    main._guest_analyze_hits["a"] = [1.0]
+    main._guest_analyze_hits["b"] = [2.0]
+    main._guest_analyze_hits["c"] = [3.0]
+    main._prune_guest_analyze_hits(10.0)
+    assert len(main._guest_analyze_hits) <= 2
+    assert "a" not in main._guest_analyze_hits
+    assert "c" in main._guest_analyze_hits
 
 
 def test_persist_guest_analysis_saves_history(monkeypatch):
