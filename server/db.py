@@ -263,6 +263,127 @@ def delete_analysis_by_id(analysis_id: str, user_id: str) -> bool:
         return False
 
 
+def get_latest_activity_book(user_id: str, client=None) -> Optional[dict]:
+    """
+    Newest saved analysis that includes a parsed trade book.
+
+    Returns analysis_id, filename, raw transactions, and packet grant fields
+    so a later CSV can merge instead of replacing the whole history.
+    """
+    if not user_id:
+        return None
+    if client is None:
+        client = get_supabase()
+    if client is None:
+        return None
+
+    try:
+        result = (
+            client.table("portfolio_analyses")
+            .select("id, filename, uploaded_at, result")
+            .eq("user_id", user_id)
+            .order("uploaded_at", desc=True)
+            .limit(10)
+            .execute()
+        )
+    except Exception as e:
+        logger.error(f"Failed to fetch latest activity book: {e}")
+        return None
+
+    for row in result.data or []:
+        payload = row.get("result") if isinstance(row, dict) else None
+        if not isinstance(payload, dict):
+            continue
+        book = payload.get("activity_book") or {}
+        transactions = book.get("transactions") if isinstance(book, dict) else None
+        if not transactions:
+            transactions = payload.get("transactions")
+        if not transactions:
+            continue
+        tax_profile = payload.get("tax_profile") or {}
+        return {
+            "analysis_id": row.get("id"),
+            "filename": row.get("filename") or "",
+            "transactions": transactions,
+            "packet_unlocked": bool(payload.get("packet_unlocked")),
+            "packet_session_id": payload.get("packet_session_id") or "",
+            "tax_year": tax_profile.get("tax_year") if isinstance(tax_profile, dict) else None,
+        }
+    return None
+
+
+def get_packet_grant_for_tax_year(
+    user_id: str,
+    tax_year: int,
+    client=None,
+) -> Optional[str]:
+    """Return a Stripe session id if this user already paid for this tax year."""
+    if not user_id:
+        return None
+    if client is None:
+        client = get_supabase()
+    if client is None:
+        return None
+
+    try:
+        result = (
+            client.table("portfolio_analyses")
+            .select("id, result")
+            .eq("user_id", user_id)
+            .order("uploaded_at", desc=True)
+            .limit(20)
+            .execute()
+        )
+    except Exception as e:
+        logger.error(f"Failed to fetch packet grant: {e}")
+        return None
+
+    for row in result.data or []:
+        payload = row.get("result") if isinstance(row, dict) else None
+        if not isinstance(payload, dict) or not payload.get("packet_unlocked"):
+            continue
+        profile = payload.get("tax_profile") or {}
+        year = profile.get("tax_year") if isinstance(profile, dict) else None
+        if year is not None and int(year) != int(tax_year):
+            continue
+        session_id = payload.get("packet_session_id") or ""
+        if isinstance(session_id, str) and session_id.startswith("cs_"):
+            return session_id
+    return None
+
+
+def patch_analysis_result(
+    analysis_id: str,
+    user_id: str,
+    patch: dict,
+) -> bool:
+    """Shallow-merge keys into a stored analysis result JSONB."""
+    if not analysis_id or not user_id or not patch:
+        return False
+    record = get_analysis_by_id(analysis_id, user_id)
+    if not record:
+        return False
+    result = record.get("result")
+    if not isinstance(result, dict):
+        result = {}
+    merged = {**result, **patch}
+    client = get_supabase()
+    if client is None:
+        return False
+    try:
+        updated = (
+            client.table("portfolio_analyses")
+            .update({"result": merged})
+            .eq("id", analysis_id)
+            .eq("user_id", user_id)
+            .execute()
+        )
+        return bool(updated.data)
+    except Exception as e:
+        logger.error(f"Failed to patch analysis {analysis_id}: {e}")
+        return False
+
+
 # ---------- Tax Profiles ----------
 
 

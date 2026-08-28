@@ -43,6 +43,21 @@ let mockHistoryData: Array<{
   uploaded_at: string;
   positions_count?: number;
   total_market_value?: number;
+  summary?: {
+    total_market_value: number;
+    total_cost_basis: number;
+    total_unrealized_pnl: number;
+    total_unrealized_pnl_pct: number;
+    total_harvestable_losses: number;
+    estimated_tax_savings: number;
+    positions_count: number;
+    lots_with_losses: number;
+    lots_with_gains: number;
+    wash_sale_flags_count: number;
+    activity_first_date?: string | null;
+    activity_last_date?: string | null;
+    activity_transaction_count?: number;
+  };
 }> = [];
 const mockAnalyzeMutate = jest.fn();
 const mockFetchAnalysisById = jest.fn();
@@ -624,6 +639,44 @@ describe("DashboardPage", () => {
       ).toBeInTheDocument();
       expect(
         screen.getByText(/Loaded saved analysis: saved.csv/i),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("offers to merge new activity with a saved trade book", async () => {
+    mockHistoryData = [
+      {
+        id: "analysis-1",
+        filename: "full-history.csv",
+        uploaded_at: "2026-01-02T12:00:00Z",
+        positions_count: 2,
+        total_market_value: 1000,
+        summary: {
+          total_market_value: 1000,
+          total_cost_basis: 800,
+          total_unrealized_pnl: 200,
+          total_unrealized_pnl_pct: 25,
+          total_harvestable_losses: 0,
+          estimated_tax_savings: 0,
+          positions_count: 2,
+          lots_with_losses: 0,
+          lots_with_gains: 2,
+          wash_sale_flags_count: 0,
+          activity_first_date: "2023-06-01",
+          activity_last_date: "2026-01-01",
+          activity_transaction_count: 40,
+        },
+      },
+    ];
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/We'll add new activity to your book from full-history.csv/i),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByLabelText(/Start a new book instead/i),
       ).toBeInTheDocument();
     });
   });

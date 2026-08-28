@@ -31,6 +31,7 @@ from auth import get_current_user, get_optional_user, enforce_ownership
 from models import (
     AssetType,
     FilingStatus,
+    ActivityBookSummary,
     PortfolioAnalysis,
     RealizedSummary,
     Supplemental1099Summary,
@@ -50,13 +51,21 @@ from year_close_packet import (
     packet_checkout_line_items,
     packet_requires_test_stripe,
     packet_session_id,
+    paid_session_for_user_year,
     remember_analysis,
     render_packet_pdf,
     resolve_packet_stripe_secret_key,
     session_grants_packet,
     upsert_payload,
 )
-from csv_parser import parse_csv, RealizedEvent
+from csv_parser import parse_csv, RealizedEvent, transactions_to_tax_lots
+from ledger import (
+    is_sample_csv_filename,
+    merge_transaction_books,
+    merge_warning,
+    strip_book_transactions_dict,
+    transactions_from_stored,
+)
 from tax_engine import get_tax_brackets_summary
 from harvesting import (
     compute_lot_metrics,
@@ -78,6 +87,9 @@ from db import (
     save_tax_profile as db_save_tax_profile,
     get_tax_profile as db_get_tax_profile,
     get_supabase,
+    get_latest_activity_book,
+    get_packet_grant_for_tax_year,
+    patch_analysis_result,
 )
 
 # Configure logging
@@ -859,6 +871,121 @@ def _filter_suggestion_tax_lots(
     return filtered_lots, warnings
 
 
+def _normalize_merge_mode(value: object) -> str:
+    raw = str(value or "auto").strip().lower()
+    return "replace" if raw == "replace" else "auto"
+
+
+def _public_analysis(result: PortfolioAnalysis) -> PortfolioAnalysis:
+    """Hide raw trades from the browser payload; they stay in saved history."""
+    book = result.activity_book
+    if not book or not book.transactions:
+        return result
+    return result.model_copy(
+        update={"activity_book": book.model_copy(update={"transactions": []})}
+    )
+
+
+def _apply_packet_year_grant(result: PortfolioAnalysis, user_id: str) -> PortfolioAnalysis:
+    """Repeat uploads in a paid tax year stay unlocked — no second $49."""
+    if not user_id or not result.analysis_id:
+        return result
+    if result.packet_unlocked and result.packet_session_id:
+        mark_paid(result.analysis_id, result.packet_session_id, user_id=user_id)
+        return result
+    tax_year = result.tax_profile.tax_year if result.tax_profile else None
+    session_id = get_packet_grant_for_tax_year(user_id, tax_year or 2026)
+    if not session_id:
+        session_id = paid_session_for_user_year(user_id, tax_year)
+    if not session_id:
+        return result
+    mark_paid(result.analysis_id, session_id, user_id=user_id)
+    return result.model_copy(
+        update={"packet_unlocked": True, "packet_session_id": session_id}
+    )
+
+
+def _resolve_activity_book(
+    *,
+    user_id: str,
+    filename: str,
+    merge_mode: str,
+    transactions: list,
+    parse_errors: list[str],
+    tax_lots: list,
+    realized_events: list,
+):
+    """Merge this upload with the saved book when the user is signed in."""
+    merge_mode = _normalize_merge_mode(merge_mode)
+    sample = is_sample_csv_filename(filename)
+    prior = None
+    if user_id and merge_mode != "replace" and not sample:
+        prior = get_latest_activity_book(user_id)
+        if prior and is_sample_csv_filename(prior.get("filename") or ""):
+            prior = None
+    prior_txns = transactions_from_stored((prior or {}).get("transactions"))
+
+    if prior_txns and transactions:
+        merged = merge_transaction_books(prior_txns, transactions)
+        tax_lots, lot_warnings, realized_events = transactions_to_tax_lots(
+            merged.transactions
+        )
+        dropped = (
+            "no open lots at all",
+            "exceeded the available open lot quantity",
+            "none matched the required asset type",
+        )
+        kept = [
+            error
+            for error in parse_errors
+            if not any(needle in error for needle in dropped)
+        ]
+        kept.extend(lot_warnings)
+        warning = merge_warning(merged, (prior or {}).get("filename") or "")
+        if warning:
+            kept.append(warning)
+        parse_errors[:] = kept
+        book = ActivityBookSummary(
+            transaction_count=len(merged.transactions),
+            first_activity_date=merged.first_activity_date,
+            last_activity_date=merged.last_activity_date,
+            added_from_this_upload=merged.added,
+            already_in_book=merged.already_in_book,
+            merged_from_analysis_id=(prior or {}).get("analysis_id"),
+            merged_from_filename=(prior or {}).get("filename") or "",
+            gap_days=merged.gap_days,
+            replaced=False,
+            transactions=merged.transactions,
+        )
+        return tax_lots, merged.transactions, realized_events, book
+
+    stored_txns = list(transactions)
+    if not stored_txns and prior_txns:
+        stored_txns = prior_txns
+        note = (
+            "This file is a position snapshot, not a transaction export. "
+            "Your saved trade book was kept. Upload a Robinhood activity CSV "
+            "to add new trades."
+        )
+        parse_errors.append(note)
+    first = min((txn.activity_date for txn in stored_txns), default=None)
+    last = max((txn.activity_date for txn in stored_txns), default=None)
+    kept_prior = bool(not transactions and prior_txns and prior)
+    book = ActivityBookSummary(
+        transaction_count=len(stored_txns),
+        first_activity_date=first,
+        last_activity_date=last,
+        added_from_this_upload=len(transactions),
+        already_in_book=0,
+        merged_from_analysis_id=(prior or {}).get("analysis_id") if kept_prior else None,
+        merged_from_filename=(prior or {}).get("filename") or "" if kept_prior else "",
+        gap_days=0,
+        replaced=merge_mode == "replace" or sample or not prior_txns,
+        transactions=stored_txns,
+    )
+    return tax_lots, transactions, realized_events, book
+
+
 @app.post(
     "/api/portfolio/analyze",
     response_model=PortfolioAnalysis,
@@ -875,6 +1002,7 @@ async def analyze_portfolio(
     filing_status: Annotated[Optional[str], Query()] = "single",
     estimated_income: Annotated[Optional[str], Query()] = None,
     tax_year: Annotated[Optional[str], Query()] = None,
+    merge_mode: Annotated[Optional[str], Query()] = "auto",
     user_id: Annotated[str, Depends(get_optional_user)] = "",
 ):
     """
@@ -907,6 +1035,7 @@ async def analyze_portfolio(
             estimated_income=estimated_income,
             tax_year=tax_year,
             user_id=user_id,
+            merge_mode=merge_mode,
         )
     except HTTPException:
         raise
@@ -930,6 +1059,7 @@ async def _run_portfolio_analysis(
     estimated_income: object,
     tax_year: object,
     user_id: str,
+    merge_mode: object = "auto",
 ) -> PortfolioAnalysis:
     """Parse the CSV and run tax, wash-sale, and harvesting analysis."""
     csv_text = _decode_csv_upload(contents)
@@ -943,6 +1073,16 @@ async def _run_portfolio_analysis(
                 "errors": parse_errors,
             },
         )
+
+    tax_lots, transactions, realized_events, activity_book = _resolve_activity_book(
+        user_id=user_id,
+        filename=filename,
+        merge_mode=_normalize_merge_mode(merge_mode),
+        transactions=transactions,
+        parse_errors=parse_errors,
+        tax_lots=tax_lots,
+        realized_events=realized_events,
+    )
 
     tax_profile = _tax_profile_from_query(filing_status, estimated_income, tax_year)
 
@@ -1001,6 +1141,10 @@ async def _run_portfolio_analysis(
     summary.realized_summary = _compute_realized_summary(
         realized_events, tax_profile.tax_year
     )
+    if activity_book:
+        summary.activity_first_date = activity_book.first_activity_date
+        summary.activity_last_date = activity_book.last_activity_date
+        summary.activity_transaction_count = activity_book.transaction_count
 
     analysis_id = str(uuid.uuid4())
     result = PortfolioAnalysis(
@@ -1012,18 +1156,23 @@ async def _run_portfolio_analysis(
         tax_profile=tax_profile,
         supplemental_1099=supplemental_1099_summary,
         analysis_id=analysis_id,
+        activity_book=activity_book,
         warnings=_summarize_warnings(all_warnings),
     )
+    result = _apply_packet_year_grant(result, user_id)
+    public_result = _public_analysis(result)
     remember_analysis(
         analysis_id,
         user_id,
-        result.model_dump(mode="json") if hasattr(result, "model_dump") else dict(result),
+        public_result.model_dump(mode="json")
+        if hasattr(public_result, "model_dump")
+        else dict(public_result),
     )
 
-    # Save analysis to history for authenticated user
+    # Save analysis to history for authenticated user (includes the trade book).
     _save_history_best_effort(user_id, filename, summary, result)
 
-    return result
+    return public_result
 
 
 @app.post(
@@ -1122,6 +1271,11 @@ async def get_portfolio_analysis(
         raise HTTPException(status_code=404, detail="Analysis not found")
     # Enforce ownership (redundant with RLS, but good defense-in-depth)
     enforce_ownership(user_id, record.get("user_id", ""))
+    if isinstance(record.get("result"), dict):
+        record = {
+            **record,
+            "result": strip_book_transactions_dict(record["result"]),
+        }
     return record
 
 
@@ -1489,6 +1643,15 @@ async def confirm_year_close_packet(
         raise HTTPException(
             status_code=403,
             detail="Checkout session does not unlock the year-close packet.",
+        )
+    if user_id:
+        patch_analysis_result(
+            analysis_id,
+            user_id,
+            {
+                "packet_unlocked": True,
+                "packet_session_id": packet_session_id(session),
+            },
         )
     return {
         "paid": True,

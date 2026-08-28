@@ -32,6 +32,8 @@ from year_close_packet import (
     reset_packet_store,
     resolve_packet_stripe_secret_key,
     session_grants_packet,
+    paid_session_for_user_year,
+    mark_paid,
 )
 
 
@@ -624,3 +626,11 @@ def test_authenticated_packet_store_survives_anon_cap(monkeypatch):
     assert "auth-1" in PACKET_STORE
     assert "anon-a" not in PACKET_STORE
     assert "anon-b" in PACKET_STORE
+
+
+def test_paid_session_reused_for_same_user_and_year():
+    reset_packet_store()
+    remember_analysis("first", "test-user-123", SAMPLE_ANALYSIS)
+    mark_paid("first", "cs_test_repeat", user_id="test-user-123")
+    assert paid_session_for_user_year("test-user-123", 2025) == "cs_test_repeat"
+    assert paid_session_for_user_year("someone-else", 2026) is None

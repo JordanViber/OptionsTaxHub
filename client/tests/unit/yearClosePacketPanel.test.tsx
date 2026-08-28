@@ -92,6 +92,22 @@ describe("YearClosePacketPanel", () => {
     expect(screen.queryByText("Buy us a coffee")).not.toBeInTheDocument();
   });
 
+  it("skips a second $49 when the tax year is already unlocked", () => {
+    render(
+      <YearClosePacketPanel
+        analysis={{
+          ...analysis,
+          packet_unlocked: true,
+          packet_session_id: "cs_test_year",
+        }}
+      />,
+    );
+    expect(
+      screen.getByText(/later updates this year stay included/i),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeDisabled();
+  });
+
   it("starts packet checkout, not tips checkout", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,

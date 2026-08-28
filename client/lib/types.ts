@@ -160,6 +160,22 @@ export interface PortfolioSummary {
   lots_with_gains: number;
   wash_sale_flags_count: number;
   realized_summary?: RealizedSummary | null;
+  activity_first_date?: string | null;
+  activity_last_date?: string | null;
+  activity_transaction_count?: number;
+}
+
+export interface ActivityBookSummary {
+  transaction_count: number;
+  first_activity_date?: string | null;
+  last_activity_date?: string | null;
+  added_from_this_upload: number;
+  already_in_book: number;
+  merged_from_analysis_id?: string | null;
+  merged_from_filename?: string;
+  gap_days: number;
+  replaced: boolean;
+  transactions?: unknown[];
 }
 
 export interface PortfolioAnalysis {
@@ -171,6 +187,9 @@ export interface PortfolioAnalysis {
   tax_profile: TaxProfile | null;
   supplemental_1099?: Supplemental1099Summary | null;
   analysis_id?: string | null;
+  activity_book?: ActivityBookSummary | null;
+  packet_unlocked?: boolean;
+  packet_session_id?: string | null;
   disclaimer: string;
   errors: string[];
   warnings: string[];
