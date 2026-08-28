@@ -305,6 +305,36 @@ describe("api hooks", () => {
       expect(call[0]).toContain("tax_year=2025");
     });
 
+    it("passes merge_mode=replace when starting a new book", async () => {
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          positions: [],
+          suggestions: [],
+          wash_sale_flags: [],
+          summary: {},
+        }),
+      } as Response);
+
+      const file = new File(["content"], "test.csv", { type: "text/csv" });
+      const wrapper = createWrapper();
+      const { result } = renderHook(() => useAnalyzePortfolio(), { wrapper });
+
+      await act(async () => {
+        result.current.mutate({
+          file,
+          mergeMode: "replace",
+        });
+      });
+
+      await waitFor(() => {
+        expect(result.current.isSuccess).toBe(true);
+      });
+
+      const call = (globalThis.fetch as jest.Mock).mock.calls[0];
+      expect(call[0]).toContain("merge_mode=replace");
+    });
+
     it("omits unusable taxYear and estimatedIncome so FastAPI does not 422", async () => {
       globalThis.fetch = jest.fn().mockResolvedValue({
         ok: true,

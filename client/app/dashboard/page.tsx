@@ -38,6 +38,8 @@ import {
   DialogContent,
   DialogContentText,
   DialogActions,
+  Checkbox,
+  FormControlLabel,
 } from "@mui/material";
 import {
   CloudUpload as CloudUploadIcon,
@@ -75,6 +77,7 @@ import FirstRunEmptyState from "../components/FirstRunEmptyState";
 import Supplemental1099InsightsPanel from "../components/Supplemental1099InsightsPanel";
 import YearClosePacketPanel, {
   isYearClosePacketPaid,
+  rememberYearClosePacketPaid,
 } from "../components/YearClosePacketPanel";
 import {
   buildHarvestTeasers,
@@ -99,6 +102,64 @@ const GUEST_UNSAVED_KEY = "oth-guest-unsaved";
 const GUEST_UNSAVED_FILENAME_KEY = "oth-guest-unsaved-filename";
 
 type AnalysisSource = "fresh-upload" | "saved-history" | "restored-session";
+
+function formatBookDate(iso?: string | null): string | null {
+  if (!iso) {
+    return null;
+  }
+  const parsed = new Date(`${String(iso).slice(0, 10)}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) {
+    return iso;
+  }
+  return parsed.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+function savedTradeBook(history?: AnalysisHistoryItem[] | null): {
+  id: string;
+  filename: string;
+  first: string | null;
+  last: string | null;
+  count: number;
+} | null {
+  const item = history?.[0];
+  const count = item?.summary?.activity_transaction_count ?? 0;
+  if (!item || count <= 0) {
+    return null;
+  }
+  return {
+    id: item.id,
+    filename: item.filename,
+    first: formatBookDate(item.summary.activity_first_date),
+    last: formatBookDate(item.summary.activity_last_date),
+    count,
+  };
+}
+
+function uploadIntroCopy({
+  tradeBook,
+  replaceBook,
+  signedIn,
+}: {
+  tradeBook: ReturnType<typeof savedTradeBook>;
+  replaceBook: boolean;
+  signedIn: boolean;
+}): string {
+  if (tradeBook && !replaceBook) {
+    const range =
+      tradeBook.first && tradeBook.last
+        ? ` (${tradeBook.first} – ${tradeBook.last})`
+        : "";
+    return `We'll add new activity to your book from ${tradeBook.filename}${range}. Overlap is fine — no need to re-export everything.`;
+  }
+  if (signedIn) {
+    return "First upload: go back to the oldest shares you still hold. Later this year you can send only new activity plus a little overlap.";
+  }
+  return "Upload your Robinhood CSV export to analyze tax-loss harvesting opportunities. Sign in, then upload a full export so later files only need new activity.";
+}
 
 type DeleteTarget = {
   id: string;
@@ -1054,6 +1115,7 @@ export default function DashboardPage() {
   );
   const [isSampleRun, setIsSampleRun] = useState(false);
   const [packetPaid, setPacketPaid] = useState(false);
+  const [replaceBook, setReplaceBook] = useState(false);
   const queryClient = useQueryClient();
 
   // Load the user's tax profile for analyze params
@@ -1113,6 +1175,16 @@ export default function DashboardPage() {
     const analysisId = displayedAnalysis?.analysis_id || "local-analysis";
     if (!displayedAnalysis) {
       setPacketPaid(false);
+      return;
+    }
+    if (displayedAnalysis.packet_unlocked) {
+      if (displayedAnalysis.packet_session_id) {
+        rememberYearClosePacketPaid(
+          analysisId,
+          displayedAnalysis.packet_session_id,
+        );
+      }
+      setPacketPaid(true);
       return;
     }
     setPacketPaid(isYearClosePacketPaid(analysisId));
@@ -1177,6 +1249,8 @@ export default function DashboardPage() {
     setIsSampleRun(sample);
     setPacketPaid(false);
     setLastUploadedCsv(csvFile);
+    const mergeMode =
+      sample || replaceBook ? "replace" : "auto";
     analyzePortfolio(
       {
         file: csvFile,
@@ -1184,10 +1258,31 @@ export default function DashboardPage() {
         filingStatus: taxProfile?.filing_status || "single",
         estimatedIncome: taxProfile?.estimated_annual_income || 75000,
         taxYear: taxProfile?.tax_year || 2026,
+        mergeMode,
       },
       {
-        onSuccess: () => {
+        onSuccess: (data) => {
           setForceEmpty(false);
+          if (data.packet_unlocked && data.packet_session_id) {
+            rememberYearClosePacketPaid(
+              data.analysis_id || "local-analysis",
+              data.packet_session_id,
+            );
+            setPacketPaid(true);
+          }
+          const book = data.activity_book;
+          if (book && book.added_from_this_upload > 0 && !book.replaced) {
+            setSnackbar({
+              message: `Added ${book.added_from_this_upload} new trade${
+                book.added_from_this_upload === 1 ? "" : "s"
+              } to your book${
+                book.already_in_book
+                  ? ` (${book.already_in_book} already on file)`
+                  : ""
+              }.`,
+              severity: "success",
+            });
+          }
           if (!confirmedUserId) {
             try {
               sessionStorage.setItem(GUEST_UNSAVED_KEY, "1");
@@ -1504,6 +1599,7 @@ export default function DashboardPage() {
     ? getConfidenceSummary(displayedAnalysis)
     : null;
   const packetUnlocked = isSampleRun || packetPaid;
+  const tradeBook = savedTradeBook(history);
   const recommendedNextSteps = displayedAnalysis
     ? getRecommendedNextSteps(displayedAnalysis, packetUnlocked)
     : [];
@@ -1756,8 +1852,12 @@ export default function DashboardPage() {
                     Portfolio Analysis
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
-                    Upload your Robinhood CSV export to analyze tax-loss
-                    harvesting opportunities. Your{" "}
+                    {uploadIntroCopy({
+                      tradeBook,
+                      replaceBook,
+                      signedIn: Boolean(confirmedUserId),
+                    })}{" "}
+                    Your{" "}
                     <Button
                       size="small"
                       onClick={() => router.push("/settings")}
@@ -1830,9 +1930,24 @@ export default function DashboardPage() {
                       : "Click to upload CSV"}
                   </Typography>
                   <Typography variant="caption" color="text.secondary">
-                    Robinhood transaction export or simplified portfolio CSV
+                    {tradeBook && !replaceBook
+                      ? `${tradeBook.count} saved trades — drop a file that starts on or before ${tradeBook.last || "the last date"}`
+                      : "Robinhood transaction export or simplified portfolio CSV"}
                   </Typography>
                 </Box>
+
+                {Boolean(tradeBook && confirmedUserId) && (
+                  <FormControlLabel
+                    control={
+                      <Checkbox
+                        checked={replaceBook}
+                        onChange={(event) => setReplaceBook(event.target.checked)}
+                        size="small"
+                      />
+                    }
+                    label="Start a new book instead (full export, ignore saved trades)"
+                  />
+                )}
 
                 <input
                   id="desk-1099-input"

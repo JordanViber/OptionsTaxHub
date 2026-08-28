@@ -104,6 +104,7 @@ describe("LandingPage", () => {
       screen.getByText(/Sign in for the year that follows you/),
     ).toBeInTheDocument();
     expect(screen.getByText("Saved runs")).toBeInTheDocument();
+    expect(screen.getByText("Update the book")).toBeInTheDocument();
   });
 
   it("renders footer with disclaimer", () => {

@@ -439,6 +439,30 @@ def is_packet_paid(analysis_id: str) -> bool:
     return bool(rec and rec.get("paid"))
 
 
+def paid_session_for_user_year(user_id: str, tax_year: int | None = None) -> str | None:
+    """Reuse a paid Stripe session for later analyses in the same tax year."""
+    if not user_id:
+        return None
+    purge_packet_store()
+    for rec in PACKET_STORE.values():
+        if rec.get("user_id") != user_id or not rec.get("paid"):
+            continue
+        payload = rec.get("payload") or {}
+        year = None
+        if isinstance(payload, dict):
+            year = payload.get("analysis_tax_year")
+            profile = payload.get("tax_profile")
+            if year is None and isinstance(profile, dict):
+                year = profile.get("tax_year")
+        if tax_year is not None and year is not None and int(year) != int(tax_year):
+            continue
+        session_ids = rec.get("session_ids") or set()
+        for session_id in session_ids:
+            if isinstance(session_id, str) and session_id.startswith("cs_"):
+                return session_id
+    return None
+
+
 def get_payload(analysis_id: str) -> dict[str, Any] | None:
     purge_packet_store()
     rec = PACKET_STORE.get(analysis_id)

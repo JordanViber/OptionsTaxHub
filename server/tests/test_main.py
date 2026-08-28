@@ -449,6 +449,8 @@ def _stub_analyze_network(monkeypatch):
     monkeypatch.setattr("main.fetch_option_prices", lambda labels, fb=None: ({}, []))
     monkeypatch.setattr("main.prepare_positions_for_ai", lambda lots: [])
     monkeypatch.setattr("main._save_history_best_effort", lambda *args, **kwargs: None)
+    monkeypatch.setattr("main.get_latest_activity_book", lambda uid, client=None: None)
+    monkeypatch.setattr("main.get_packet_grant_for_tax_year", lambda *args, **kwargs: None)
 
 
 def _make_supplemental_1099_upload() -> tuple[str, bytes, str]:
@@ -573,6 +575,98 @@ def test_analyze_robinhood_style_csv_succeeds(monkeypatch):
     symbols = {position["symbol"] for position in data["positions"]}
     assert "AAPL" in symbols
     assert "MSFT" in symbols
+
+
+_RH_HEADER = (
+    "Activity Date,Process Date,Settle Date,Instrument,Description,"
+    "Trans Code,Quantity,Price,Amount\n"
+)
+
+
+def _rh_csv(*rows: str) -> bytes:
+    return (_RH_HEADER + "".join(rows)).encode("utf-8")
+
+
+def test_analyze_merges_new_activity_with_saved_book(monkeypatch):
+    """Signed-in users can upload only new trades; overlap is not double-counted."""
+    from csv_parser import parse_csv
+
+    _stub_analyze_network(monkeypatch)
+    prior_csv = _rh_csv(
+        "06/01/2023,06/01/2023,06/03/2023,AAPL,Apple,Buy,10,100.00,-1000.00\n",
+        "01/01/2026,01/01/2026,01/03/2026,AAPL,Apple,Buy,2,180.00,-360.00\n",
+    )
+    _prior_lots, prior_txns, _errs, _real = parse_csv(prior_csv.decode())
+    monkeypatch.setattr(
+        "main.get_latest_activity_book",
+        lambda uid, client=None: {
+            "analysis_id": "book-2023",
+            "filename": "full-history.csv",
+            "transactions": [t.model_dump(mode="json") for t in prior_txns],
+            "packet_unlocked": True,
+            "packet_session_id": "cs_test_yeargrant",
+            "tax_year": 2026,
+        },
+    )
+    monkeypatch.setattr(
+        "main.get_packet_grant_for_tax_year",
+        lambda uid, year, client=None: "cs_test_yeargrant",
+    )
+
+    new_csv = _rh_csv(
+        "01/01/2026,01/01/2026,01/03/2026,AAPL,Apple,Buy,2,180.00,-360.00\n",
+        "03/01/2026,03/01/2026,03/03/2026,AAPL,Apple,Buy,5,150.00,-750.00\n",
+    )
+    response = client.post(
+        "/api/portfolio/analyze?tax_year=2026",
+        files={"file": ("ytd-2026.csv", new_csv, "text/csv")},
+    )
+    assert response.status_code == 200, response.text
+    data = response.json()
+    aapl = next(p for p in data["positions"] if p["symbol"] == "AAPL")
+    assert aapl["quantity"] == 17
+    book = data["activity_book"]
+    assert book["added_from_this_upload"] == 1
+    assert book["already_in_book"] == 1
+    assert book["transaction_count"] == 3
+    assert book["transactions"] == []
+    assert book["merged_from_filename"] == "full-history.csv"
+    assert data["packet_unlocked"] is True
+    assert data["packet_session_id"] == "cs_test_yeargrant"
+    assert data["summary"]["activity_transaction_count"] == 3
+    assert any("Added 1 new trade" in w for w in data["warnings"])
+
+
+def test_analyze_replace_mode_ignores_saved_book(monkeypatch):
+    """Start a new book uses only the file that was just uploaded."""
+    from csv_parser import parse_csv
+
+    _stub_analyze_network(monkeypatch)
+    prior_csv = _rh_csv(
+        "06/01/2023,06/01/2023,06/03/2023,AAPL,Apple,Buy,10,100.00,-1000.00\n",
+    )
+    _lots, prior_txns, _e, _r = parse_csv(prior_csv.decode())
+    monkeypatch.setattr(
+        "main.get_latest_activity_book",
+        lambda uid, client=None: {
+            "analysis_id": "book-2023",
+            "filename": "full-history.csv",
+            "transactions": [t.model_dump(mode="json") for t in prior_txns],
+        },
+    )
+    new_csv = _rh_csv(
+        "03/01/2026,03/01/2026,03/03/2026,AAPL,Apple,Buy,5,150.00,-750.00\n",
+    )
+    response = client.post(
+        "/api/portfolio/analyze?merge_mode=replace",
+        files={"file": ("fresh.csv", new_csv, "text/csv")},
+    )
+    assert response.status_code == 200, response.text
+    data = response.json()
+    aapl = next(p for p in data["positions"] if p["symbol"] == "AAPL")
+    assert aapl["quantity"] == 5
+    assert data["activity_book"]["replaced"] is True
+    assert data["activity_book"]["transaction_count"] == 1
 
 
 def test_analyze_invalid_tax_year_does_not_500(monkeypatch):

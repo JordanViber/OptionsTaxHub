@@ -120,6 +120,7 @@ interface AnalyzePortfolioParams {
   filingStatus?: FilingStatus;
   estimatedIncome?: number;
   taxYear?: number;
+  mergeMode?: "auto" | "replace";
 }
 
 const OBJECT_OBJECT_MESSAGE = "[object Object]";
@@ -210,6 +211,9 @@ function analyzePortfolioPath(params: AnalyzePortfolioParams): string {
   const year = toFiniteNumber(params.taxYear);
   if (year != null && Number.isInteger(year) && year >= 2024 && year <= 2026) {
     queryParams.set("tax_year", String(year));
+  }
+  if (params.mergeMode === "replace") {
+    queryParams.set("merge_mode", "replace");
   }
   const qs = queryParams.toString();
   return qs ? `/api/portfolio/analyze?${qs}` : `/api/portfolio/analyze`;

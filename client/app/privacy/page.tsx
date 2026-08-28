@@ -50,10 +50,11 @@ export default function PrivacyPage() {
             </Typography>
             <Typography variant="body1" paragraph>
               Analysis results are saved to your account history so you can
-              reopen them later. The current result may also be kept in your
-              browser (session storage) until you sign out or clear it. This is
-              not an in-memory-only tool, and uploads are not discarded
-              immediately after analysis.
+              reopen them later. Signed-in runs also keep the parsed trade book
+              so a later CSV can add new activity without a full re-export. The
+              current result may also be kept in your browser (session storage)
+              until you sign out or clear it. This is not an in-memory-only
+              tool, and uploads are not discarded immediately after analysis.
             </Typography>
           </Box>
 
