@@ -183,11 +183,11 @@ export default function YearClosePacketPanel({
           }
           setPaid(true);
           writeSessionItem(paidStorageKey(analysisId), sid);
+          stripPacketQueryParams();
         } catch (err) {
           setError(err instanceof Error ? err.message : "Could not confirm payment.");
         } finally {
           setBusy(null);
-          stripPacketQueryParams();
         }
       })();
       return;

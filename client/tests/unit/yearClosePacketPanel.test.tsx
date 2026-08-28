@@ -180,4 +180,26 @@ describe("YearClosePacketPanel", () => {
     expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
     expect(store[PACKET_CHECKOUT_INFLIGHT_KEY]).toBeUndefined();
   });
+
+  it("preserves the Stripe session URL when confirmation fails", async () => {
+    window.history.replaceState(
+      null,
+      "",
+      "/dashboard?packet_session=cs_test_packet&packet_analysis=analysis-1",
+    );
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 503,
+      json: () => Promise.resolve({ detail: "Confirmation temporarily failed." }),
+    });
+
+    render(<YearClosePacketPanel analysis={analysis} />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "Confirmation temporarily failed.",
+      );
+    });
+    expect(window.location.search).toContain("packet_session=cs_test_packet");
+  });
 });
