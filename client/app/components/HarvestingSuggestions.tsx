@@ -47,6 +47,53 @@ function formatCurrency(value: number): string {
   }).format(value);
 }
 
+function formatShareCount(quantity: number): string {
+  if (Number.isInteger(quantity)) return String(quantity);
+  return quantity.toLocaleString("en-US", { maximumFractionDigits: 4 });
+}
+
+function replacementSymbolsLabel(
+  suggestion: HarvestingSuggestion,
+): string | null {
+  const symbols = suggestion.replacement_candidates
+    .map((candidate) => candidate.symbol)
+    .filter(Boolean);
+  if (symbols.length === 0) return null;
+  if (symbols.length === 1) return symbols[0];
+  if (symbols.length === 2) return `${symbols[0]} or ${symbols[1]}`;
+  return `${symbols.slice(0, -1).join(", ")}, or ${symbols[symbols.length - 1]}`;
+}
+
+/**
+ * Plain-language harvest action. Always visible — the card used to lead with
+ * the ticker and leave the actual "sell this lot" instruction implicit.
+ */
+export function getRecommendedActionCopy(suggestion: HarvestingSuggestion): {
+  headline: string;
+  detail: string;
+} {
+  const qty = formatShareCount(suggestion.quantity);
+  const symbol = suggestion.symbol;
+  const term = suggestion.is_long_term ? "long-term" : "short-term";
+  const loss = formatCurrency(Math.abs(suggestion.estimated_loss));
+  const savings = formatCurrency(Math.abs(suggestion.tax_savings_estimate));
+  const replacements = replacementSymbolsLabel(suggestion);
+  const headline = `Sell ${qty} ${symbol} to harvest this ${term} loss`;
+  const rotate = replacements
+    ? ` To keep similar exposure without buying ${symbol} back, look at ${replacements}.`
+    : ` Do not repurchase ${symbol} (or a substantially identical security) for 31 days.`;
+  if (suggestion.wash_sale_risk) {
+    return {
+      headline,
+      detail: `This lot is a harvest candidate, but selling now may trigger a wash sale — read the warning before you act. Estimated loss ${loss}; estimated tax savings ${savings}.${rotate}`,
+    };
+  }
+  return {
+    headline,
+    detail: `Realize about ${loss} of loss for an estimated ${savings} in tax savings.${rotate}`,
+  };
+}
+
 function suggestionGroupKey(suggestion: HarvestingSuggestion): string {
   return suggestion.display_label || suggestion.symbol;
 }
@@ -106,6 +153,7 @@ function SuggestionCard({
   const [expanded, setExpanded] = useState(false);
   const needsManualReview = Boolean(suggestion.manual_review_required);
   const detailText = getSuggestionDetailText(suggestion, lotIndex, lotCount);
+  const recommended = getRecommendedActionCopy(suggestion);
 
   return (
     <Card
@@ -126,9 +174,15 @@ function SuggestionCard({
             alignItems: "flex-start",
           }}
         >
-          <Box sx={{ flex: 1 }}>
+          <Box sx={{ flex: 1, minWidth: 0 }}>
             <Box
-              sx={{ display: "flex", alignItems: "center", gap: 1, mb: 0.5 }}
+              sx={{
+                display: "flex",
+                alignItems: "center",
+                gap: 1,
+                mb: 0.5,
+                flexWrap: "wrap",
+              }}
             >
               <Typography variant="h6" sx={{ fontWeight: 700 }}>
                 {suggestion.display_label || suggestion.symbol}
@@ -142,6 +196,13 @@ function SuggestionCard({
                     sx={{ height: 20, fontSize: "0.65rem" }}
                   />
                 )}
+              <Chip
+                label="Sell to harvest"
+                size="small"
+                color="error"
+                variant="outlined"
+                sx={{ height: 20, fontSize: "0.65rem", fontWeight: 700 }}
+              />
               <Chip
                 label={`#${suggestion.priority}`}
                 size="small"
@@ -197,6 +258,44 @@ function SuggestionCard({
                 {detailText}
               </Typography>
             )}
+
+            <Box
+              data-testid="harvest-recommended-action"
+              sx={{
+                mt: 1,
+                mb: 1,
+                px: 1.25,
+                py: 1,
+                borderRadius: 1,
+                border: "1px solid",
+                borderColor: "divider",
+                bgcolor: "action.hover",
+              }}
+            >
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{
+                  display: "block",
+                  letterSpacing: "0.08em",
+                  textTransform: "uppercase",
+                  fontWeight: 700,
+                  mb: 0.25,
+                }}
+              >
+                Recommended action
+              </Typography>
+              <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                {recommended.headline}
+              </Typography>
+              <Typography
+                variant="body2"
+                color="text.secondary"
+                sx={{ mt: 0.25, lineHeight: 1.5 }}
+              >
+                {recommended.detail}
+              </Typography>
+            </Box>
 
             {needsManualReview && suggestion.manual_review_reason && (
               <Box
