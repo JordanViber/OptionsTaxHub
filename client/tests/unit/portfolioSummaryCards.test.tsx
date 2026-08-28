@@ -36,7 +36,7 @@ describe("PortfolioSummaryCards", () => {
 
     expect(
       screen.getByText(
-        "5 open positions — excludes cash and account equity adjustments",
+        "5 open positions — short options count as liabilities; excludes cash",
       ),
     ).toBeInTheDocument();
   });
@@ -92,6 +92,28 @@ describe("PortfolioSummaryCards", () => {
     render(<PortfolioSummaryCards summary={baseSummary} />);
 
     expect(screen.getByText("$3,000")).toBeInTheDocument();
+  });
+
+  it("shows open-loss preview instead of $0 tax savings when locked", () => {
+    render(
+      <PortfolioSummaryCards
+        summary={{
+          ...baseSummary,
+          estimated_tax_savings: 0,
+          total_harvestable_losses: 0,
+        }}
+        preview={{
+          locked: true,
+          candidateCount: 3,
+          openLossTotal: 4280,
+          potentialTaxSavings: 0,
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Open losses to review")).toBeInTheDocument();
+    expect(screen.getAllByText("$4,280")).toHaveLength(2);
+    expect(screen.queryByText("Est. Tax Savings")).not.toBeInTheDocument();
   });
 
   it("does not render realized card when realized_summary is absent", () => {

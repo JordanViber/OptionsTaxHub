@@ -19,6 +19,7 @@ import type { WashSaleFlag } from "@/lib/types";
 interface WashSaleWarningProps {
   flags: WashSaleFlag[];
   taxYear?: number;
+  locked?: boolean;
 }
 
 /**
@@ -31,6 +32,7 @@ interface WashSaleWarningProps {
 export default function WashSaleWarning({
   flags,
   taxYear,
+  locked = false,
 }: Readonly<WashSaleWarningProps>) {
   const [expanded, setExpanded] = useState<string | false>(false);
 
@@ -64,6 +66,39 @@ export default function WashSaleWarning({
     (panel: string) => (_: React.SyntheticEvent, isExpanded: boolean) => {
       setExpanded(isExpanded ? panel : false);
     };
+
+  if (locked) {
+    return (
+      <Alert
+        severity="warning"
+        icon={<WarnIcon />}
+        data-testid="wash-sale-packet-preview"
+        sx={{ "& .MuiAlert-message": { width: "100%" } }}
+      >
+        <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>
+          Wash-sale activity on this run ({meaningfulFlags.length} event
+          {meaningfulFlags.length === 1 ? "" : "s"} across {tickers.length}{" "}
+          ticker{tickers.length === 1 ? "" : "s"})
+        </Typography>
+        <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.75, my: 1 }}>
+          {tickers.map((ticker) => (
+            <Chip
+              key={ticker}
+              label={ticker}
+              size="small"
+              variant="outlined"
+              sx={{ height: 22, fontWeight: 700 }}
+            />
+          ))}
+        </Box>
+        <Typography variant="caption" color="text.secondary">
+          Pay $49 to see how much loss is disallowed and the sale/repurchase
+          dates — plus the printable CPA packet.
+          {taxYear ? ` Events are limited to tax year ${taxYear}.` : ""}
+        </Typography>
+      </Alert>
+    );
+  }
 
   return (
     <Alert

@@ -548,8 +548,8 @@ class TestGenerateSuggestions:
         assert suggestions[0].display_label == "TSLA 3/20/2026 Put $375.00"
         assert "Option lot opened" in suggestions[0].lot_details
 
-    def test_wash_sale_risk_excluded(self):
-        """Lots with prospective wash-sale risk should not appear in main suggestions."""
+    def test_wash_sale_risk_still_listed(self):
+        """Lots with prospective wash-sale risk still appear, flagged, not hidden."""
         purchase_date = date.today() - timedelta(days=10)
         lots = [_lot(symbol="AAPL", cost_basis=150.0, current_price=140.0,
                      purchase_date=purchase_date)]
@@ -563,8 +563,9 @@ class TestGenerateSuggestions:
             transactions=txns,
             tax_profile=_profile(),
         )
-        # Should be empty because of wash-sale risk
-        assert len(suggestions) == 0
+        assert len(suggestions) == 1
+        assert suggestions[0].wash_sale_risk is True
+        assert "Wash-sale risk" in suggestions[0].wash_sale_explanation
 
     def test_ranked_by_tax_savings(self):
         lots = [
@@ -725,6 +726,33 @@ class TestBuildPortfolioSummary:
         assert summary.lots_with_losses >= 1
         assert summary.lots_with_gains >= 1
         assert summary.wash_sale_flags_count == 0
+
+    def test_wash_risk_suggestions_do_not_inflate_harvestable(self):
+        """Headline harvestable $ is only lots safe to sell now."""
+        positions = aggregate_positions(
+            compute_lot_metrics(
+                [_lot(symbol="AAPL", cost_basis=150.0, current_price=140.0)],
+                reference_date=date(2025, 6, 1),
+            )
+        )
+        suggestions = [
+            HarvestingSuggestion(
+                symbol="AAPL",
+                suggestion_id="AAPL::stock::lot",
+                display_label="AAPL",
+                quantity=10,
+                cost_basis_per_share=150.0,
+                estimated_loss=100.0,
+                tax_savings_estimate=24.0,
+                holding_period_days=30,
+                is_long_term=False,
+                wash_sale_risk=True,
+            )
+        ]
+        summary = build_portfolio_summary(positions, suggestions, [])
+        assert summary.total_harvestable_losses == pytest.approx(0.0)
+        assert summary.estimated_tax_savings == pytest.approx(0.0)
+        assert summary.lots_with_losses >= 1
 
     def test_empty_portfolio(self):
         summary = build_portfolio_summary([], [], [])

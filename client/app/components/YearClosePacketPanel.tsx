@@ -40,6 +40,21 @@ function paidStorageKey(analysisId: string): string {
   return `optionstaxhub-packet-paid:${analysisId}`;
 }
 
+export function isYearClosePacketPaid(analysisId: string): boolean {
+  const stored = readSessionItem(paidStorageKey(analysisId));
+  return Boolean(stored && stored.startsWith("cs_"));
+}
+
+export function rememberYearClosePacketPaid(
+  analysisId: string,
+  sessionId: string,
+): void {
+  if (!analysisId || !sessionId.startsWith("cs_")) {
+    return;
+  }
+  writeSessionItem(paidStorageKey(analysisId), sessionId);
+}
+
 function readSessionItem(key: string): string | null {
   try {
     return sessionStorage.getItem(key);
@@ -123,7 +138,11 @@ function triggerPdfDownload(blob: Blob): void {
 
 export default function YearClosePacketPanel({
   analysis,
-}: Readonly<{ analysis: PortfolioAnalysis }>) {
+  onPaidChange,
+}: Readonly<{
+  analysis: PortfolioAnalysis;
+  onPaidChange?: (paid: boolean) => void;
+}>) {
   const analysisId = analysis.analysis_id || "local-analysis";
   const [busy, setBusy] = useState<"pay" | "download" | "confirm" | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -146,10 +165,19 @@ export default function YearClosePacketPanel({
   }, []);
 
   useEffect(() => {
+    if (analysis.packet_unlocked) {
+      setPaid(true);
+      if (analysis.packet_session_id?.startsWith("cs_")) {
+        setSessionId(analysis.packet_session_id);
+        writeSessionItem(paidStorageKey(analysisId), analysis.packet_session_id);
+      }
+      onPaidChange?.(true);
+    }
     const stored = readSessionItem(paidStorageKey(analysisId));
     if (stored && stored.startsWith("cs_")) {
       setPaid(true);
       setSessionId(stored);
+      onPaidChange?.(true);
     }
 
     const params = new URLSearchParams(window.location.search);
@@ -183,6 +211,7 @@ export default function YearClosePacketPanel({
           }
           setPaid(true);
           writeSessionItem(paidStorageKey(analysisId), sid);
+          onPaidChange?.(true);
           stripPacketQueryParams();
         } catch (err) {
           setError(err instanceof Error ? err.message : "Could not confirm payment.");
@@ -272,6 +301,7 @@ export default function YearClosePacketPanel({
   return (
     <Box
       data-testid="year-close-packet-panel"
+      id="year-close-packet"
       className="hairline"
       sx={{
         borderRadius: 2,
@@ -286,8 +316,10 @@ export default function YearClosePacketPanel({
             {YEAR_CLOSE_PACKET_TITLE}
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            {YEAR_CLOSE_PACKET_COPY} One-time payment — not a subscription and
-            not a tip.
+            {YEAR_CLOSE_PACKET_COPY}{" "}
+            {paid
+              ? "Unlocked for this tax year — later CSV updates stay included, no second $49."
+              : "One-time payment — not a subscription and not a tip. Unlocks lot-level harvest instructions, wash-sale events, tax-lot detail, and the downloadable PDF."}
           </Typography>
         </Box>
         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
@@ -301,7 +333,7 @@ export default function YearClosePacketPanel({
               )
             }
             onClick={handlePay}
-            disabled={busy !== null}
+            disabled={busy !== null || paid}
           >
             Pay $49
           </Button>
@@ -337,7 +369,9 @@ export default function YearClosePacketPanel({
         )}
         {paid && !error && (
           <Typography variant="caption" color="success.main">
-            Payment confirmed. Download is unlocked for this analysis.
+            Payment confirmed. Unlocked for tax year{" "}
+            {analysis.tax_profile?.tax_year ?? "this year"}. Later updates this
+            year stay included — no second $49.
           </Typography>
         )}
       </Stack>

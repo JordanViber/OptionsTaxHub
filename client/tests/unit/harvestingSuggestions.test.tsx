@@ -34,6 +34,77 @@ describe("HarvestingSuggestions", () => {
     expect(
       screen.getByText(/No tax-loss harvesting opportunities found/),
     ).toBeInTheDocument();
+    expect(
+      screen.getByText(/No open lots currently show an unrealized loss/),
+    ).toBeInTheDocument();
+  });
+
+  it("does not claim all positions are at a gain when losing lots exist", () => {
+    render(<HarvestingSuggestions suggestions={[]} lotsWithLosses={3} />);
+
+    expect(
+      screen.getByText(/Open lots with unrealized losses were found/),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/All positions are currently at a gain/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows packet preview instead of sell recipes when locked", () => {
+    render(
+      <HarvestingSuggestions
+        suggestions={[baseSuggestion]}
+        lotsWithLosses={1}
+        locked
+      />,
+    );
+
+    expect(screen.getByTestId("harvest-packet-preview")).toBeInTheDocument();
+    expect(screen.getByTestId("harvest-teaser-card")).toBeInTheDocument();
+    expect(screen.getByText("AAPL")).toBeInTheDocument();
+    expect(screen.getByText("Open loss")).toBeInTheDocument();
+    expect(screen.queryByText("Sell to harvest")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Sell 10 AAPL to harvest this short-term loss"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Unlock harvest plan — \$49/ }),
+    ).toBeInTheDocument();
+  });
+
+  it("previews losing positions when the engine returned no suggestions", () => {
+    render(
+      <HarvestingSuggestions
+        suggestions={[]}
+        lotsWithLosses={1}
+        locked
+        positions={[
+          {
+            symbol: "TSLA",
+            display_label: "TSLA",
+            quantity: 16,
+            avg_cost_basis: 350,
+            total_cost_basis: 5600,
+            current_price: 320,
+            market_value: 5120,
+            unrealized_pnl: -480,
+            unrealized_pnl_pct: -8.6,
+            earliest_purchase_date: "2026-08-27",
+            holding_period_days: 1,
+            is_long_term: false,
+            asset_type: "stock",
+            tax_lots: [],
+            wash_sale_risk: true,
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("TSLA")).toBeInTheDocument();
+    expect(screen.getByText("31-day wait")).toBeInTheDocument();
+    expect(
+      screen.queryByText(/No tax-loss harvesting opportunities found/),
+    ).not.toBeInTheDocument();
   });
 
   it("renders suggestion cards for each suggestion", () => {

@@ -361,8 +361,8 @@ export default function LandingPage() {
               body="Named past analyses reopen without the original file. Harvest, wash sales, and packet unlocks follow the tax year. Analyses are saved to your account history so you can reopen or delete them."
             />
             <Feature
-              title="Last year’s book"
-              body="2025 next to 2026. Come back in December and pick up the run you already reconciled."
+              title="Update the book"
+              body="Full history once. Later this year, send only new activity plus a little overlap — we merge the trades and skip a second $49 for that tax year."
             />
           </Box>
         </Container>

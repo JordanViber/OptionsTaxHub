@@ -49,6 +49,9 @@ class _FakeQueryBuilder:
     def delete(self):
         return self
 
+    def update(self, row):
+        return self
+
     def eq(self, *args):
         return self
 
@@ -327,3 +330,48 @@ class TestGetTaxProfile:
         monkeypatch.setattr(db, "get_supabase", lambda: mock_client)
         result = db.get_tax_profile("user1")
         assert result is None
+
+
+class TestLatestActivityBook:
+    def test_skips_runs_without_a_trade_book(self, monkeypatch):
+        rows = [
+            {
+                "id": "new",
+                "filename": "snapshot.csv",
+                "result": {"positions": []},
+            },
+            {
+                "id": "book-1",
+                "filename": "full.csv",
+                "result": {
+                    "activity_book": {
+                        "transactions": [{"instrument": "AAPL", "trans_code": "Buy"}]
+                    },
+                    "packet_unlocked": True,
+                    "packet_session_id": "cs_abc",
+                    "tax_profile": {"tax_year": 2026},
+                },
+            },
+        ]
+        client = _FakeClient(table_data=rows)
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+        book = db.get_latest_activity_book("user1")
+        assert book["analysis_id"] == "book-1"
+        assert book["packet_session_id"] == "cs_abc"
+        assert len(book["transactions"]) == 1
+
+    def test_packet_grant_matches_tax_year(self, monkeypatch):
+        rows = [
+            {
+                "id": "a",
+                "result": {
+                    "packet_unlocked": True,
+                    "packet_session_id": "cs_2026",
+                    "tax_profile": {"tax_year": 2026},
+                },
+            }
+        ]
+        client = _FakeClient(table_data=rows)
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+        assert db.get_packet_grant_for_tax_year("user1", 2026) == "cs_2026"
+        assert db.get_packet_grant_for_tax_year("user1", 2025) is None

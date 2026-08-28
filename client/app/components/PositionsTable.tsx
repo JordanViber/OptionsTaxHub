@@ -37,10 +37,26 @@ interface PositionsTableProps {
   positions: Position[];
   /** Realized wash-sale flags from analyze — mapped onto replacement lots. */
   washSaleFlags?: WashSaleFlag[];
+  /** When false, hide lot drill-in (packet preview). */
+  lotDetailsUnlocked?: boolean;
 }
 
 function getPositionRowId(row: Position): string {
   return row.position_id ?? `${row.symbol}:${row.asset_type}`;
+}
+
+export function getPositionHarvestLabel(
+  position: Position,
+): "Candidate" | "Wait" | null {
+  const lots = position.tax_lots ?? [];
+  const lotLoss = lots.some(
+    (lot) => lot.unrealized_pnl != null && lot.unrealized_pnl < 0,
+  );
+  const positionLoss =
+    position.unrealized_pnl != null && position.unrealized_pnl < 0;
+  if (!lotLoss && !positionLoss) return null;
+  if (position.wash_sale_risk) return "Wait";
+  return "Candidate";
 }
 
 /**
@@ -500,6 +516,31 @@ function buildColumns(
       },
     },
     {
+      field: "harvest",
+      headerName: "Harvest",
+      width: 120,
+      sortable: false,
+      renderCell: (params) => {
+        const label = getPositionHarvestLabel(params.row);
+        if (!label) {
+          return (
+            <Typography variant="body2" color="text.secondary">
+              —
+            </Typography>
+          );
+        }
+        return (
+          <Chip
+            label={label}
+            size="small"
+            color={label === "Wait" ? "warning" : "error"}
+            variant={label === "Wait" ? "outlined" : "filled"}
+            sx={{ height: 22, fontSize: "0.7rem", fontWeight: 700 }}
+          />
+        );
+      },
+    },
+    {
       field: "wash_sale_risk",
       headerName: "Wash Sale",
       width: 100,
@@ -551,13 +592,17 @@ function buildColumns(
 export default function PositionsTable({
   positions,
   washSaleFlags = [],
+  lotDetailsUnlocked = true,
 }: Readonly<PositionsTableProps>) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const togglePosition = useCallback((position: Position) => {
+    if (!lotDetailsUnlocked) {
+      return;
+    }
     const rowId = getPositionRowId(position);
     setExpandedId((current) => (current === rowId ? null : rowId));
-  }, []);
+  }, [lotDetailsUnlocked]);
 
   const columns = useMemo(
     () => buildColumns(expandedId, togglePosition),
@@ -578,7 +623,7 @@ export default function PositionsTable({
         rows={positions}
         columns={columns}
         getRowId={(row) => getPositionRowId(row)}
-        onRowClick={handleRowClick}
+        onRowClick={lotDetailsUnlocked ? handleRowClick : undefined}
         initialState={{
           sorting: {
             sortModel: [{ field: "unrealized_pnl", sort: "asc" }],
@@ -598,7 +643,7 @@ export default function PositionsTable({
             overflow: "hidden",
           },
           "& .MuiDataGrid-row": {
-            cursor: "pointer",
+            cursor: lotDetailsUnlocked ? "pointer" : "default",
             "&:hover": { backgroundColor: "action.hover" },
           },
           "& .loss-row": {

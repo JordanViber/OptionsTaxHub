@@ -33,6 +33,7 @@ export const MOCK_SESSION = {
 };
 
 export const MOCK_ANALYSIS = {
+  analysis_id: "local-analysis",
   positions: [
     {
       symbol: "AAPL",
@@ -302,6 +303,14 @@ export async function injectMockSession(page: Page) {
     const existing = keys.find((k) => k.includes("auth-token"));
     const storageKey = existing || "sb-vgrlucxqncajjdoaoctq-auth-token";
     localStorage.setItem(storageKey, JSON.stringify(authData));
+    try {
+      sessionStorage.setItem(
+        "optionstaxhub-packet-paid:local-analysis",
+        "cs_test_e2e",
+      );
+    } catch {
+      // ignore
+    }
   });
 }
 

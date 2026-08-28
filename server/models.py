@@ -31,6 +31,7 @@ class TransCode(str, Enum):
     STC = "STC"  # Sell to Close
     OEXP = "OEXP"  # Option Expiration
     OASGN = "OASGN"  # Option Assignment
+    OEXCS = "OEXCS"  # Option Exercise
     OCA = "OCA"  # Option Corporate Action
     # Corporate action / account activity codes
     SPR = "SPR"  # Stock Split / Reverse Split
@@ -85,6 +86,10 @@ class Transaction(BaseModel):
     price: float = Field(..., ge=0)
     amount: float = Field(..., description="Total dollar amount (negative for buys)")
     asset_type: AssetType = AssetType.STOCK
+    is_quantity_out: bool = Field(
+        default=False,
+        description="True when Robinhood Quantity ends in S (shares/contracts out)",
+    )
 
 
 class TaxLot(BaseModel):
@@ -296,6 +301,9 @@ class PortfolioSummary(BaseModel):
     lots_with_gains: int = 0
     wash_sale_flags_count: int = 0
     realized_summary: Optional["RealizedSummary"] = None
+    activity_first_date: Optional[date] = None
+    activity_last_date: Optional[date] = None
+    activity_transaction_count: int = 0
 
 
 class RealizedSummary(BaseModel):
@@ -310,6 +318,21 @@ class RealizedSummary(BaseModel):
     net_lt: float = 0.0     # lt_gains + lt_losses
     total_net: float = 0.0  # net_st + net_lt
     transactions_count: int = 0  # Number of sell transactions contributing
+
+
+class ActivityBookSummary(BaseModel):
+    """Saved trade ledger for signed-in incremental uploads."""
+
+    transaction_count: int = 0
+    first_activity_date: Optional[date] = None
+    last_activity_date: Optional[date] = None
+    added_from_this_upload: int = 0
+    already_in_book: int = 0
+    merged_from_analysis_id: Optional[str] = None
+    merged_from_filename: str = ""
+    gap_days: int = 0
+    replaced: bool = False
+    transactions: list[Transaction] = Field(default_factory=list)
 
 
 class PortfolioAnalysis(BaseModel):
@@ -331,6 +354,9 @@ class PortfolioAnalysis(BaseModel):
     tax_profile: Optional[TaxProfile] = None
     supplemental_1099: Optional[Supplemental1099Summary] = None
     analysis_id: Optional[str] = None
+    activity_book: Optional[ActivityBookSummary] = None
+    packet_unlocked: bool = False
+    packet_session_id: Optional[str] = None
     disclaimer: str = (
         "This analysis is for educational and simulation purposes only. "
         "It does not constitute financial, tax, or investment advice. "

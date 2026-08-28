@@ -190,4 +190,16 @@ describe("WashSaleWarning", () => {
     expect(screen.getByText("AAPL")).toBeInTheDocument();
     expect(screen.getByText("MSFT")).toBeInTheDocument();
   });
+
+  it("shows ticker chips without amounts when the packet is locked", () => {
+    render(<WashSaleWarning flags={[baseFlag]} locked />);
+
+    expect(screen.getByTestId("wash-sale-packet-preview")).toBeInTheDocument();
+    expect(screen.getByText("AAPL")).toBeInTheDocument();
+    expect(
+      screen.queryByText(/Wash-Sale Rule Violations Detected/),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/\$500/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/\$[\d,.]+ disallowed/i)).not.toBeInTheDocument();
+  });
 });

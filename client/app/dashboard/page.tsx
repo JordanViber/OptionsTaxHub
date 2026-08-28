@@ -38,6 +38,8 @@ import {
   DialogContent,
   DialogContentText,
   DialogActions,
+  Checkbox,
+  FormControlLabel,
 } from "@mui/material";
 import {
   CloudUpload as CloudUploadIcon,
@@ -73,7 +75,15 @@ import {
 } from "@/lib/api";
 import FirstRunEmptyState from "../components/FirstRunEmptyState";
 import Supplemental1099InsightsPanel from "../components/Supplemental1099InsightsPanel";
-import YearClosePacketPanel from "../components/YearClosePacketPanel";
+import YearClosePacketPanel, {
+  isYearClosePacketPaid,
+  rememberYearClosePacketPaid,
+} from "../components/YearClosePacketPanel";
+import {
+  buildHarvestTeasers,
+  formatUsd,
+  harvestTeaserTotals,
+} from "@/lib/harvestPreview";
 import { useAuth } from "@/app/context/auth";
 import { isEmailConfirmed } from "@/lib/supabase";
 import { beginGuestPersist, endGuestPersist } from "@/lib/guest-persist-lock";
@@ -92,6 +102,64 @@ const GUEST_UNSAVED_KEY = "oth-guest-unsaved";
 const GUEST_UNSAVED_FILENAME_KEY = "oth-guest-unsaved-filename";
 
 type AnalysisSource = "fresh-upload" | "saved-history" | "restored-session";
+
+function formatBookDate(iso?: string | null): string | null {
+  if (!iso) {
+    return null;
+  }
+  const parsed = new Date(`${String(iso).slice(0, 10)}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) {
+    return iso;
+  }
+  return parsed.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+function savedTradeBook(history?: AnalysisHistoryItem[] | null): {
+  id: string;
+  filename: string;
+  first: string | null;
+  last: string | null;
+  count: number;
+} | null {
+  const item = history?.[0];
+  const count = item?.summary?.activity_transaction_count ?? 0;
+  if (!item || count <= 0) {
+    return null;
+  }
+  return {
+    id: item.id,
+    filename: item.filename,
+    first: formatBookDate(item.summary.activity_first_date),
+    last: formatBookDate(item.summary.activity_last_date),
+    count,
+  };
+}
+
+function uploadIntroCopy({
+  tradeBook,
+  replaceBook,
+  signedIn,
+}: {
+  tradeBook: ReturnType<typeof savedTradeBook>;
+  replaceBook: boolean;
+  signedIn: boolean;
+}): string {
+  if (tradeBook && !replaceBook) {
+    const range =
+      tradeBook.first && tradeBook.last
+        ? ` (${tradeBook.first} – ${tradeBook.last})`
+        : "";
+    return `We'll add new activity to your book from ${tradeBook.filename}${range}. Overlap is fine — no need to re-export everything.`;
+  }
+  if (signedIn) {
+    return "First upload: go back to the oldest shares you still hold. Later this year you can send only new activity plus a little overlap.";
+  }
+  return "Upload your Robinhood CSV export to analyze tax-loss harvesting opportunities. Sign in, then upload a full export so later files only need new activity.";
+}
 
 type DeleteTarget = {
   id: string;
@@ -250,9 +318,31 @@ function getConfidenceSummary(analysis: PortfolioAnalysis): {
   };
 }
 
-function getRecommendedNextSteps(analysis: PortfolioAnalysis): string[] {
+function getRecommendedNextSteps(
+  analysis: PortfolioAnalysis,
+  packetUnlocked = true,
+): string[] {
   const steps: string[] = [];
 
+  if (!packetUnlocked) {
+    const teasers = buildHarvestTeasers(
+      analysis.suggestions,
+      analysis.positions,
+    );
+    const totals = harvestTeaserTotals(teasers);
+    if (totals.count > 0) {
+      steps.push(
+        `${totals.count} lot${totals.count === 1 ? "" : "s"} show ${formatUsd(
+          totals.totalLoss,
+        )} in unrealized losses. Pay $49 to unlock sell instructions, replacements, wash-sale events, and the CPA PDF.`,
+      );
+    } else {
+      steps.push(
+        "This preview shows headline numbers. Pay $49 to unlock harvest instructions, wash-sale events, tax-lot detail, and the CPA PDF.",
+      );
+    }
+    return steps;
+  }
   if (analysis.suggestions.length > 0) {
     steps.push(
       `Start with the ${analysis.suggestions.length} harvesting suggestion${analysis.suggestions.length === 1 ? "" : "s"} shown below.`,
@@ -306,9 +396,15 @@ function getSkippedSuggestionSymbolsForAnalysis(
 function SuggestionsPanel({
   suggestions,
   skippedSuggestionSymbols,
+  lotsWithLosses,
+  locked,
+  positions,
 }: Readonly<{
   suggestions: PortfolioAnalysis["suggestions"];
   skippedSuggestionSymbols: string[];
+  lotsWithLosses: number;
+  locked: boolean;
+  positions: PortfolioAnalysis["positions"];
 }>) {
   return (
     <Stack spacing={2}>
@@ -321,7 +417,12 @@ function SuggestionsPanel({
           before acting.
         </Alert>
       )}
-      <HarvestingSuggestions suggestions={suggestions} />
+      <HarvestingSuggestions
+        suggestions={suggestions}
+        lotsWithLosses={lotsWithLosses}
+        locked={locked}
+        positions={positions}
+      />
     </Stack>
   );
 }
@@ -545,6 +646,8 @@ function ResultsSection({
   skippedSuggestionSymbols,
   shouldPrompt1099Supplement,
   guest,
+  packetUnlocked,
+  onPacketPaidChange,
 }: Readonly<{
   displayedAnalysis: PortfolioAnalysis;
   analysisSource: AnalysisSource | null;
@@ -556,7 +659,18 @@ function ResultsSection({
   skippedSuggestionSymbols: string[];
   shouldPrompt1099Supplement: boolean;
   guest?: boolean;
+  packetUnlocked: boolean;
+  onPacketPaidChange?: (paid: boolean) => void;
 }>) {
+  const harvestTeasers = buildHarvestTeasers(
+    displayedAnalysis.suggestions,
+    displayedAnalysis.positions,
+  );
+  const harvestTotals = harvestTeaserTotals(harvestTeasers);
+  const suggestionTabCount = packetUnlocked
+    ? displayedAnalysis.suggestions.length
+    : harvestTeasers.length;
+
   return (
     <>
       {guest && (
@@ -648,7 +762,10 @@ function ResultsSection({
         />
       )}
 
-      <YearClosePacketPanel analysis={displayedAnalysis} />
+      <YearClosePacketPanel
+        analysis={displayedAnalysis}
+        onPaidChange={onPacketPaidChange}
+      />
 
       {shouldPrompt1099Supplement && (
         <Alert severity="info" variant="outlined">
@@ -671,12 +788,25 @@ function ResultsSection({
         </Alert>
       )}
 
-      <PortfolioSummaryCards summary={displayedAnalysis.summary} />
+      <PortfolioSummaryCards
+        summary={displayedAnalysis.summary}
+        preview={
+          packetUnlocked
+            ? undefined
+            : {
+                locked: true,
+                candidateCount: harvestTotals.count,
+                openLossTotal: harvestTotals.totalLoss,
+                potentialTaxSavings: harvestTotals.totalSavings,
+              }
+        }
+      />
 
       {displayedAnalysis.wash_sale_flags.length > 0 && (
         <WashSaleWarning
           flags={displayedAnalysis.wash_sale_flags}
           taxYear={displayedAnalysis.tax_profile?.tax_year}
+          locked={!packetUnlocked}
         />
       )}
 
@@ -687,7 +817,7 @@ function ResultsSection({
           sx={{ borderBottom: 1, borderColor: "divider", px: 2 }}
         >
           <Tab
-            label={`Suggestions (${displayedAnalysis.suggestions.length})`}
+            label={`Suggestions (${suggestionTabCount})`}
             id="tab-suggestions"
           />
           <Tab
@@ -701,12 +831,18 @@ function ResultsSection({
             <SuggestionsPanel
               suggestions={displayedAnalysis.suggestions}
               skippedSuggestionSymbols={skippedSuggestionSymbols}
+              lotsWithLosses={
+                displayedAnalysis.summary?.lots_with_losses ?? 0
+              }
+              locked={!packetUnlocked}
+              positions={displayedAnalysis.positions}
             />
           )}
           {activeTab === 1 && (
             <PositionsTable
               positions={displayedAnalysis.positions}
               washSaleFlags={displayedAnalysis.wash_sale_flags}
+              lotDetailsUnlocked={packetUnlocked}
             />
           )}
         </CardContent>
@@ -977,6 +1113,9 @@ export default function DashboardPage() {
   const [heldAnalysis, setHeldAnalysis] = useState<PortfolioAnalysis | null>(
     null,
   );
+  const [isSampleRun, setIsSampleRun] = useState(false);
+  const [packetPaid, setPacketPaid] = useState(false);
+  const [replaceBook, setReplaceBook] = useState(false);
   const queryClient = useQueryClient();
 
   // Load the user's tax profile for analyze params
@@ -1031,6 +1170,26 @@ export default function DashboardPage() {
   const displayedAnalysis = getDisplayedAnalysis(loadedAnalysis, analysis);
   const skippedSuggestionSymbols =
     getSkippedSuggestionSymbolsForAnalysis(displayedAnalysis);
+
+  useEffect(() => {
+    const analysisId = displayedAnalysis?.analysis_id || "local-analysis";
+    if (!displayedAnalysis) {
+      setPacketPaid(false);
+      return;
+    }
+    if (displayedAnalysis.packet_unlocked) {
+      if (displayedAnalysis.packet_session_id) {
+        rememberYearClosePacketPaid(
+          analysisId,
+          displayedAnalysis.packet_session_id,
+        );
+      }
+      setPacketPaid(true);
+      return;
+    }
+    setPacketPaid(isYearClosePacketPaid(analysisId));
+  }, [displayedAnalysis?.analysis_id, displayedAnalysis]);
+
   useEffect(() => {
     if (displayedAnalysis) {
       saveAnalysisToStorage(displayedAnalysis);
@@ -1085,7 +1244,13 @@ export default function DashboardPage() {
     csvFile: File,
     supplementalFile: File | null = supplemental1099File,
   ) => {
+    const sample =
+      csvFile.name === "sample-robinhood-transactions.csv";
+    setIsSampleRun(sample);
+    setPacketPaid(false);
     setLastUploadedCsv(csvFile);
+    const mergeMode =
+      sample || replaceBook ? "replace" : "auto";
     analyzePortfolio(
       {
         file: csvFile,
@@ -1093,10 +1258,31 @@ export default function DashboardPage() {
         filingStatus: taxProfile?.filing_status || "single",
         estimatedIncome: taxProfile?.estimated_annual_income || 75000,
         taxYear: taxProfile?.tax_year || 2026,
+        mergeMode,
       },
       {
-        onSuccess: () => {
+        onSuccess: (data) => {
           setForceEmpty(false);
+          if (data.packet_unlocked && data.packet_session_id) {
+            rememberYearClosePacketPaid(
+              data.analysis_id || "local-analysis",
+              data.packet_session_id,
+            );
+            setPacketPaid(true);
+          }
+          const book = data.activity_book;
+          if (book && book.added_from_this_upload > 0 && !book.replaced) {
+            setSnackbar({
+              message: `Added ${book.added_from_this_upload} new trade${
+                book.added_from_this_upload === 1 ? "" : "s"
+              } to your book${
+                book.already_in_book
+                  ? ` (${book.already_in_book} already on file)`
+                  : ""
+              }.`,
+              severity: "success",
+            });
+          }
           if (!confirmedUserId) {
             try {
               sessionStorage.setItem(GUEST_UNSAVED_KEY, "1");
@@ -1412,8 +1598,10 @@ export default function DashboardPage() {
   const confidenceSummary = displayedAnalysis
     ? getConfidenceSummary(displayedAnalysis)
     : null;
+  const packetUnlocked = isSampleRun || packetPaid;
+  const tradeBook = savedTradeBook(history);
   const recommendedNextSteps = displayedAnalysis
-    ? getRecommendedNextSteps(displayedAnalysis)
+    ? getRecommendedNextSteps(displayedAnalysis, packetUnlocked)
     : [];
   const shouldPrompt1099Supplement = shouldRecommendSupplemental1099(
     displayedAnalysis,
@@ -1664,8 +1852,12 @@ export default function DashboardPage() {
                     Portfolio Analysis
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
-                    Upload your Robinhood CSV export to analyze tax-loss
-                    harvesting opportunities. Your{" "}
+                    {uploadIntroCopy({
+                      tradeBook,
+                      replaceBook,
+                      signedIn: Boolean(confirmedUserId),
+                    })}{" "}
+                    Your{" "}
                     <Button
                       size="small"
                       onClick={() => router.push("/settings")}
@@ -1738,9 +1930,24 @@ export default function DashboardPage() {
                       : "Click to upload CSV"}
                   </Typography>
                   <Typography variant="caption" color="text.secondary">
-                    Robinhood transaction export or simplified portfolio CSV
+                    {tradeBook && !replaceBook
+                      ? `${tradeBook.count} saved trades — drop a file that starts on or before ${tradeBook.last || "the last date"}`
+                      : "Robinhood transaction export or simplified portfolio CSV"}
                   </Typography>
                 </Box>
+
+                {Boolean(tradeBook && confirmedUserId) && (
+                  <FormControlLabel
+                    control={
+                      <Checkbox
+                        checked={replaceBook}
+                        onChange={(event) => setReplaceBook(event.target.checked)}
+                        size="small"
+                      />
+                    }
+                    label="Start a new book instead (full export, ignore saved trades)"
+                  />
+                )}
 
                 <input
                   id="desk-1099-input"
@@ -1844,6 +2051,8 @@ export default function DashboardPage() {
               skippedSuggestionSymbols={skippedSuggestionSymbols}
               shouldPrompt1099Supplement={shouldPrompt1099Supplement}
               guest={!user}
+              packetUnlocked={packetUnlocked}
+              onPacketPaidChange={setPacketPaid}
             />
           )}
 

@@ -58,7 +58,7 @@ ROBINHOOD_COLUMNS = {
 SIMPLE_COLUMNS = {"symbol", "quantity", "purchase_price", "current_price"}
 
 # Options transaction codes
-OPTIONS_TRANS_CODES = {"STO", "BTC", "BTO", "STC", "OEXP", "OASGN", "OCA"}
+OPTIONS_TRANS_CODES = {"STO", "BTC", "BTO", "STC", "OEXP", "OASGN", "OEXCS", "OCA"}
 
 # Non-trading account activity codes (skipped during parsing)
 ACCOUNT_ACTIVITY_CODES = {
@@ -170,7 +170,7 @@ def determine_asset_type(trans_code: str, description: str = "") -> AssetType:
     """
     Determine if a transaction is for a stock or an option.
 
-    Options are identified by their Trans Code (STO, BTC, BTO, STC, OEXP)
+    Options are identified by their Trans Code (STO, BTC, BTO, STC, OEXP, OASGN, OEXCS)
     or by keywords in the Description field (Call, Put, strike prices).
     """
     if trans_code in OPTIONS_TRANS_CODES:
@@ -226,6 +226,8 @@ def _parse_robinhood_row(
         description = ""
 
     # Parse numeric fields (handle $, commas, parentheses, S suffix)
+    raw_quantity = str(row.get("Quantity", "")).strip()
+    is_quantity_out = raw_quantity.endswith(("S", "s"))
     quantity = parse_robinhood_quantity(row.get("Quantity", 0))
     price = abs(parse_robinhood_amount(row.get("Price", 0)))
     amount = parse_robinhood_amount(row.get("Amount", 0))
@@ -244,6 +246,7 @@ def _parse_robinhood_row(
         price=price,
         amount=amount,
         asset_type=asset_type,
+        is_quantity_out=is_quantity_out,
     )
     return txn, None
 
@@ -393,9 +396,9 @@ def _add_lot(
         asset_type=resolved_type,
         contract_label=txn.description or None,
         is_short_position=is_short_position,
-        # Seed option current_price with last-known premium so market_value is
-        # non-None until a live option quote can be fetched.
-        current_price=txn.price if resolved_type == AssetType.OPTION else None,
+        # Seed current_price with the fill so market_value is non-None until a
+        # live quote arrives (options: last premium; stock: purchase price).
+        current_price=txn.price,
     )
     if symbol not in open_lots:
         open_lots[symbol] = []
@@ -408,6 +411,7 @@ def _close_lots_fifo(
     txn: Transaction,
     unmatched_sells: list[tuple[str, str]],
     realized: list[RealizedEvent],
+    prefer_short: bool | None = None,
 ) -> None:
     """Close lots in FIFO order for a sell transaction.
 
@@ -433,12 +437,37 @@ def _close_lots_fifo(
     close_asset_type = txn.asset_type
     matched_any = False
 
-    while remaining_to_sell > 0:
-        # Find the earliest (FIFO) open lot with the matching asset type
-        matching_idx = next(
-            (i for i, lot in enumerate(open_lots.get(symbol, [])) if lot.asset_type == close_asset_type),
+    def _matching_idx() -> int | None:
+        lots = open_lots.get(symbol, [])
+        if prefer_short is True:
+            idx = next(
+                (
+                    i
+                    for i, lot in enumerate(lots)
+                    if lot.asset_type == close_asset_type and lot.is_short_position
+                ),
+                None,
+            )
+            if idx is not None:
+                return idx
+        elif prefer_short is False:
+            idx = next(
+                (
+                    i
+                    for i, lot in enumerate(lots)
+                    if lot.asset_type == close_asset_type and not lot.is_short_position
+                ),
+                None,
+            )
+            if idx is not None:
+                return idx
+        return next(
+            (i for i, lot in enumerate(lots) if lot.asset_type == close_asset_type),
             None,
         )
+
+    while remaining_to_sell > 0:
+        matching_idx = _matching_idx()
         if matching_idx is None:
             break
 
@@ -493,14 +522,6 @@ def _close_lots_fifo(
 def _warn_on_corporate_action(txn: Transaction, warnings: list[str]) -> None:
     """Append user-facing warnings for unsupported corporate actions."""
     symbol = txn.instrument
-    if txn.trans_code == TransCode.SPR:
-        warnings.append(
-            f"Stock split detected for {symbol} — lot quantities are NOT automatically "
-            f"adjusted. Reported positions for {symbol} may be inaccurate. Verify against "
-            f"your brokerage account and re-run after the CSV reflects post-split quantities."
-        )
-        return
-
     if txn.trans_code == TransCode.OCA:
         warnings.append(
             f"Corporate action (OCA) detected for {symbol} — lot quantities are NOT "
@@ -510,11 +531,78 @@ def _warn_on_corporate_action(txn: Transaction, warnings: list[str]) -> None:
         )
 
 
+def _apply_stock_splits(
+    open_lots: dict[str, list[TaxLot]],
+    sprs: list[Transaction],
+    warnings: list[str],
+) -> None:
+    """Apply paired Robinhood SPR rows (qty-out with trailing S, qty-in without)."""
+    if not sprs:
+        return
+
+    from collections import defaultdict
+
+    by_symbol: dict[str, list[Transaction]] = defaultdict(list)
+    for txn in sprs:
+        by_symbol[txn.instrument].append(txn)
+
+    for symbol, rows in by_symbol.items():
+        qty_out = sum(t.quantity for t in rows if t.is_quantity_out)
+        qty_in = sum(t.quantity for t in rows if not t.is_quantity_out)
+        if qty_out <= 0 or qty_in <= 0:
+            warnings.append(
+                f"Stock split detected for {symbol} — could not determine the split "
+                f"ratio from the SPR rows. Reported positions for {symbol} may be inaccurate."
+            )
+            continue
+
+        ratio = qty_in / qty_out
+        adjusted = 0
+        for lot in open_lots.get(symbol, []):
+            if lot.asset_type != AssetType.STOCK:
+                continue
+            lot.quantity = round(lot.quantity * ratio, 6)
+            lot.cost_basis_per_share = lot.cost_basis_per_share / ratio
+            lot.total_cost_basis = lot.cost_basis_per_share * lot.quantity
+            adjusted += 1
+
+        warnings.append(
+            f"Applied stock split for {symbol}: {qty_out:g} → {qty_in:g} shares "
+            f"(ratio {ratio:g}). {adjusted} open stock lot(s) were adjusted."
+        )
+
+
+_OPEN_CODES = {TransCode.BUY, TransCode.BTO, TransCode.STO}
+_CORP_CODES = {TransCode.SPR, TransCode.OCA}
+_OPTION_EVENT_CODES = {TransCode.OEXP, TransCode.OASGN, TransCode.OEXCS}
+_CLOSE_CODES = {TransCode.SELL, TransCode.STC, TransCode.BTC}
+
+
+def _intraday_rank(txn: Transaction) -> int:
+    """Same-day processing order.
+
+    Robinhood assignment/exercise groups are listed OASGN, Buy, OEXCS, Sell —
+    not newest-first chronological. Reversing CSV index therefore processes the
+    exercise stock Sell before the assignment stock Buy and leaves a phantom
+    open lot. Rank opens before closes so those paired stock legs net.
+    Corporate actions apply first so later same-day trades see post-split qty.
+    """
+    if txn.trans_code in _CORP_CODES:
+        return 0
+    if txn.trans_code in _OPEN_CODES:
+        return 1
+    if txn.trans_code in _OPTION_EVENT_CODES:
+        return 2
+    if txn.trans_code in _CLOSE_CODES:
+        return 3
+    return 4
+
+
 def _process_transaction(
     txn: Transaction,
     open_lots: dict[str, list[TaxLot]],
     warnings: list[str],
-    unmatched_sells: list[str],
+    unmatched_sells: list[tuple[str, str]],
     realized: list[RealizedEvent],
 ) -> None:
     """Apply a single transaction to the open-lot ledger."""
@@ -525,17 +613,36 @@ def _process_transaction(
         return
 
     if txn.trans_code in (TransCode.SELL, TransCode.STC, TransCode.BTC):
-        _close_lots_fifo(open_lots, symbol, txn, unmatched_sells, realized)
+        prefer_short = None
+        if txn.trans_code == TransCode.BTC:
+            prefer_short = True
+        elif txn.trans_code == TransCode.STC:
+            prefer_short = False
+        _close_lots_fifo(
+            open_lots, symbol, txn, unmatched_sells, realized, prefer_short=prefer_short
+        )
         return
 
-    if txn.trans_code in (TransCode.OEXP, TransCode.OASGN):
-        _close_lots_fifo(open_lots, symbol, txn, unmatched_sells, realized)
+    if txn.trans_code in (TransCode.OEXP, TransCode.OASGN, TransCode.OEXCS):
+        prefer_short = None
+        if txn.trans_code == TransCode.OASGN:
+            prefer_short = True
+        elif txn.trans_code == TransCode.OEXCS:
+            prefer_short = False
+        _close_lots_fifo(
+            open_lots, symbol, txn, unmatched_sells, realized, prefer_short=prefer_short
+        )
         if txn.trans_code == TransCode.OASGN:
             warnings.append(
                 f"Option assignment (OASGN) detected for {symbol} on "
                 f"{txn.activity_date.strftime('%m/%d/%Y')} — the option P&L has "
-                f"been recorded, but the resulting stock position change from "
-                f"assignment/exercise may require manual verification."
+                f"been recorded. Paired stock Buy/Sell legs are processed separately."
+            )
+        elif txn.trans_code == TransCode.OEXCS:
+            warnings.append(
+                f"Option exercise (OEXCS) detected for {symbol} on "
+                f"{txn.activity_date.strftime('%m/%d/%Y')} — the option P&L has "
+                f"been recorded. Paired stock Buy/Sell legs are processed separately."
             )
         return
 
@@ -543,7 +650,7 @@ def _process_transaction(
         _add_lot(open_lots, symbol, txn, asset_type=AssetType.OPTION, is_short_position=True)
         return
 
-    if txn.trans_code in (TransCode.SPR, TransCode.OCA):
+    if txn.trans_code == TransCode.OCA:
         _warn_on_corporate_action(txn, warnings)
 
 
@@ -560,14 +667,15 @@ def transactions_to_tax_lots(transactions: list[Transaction]) -> tuple[list[TaxL
     Returns:
         Tuple of (list of open TaxLot positions, list of warnings, list of realized events).
     """
+    from itertools import groupby
+
     warnings: list[str] = []
     unmatched_sells: list[tuple[str, str]] = []  # (symbol, reason) tuples; consolidated at end
     realized: list[RealizedEvent] = []
 
-    # Robinhood exports are newest-first. For transactions that share the same
-    # date, reverse the original CSV order within that day so FIFO sees the
-    # earlier same-day buys before later same-day sells. Otherwise a same-day
-    # round-trip can be processed as SELL -> BUY, leaving a phantom open lot.
+    # Date order, then same-day rank (splits, opens, option events, closes),
+    # then reverse original CSV index so newest-first exports still process
+    # earlier-in-day regular trades first within a rank.
     sorted_txns = [
         txn
         for _, txn in sorted(
@@ -576,6 +684,7 @@ def transactions_to_tax_lots(transactions: list[Transaction]) -> tuple[list[TaxL
                 item[1].activity_date,
                 item[1].process_date or item[1].activity_date,
                 item[1].settle_date or item[1].activity_date,
+                _intraday_rank(item[1]),
                 -item[0],
             ),
         )
@@ -584,8 +693,13 @@ def transactions_to_tax_lots(transactions: list[Transaction]) -> tuple[list[TaxL
     # Track open lots per symbol (FIFO order)
     open_lots: dict[str, list[TaxLot]] = {}
 
-    for txn in sorted_txns:
-        _process_transaction(txn, open_lots, warnings, unmatched_sells, realized)
+    for _day, day_txns in groupby(sorted_txns, key=lambda t: t.activity_date):
+        day_list = list(day_txns)
+        sprs = [t for t in day_list if t.trans_code == TransCode.SPR]
+        rest = [t for t in day_list if t.trans_code != TransCode.SPR]
+        _apply_stock_splits(open_lots, sprs, warnings)
+        for txn in rest:
+            _process_transaction(txn, open_lots, warnings, unmatched_sells, realized)
 
     # Consolidated warnings for sells that could not be matched to open lots,
     # grouped by reason so each message is accurate and actionable.

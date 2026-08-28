@@ -210,6 +210,7 @@ class TestTransactionsToTaxLots:
         assert lots[0].symbol == "AAPL"
         assert lots[0].quantity == 10
         assert lots[0].cost_basis_per_share == pytest.approx(150.0)
+        assert lots[0].current_price == pytest.approx(150.0)
 
     def test_sell_closes_fifo(self):
         from models import Transaction, TransCode, AssetType
@@ -965,3 +966,174 @@ class TestParseCsvEdgeCases:
         # Either "No valid transactions" or similar error
         assert len(lots) == 0
         assert len(txns) == 0
+
+
+class TestAssignmentExerciseAndSplits:
+    """Regression tests for the $668k phantom-lot production bug.
+
+    Robinhood lists credit-spread expiration as OASGN, Buy, OEXCS, Sell.
+    Newest-first reverse-index processed Sell before Buy, leaving the
+    assignment shares open. OEXCS was also an unrecognized TransCode.
+    """
+
+    def _txn(self, **kwargs):
+        defaults = dict(
+            process_date=None,
+            settle_date=None,
+            description="",
+            price=0.0,
+            amount=0.0,
+            asset_type=AssetType.STOCK,
+            is_quantity_out=False,
+        )
+        defaults.update(kwargs)
+        return Transaction(**defaults)
+
+    def test_oexcs_is_recognized(self):
+        rows = [{
+            "Activity Date": "07/24/2026",
+            "Process Date": "07/24/2026",
+            "Settle Date": "07/27/2026",
+            "Instrument": "MSTR",
+            "Description": "MSTR 7/24/2026 Put $96.00",
+            "Trans Code": "OEXCS",
+            "Quantity": "50S",
+            "Price": "",
+            "Amount": "",
+        }]
+        transactions, errors = parse_robinhood_csv(pd.DataFrame(rows))
+        assert errors == []
+        assert len(transactions) == 1
+        assert transactions[0].trans_code == TransCode.OEXCS
+        assert transactions[0].asset_type == AssetType.OPTION
+        assert transactions[0].quantity == pytest.approx(50.0)
+        assert transactions[0].is_quantity_out is True
+
+    def test_assignment_exercise_csv_order_does_not_leave_phantom_stock(self):
+        """Real Robinhood file order: OASGN, Buy, OEXCS, Sell on the same day."""
+        day = date(2026, 7, 24)
+        txns = [
+            self._txn(
+                activity_date=day, instrument="MSTR",
+                description="MSTR 7/24/2026 Put $97.00",
+                trans_code=TransCode.OASGN, quantity=50,
+                asset_type=AssetType.OPTION,
+            ),
+            self._txn(
+                activity_date=day, instrument="MSTR",
+                description="50 MSTR Options Assigned",
+                trans_code=TransCode.BUY, quantity=5000, price=97.0,
+                amount=-485000.0, asset_type=AssetType.STOCK,
+            ),
+            self._txn(
+                activity_date=day, instrument="MSTR",
+                description="MSTR 7/24/2026 Put $96.00",
+                trans_code=TransCode.OEXCS, quantity=50,
+                asset_type=AssetType.OPTION, is_quantity_out=True,
+            ),
+            self._txn(
+                activity_date=day, instrument="MSTR",
+                description="50 MSTR Options Exercised",
+                trans_code=TransCode.SELL, quantity=5000, price=96.0,
+                amount=479989.13, asset_type=AssetType.STOCK,
+            ),
+        ]
+        lots, warnings, realized = transactions_to_tax_lots(txns)
+        stock_lots = [lot for lot in lots if lot.asset_type == AssetType.STOCK]
+        assert stock_lots == []
+        stock_realized = [e for e in realized if e.quantity == 5000]
+        assert len(stock_realized) == 1
+        # Lot P&L uses per-share price, not the fee-adjusted Amount column.
+        assert stock_realized[0].pnl == pytest.approx(5000 * 96.0 - 5000 * 97.0)
+
+    def test_oexcs_closes_long_option_not_short(self):
+        day = date(2026, 7, 6)
+        expiry = date(2026, 7, 24)
+        txns = [
+            self._txn(
+                activity_date=day, instrument="MSTR",
+                description="MSTR 7/24/2026 Put $96.00",
+                trans_code=TransCode.BTO, quantity=50, price=6.93,
+                amount=-34650.0, asset_type=AssetType.OPTION,
+            ),
+            self._txn(
+                activity_date=day, instrument="MSTR",
+                description="MSTR 7/24/2026 Put $97.00",
+                trans_code=TransCode.STO, quantity=50, price=7.35,
+                amount=36750.0, asset_type=AssetType.OPTION,
+            ),
+            self._txn(
+                activity_date=expiry, instrument="MSTR",
+                description="MSTR 7/24/2026 Put $97.00",
+                trans_code=TransCode.OASGN, quantity=50,
+                asset_type=AssetType.OPTION,
+            ),
+            self._txn(
+                activity_date=expiry, instrument="MSTR",
+                description="MSTR 7/24/2026 Put $96.00",
+                trans_code=TransCode.OEXCS, quantity=50,
+                asset_type=AssetType.OPTION, is_quantity_out=True,
+            ),
+        ]
+        lots, _, _ = transactions_to_tax_lots(txns)
+        assert [lot for lot in lots if lot.asset_type == AssetType.OPTION] == []
+
+    def test_reverse_split_adjusts_open_stock_lots(self):
+        txns = [
+            self._txn(
+                activity_date=date(2026, 2, 5), instrument="ASST",
+                trans_code=TransCode.BUY, quantity=400, price=5.0,
+                amount=-2000.0,
+            ),
+            self._txn(
+                activity_date=date(2026, 2, 6), instrument="ASST",
+                trans_code=TransCode.SPR, quantity=400, is_quantity_out=True,
+            ),
+            self._txn(
+                activity_date=date(2026, 2, 6), instrument="ASST",
+                trans_code=TransCode.SPR, quantity=20,
+            ),
+        ]
+        lots, warnings, _ = transactions_to_tax_lots(txns)
+        assert len(lots) == 1
+        assert lots[0].quantity == pytest.approx(20.0)
+        assert lots[0].cost_basis_per_share == pytest.approx(100.0)
+        assert lots[0].total_cost_basis == pytest.approx(2000.0)
+        assert any("Applied stock split for ASST" in w for w in warnings)
+
+    def test_btc_stc_prefer_short_and_long_legs(self):
+        """Credit-spread BTC/STC must close the matching short/long leg, not FIFO any option."""
+        open_day = date(2026, 8, 27)
+        close_day = date(2026, 8, 28)
+        txns = [
+            self._txn(
+                activity_date=open_day, instrument="SPCX",
+                description="SPCX 9/11/2026 Put $130.00",
+                trans_code=TransCode.BTO, quantity=5, price=2.32,
+                asset_type=AssetType.OPTION,
+            ),
+            self._txn(
+                activity_date=open_day, instrument="SPCX",
+                description="SPCX 9/11/2026 Put $133.00",
+                trans_code=TransCode.STO, quantity=5, price=3.22,
+                asset_type=AssetType.OPTION,
+            ),
+            # Robinhood newest-first same-day order: BTC then STC
+            self._txn(
+                activity_date=close_day, instrument="SPCX",
+                description="SPCX 9/11/2026 Put $133.00",
+                trans_code=TransCode.BTC, quantity=1, price=1.92,
+                asset_type=AssetType.OPTION,
+            ),
+            self._txn(
+                activity_date=close_day, instrument="SPCX",
+                description="SPCX 9/11/2026 Put $130.00",
+                trans_code=TransCode.STC, quantity=1, price=1.27,
+                asset_type=AssetType.OPTION,
+            ),
+        ]
+        lots, _, _ = transactions_to_tax_lots(txns)
+        longs = [lot for lot in lots if not lot.is_short_position]
+        shorts = [lot for lot in lots if lot.is_short_position]
+        assert sum(lot.quantity for lot in longs) == pytest.approx(4.0)
+        assert sum(lot.quantity for lot in shorts) == pytest.approx(4.0)
