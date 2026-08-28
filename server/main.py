@@ -519,6 +519,16 @@ def _classify_warning(
         )
         return
 
+    exercise_match = re.match(
+        r"^Option exercise \(OEXCS\) detected for (?P<symbol>\S+) on (?P<date>\d{2}/\d{2}/\d{4})",
+        warning,
+    )
+    if exercise_match:
+        option_assignments[exercise_match.group("symbol")].append(
+            exercise_match.group("date")
+        )
+        return
+
     corporate_match = re.match(
         r"^Corporate action \(OCA\) detected for (?P<symbol>\S+)",
         warning,
@@ -652,6 +662,8 @@ def _build_manual_review_notes_by_symbol(transactions: list) -> dict[str, str]:
             events_by_symbol[symbol].add("corporate-action adjustments")
         elif txn.trans_code == TransCode.OASGN:
             events_by_symbol[symbol].add("option assignment activity")
+        elif txn.trans_code == TransCode.OEXCS:
+            events_by_symbol[symbol].add("option exercise activity")
 
     notes: dict[str, str] = {}
     for symbol, event_labels in events_by_symbol.items():

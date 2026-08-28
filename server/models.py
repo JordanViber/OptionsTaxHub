@@ -31,6 +31,7 @@ class TransCode(str, Enum):
     STC = "STC"  # Sell to Close
     OEXP = "OEXP"  # Option Expiration
     OASGN = "OASGN"  # Option Assignment
+    OEXCS = "OEXCS"  # Option Exercise
     OCA = "OCA"  # Option Corporate Action
     # Corporate action / account activity codes
     SPR = "SPR"  # Stock Split / Reverse Split
@@ -85,6 +86,10 @@ class Transaction(BaseModel):
     price: float = Field(..., ge=0)
     amount: float = Field(..., description="Total dollar amount (negative for buys)")
     asset_type: AssetType = AssetType.STOCK
+    is_quantity_out: bool = Field(
+        default=False,
+        description="True when Robinhood Quantity ends in S (shares/contracts out)",
+    )
 
 
 class TaxLot(BaseModel):
