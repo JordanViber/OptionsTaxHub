@@ -12,6 +12,8 @@ services:
       - key: DATABASE_URL
         sync: false
       - key: FRONTEND_URL
+        value: https://www.optionstaxhub.com
+      - key: CORS_ORIGINS
         value: https://options-tax-hub-client-prod.onrender.com
       - key: API_KEY_SECRET
         generateValue: true

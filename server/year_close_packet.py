@@ -456,7 +456,11 @@ def packet_requires_test_stripe() -> bool:
         return True
     if environment in ("development", "test", "staging"):
         return True
-    if "client-prod" in frontend or "server-prod" in render_service:
+    if (
+        "client-prod" in frontend
+        or "server-prod" in render_service
+        or "optionstaxhub.com" in frontend
+    ):
         return False
     # Ambiguous environment: never live-charge the packet by accident.
     return True
