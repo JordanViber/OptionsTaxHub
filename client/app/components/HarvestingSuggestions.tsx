@@ -2,6 +2,7 @@
 
 import {
   Box,
+  Button,
   Card,
   CardContent,
   Chip,
@@ -23,12 +24,21 @@ import {
   TrendingDown as LossIcon,
 } from "@mui/icons-material";
 import { useState } from "react";
-import type { HarvestingSuggestion } from "@/lib/types";
+import type { HarvestingSuggestion, Position } from "@/lib/types";
+import {
+  buildHarvestTeasers,
+  formatUsd,
+  harvestTeaserTotals,
+  PREVIEW_CARD_LIMIT,
+  scrollToPacketPanel,
+  type HarvestTeaser,
+} from "@/lib/harvestPreview";
 
 interface HarvestingSuggestionsProps {
   suggestions: HarvestingSuggestion[];
   lotsWithLosses?: number;
   locked?: boolean;
+  positions?: Position[];
 }
 
 interface SuggestionDisplayMeta {
@@ -41,12 +51,7 @@ interface SuggestionDisplayMeta {
  * Format a number as USD currency.
  */
 function formatCurrency(value: number): string {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  }).format(value);
+  return formatUsd(value);
 }
 
 function formatShareCount(quantity: number): string {
@@ -374,14 +379,14 @@ function SuggestionCard({
               mt: 1.5,
               p: 1,
               borderRadius: 1,
-              backgroundColor: "#fff8e1",
+              backgroundColor: "warning.dark",
               display: "flex",
               alignItems: "flex-start",
               gap: 1,
             }}
           >
             <WarnIcon sx={{ color: "warning.main", fontSize: 18, mt: 0.2 }} />
-            <Typography variant="caption" sx={{ color: "warning.dark" }}>
+            <Typography variant="caption" sx={{ color: "warning.main" }}>
               {suggestion.wash_sale_explanation ||
                 "Wash-sale risk detected. Selling this position may trigger wash-sale rules."}
             </Typography>
@@ -392,7 +397,6 @@ function SuggestionCard({
         <Collapse in={expanded}>
           <Divider sx={{ my: 1.5 }} />
 
-          {/* AI Explanation */}
           {suggestion.ai_explanation && (
             <Box sx={{ mb: 2 }}>
               <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>
@@ -408,7 +412,6 @@ function SuggestionCard({
             </Box>
           )}
 
-          {/* Replacement Candidates */}
           {suggestion.replacement_candidates.length > 0 && (
             <Box>
               <Typography
@@ -465,6 +468,159 @@ function SuggestionCard({
   );
 }
 
+function HarvestTeaserCard({ teaser }: Readonly<{ teaser: HarvestTeaser }>) {
+  return (
+    <Card
+      variant="outlined"
+      data-testid="harvest-teaser-card"
+      sx={{
+        borderLeft: 4,
+        borderLeftColor: teaser.washSaleRisk ? "warning.main" : "error.main",
+      }}
+    >
+      <CardContent sx={{ py: 1.5, "&:last-child": { pb: 1.5 } }}>
+        <Box
+          sx={{
+            display: "flex",
+            justifyContent: "space-between",
+            gap: 2,
+            alignItems: "flex-start",
+          }}
+        >
+          <Box sx={{ minWidth: 0 }}>
+            <Typography variant="subtitle1" sx={{ fontWeight: 700 }} noWrap>
+              {teaser.label}
+            </Typography>
+            <Stack
+              direction="row"
+              spacing={0.75}
+              sx={{ mt: 0.5 }}
+              flexWrap="wrap"
+              useFlexGap
+            >
+              <Chip
+                label={teaser.isLongTerm ? "Long-term" : "Short-term"}
+                size="small"
+                variant="outlined"
+                sx={{ height: 20, fontSize: "0.65rem" }}
+              />
+              {teaser.washSaleRisk && (
+                <Chip
+                  label="31-day wait"
+                  size="small"
+                  color="warning"
+                  sx={{ height: 20, fontSize: "0.65rem" }}
+                />
+              )}
+            </Stack>
+          </Box>
+          <Box sx={{ textAlign: "right", flexShrink: 0 }}>
+            <Typography variant="caption" color="text.secondary">
+              Open loss
+            </Typography>
+            <Typography sx={{ fontWeight: 700, color: "error.main" }}>
+              {formatCurrency(teaser.estimatedLoss)}
+            </Typography>
+            {teaser.taxSavings != null && teaser.taxSavings > 0 && (
+              <Typography
+                variant="caption"
+                sx={{ color: "success.main", display: "block" }}
+              >
+                {formatCurrency(teaser.taxSavings)} est. savings
+              </Typography>
+            )}
+          </Box>
+        </Box>
+        <Box
+          sx={{
+            mt: 1.25,
+            filter: "blur(5px)",
+            userSelect: "none",
+            opacity: 0.5,
+          }}
+          aria-hidden
+        >
+          <Typography variant="body2">
+            Sell quantity and replacement names
+          </Typography>
+          <Typography variant="caption" color="text.secondary">
+            Lot opened · cost basis · wash-sale dates
+          </Typography>
+        </Box>
+      </CardContent>
+    </Card>
+  );
+}
+
+function LockedHarvestPreview({
+  teasers,
+}: Readonly<{ teasers: HarvestTeaser[] }>) {
+  const totals = harvestTeaserTotals(teasers);
+  const visible = teasers.slice(0, PREVIEW_CARD_LIMIT);
+  const hiddenCount = teasers.length - visible.length;
+  const savingsLine = totals.hasTaxSavings
+    ? ` · ${formatCurrency(totals.totalSavings)} estimated tax savings`
+    : "";
+
+  return (
+    <Stack spacing={1.5} data-testid="harvest-packet-preview">
+      <Box
+        sx={{
+          display: "flex",
+          alignItems: "flex-end",
+          justifyContent: "space-between",
+          gap: 2,
+          flexWrap: "wrap",
+        }}
+      >
+        <Box>
+          <Typography
+            variant="caption"
+            sx={{
+              letterSpacing: "0.14em",
+              textTransform: "uppercase",
+              fontFamily: "var(--font-mono), 'IBM Plex Mono', monospace",
+              color: "text.secondary",
+              fontWeight: 700,
+            }}
+          >
+            Harvest preview
+          </Typography>
+          <Typography
+            sx={{
+              mt: 0.5,
+              fontFamily: "var(--font-display), Fraunces, Georgia, serif",
+              fontSize: "1.75rem",
+              fontWeight: 600,
+              letterSpacing: "-0.03em",
+              lineHeight: 1,
+            }}
+          >
+            {formatCurrency(totals.totalLoss)}
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75 }}>
+            {totals.count} lot{totals.count === 1 ? "" : "s"} with unrealized
+            losses
+            {savingsLine}
+          </Typography>
+        </Box>
+        <Button variant="contained" onClick={scrollToPacketPanel}>
+          Unlock harvest plan — $49
+        </Button>
+      </Box>
+      {visible.map((teaser) => (
+        <HarvestTeaserCard key={teaser.id} teaser={teaser} />
+      ))}
+      {hiddenCount > 0 && (
+        <Typography variant="caption" color="text.secondary">
+          + {hiddenCount} more lot{hiddenCount === 1 ? "" : "s"} in the $49
+          packet
+        </Typography>
+      )}
+    </Stack>
+  );
+}
+
 export function getHarvestEmptyCopy(lotsWithLosses = 0): string {
   if (lotsWithLosses > 0) {
     return (
@@ -488,9 +644,13 @@ export default function HarvestingSuggestions({
   suggestions,
   lotsWithLosses = 0,
   locked = false,
+  positions = [],
 }: Readonly<HarvestingSuggestionsProps>) {
   if (locked) {
-    const lossLots = lotsWithLosses || suggestions.length;
+    const teasers = buildHarvestTeasers(suggestions, positions);
+    if (teasers.length > 0) {
+      return <LockedHarvestPreview teasers={teasers} />;
+    }
     return (
       <Card variant="outlined" data-testid="harvest-packet-preview">
         <CardContent>
@@ -498,8 +658,8 @@ export default function HarvestingSuggestions({
             Harvest plan is in the $49 packet
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            {lossLots > 0
-              ? `${lossLots} open lot${lossLots === 1 ? "" : "s"} show an unrealized loss. Pay $49 for lot-level sell instructions, replacements, and the CPA PDF.`
+            {lotsWithLosses > 0
+              ? `${lotsWithLosses} open lot${lotsWithLosses === 1 ? "" : "s"} show an unrealized loss. Pay $49 for lot-level sell instructions, replacements, and the CPA PDF.`
               : "Pay $49 to unlock lot-level harvest instructions, wash-sale detail, and the year-close PDF."}
           </Typography>
         </CardContent>

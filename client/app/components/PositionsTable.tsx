@@ -45,6 +45,20 @@ function getPositionRowId(row: Position): string {
   return row.position_id ?? `${row.symbol}:${row.asset_type}`;
 }
 
+export function getPositionHarvestLabel(
+  position: Position,
+): "Candidate" | "Wait" | null {
+  const lots = position.tax_lots ?? [];
+  const lotLoss = lots.some(
+    (lot) => lot.unrealized_pnl != null && lot.unrealized_pnl < 0,
+  );
+  const positionLoss =
+    position.unrealized_pnl != null && position.unrealized_pnl < 0;
+  if (!lotLoss && !positionLoss) return null;
+  if (position.wash_sale_risk) return "Wait";
+  return "Candidate";
+}
+
 /**
  * Format a number as USD currency.
  */
@@ -498,6 +512,31 @@ function buildColumns(
             </Typography>
             <TermChip isLong={params.row.is_long_term} />
           </Box>
+        );
+      },
+    },
+    {
+      field: "harvest",
+      headerName: "Harvest",
+      width: 120,
+      sortable: false,
+      renderCell: (params) => {
+        const label = getPositionHarvestLabel(params.row);
+        if (!label) {
+          return (
+            <Typography variant="body2" color="text.secondary">
+              —
+            </Typography>
+          );
+        }
+        return (
+          <Chip
+            label={label}
+            size="small"
+            color={label === "Wait" ? "warning" : "error"}
+            variant={label === "Wait" ? "outlined" : "filled"}
+            sx={{ height: 22, fontSize: "0.7rem", fontWeight: 700 }}
+          />
         );
       },
     },

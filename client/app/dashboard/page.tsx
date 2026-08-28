@@ -76,6 +76,11 @@ import Supplemental1099InsightsPanel from "../components/Supplemental1099Insight
 import YearClosePacketPanel, {
   isYearClosePacketPaid,
 } from "../components/YearClosePacketPanel";
+import {
+  buildHarvestTeasers,
+  formatUsd,
+  harvestTeaserTotals,
+} from "@/lib/harvestPreview";
 import { useAuth } from "@/app/context/auth";
 import { isEmailConfirmed } from "@/lib/supabase";
 import { beginGuestPersist, endGuestPersist } from "@/lib/guest-persist-lock";
@@ -259,9 +264,22 @@ function getRecommendedNextSteps(
   const steps: string[] = [];
 
   if (!packetUnlocked) {
-    steps.push(
-      "This preview shows headline numbers only. Pay $49 to unlock harvest instructions, wash-sale events, tax-lot detail, and the CPA PDF.",
+    const teasers = buildHarvestTeasers(
+      analysis.suggestions,
+      analysis.positions,
     );
+    const totals = harvestTeaserTotals(teasers);
+    if (totals.count > 0) {
+      steps.push(
+        `${totals.count} lot${totals.count === 1 ? "" : "s"} show ${formatUsd(
+          totals.totalLoss,
+        )} in unrealized losses. Pay $49 to unlock sell instructions, replacements, wash-sale events, and the CPA PDF.`,
+      );
+    } else {
+      steps.push(
+        "This preview shows headline numbers. Pay $49 to unlock harvest instructions, wash-sale events, tax-lot detail, and the CPA PDF.",
+      );
+    }
     return steps;
   }
   if (analysis.suggestions.length > 0) {
@@ -319,11 +337,13 @@ function SuggestionsPanel({
   skippedSuggestionSymbols,
   lotsWithLosses,
   locked,
+  positions,
 }: Readonly<{
   suggestions: PortfolioAnalysis["suggestions"];
   skippedSuggestionSymbols: string[];
   lotsWithLosses: number;
   locked: boolean;
+  positions: PortfolioAnalysis["positions"];
 }>) {
   return (
     <Stack spacing={2}>
@@ -340,6 +360,7 @@ function SuggestionsPanel({
         suggestions={suggestions}
         lotsWithLosses={lotsWithLosses}
         locked={locked}
+        positions={positions}
       />
     </Stack>
   );
@@ -580,6 +601,15 @@ function ResultsSection({
   packetUnlocked: boolean;
   onPacketPaidChange?: (paid: boolean) => void;
 }>) {
+  const harvestTeasers = buildHarvestTeasers(
+    displayedAnalysis.suggestions,
+    displayedAnalysis.positions,
+  );
+  const harvestTotals = harvestTeaserTotals(harvestTeasers);
+  const suggestionTabCount = packetUnlocked
+    ? displayedAnalysis.suggestions.length
+    : harvestTeasers.length;
+
   return (
     <>
       {guest && (
@@ -697,7 +727,19 @@ function ResultsSection({
         </Alert>
       )}
 
-      <PortfolioSummaryCards summary={displayedAnalysis.summary} />
+      <PortfolioSummaryCards
+        summary={displayedAnalysis.summary}
+        preview={
+          packetUnlocked
+            ? undefined
+            : {
+                locked: true,
+                candidateCount: harvestTotals.count,
+                openLossTotal: harvestTotals.totalLoss,
+                potentialTaxSavings: harvestTotals.totalSavings,
+              }
+        }
+      />
 
       {displayedAnalysis.wash_sale_flags.length > 0 && (
         <WashSaleWarning
@@ -714,7 +756,7 @@ function ResultsSection({
           sx={{ borderBottom: 1, borderColor: "divider", px: 2 }}
         >
           <Tab
-            label={`Suggestions (${displayedAnalysis.suggestions.length})`}
+            label={`Suggestions (${suggestionTabCount})`}
             id="tab-suggestions"
           />
           <Tab
@@ -732,6 +774,7 @@ function ResultsSection({
                 displayedAnalysis.summary?.lots_with_losses ?? 0
               }
               locked={!packetUnlocked}
+              positions={displayedAnalysis.positions}
             />
           )}
           {activeTab === 1 && (
