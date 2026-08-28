@@ -19,10 +19,13 @@ from year_close_packet import (
     PACKET_DISCLAIMER,
     PACKET_METADATA_PRODUCT,
     PACKET_PRODUCT_NAME,
+    PACKET_STORE,
     SETTLEMENT_DATE_FAQ,
     build_packet_payload,
     packet_plain_text,
     packet_requires_test_stripe,
+    purge_packet_store,
+    remember_analysis,
     render_packet_pdf,
     reset_packet_store,
     resolve_packet_stripe_secret_key,
@@ -570,3 +573,41 @@ def test_three_dollar_stripe_object_tip_does_not_unlock():
         },
     )
     assert session_grants_packet(wrong_amount, "analysis-sample-1") is False
+
+
+def test_anonymous_packet_store_expires(monkeypatch):
+    """Anonymous PACKET_STORE entries expire so guest analyses cannot accumulate forever."""
+    import year_close_packet as packet_mod
+
+    monkeypatch.setattr(packet_mod, "ANON_PACKET_TTL_SECONDS", 10)
+    remember_analysis("anon-1", "", SAMPLE_ANALYSIS)
+    assert "anon-1" in PACKET_STORE
+    PACKET_STORE["anon-1"]["created_at"] = 0
+    purge_packet_store(now=100)
+    assert "anon-1" not in PACKET_STORE
+
+
+def test_anonymous_packet_store_evicts_oldest_when_over_cap(monkeypatch):
+    """Anonymous PACKET_STORE is capped; oldest unpaid guest snapshots are evicted first."""
+    import year_close_packet as packet_mod
+
+    monkeypatch.setattr(packet_mod, "ANON_PACKET_STORE_MAX", 2)
+    remember_analysis("anon-a", "", SAMPLE_ANALYSIS)
+    remember_analysis("anon-b", "", SAMPLE_ANALYSIS)
+    remember_analysis("anon-c", "", SAMPLE_ANALYSIS)
+    assert "anon-a" not in PACKET_STORE
+    assert "anon-b" in PACKET_STORE
+    assert "anon-c" in PACKET_STORE
+
+
+def test_authenticated_packet_store_survives_anon_cap(monkeypatch):
+    """Signed-in snapshots are not evicted by the anonymous cap."""
+    import year_close_packet as packet_mod
+
+    monkeypatch.setattr(packet_mod, "ANON_PACKET_STORE_MAX", 1)
+    remember_analysis("auth-1", "test-user-123", SAMPLE_ANALYSIS)
+    remember_analysis("anon-a", "", SAMPLE_ANALYSIS)
+    remember_analysis("anon-b", "", SAMPLE_ANALYSIS)
+    assert "auth-1" in PACKET_STORE
+    assert "anon-a" not in PACKET_STORE
+    assert "anon-b" in PACKET_STORE

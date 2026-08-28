@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from io import BytesIO
 from typing import Any, Optional
 
@@ -40,10 +41,85 @@ OPTIONS_WASH_SALE_FAQ = (
 # from a client-supplied packet payload after Stripe session verification.
 PACKET_STORE: dict[str, dict[str, Any]] = {}
 
+# Guest analyses are stored under an empty user_id. Without TTL + a cap this
+# dict grows without bound on every unauthenticated POST /analyze.
+ANON_PACKET_TTL_SECONDS = 60 * 60
+ANON_PAID_PACKET_TTL_SECONDS = 24 * 60 * 60
+ANON_PACKET_STORE_MAX = 64
+
 
 def reset_packet_store() -> None:
     """Clear entitlements (tests only)."""
     PACKET_STORE.clear()
+
+
+def _packet_is_anonymous(rec: dict[str, Any]) -> bool:
+    return not rec.get("user_id")
+
+
+def _packet_created_at(rec: dict[str, Any]) -> float:
+    created = rec.get("created_at")
+    try:
+        return float(created)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _packet_is_expired(rec: dict[str, Any], now: float) -> bool:
+    ttl = (
+        ANON_PAID_PACKET_TTL_SECONDS
+        if rec.get("paid")
+        else ANON_PACKET_TTL_SECONDS
+    )
+    created = rec.get("created_at")
+    if created is None:
+        return True
+    return now - _packet_created_at(rec) > ttl
+
+
+def purge_packet_store(now: float | None = None) -> None:
+    """Expire and cap anonymous PACKET_STORE entries so memory cannot grow unbounded."""
+    current = time.time() if now is None else now
+    expired = [
+        key
+        for key, rec in list(PACKET_STORE.items())
+        if _packet_is_anonymous(rec) and _packet_is_expired(rec, current)
+    ]
+    for key in expired:
+        PACKET_STORE.pop(key, None)
+
+    anon_keys = [
+        key for key, rec in PACKET_STORE.items() if _packet_is_anonymous(rec)
+    ]
+    overflow = len(anon_keys) - ANON_PACKET_STORE_MAX
+    if overflow <= 0:
+        return
+
+    def eviction_order(key: str) -> tuple[int, float]:
+        rec = PACKET_STORE[key]
+        paid = 1 if rec.get("paid") else 0
+        return (paid, _packet_created_at(rec))
+
+    anon_keys.sort(key=eviction_order)
+    for key in anon_keys[:overflow]:
+        PACKET_STORE.pop(key, None)
+
+
+def _new_packet_record(
+    user_id: str,
+    *,
+    payload: dict[str, Any] | None,
+    paid: bool,
+    session_ids: set[str],
+    created_at: float | None = None,
+) -> dict[str, Any]:
+    return {
+        "user_id": user_id,
+        "payload": payload,
+        "paid": paid,
+        "session_ids": session_ids,
+        "created_at": created_at if created_at is not None else time.time(),
+    }
 
 
 def _as_float(value: Any, default: float = 0.0) -> float:
@@ -292,12 +368,14 @@ def render_packet_pdf(payload: dict[str, Any]) -> bytes:
 
 def remember_analysis(analysis_id: str, user_id: str, analysis: dict[str, Any]) -> None:
     existing = PACKET_STORE.get(analysis_id) or {}
-    PACKET_STORE[analysis_id] = {
-        "user_id": user_id,
-        "payload": build_packet_payload(analysis, analysis_id=analysis_id),
-        "paid": bool(existing.get("paid")),
-        "session_ids": set(existing.get("session_ids") or []),
-    }
+    PACKET_STORE[analysis_id] = _new_packet_record(
+        user_id,
+        payload=build_packet_payload(analysis, analysis_id=analysis_id),
+        paid=bool(existing.get("paid")),
+        session_ids=set(existing.get("session_ids") or []),
+        created_at=existing.get("created_at"),
+    )
+    purge_packet_store()
 
 
 def upsert_payload(analysis_id: str, user_id: str, analysis: dict[str, Any] | None) -> dict[str, Any]:
@@ -305,44 +383,51 @@ def upsert_payload(analysis_id: str, user_id: str, analysis: dict[str, Any] | No
     if rec and rec.get("payload"):
         if user_id and rec.get("user_id") in ("", None):
             rec["user_id"] = user_id
-        return rec
+        purge_packet_store()
+        return PACKET_STORE.get(analysis_id) or rec
     if analysis:
         remember_analysis(analysis_id, user_id, analysis)
         return PACKET_STORE[analysis_id]
     if rec:
-        return rec
-    PACKET_STORE[analysis_id] = {
-        "user_id": user_id,
-        "payload": None,
-        "paid": False,
-        "session_ids": set(),
-    }
+        purge_packet_store()
+        return PACKET_STORE.get(analysis_id) or rec
+    PACKET_STORE[analysis_id] = _new_packet_record(
+        user_id,
+        payload=None,
+        paid=False,
+        session_ids=set(),
+    )
+    purge_packet_store()
     return PACKET_STORE[analysis_id]
 
 
 def mark_paid(analysis_id: str, session_id: str, user_id: str = "") -> None:
     rec = PACKET_STORE.get(analysis_id)
     if rec is None:
-        PACKET_STORE[analysis_id] = {
-            "user_id": user_id,
-            "payload": None,
-            "paid": True,
-            "session_ids": {session_id} if session_id else set(),
-        }
+        PACKET_STORE[analysis_id] = _new_packet_record(
+            user_id,
+            payload=None,
+            paid=True,
+            session_ids={session_id} if session_id else set(),
+        )
+        purge_packet_store()
         return
     rec["paid"] = True
     if session_id:
         rec.setdefault("session_ids", set()).add(session_id)
     if user_id and not rec.get("user_id"):
         rec["user_id"] = user_id
+    purge_packet_store()
 
 
 def is_packet_paid(analysis_id: str) -> bool:
+    purge_packet_store()
     rec = PACKET_STORE.get(analysis_id)
     return bool(rec and rec.get("paid"))
 
 
 def get_payload(analysis_id: str) -> dict[str, Any] | None:
+    purge_packet_store()
     rec = PACKET_STORE.get(analysis_id)
     if not rec:
         return None

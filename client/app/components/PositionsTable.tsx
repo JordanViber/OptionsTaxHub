@@ -218,7 +218,7 @@ export function TaxLotsPanel({
         border: 1,
         borderColor: "divider",
         borderRadius: 2,
-        bgcolor: "grey.50",
+        bgcolor: "background.default",
       }}
     >
       <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1 }}>
@@ -543,7 +543,7 @@ function buildColumns(
  * Displays symbol, quantity, cost basis, current price, P&L, holding period,
  * short/long-term badge, wash-sale risk, and asset type.
  * Click a row (or its lot chip) to inspect individual tax lots.
- * Rows with losses are highlighted in light red, gains in light green.
+ * Rows with losses/gains use dark ink fills so cream type stays readable.
  */
 export default function PositionsTable({
   positions,
@@ -596,10 +596,10 @@ export default function PositionsTable({
             "&:hover": { backgroundColor: "action.hover" },
           },
           "& .loss-row": {
-            backgroundColor: "#ffebee",
+            backgroundColor: "error.dark",
           },
           "& .gain-row": {
-            backgroundColor: "#e8f5e9",
+            backgroundColor: "success.dark",
           },
           border: 1,
           borderColor: "divider",

@@ -1,6 +1,7 @@
 import os
 import logging
 import re
+import time
 from collections import defaultdict
 from pathlib import Path
 import uuid
@@ -92,6 +93,10 @@ SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
 SUPABASE_JWT_SECRET = os.environ.get("SUPABASE_JWT_SECRET", "")
 STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY")
 _MAX_SUPPLEMENTAL_PDF_BYTES = 20 * 1024 * 1024  # 20 MB: max size for supplemental 1099 PDF uploads
+_MAX_GUEST_CSV_BYTES = 5 * 1024 * 1024  # 5 MB: unauthenticated analyze must not file.read() unbounded
+_GUEST_ANALYZE_WINDOW_SECONDS = 60 * 60
+_GUEST_ANALYZE_MAX_PER_WINDOW = 10
+_guest_analyze_hits: dict[str, list[float]] = defaultdict(list)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -132,6 +137,11 @@ class PushNotification(BaseModel):
     badge: str = "/icons/icon-192x192.svg"
     tag: str = "default"
     data: Dict[str, Any] = {}
+
+
+class PersistGuestAnalysisBody(BaseModel):
+    filename: str = "guest-run.csv"
+    analysis: Dict[str, Any]
 
 # Enable CORS for frontend
 # In development allow any localhost port so dev servers on 3000/3001/etc work.
@@ -174,6 +184,57 @@ else:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+def reset_guest_analyze_quota() -> None:
+    """Clear guest analyze rate-limit buckets (tests only)."""
+    _guest_analyze_hits.clear()
+
+
+def _client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        first = forwarded.split(",")[0].strip()
+        if first:
+            return first
+    if request.client and request.client.host:
+        return request.client.host
+    return "unknown"
+
+
+def _enforce_guest_analyze_quota(request: Request) -> None:
+    """Simple per-IP quota so anonymous analyze cannot be used as a free compute pump."""
+    now = time.time()
+    key = _client_ip(request)
+    hits = _guest_analyze_hits[key]
+    hits[:] = [stamp for stamp in hits if now - stamp < _GUEST_ANALYZE_WINDOW_SECONDS]
+    if len(hits) >= _GUEST_ANALYZE_MAX_PER_WINDOW:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many guest analyses from this network. Sign in or try again later.",
+        )
+    hits.append(now)
+
+
+async def _read_csv_upload(file: UploadFile, *, guest: bool) -> bytes:
+    """Read the CSV. Guest uploads are capped so file.read() is never unbounded."""
+    if not guest:
+        return await file.read()
+
+    declared = getattr(file, "size", None)
+    if isinstance(declared, int) and declared > _MAX_GUEST_CSV_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail="CSV is too large for a guest analysis. Maximum size is 5 MB.",
+        )
+
+    contents = await file.read(_MAX_GUEST_CSV_BYTES + 1)
+    if len(contents) > _MAX_GUEST_CSV_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail="CSV is too large for a guest analysis. Maximum size is 5 MB.",
+        )
+    return contents
+
 
 def validate_user_id(user_id: Optional[str]) -> None:
     """
@@ -757,9 +818,14 @@ def _filter_suggestion_tax_lots(
 @app.post(
     "/api/portfolio/analyze",
     response_model=PortfolioAnalysis,
-    responses={400: {"description": "Invalid user ID format or unparseable CSV"}},
+    responses={
+        400: {"description": "Invalid user ID format or unparseable CSV"},
+        413: {"description": "Guest CSV exceeds size limit"},
+        429: {"description": "Guest analyze quota exceeded"},
+    },
 )
 async def analyze_portfolio(
+    request: Request,
     file: Annotated[UploadFile, File()],
     supplemental_1099: Annotated[Optional[UploadFile], File()] = None,
     filing_status: Annotated[Optional[str], Query()] = "single",
@@ -776,13 +842,18 @@ async def analyze_portfolio(
 
     Authentication is optional. With a valid Supabase JWT the analysis is saved
     to the user's history. Guests still get a full analysis; it is not persisted.
+    Guest uploads are size-capped and rate-limited.
 
     DISCLAIMER: For educational/simulation purposes only — not financial or tax advice.
     """
     # Validate user_id format if provided
     validate_user_id(user_id)
 
-    contents = await file.read()
+    guest = not user_id
+    if guest:
+        _enforce_guest_analyze_quota(request)
+
+    contents = await _read_csv_upload(file, guest=guest)
     try:
         return await _run_portfolio_analysis(
             contents,
@@ -909,6 +980,36 @@ async def _run_portfolio_analysis(
     _save_history_best_effort(user_id, filename, summary, result)
 
     return result
+
+
+@app.post(
+    "/api/portfolio/history",
+    responses={
+        401: {"description": "Authentication required"},
+        503: {"description": "Could not save analysis history"},
+    },
+)
+async def persist_portfolio_history(
+    body: PersistGuestAnalysisBody,
+    user_id: Annotated[str, Depends(get_current_user)],
+):
+    """Save a guest (or restored) analysis into the signed-in user's history."""
+    validate_user_id(user_id)
+    analysis = body.analysis or {}
+    summary = analysis.get("summary") if isinstance(analysis.get("summary"), dict) else {}
+    filename = Path(body.filename or "guest-run.csv").name.strip() or "guest-run.csv"
+    saved = save_analysis_history(
+        user_id=user_id,
+        filename=filename[:255],
+        summary=summary,
+        result_data=analysis,
+    )
+    if not saved:
+        raise HTTPException(
+            status_code=503,
+            detail="Could not save analysis history",
+        )
+    return saved
 
 
 @app.get(

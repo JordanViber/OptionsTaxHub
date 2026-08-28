@@ -25,6 +25,7 @@ client = TestClient(main.app)
 
 def setup_function():
     main.push_subscriptions.clear()
+    main.reset_guest_analyze_quota()
 
 
 def test_health():
@@ -735,6 +736,104 @@ def test_analyze_portfolio_allows_unauthenticated(monkeypatch):
 def test_save_history_best_effort_skips_anonymous():
     """Anonymous analyses are not persisted."""
     main._save_history_best_effort("", "guest.csv", None, None)
+
+
+def test_guest_analyze_rejects_oversize_csv(monkeypatch):
+    """Unauthenticated analyze must 413 before unbounded file.read()."""
+    monkeypatch.setattr(main, "_MAX_GUEST_CSV_BYTES", 64)
+    parse_called = {"value": False}
+
+    def _should_not_parse(_content):
+        parse_called["value"] = True
+        raise AssertionError("parse_csv must not run for an oversize guest CSV")
+
+    monkeypatch.setattr("main.parse_csv", _should_not_parse)
+    main.app.dependency_overrides.pop(get_optional_user, None)
+    try:
+        response = client.post(
+            "/api/portfolio/analyze",
+            files={"file": ("huge.csv", b"a" * 65, "text/csv")},
+        )
+    finally:
+        main.app.dependency_overrides[get_optional_user] = mock_get_current_user
+
+    assert response.status_code == 413
+    assert "too large" in response.json()["detail"].lower()
+    assert parse_called["value"] is False
+
+
+def test_guest_analyze_quota_returns_429(monkeypatch):
+    """Unauthenticated analyze is rate-limited per client IP."""
+    _stub_analyze_network(monkeypatch)
+    monkeypatch.setattr(main, "_GUEST_ANALYZE_MAX_PER_WINDOW", 2)
+    sample_path = (
+        Path(__file__).resolve().parents[2]
+        / "client"
+        / "public"
+        / "sample-robinhood-transactions.csv"
+    )
+    csv_bytes = sample_path.read_bytes()
+    main.app.dependency_overrides.pop(get_optional_user, None)
+    try:
+        first = client.post(
+            "/api/portfolio/analyze",
+            files={"file": (sample_path.name, csv_bytes, "text/csv")},
+        )
+        second = client.post(
+            "/api/portfolio/analyze",
+            files={"file": (sample_path.name, csv_bytes, "text/csv")},
+        )
+        third = client.post(
+            "/api/portfolio/analyze",
+            files={"file": (sample_path.name, csv_bytes, "text/csv")},
+        )
+    finally:
+        main.app.dependency_overrides[get_optional_user] = mock_get_current_user
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert third.status_code == 429
+    assert "too many guest analyses" in third.json()["detail"].lower()
+
+
+def test_persist_guest_analysis_saves_history(monkeypatch):
+    """Signed-in POST /api/portfolio/history stores a guest snapshot."""
+    saved = {}
+
+    def fake_save(**kwargs):
+        saved.update(kwargs)
+        return {"id": "hist-guest-1", "filename": kwargs["filename"]}
+
+    monkeypatch.setattr("main.save_analysis_history", fake_save)
+    response = client.post(
+        "/api/portfolio/history",
+        json={
+            "filename": "sample-robinhood-transactions.csv",
+            "analysis": {
+                "analysis_id": "guest-abc",
+                "summary": {"positions_count": 3, "total_market_value": 1000},
+            },
+        },
+    )
+    assert response.status_code == 200
+    assert saved["user_id"] == "test-user-123"
+    assert saved["filename"] == "sample-robinhood-transactions.csv"
+    assert saved["summary"]["positions_count"] == 3
+    assert saved["result_data"]["analysis_id"] == "guest-abc"
+
+
+def test_persist_guest_analysis_requires_auth():
+    """Guest history persist must not work without a signed-in user."""
+    main.app.dependency_overrides.pop(get_current_user, None)
+    try:
+        response = client.post(
+            "/api/portfolio/history",
+            json={"filename": "guest-run.csv", "analysis": {"summary": {}}},
+        )
+    finally:
+        main.app.dependency_overrides[get_current_user] = mock_get_current_user
+
+    assert response.status_code == 401
 
 
 def test_analyze_portfolio_ai_failure_adds_warning(monkeypatch):
