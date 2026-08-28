@@ -396,9 +396,9 @@ def _add_lot(
         asset_type=resolved_type,
         contract_label=txn.description or None,
         is_short_position=is_short_position,
-        # Seed option current_price with last-known premium so market_value is
-        # non-None until a live option quote can be fetched.
-        current_price=txn.price if resolved_type == AssetType.OPTION else None,
+        # Seed current_price with the fill so market_value is non-None until a
+        # live quote arrives (options: last premium; stock: purchase price).
+        current_price=txn.price,
     )
     if symbol not in open_lots:
         open_lots[symbol] = []
