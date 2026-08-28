@@ -1,7 +1,9 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fireEvent, render, screen } from "@testing-library/react";
-import PositionsTable from "../../app/components/PositionsTable";
+import PositionsTable, {
+  getPositionHarvestLabel,
+} from "../../app/components/PositionsTable";
 import type { Position, TaxLot, WashSaleFlag } from "@/lib/types";
 
 // Mock MUI DataGrid to avoid license warnings and simplify testing
@@ -946,5 +948,40 @@ describe("PositionsTable", () => {
       expect(screen.queryByText(/Replacement-lot basis bump/i)).not.toBeInTheDocument();
       expect(screen.getByTestId("tax-lot-MSFT-0")).toHaveTextContent("Jun 2, 2025");
     });
+  });
+});
+
+describe("getPositionHarvestLabel", () => {
+  const base: Position = {
+    symbol: "TSLA",
+    quantity: 16,
+    avg_cost_basis: 350,
+    total_cost_basis: 5600,
+    current_price: 320,
+    market_value: 5120,
+    unrealized_pnl: -480,
+    unrealized_pnl_pct: -8.6,
+    earliest_purchase_date: "2026-08-27",
+    holding_period_days: 1,
+    is_long_term: false,
+    asset_type: "stock",
+    tax_lots: [],
+    wash_sale_risk: false,
+  };
+
+  it("labels a losing position as a harvest candidate", () => {
+    expect(getPositionHarvestLabel(base)).toBe("Candidate");
+  });
+
+  it("labels a losing wash-risk position as wait", () => {
+    expect(getPositionHarvestLabel({ ...base, wash_sale_risk: true })).toBe(
+      "Wait",
+    );
+  });
+
+  it("returns null for a gain", () => {
+    expect(
+      getPositionHarvestLabel({ ...base, unrealized_pnl: 200 }),
+    ).toBeNull();
   });
 });

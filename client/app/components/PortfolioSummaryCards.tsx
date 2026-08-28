@@ -21,6 +21,12 @@ import type { PortfolioSummary, RealizedSummary } from "@/lib/types";
 
 interface PortfolioSummaryCardsProps {
   summary: PortfolioSummary;
+  preview?: {
+    locked: boolean;
+    candidateCount: number;
+    openLossTotal: number;
+    potentialTaxSavings: number;
+  };
 }
 
 /**
@@ -185,12 +191,34 @@ function RealizedCard({ realized }: Readonly<{ realized: RealizedSummary }>) {
  */
 export default function PortfolioSummaryCards({
   summary,
+  preview,
 }: Readonly<PortfolioSummaryCardsProps>) {
   const pnlColor = summary.total_unrealized_pnl >= 0 ? "#7a9e84" : "#c46a58";
   const pnlSign = summary.total_unrealized_pnl >= 0 ? "+" : "";
   const hasRealized = !!summary.realized_summary;
   const savingsColor =
     summary.wash_sale_flags_count > 0 ? "#c4a36a" : "#7a9e84";
+  const showLossPreview =
+    Boolean(preview?.locked) &&
+    (preview?.candidateCount ?? 0) > 0 &&
+    summary.estimated_tax_savings <= 0;
+  let heroValue = summary.estimated_tax_savings;
+  if (showLossPreview) {
+    heroValue = preview?.openLossTotal ?? 0;
+  } else if (preview?.locked && (preview.potentialTaxSavings ?? 0) > 0) {
+    heroValue = preview.potentialTaxSavings;
+  }
+  const heroLabel = showLossPreview ? "Open losses to review" : "Est. Tax Savings";
+  const heroColor = showLossPreview ? "#c46a58" : savingsColor;
+  const harvestableValue =
+    preview?.locked && (preview.openLossTotal ?? 0) > summary.total_harvestable_losses
+      ? preview.openLossTotal
+      : summary.total_harvestable_losses;
+  const harvestableSubtitle = `${
+    preview?.locked
+      ? preview.candidateCount || summary.lots_with_losses
+      : summary.lots_with_losses
+  } lots with losses`;
 
   return (
     <Box sx={{ display: "grid", gap: 2 }}>
@@ -206,7 +234,7 @@ export default function PortfolioSummaryCards({
               fontFamily: "var(--font-mono), 'IBM Plex Mono', monospace",
             }}
           >
-            Est. Tax Savings
+            {heroLabel}
           </Typography>
           <Typography
             sx={{
@@ -216,19 +244,24 @@ export default function PortfolioSummaryCards({
               fontWeight: 600,
               letterSpacing: "-0.03em",
               lineHeight: 1,
-              color: savingsColor,
+              color: heroColor,
             }}
           >
-            {formatCurrency(summary.estimated_tax_savings)}
+            {formatCurrency(heroValue)}
           </Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1.5 }}>
-            Federal harvest still available from{" "}
-            {formatCurrency(summary.total_harvestable_losses)} of losing lots.
+            {showLossPreview
+              ? `${preview?.candidateCount ?? 0} lots with unrealized losses. Unlock the $49 plan for sell instructions and what to wait on.`
+              : `Federal harvest still available from ${formatCurrency(
+                  harvestableValue,
+                )} of losing lots.`}
           </Typography>
           <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
             {summary.wash_sale_flags_count > 0
               ? `${summary.wash_sale_flags_count} wash-sale warning(s)`
-              : "From harvesting losses"}
+              : showLossPreview
+                ? "Preview — recipes stay in the packet"
+                : "From harvesting losses"}
           </Typography>
         </CardContent>
       </Card>
@@ -257,8 +290,8 @@ export default function PortfolioSummaryCards({
         <Grid size={{ xs: 12, sm: 6, md: hasRealized ? 3 : 4 }}>
           <MetricCard
             title="Harvestable Losses"
-            value={formatCurrency(summary.total_harvestable_losses)}
-            subtitle={`${summary.lots_with_losses} lots with losses`}
+            value={formatCurrency(harvestableValue)}
+            subtitle={harvestableSubtitle}
             icon={<LossIcon />}
             color="#c46a58"
           />

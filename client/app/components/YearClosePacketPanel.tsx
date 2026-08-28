@@ -283,6 +283,7 @@ export default function YearClosePacketPanel({
   return (
     <Box
       data-testid="year-close-packet-panel"
+      id="year-close-packet"
       className="hairline"
       sx={{
         borderRadius: 2,
