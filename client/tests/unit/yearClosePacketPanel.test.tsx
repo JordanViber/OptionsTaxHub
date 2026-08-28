@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import YearClosePacketPanel, {
-  YEAR_CLOSE_PACKET_COPY,
+  PACKET_CHECKOUT_CANCELED_COPY,
+  PACKET_CHECKOUT_INFLIGHT_KEY,
   YEAR_CLOSE_PACKET_TITLE,
 } from "../../app/components/YearClosePacketPanel";
 import type { PortfolioAnalysis } from "../../lib/types";
@@ -54,17 +55,29 @@ const analysis: PortfolioAnalysis = {
 };
 
 describe("YearClosePacketPanel", () => {
+  const store: Record<string, string> = {};
+
   beforeEach(() => {
     mockFetch.mockReset();
+    for (const key of Object.keys(store)) {
+      delete store[key];
+    }
     Object.defineProperty(globalThis, "sessionStorage", {
       value: {
-        getItem: jest.fn(() => null),
-        setItem: jest.fn(),
-        removeItem: jest.fn(),
-        clear: jest.fn(),
+        getItem: jest.fn((key: string) => store[key] ?? null),
+        setItem: jest.fn((key: string, value: string) => {
+          store[key] = value;
+        }),
+        removeItem: jest.fn((key: string) => {
+          delete store[key];
+        }),
+        clear: jest.fn(() => {
+          for (const key of Object.keys(store)) delete store[key];
+        }),
       },
       writable: true,
     });
+    window.history.replaceState(null, "", "/dashboard");
     globalThis.URL.createObjectURL = jest.fn(() => "blob:packet");
     globalThis.URL.revokeObjectURL = jest.fn();
   });
@@ -117,5 +130,54 @@ describe("YearClosePacketPanel", () => {
         /Pay \$49 to download the year-close packet/i,
       );
     });
+  });
+
+  it("releases the Pay spinner when returning from a closed Stripe checkout", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          checkout_url: "https://checkout.stripe.com/c/pay/cs_test_packet",
+        }),
+    });
+
+    render(<YearClosePacketPanel analysis={analysis} />);
+    const pay = screen.getByRole("button", { name: /Pay \$49/i });
+    fireEvent.click(pay);
+
+    await waitFor(() => {
+      expect(pay).toBeDisabled();
+    });
+    expect(store[PACKET_CHECKOUT_INFLIGHT_KEY]).toBe("analysis-1");
+
+    fireEvent(window, new Event("pageshow"));
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
+    });
+    expect(store[PACKET_CHECKOUT_INFLIGHT_KEY]).toBeUndefined();
+  });
+
+  it("treats Stripe cancel_url as a closed checkout, not a hang", async () => {
+    window.history.replaceState(null, "", "/dashboard?packet_canceled=1");
+    render(<YearClosePacketPanel analysis={analysis} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("packet-checkout-canceled")).toHaveTextContent(
+        PACKET_CHECKOUT_CANCELED_COPY,
+      );
+    });
+    expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
+  });
+
+  it("clears a leftover inflight flag when the dashboard remounts after closing Stripe", async () => {
+    store[PACKET_CHECKOUT_INFLIGHT_KEY] = "analysis-1";
+    render(<YearClosePacketPanel analysis={analysis} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("packet-checkout-canceled")).toBeInTheDocument();
+    });
+    expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
+    expect(store[PACKET_CHECKOUT_INFLIGHT_KEY]).toBeUndefined();
   });
 });
