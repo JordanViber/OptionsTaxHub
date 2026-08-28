@@ -26,6 +26,7 @@ from typing import List, Dict, Any
 from pywebpush import webpush, WebPushException
 from pydantic import BaseModel, ValidationError
 
+from cors_origins import cors_allowed_origins
 from auth import get_current_user, get_optional_user, enforce_ownership
 from models import (
     AssetType,
@@ -157,28 +158,15 @@ if FRONTEND_URL.startswith("http://localhost"):
         allow_headers=["*"],
     )
 else:
-    # Build a set of allowed origins that covers both the bare domain and the
-    # www. subdomain prefix, so a www-redirect in production doesn't break CORS.
-    _allowed_origins: list[str] = [FRONTEND_URL]
-    try:
-        from urllib.parse import urlparse as _urlparse
-        _parsed = _urlparse(FRONTEND_URL)
-        _host = _parsed.hostname or ""
-        if _host.startswith("www."):
-            # e.g. https://www.optionstaxhub.com -> also allow https://optionstaxhub.com
-            _bare = f"{_parsed.scheme}://{_host[4:]}"
-            if _parsed.port:
-                _bare += f":{_parsed.port}"
-            _allowed_origins.append(_bare)
-        else:
-            # e.g. https://optionstaxhub.com -> also allow https://www.optionstaxhub.com
-            _www = f"{_parsed.scheme}://www.{_host}"
-            if _parsed.port:
-                _www += f":{_parsed.port}"
-            _allowed_origins.append(_www)
-    except Exception:
-        pass  # If URL parsing fails, fall back to the single origin
-
+    # FRONTEND_URL plus www/apex twins, CORS_ORIGINS extras, and known public
+    # hosts (www.optionstaxhub.com + Render client URLs). Do not derive the
+    # allow-list from FRONTEND_URL alone — prod used the onrender hostname
+    # while users load the custom domain, which omitted ACAO and broke analyze.
+    _allowed_origins = cors_allowed_origins(
+        FRONTEND_URL,
+        extra_origins=os.environ.get("CORS_ORIGINS", ""),
+    )
+    logger.info("CORS allow_origins=%s", _allowed_origins)
     app.add_middleware(  # NOSONAR python:S8414
         CORSMiddleware,
         allow_origins=_allowed_origins,

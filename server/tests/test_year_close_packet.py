@@ -378,6 +378,14 @@ def test_staging_uses_test_key_not_live(monkeypatch):
     assert reason == "test"
 
 
+def test_custom_domain_frontend_uses_live_stripe(monkeypatch):
+    monkeypatch.delenv("STRIPE_FORCE_TEST_MODE", raising=False)
+    monkeypatch.setenv("FRONTEND_URL", "https://www.optionstaxhub.com")
+    monkeypatch.delenv("RENDER_SERVICE_NAME", raising=False)
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
+    assert packet_requires_test_stripe() is False
+
+
 def test_post_download_rebuilds_from_analysis_json(monkeypatch):
     _test_stripe_env(monkeypatch)
     paid_session = SimpleNamespace(
