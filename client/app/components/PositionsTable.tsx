@@ -369,61 +369,64 @@ function buildColumns(
     {
       field: "symbol",
       headerName: "Position",
-      width: 240,
+      width: 260,
       renderCell: (params) => {
         const lotCount = params.row.tax_lots?.length ?? 0;
         const rowId = getPositionRowId(params.row);
         const isExpanded = expandedId === rowId;
+        const label = params.row.display_label ?? params.value;
         return (
-          <Box sx={{ minWidth: 0, display: "flex", alignItems: "center", gap: 0.75 }}>
+          <Box
+            sx={{
+              minWidth: 0,
+              width: "100%",
+              height: "100%",
+              display: "flex",
+              alignItems: "center",
+              gap: 0.75,
+            }}
+          >
             {lotCount > 0 ? (
               isExpanded ? (
-                <CollapseIcon sx={{ fontSize: 18, color: "text.secondary" }} />
-              ) : (
-                <ExpandIcon sx={{ fontSize: 18, color: "text.secondary" }} />
-              )
-            ) : null}
-            <Box sx={{ minWidth: 0 }}>
-              <Typography variant="body2" sx={{ fontWeight: 700 }} noWrap>
-                {params.row.display_label ?? params.value}
-              </Typography>
-              {params.row.display_label &&
-                params.row.display_label !== params.value && (
-                  <Typography variant="caption" color="text.secondary" noWrap>
-                    {params.value}
-                  </Typography>
-                )}
-              {lotCount > 0 && (
-                <Chip
-                  label={`${lotCount} lot${lotCount === 1 ? "" : "s"}`}
-                  size="small"
-                  variant="outlined"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onToggle(params.row);
-                  }}
-                  sx={{ height: 18, fontSize: "0.65rem", mt: 0.25 }}
+                <CollapseIcon
+                  sx={{ fontSize: 18, color: "text.secondary", flexShrink: 0 }}
                 />
+              ) : (
+                <ExpandIcon
+                  sx={{ fontSize: 18, color: "text.secondary", flexShrink: 0 }}
+                />
+              )
+            ) : (
+              <Box sx={{ width: 18, flexShrink: 0 }} aria-hidden />
+            )}
+            <Typography
+              variant="body2"
+              sx={{ fontWeight: 700, minWidth: 0 }}
+              noWrap
+            >
+              {label}
+            </Typography>
+            {lotCount > 0 && (
+              <Chip
+                label={`${lotCount} lot${lotCount === 1 ? "" : "s"}`}
+                size="small"
+                variant="outlined"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onToggle(params.row);
+                }}
+                sx={{ height: 20, fontSize: "0.65rem", flexShrink: 0 }}
+              />
+            )}
+            {params.row.manual_review_required &&
+              params.row.manual_review_reason && (
+                <Tooltip title={params.row.manual_review_reason}>
+                  <WarnIcon
+                    aria-label={`Manual review: ${params.row.manual_review_reason}`}
+                    sx={{ color: "warning.main", fontSize: 16, flexShrink: 0 }}
+                  />
+                </Tooltip>
               )}
-              {params.row.manual_review_required &&
-                params.row.manual_review_reason && (
-                  <Tooltip title={params.row.manual_review_reason}>
-                    <Box
-                      sx={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 0.5,
-                        minWidth: 0,
-                      }}
-                    >
-                      <WarnIcon sx={{ color: "warning.main", fontSize: 14 }} />
-                      <Typography variant="caption" color="warning.dark" noWrap>
-                        Manual review
-                      </Typography>
-                    </Box>
-                  </Tooltip>
-                )}
-            </Box>
           </Box>
         );
       },
@@ -581,7 +584,7 @@ export default function PositionsTable({
             sortModel: [{ field: "unrealized_pnl", sort: "asc" }],
           },
         }}
-        rowHeight={48}
+        rowHeight={52}
         columnHeaderHeight={40}
         pageSizeOptions={[10, 25, 50]}
         disableRowSelectionOnClick
@@ -589,7 +592,10 @@ export default function PositionsTable({
         sx={{
           fontSize: "0.8rem",
           "& .MuiDataGrid-cell": {
-            py: 0.5,
+            display: "flex",
+            alignItems: "center",
+            py: 0,
+            overflow: "hidden",
           },
           "& .MuiDataGrid-row": {
             cursor: "pointer",

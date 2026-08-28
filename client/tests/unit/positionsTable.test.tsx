@@ -198,9 +198,7 @@ describe("PositionsTable", () => {
 
       render(<PositionsTable positions={[position]} />);
 
-      expect(screen.getByTestId("rendered-symbol-ASST")).toHaveTextContent(
-        "Manual review",
-      );
+      expect(screen.getByLabelText(/Manual review/i)).toBeInTheDocument();
       expect(
         screen.getByLabelText(/Recent stock split activity affected ASST/i),
       ).toBeInTheDocument();
@@ -762,6 +760,7 @@ describe("PositionsTable", () => {
       expect(
         screen.queryByTestId("tax-lots-panel-AAPL"),
       ).not.toBeInTheDocument();
+      expect(screen.getByText("2 lots")).toBeInTheDocument();
 
       fireEvent.click(screen.getByTestId("position-row-AAPL"));
 
@@ -771,6 +770,7 @@ describe("PositionsTable", () => {
       expect(screen.getAllByText("ST").length).toBeGreaterThan(0);
       expect(screen.getAllByText("LT").length).toBeGreaterThan(0);
       expect(screen.getByTestId("tax-lot-AAPL-0")).toHaveTextContent("Jul 1, 2024");
+      expect(screen.getByText("2 lots")).toBeInTheDocument();
     });
 
     it("formats YYYY-MM-DD lot dates as local calendar dates, not UTC midnight", () => {

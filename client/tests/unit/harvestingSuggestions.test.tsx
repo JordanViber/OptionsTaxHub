@@ -1,5 +1,7 @@
 import { render, screen, fireEvent } from "@testing-library/react";
-import HarvestingSuggestions from "../../app/components/HarvestingSuggestions";
+import HarvestingSuggestions, {
+  getRecommendedActionCopy,
+} from "../../app/components/HarvestingSuggestions";
 import type { HarvestingSuggestion } from "../../lib/types";
 
 const baseSuggestion: HarvestingSuggestion = {
@@ -133,6 +135,52 @@ describe("HarvestingSuggestions", () => {
 
     expect(screen.getByText("$100")).toBeInTheDocument();
     expect(screen.getByText("$25")).toBeInTheDocument();
+  });
+
+  it("states the sell-to-harvest action without expanding the card", () => {
+    const withCandidates: HarvestingSuggestion = {
+      ...baseSuggestion,
+      quantity: 40,
+      estimated_loss: 9538,
+      tax_savings_estimate: 2098,
+      replacement_candidates: [
+        {
+          symbol: "SMH",
+          name: "VanEck Semiconductor ETF",
+          reason: "Similar exposure",
+        },
+        {
+          symbol: "SOXX",
+          name: "iShares Semiconductor ETF",
+          reason: "Semiconductor index",
+        },
+      ],
+    };
+    render(<HarvestingSuggestions suggestions={[withCandidates]} />);
+
+    expect(screen.getByText("Sell to harvest")).toBeInTheDocument();
+    expect(screen.getByText("Recommended action")).toBeInTheDocument();
+    expect(
+      screen.getByText("Sell 40 AAPL to harvest this short-term loss"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/look at SMH or SOXX/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("VanEck Semiconductor ETF"),
+    ).not.toBeVisible();
+  });
+
+  it("builds wash-sale-aware action copy", () => {
+    const copy = getRecommendedActionCopy({
+      ...baseSuggestion,
+      wash_sale_risk: true,
+      estimated_loss: 300,
+      tax_savings_estimate: 66,
+    });
+    expect(copy.headline).toBe("Sell 10 AAPL to harvest this short-term loss");
+    expect(copy.detail).toMatch(/may trigger a wash sale/i);
+    expect(copy.detail).toMatch(/\$300/);
   });
 
   it("shows wash-sale risk warning when flagged", () => {
