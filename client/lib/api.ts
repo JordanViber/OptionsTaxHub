@@ -59,6 +59,24 @@ async function getAuthHeaders(): Promise<HeadersInit> {
 }
 
 /**
+ * Authorization header when a session exists; empty object for guests.
+ * Used by analyze so a CSV can run without a velvet rope.
+ */
+async function getOptionalAuthHeaders(): Promise<HeadersInit> {
+  try {
+    const session = await getSession();
+    if (!session?.access_token) {
+      return {};
+    }
+    return {
+      Authorization: `Bearer ${session.access_token}`,
+    };
+  } catch {
+    return {};
+  }
+}
+
+/**
  * API response type for legacy CSV upload
  * Backend returns parsed CSV data (first 5 rows)
  */
@@ -200,8 +218,8 @@ function analyzePortfolioPath(params: AnalyzePortfolioParams): string {
 /**
  * Upload CSV and get full portfolio analysis with tax-loss harvesting suggestions.
  *
- * Requires authentication. Calls POST /api/portfolio/analyze with JWT token.
- * Returns positions, harvesting suggestions, wash-sale flags, and summary.
+ * Authentication is optional. With a session, POST /api/portfolio/analyze includes
+ * a JWT so the run is saved to history. Guests still get a full analysis.
  */
 async function analyzePortfolio(
   params: AnalyzePortfolioParams,
@@ -213,17 +231,12 @@ async function analyzePortfolio(
   }
 
   const url = apiPath(analyzePortfolioPath(params));
-  const headers = await getAuthHeaders();
-
-  // Don't set Content-Type for FormData (browser will set it with boundary)
-  const headersForForm: HeadersInit = {
-    Authorization: headers["Authorization"],
-  };
+  const headers = await getOptionalAuthHeaders();
 
   const response = await fetch(url, {
     method: "POST",
     body: formData,
-    headers: headersForForm,
+    headers,
   });
 
   if (!response.ok) {

@@ -1,40 +1,47 @@
 "use client";
 
-import { Box, Container, Link as MuiLink, Stack } from "@mui/material";
-import { Dashboard as DashboardIcon } from "@mui/icons-material";
-import NextLink from "next/link";
+import { Box, Container, Stack, Typography } from "@mui/material";
+import Wordmark from "./Wordmark";
 import TaxDisclaimer from "./TaxDisclaimer";
 
 /**
- * Shared chrome for sign-in, sign-up, confirm-email, and password reset: home link + tax disclaimer.
+ * Shared chrome for sign-in, sign-up, confirm-email, and password reset.
  */
 export default function AuthPageShell({
   children,
-}: Readonly<{ children: React.ReactNode }>) {
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
   return (
-    <Container maxWidth="sm" sx={{ py: 6 }}>
-      <Stack spacing={3}>
-        <Box sx={{ textAlign: "center" }}>
-          <MuiLink
-            component={NextLink}
-            href="/"
-            underline="none"
-            sx={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 1,
-              color: "text.primary",
-              fontWeight: 700,
-              fontSize: "1.15rem",
-            }}
-          >
-            <DashboardIcon color="primary" />
-            OptionsTaxHub
-          </MuiLink>
-        </Box>
-        {children}
-        <TaxDisclaimer />
-      </Stack>
-    </Container>
+    <Box
+      sx={{
+        minHeight: "100vh",
+        bgcolor: "background.default",
+        position: "relative",
+        overflow: "hidden",
+      }}
+    >
+      <Box
+        className="desk-grid"
+        sx={{ pointerEvents: "none", position: "absolute", inset: 0, opacity: 0.45 }}
+      />
+      <Container maxWidth="sm" sx={{ py: 6, position: "relative", zIndex: 1 }}>
+        <Stack spacing={3}>
+          <Box sx={{ textAlign: "center" }}>
+            <Wordmark />
+            <Typography
+              variant="body2"
+              color="text.secondary"
+              sx={{ mt: 2, maxWidth: 420, mx: "auto" }}
+            >
+              Sign in keeps tax year, saved runs, and packet unlocks on the next
+              device. You can still analyze a CSV without an account.
+            </Typography>
+          </Box>
+          {children}
+          <TaxDisclaimer />
+        </Stack>
+      </Container>
+    </Box>
   );
 }

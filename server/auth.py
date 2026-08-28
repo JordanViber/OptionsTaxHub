@@ -231,3 +231,18 @@ def enforce_ownership(user_id: str, resource_owner_id: str) -> None:
             status_code=403,
             detail="You do not have permission to access this resource",
         )
+
+
+def get_optional_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(security),
+) -> str:
+    """
+    Return user_id when a valid JWT is present; otherwise an empty string.
+
+    Used by guest-usable endpoints such as portfolio analyze. History, tax
+    profile, and paid packet routes still go through get_current_user.
+    """
+    if not credentials:
+        return ""
+    return get_current_user(credentials)
+

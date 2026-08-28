@@ -219,6 +219,32 @@ describe("api hooks", () => {
       expect(call[1].headers.Authorization).toBe("Bearer mock-jwt-token");
     });
 
+    it("analyzes without Authorization when there is no session", async () => {
+      mockGetSession.mockResolvedValueOnce(null);
+      const file = new File(["content"], "test.csv", { type: "text/csv" });
+
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          positions: [],
+          suggestions: [],
+          wash_sale_flags: [],
+          summary: {},
+        }),
+      } as Response);
+
+      render(<AnalyzeComponent file={file} />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByText("Analyze"));
+
+      await waitFor(() => {
+        expect(screen.getByText("success")).toBeInTheDocument();
+      });
+
+      const guestCall = (globalThis.fetch as jest.Mock).mock.calls[0];
+      expect(guestCall[0]).toContain("/api/portfolio/analyze");
+      expect(guestCall[1].headers.Authorization).toBeUndefined();
+    });
+
     it("analyzes portfolio with optional parameters", async () => {
       const file = new File(["content"], "test.csv", { type: "text/csv" });
 

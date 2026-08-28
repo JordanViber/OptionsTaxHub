@@ -189,14 +189,12 @@ export default function YearClosePacketPanel({
   return (
     <Box
       data-testid="year-close-packet-panel"
+      className="hairline"
       sx={{
-        border: "1px solid",
-        borderColor: "primary.light",
         borderRadius: 2,
         px: 2,
         py: 1.75,
-        background:
-          "linear-gradient(180deg, rgba(232,245,233,0.55) 0%, rgba(232,245,233,0.18) 100%)",
+        bgcolor: "background.paper",
       }}
     >
       <Stack spacing={1.25}>

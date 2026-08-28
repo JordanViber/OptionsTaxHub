@@ -45,12 +45,13 @@ import {
   ExpandMore as ExpandMoreIcon,
   Logout as LogoutIcon,
   Settings as SettingsIcon,
-  Dashboard as DashboardIcon,
   History as HistoryIcon,
   Favorite as HeartIcon,
   Close as CloseIcon,
   CalendarToday as CalendarIcon,
 } from "@mui/icons-material";
+import NextLink from "next/link";
+import Wordmark from "../components/Wordmark";
 import ServiceWorkerRegistration from "../components/ServiceWorkerRegistration";
 import TaxDisclaimer from "../components/TaxDisclaimer";
 import PortfolioSummaryCards from "../components/PortfolioSummaryCards";
@@ -82,6 +83,9 @@ import type {
 } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
+
+const UPLOAD_INTENT_KEY = "oth-upload-intent";
+const LOAD_SAMPLE_KEY = "oth-load-sample";
 
 type AnalysisSource = "fresh-upload" | "saved-history" | "restored-session";
 
@@ -421,7 +425,6 @@ function Supplemental1099UploadPanel({
   analysisSource,
   hasUploadedCsv,
   canRemoveSupplement,
-  onChooseFile,
   onClearFile,
   isPending,
 }: Readonly<{
@@ -430,7 +433,7 @@ function Supplemental1099UploadPanel({
   analysisSource: AnalysisSource | null;
   hasUploadedCsv: boolean;
   canRemoveSupplement: boolean;
-  onChooseFile: () => void;
+  onChooseFile?: () => void;
   onClearFile: () => void;
   isPending: boolean;
 }>) {
@@ -464,8 +467,8 @@ function Supplemental1099UploadPanel({
         borderRadius: 3,
         p: 2,
         background: isApplied
-          ? "linear-gradient(180deg, rgba(232,245,233,0.7) 0%, rgba(232,245,233,0.28) 100%)"
-          : "linear-gradient(180deg, rgba(248,250,252,0.95) 0%, rgba(248,250,252,0.7) 100%)",
+          ? "rgba(122, 158, 132, 0.12)"
+          : "rgba(236, 234, 228, 0.03)",
       }}
     >
       <Stack spacing={1.5}>
@@ -503,9 +506,10 @@ function Supplemental1099UploadPanel({
 
         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
           <Button
+            component="label"
+            htmlFor="desk-1099-input"
             variant={displayFileName ? "outlined" : "contained"}
             size="small"
-            onClick={onChooseFile}
             disabled={isPending}
           >
             {displayFileName ? "Replace 1099 PDF" : "Add 1099 PDF"}
@@ -536,6 +540,7 @@ function ResultsSection({
   setActiveTab,
   skippedSuggestionSymbols,
   shouldPrompt1099Supplement,
+  guest,
 }: Readonly<{
   displayedAnalysis: PortfolioAnalysis;
   analysisSource: AnalysisSource | null;
@@ -546,9 +551,25 @@ function ResultsSection({
   setActiveTab: (value: number) => void;
   skippedSuggestionSymbols: string[];
   shouldPrompt1099Supplement: boolean;
+  guest?: boolean;
 }>) {
   return (
     <>
+      {guest && (
+        <Alert severity="info" variant="outlined">
+          <AlertTitle>This run lives on this device</AlertTitle>
+          Sign in to keep harvest, wash sales, and the packet for next
+          December.{" "}
+          <Button
+            component={NextLink}
+            href="/auth/signin"
+            size="small"
+            sx={{ textTransform: "none", minWidth: "auto", p: 0 }}
+          >
+            Sign in
+          </Button>
+        </Alert>
+      )}
       <Box
         sx={{
           display: "flex",
@@ -858,7 +879,8 @@ function HistoryContent({
         color="text.secondary"
         sx={{ p: 2, textAlign: "center" }}
       >
-        No past uploads yet. Upload a CSV to get started.
+        No saved runs yet. Sample analysis is not auto-saved. Sign in, then
+        save a run after you drop a CSV.
       </Typography>
     );
   }
@@ -947,6 +969,10 @@ export default function DashboardPage() {
     message: string;
     severity: "success" | "error" | "info";
   } | null>(null);
+  const [forceEmpty, setForceEmpty] = useState(false);
+  const [heldAnalysis, setHeldAnalysis] = useState<PortfolioAnalysis | null>(
+    null,
+  );
   const queryClient = useQueryClient();
 
   // Load the user's tax profile for analyze params
@@ -973,7 +999,24 @@ export default function DashboardPage() {
 
   // --- State persistence: restore analysis from sessionStorage on mount ---
   useEffect(() => {
+    let wantsUpload = false;
+    try {
+      wantsUpload = sessionStorage.getItem(UPLOAD_INTENT_KEY) === "1";
+      if (wantsUpload) {
+        sessionStorage.removeItem(UPLOAD_INTENT_KEY);
+      }
+    } catch {
+      wantsUpload = false;
+    }
+
     const saved = restoreAnalysisFromStorage();
+    if (wantsUpload) {
+      setForceEmpty(true);
+      if (saved) {
+        setHeldAnalysis(saved);
+      }
+      return;
+    }
     if (saved) {
       setLoadedAnalysis(saved);
       setAnalysisSource("restored-session");
@@ -1010,8 +1053,28 @@ export default function DashboardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [confirmedUserId]);
 
-  const handleUploadClick = () => {
-    fileInputRef.current?.click();
+  const handleOpenSavedRuns = () => {
+    if (!user) {
+      router.push("/auth/signin?reason=runs");
+      return;
+    }
+    setHistoryOpen(true);
+  };
+
+  const handleOpenSettings = () => {
+    if (!user) {
+      router.push("/auth/signin?reason=profile");
+      return;
+    }
+    router.push("/settings");
+  };
+
+  const handleKeepCurrentRun = () => {
+    if (heldAnalysis) {
+      setLoadedAnalysis(heldAnalysis);
+      setAnalysisSource("restored-session");
+    }
+    setForceEmpty(false);
   };
 
   const runPortfolioAnalysis = (
@@ -1029,6 +1092,7 @@ export default function DashboardPage() {
       },
       {
         onSuccess: () => {
+          setForceEmpty(false);
           queryClient.invalidateQueries({
             queryKey: ["portfolio-history", user?.id],
           });
@@ -1037,7 +1101,79 @@ export default function DashboardPage() {
     );
   };
 
+  const handleLoadSample = () => {
+    void (async () => {
+      try {
+        const response = await fetch("/sample-robinhood-transactions.csv");
+        if (!response.ok) {
+          throw new Error("Could not load the sample CSV.");
+        }
+        const blob = await response.blob();
+        const file = new File([blob], "sample-robinhood-transactions.csv", {
+          type: "text/csv",
+        });
+        clearCurrentAnalysisView({
+          setLoadedAnalysis,
+          setAnalysisSource,
+        });
+        setForceEmpty(false);
+        runPortfolioAnalysis(file);
+      } catch {
+        setSnackbar({
+          message: "Could not load the sample CSV.",
+          severity: "error",
+        });
+      }
+    })();
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    let wantsSample = false;
+    try {
+      wantsSample = sessionStorage.getItem(LOAD_SAMPLE_KEY) === "1";
+      if (wantsSample) {
+        sessionStorage.removeItem(LOAD_SAMPLE_KEY);
+      }
+    } catch {
+      wantsSample = false;
+    }
+    if (!wantsSample) {
+      return undefined;
+    }
+
+    void (async () => {
+      try {
+        const response = await fetch("/sample-robinhood-transactions.csv");
+        if (!response.ok || cancelled) {
+          return;
+        }
+        const blob = await response.blob();
+        const file = new File([blob], "sample-robinhood-transactions.csv", {
+          type: "text/csv",
+        });
+        if (cancelled) {
+          return;
+        }
+        analyzePortfolio({
+          file,
+          filingStatus: taxProfile?.filing_status || "single",
+          estimatedIncome: taxProfile?.estimated_annual_income || 75000,
+          taxYear: taxProfile?.tax_year || 2026,
+        });
+      } catch {
+        // Sample fetch failed; the empty desk still offers the button.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setForceEmpty(false);
     handleCsvInputChange({
       event: e,
       clearAnalysis: () =>
@@ -1156,16 +1292,12 @@ export default function DashboardPage() {
     if (authLoading) {
       return;
     }
-    if (!user) {
-      router.push("/auth/signin");
-      return;
-    }
-    if (!emailConfirmed) {
+    if (user && !emailConfirmed) {
       router.push("/auth/confirm-email");
     }
   }, [authLoading, user, emailConfirmed, router]);
 
-  if (authLoading || !user || !emailConfirmed) {
+  if (authLoading) {
     return (
       <Box
         sx={{
@@ -1180,18 +1312,33 @@ export default function DashboardPage() {
     );
   }
 
-  const firstName = user.user_metadata?.first_name as string | null;
-  const lastName = user.user_metadata?.last_name as string | null;
+  if (user && !emailConfirmed) {
+    return (
+      <Box
+        sx={{
+          display: "flex",
+          justifyContent: "center",
+          alignItems: "center",
+          height: "100vh",
+        }}
+      >
+        <CircularProgress />
+      </Box>
+    );
+  }
+
+  const firstName = user?.user_metadata?.first_name as string | null;
+  const lastName = user?.user_metadata?.last_name as string | null;
   const fullName = [firstName, lastName].filter(Boolean).join(" ");
   const displayNameFromProfile =
-    (user.user_metadata?.display_name as string | null) ||
-    (user.user_metadata?.full_name as string | null);
+    (user?.user_metadata?.display_name as string | null) ||
+    (user?.user_metadata?.full_name as string | null);
   const displayName =
-    displayNameFromProfile || fullName || user.email || "Account";
+    displayNameFromProfile || fullName || user?.email || "Account";
   const avatarLetter = displayName[0].toUpperCase();
 
   // displayedAnalysis is computed above (near sessionStorage effects)
-  const hasResults = !!displayedAnalysis;
+  const hasResults = !!displayedAnalysis && !forceEmpty;
   const confidenceSummary = displayedAnalysis
     ? getConfidenceSummary(displayedAnalysis)
     : null;
@@ -1217,21 +1364,10 @@ export default function DashboardPage() {
       <ServiceWorkerRegistration />
 
       {/* Header AppBar */}
-      <AppBar position="static">
+      <AppBar position="static" sx={{ zIndex: 40 }}>
         <Toolbar sx={{ px: { xs: 1, sm: 2 }, gap: { xs: 0.25, sm: 0.5 } }}>
-          <DashboardIcon sx={{ mr: 0.5 }} />
-          <Typography
-            variant="h6"
-            component="div"
-            sx={{
-              flexGrow: 1,
-              fontWeight: 700,
-              fontSize: { xs: "1rem", sm: "1.25rem" },
-              whiteSpace: "nowrap",
-            }}
-          >
-            OptionsTaxHub
-          </Typography>
+          <Wordmark href="/dashboard" />
+          <Box sx={{ flexGrow: 1 }} />
 
           {/* Tip — icon-only on mobile */}
           <IconButton
@@ -1240,11 +1376,11 @@ export default function DashboardPage() {
             aria-label="Tip"
             sx={{ display: { xs: "inline-flex", sm: "none" } }}
           >
-            <HeartIcon sx={{ color: "#ff6b6b" }} />
+            <HeartIcon sx={{ color: "#c46a58" }} />
           </IconButton>
           <Button
             color="inherit"
-            startIcon={<HeartIcon sx={{ color: "#ff6b6b" }} />}
+            startIcon={<HeartIcon sx={{ color: "#c46a58" }} />}
             onClick={() => setTipJarOpen(true)}
             sx={{
               textTransform: "none",
@@ -1255,11 +1391,11 @@ export default function DashboardPage() {
             Tip
           </Button>
 
-          {/* History — icon-only on mobile */}
+          {/* Saved runs — icon-only on mobile */}
           <IconButton
             color="inherit"
-            onClick={() => setHistoryOpen(true)}
-            aria-label="History"
+            onClick={handleOpenSavedRuns}
+            aria-label="Saved runs"
             sx={{ display: { xs: "inline-flex", sm: "none" } }}
           >
             <HistoryIcon />
@@ -1267,20 +1403,20 @@ export default function DashboardPage() {
           <Button
             color="inherit"
             startIcon={<HistoryIcon />}
-            onClick={() => setHistoryOpen(true)}
+            onClick={handleOpenSavedRuns}
             sx={{
               textTransform: "none",
               mr: 0.5,
               display: { xs: "none", sm: "inline-flex" },
             }}
           >
-            History
+            Saved runs
           </Button>
 
           {/* Settings — icon-only on mobile */}
           <IconButton
             color="inherit"
-            onClick={() => router.push("/settings")}
+            onClick={handleOpenSettings}
             aria-label="Settings"
             sx={{ display: { xs: "inline-flex", sm: "none" } }}
           >
@@ -1289,7 +1425,7 @@ export default function DashboardPage() {
           <Button
             color="inherit"
             startIcon={<SettingsIcon />}
-            onClick={() => router.push("/settings")}
+            onClick={handleOpenSettings}
             sx={{
               textTransform: "none",
               mr: 0.5,
@@ -1299,40 +1435,72 @@ export default function DashboardPage() {
             Settings
           </Button>
 
-          {/* Avatar — name hidden on mobile */}
-          <Button
-            color="inherit"
-            onClick={(e) => setMenuAnchor(e.currentTarget)}
-            sx={{
-              textTransform: "none",
-              minWidth: "auto",
-              px: { xs: 0.5, sm: 1 },
-            }}
-          >
-            <Avatar sx={{ width: 32, height: 32 }}>{avatarLetter}</Avatar>
-            <Typography
-              component="span"
-              sx={{ ml: 1, display: { xs: "none", sm: "inline" } }}
+          {user ? (
+            <>
+              <Button
+                color="inherit"
+                onClick={(e) => setMenuAnchor(e.currentTarget)}
+                sx={{
+                  textTransform: "none",
+                  minWidth: "auto",
+                  px: { xs: 0.5, sm: 1 },
+                }}
+              >
+                <Avatar sx={{ width: 32, height: 32 }}>{avatarLetter}</Avatar>
+                <Typography
+                  component="span"
+                  sx={{ ml: 1, display: { xs: "none", sm: "inline" } }}
+                >
+                  {displayName}
+                </Typography>
+              </Button>
+              <Menu
+                anchorEl={menuAnchor}
+                open={Boolean(menuAnchor)}
+                onClose={() => setMenuAnchor(null)}
+                slotProps={{
+                  paper: { sx: { zIndex: 50 } },
+                }}
+              >
+                <MenuItem disabled>
+                  <Typography variant="body2">
+                    {displayName}
+                    {user.email ? ` (${user.email})` : ""}
+                  </Typography>
+                </MenuItem>
+                <MenuItem
+                  onClick={() => {
+                    setMenuAnchor(null);
+                    handleOpenSavedRuns();
+                  }}
+                >
+                  Saved runs
+                </MenuItem>
+                <MenuItem
+                  onClick={() => {
+                    setMenuAnchor(null);
+                    handleOpenSettings();
+                  }}
+                >
+                  Tax profile
+                </MenuItem>
+                <MenuItem onClick={handleSignOut}>
+                  <LogoutIcon sx={{ mr: 1 }} />
+                  Sign Out
+                </MenuItem>
+              </Menu>
+            </>
+          ) : (
+            <Button
+              component={NextLink}
+              href="/auth/signin"
+              variant="contained"
+              size="small"
+              sx={{ ml: 0.5 }}
             >
-              {displayName}
-            </Typography>
-          </Button>
-          <Menu
-            anchorEl={menuAnchor}
-            open={Boolean(menuAnchor)}
-            onClose={() => setMenuAnchor(null)}
-          >
-            <MenuItem disabled>
-              <Typography variant="body2">
-                {displayName}
-                {user.email ? ` (${user.email})` : ""}
-              </Typography>
-            </MenuItem>
-            <MenuItem onClick={handleSignOut}>
-              <LogoutIcon sx={{ mr: 1 }} />
-              Sign Out
-            </MenuItem>
-          </Menu>
+              Sign In
+            </Button>
+          )}
         </Toolbar>
       </AppBar>
 
@@ -1348,6 +1516,7 @@ export default function DashboardPage() {
         <Box sx={{ width: 300, pt: 2 }}>
           <Typography
             variant="h6"
+            component="h2"
             sx={{
               px: 2,
               pb: 1,
@@ -1357,7 +1526,7 @@ export default function DashboardPage() {
               gap: 1,
             }}
           >
-            <HistoryIcon /> Upload History
+            <HistoryIcon /> Saved runs
           </Typography>
           <Divider />
           <HistoryContent
@@ -1438,15 +1607,26 @@ export default function DashboardPage() {
                   </Typography>
                 </Box>
 
-                {/* Upload area */}
+                {/* Upload area — native label, not programmatic input.click() */}
+                <input
+                  id="desk-csv-input"
+                  ref={fileInputRef}
+                  className="file-input-hidden"
+                  type="file"
+                  accept=".csv"
+                  onChange={handleFileChange}
+                />
                 <Box
+                  component="label"
+                  htmlFor={isPending ? undefined : "desk-csv-input"}
                   sx={{
-                    border: "2px dashed",
-                    borderColor: isPending ? "grey.400" : "primary.main",
+                    border: "1px dashed",
+                    borderColor: isPending ? "divider" : "primary.main",
                     borderRadius: 2,
                     p: 3,
                     textAlign: "center",
                     cursor: isPending ? "default" : "pointer",
+                    display: "block",
                     transition: "all 0.2s",
                     opacity: isPending ? 0.6 : 1,
                     "& *": {
@@ -1456,20 +1636,10 @@ export default function DashboardPage() {
                       ? {}
                       : {
                           backgroundColor: "action.hover",
-                          borderColor: "primary.dark",
+                          borderColor: "primary.light",
                         },
                   }}
-                  onClick={isPending ? undefined : handleUploadClick}
-                  role={isPending ? undefined : "button"}
-                  tabIndex={isPending ? undefined : 0}
                 >
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept=".csv"
-                    onChange={handleFileChange}
-                    style={{ display: "none" }}
-                  />
                   <CloudUploadIcon
                     sx={{ fontSize: 40, color: "primary.main", mb: 0.5 }}
                   />
@@ -1484,11 +1654,12 @@ export default function DashboardPage() {
                 </Box>
 
                 <input
+                  id="desk-1099-input"
                   ref={supplemental1099InputRef}
+                  className="file-input-hidden"
                   type="file"
                   accept=".pdf,application/pdf"
                   onChange={handleSupplemental1099Change}
-                  style={{ display: "none" }}
                 />
                 <Supplemental1099UploadPanel
                   selectedFileName={supplemental1099File?.name ?? null}
@@ -1543,8 +1714,33 @@ export default function DashboardPage() {
             </Alert>
           )}
 
+          {forceEmpty && heldAnalysis && !isPending && (
+            <Alert
+              severity="info"
+              variant="outlined"
+              action={
+                <Button
+                  color="inherit"
+                  size="small"
+                  onClick={handleKeepCurrentRun}
+                >
+                  Keep current run
+                </Button>
+              }
+            >
+              <AlertTitle>Drop a new file</AlertTitle>
+              A previous analysis is still on this device. Upload a CSV to
+              replace it, or keep the current run.
+            </Alert>
+          )}
+
           {/* First-run guidance when the user has not analyzed a CSV yet */}
-          {!hasResults && !isPending && !error && <FirstRunEmptyState />}
+          {!hasResults && !isPending && !error && (
+            <FirstRunEmptyState
+              onLoadSample={handleLoadSample}
+              settingsHref={user ? "/settings" : "/auth/signin?reason=profile"}
+            />
+          )}
 
           {/* Results — shown ABOVE warnings so actionable info is immediately visible */}
           {hasResults && (
@@ -1558,6 +1754,7 @@ export default function DashboardPage() {
               setActiveTab={setActiveTab}
               skippedSuggestionSymbols={skippedSuggestionSymbols}
               shouldPrompt1099Supplement={shouldPrompt1099Supplement}
+              guest={!user}
             />
           )}
 
