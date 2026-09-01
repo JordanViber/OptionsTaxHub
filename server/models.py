@@ -266,7 +266,7 @@ class HarvestingSuggestion(BaseModel):
 
 
 class Supplemental1099Summary(BaseModel):
-    """Parsed reconciliation context from an optional prior-year Robinhood 1099 PDF."""
+    """Parsed reconciliation context from an optional Robinhood 1099 PDF."""
 
     source_filename: str = ""
     broker_name: str = ""

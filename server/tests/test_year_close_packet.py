@@ -14,6 +14,8 @@ from auth import get_current_user, get_current_user_with_token
 from stripe import StripeObject
 
 from year_close_packet import (
+    COMPARE_GAP_COPY,
+    COMPARE_TITLE,
     OPTIONS_WASH_SALE_FAQ,
     PACKET_AMOUNT_CENTS,
     PACKET_CHECKOUT_DESCRIPTION,
@@ -24,6 +26,7 @@ from year_close_packet import (
     PACKET_STORE,
     SETTLEMENT_DATE_FAQ,
     build_packet_payload,
+    is_same_year_1099_compare,
     packet_plain_text,
     packet_requires_test_stripe,
     purge_packet_store,
@@ -31,6 +34,7 @@ from year_close_packet import (
     render_packet_pdf,
     reset_packet_store,
     resolve_packet_stripe_secret_key,
+    same_year_compare_plain_text,
     session_grants_packet,
     paid_session_for_user_year,
     mark_paid,
@@ -93,6 +97,10 @@ SAMPLE_ANALYSIS = {
 def _pdf_text(pdf_bytes: bytes) -> str:
     reader = PdfReader(BytesIO(pdf_bytes))
     return "\n".join((page.extract_text() or "") for page in reader.pages)
+
+
+def _pdf_text_normalized(pdf_bytes: bytes) -> str:
+    return " ".join(_pdf_text(pdf_bytes).split())
 
 
 @pytest.fixture(autouse=True)
@@ -634,3 +642,150 @@ def test_paid_session_reused_for_same_user_and_year():
     mark_paid("first", "cs_test_repeat", user_id="test-user-123")
     assert paid_session_for_user_year("test-user-123", 2025) == "cs_test_repeat"
     assert paid_session_for_user_year("someone-else", 2026) is None
+
+
+SAME_YEAR_ANALYSIS = {
+    **SAMPLE_ANALYSIS,
+    "analysis_id": "analysis-same-year-2024",
+    "tax_profile": {"tax_year": 2024, "filing_status": "single"},
+    "summary": {
+        "realized_summary": {
+            "tax_year": 2024,
+            "st_gains": 0.0,
+            "st_losses": -300.0,
+            "lt_gains": 0.0,
+            "lt_losses": 0.0,
+            "net_st": -300.0,
+            "net_lt": 0.0,
+            "total_net": -300.0,
+            "transactions_count": 1,
+        }
+    },
+    "wash_sale_flags": [
+        {
+            "symbol": "AMD",
+            "sale_date": "2024-07-15",
+            "sale_quantity": 10,
+            "sale_loss": 300.0,
+            "repurchase_date": "2024-07-24",
+            "repurchase_quantity": 10,
+            "disallowed_loss": 300.0,
+            "adjusted_cost_basis": 1550.0,
+            "explanation": "Wash sale on AMD",
+        }
+    ],
+}
+
+MISMATCH_2026_ANALYSIS = {
+    **SAMPLE_ANALYSIS,
+    "analysis_id": "analysis-2026-sample",
+    "tax_profile": {"tax_year": 2026, "filing_status": "single"},
+    "summary": {
+        "realized_summary": {
+            "tax_year": 2026,
+            "st_gains": 0.0,
+            "st_losses": -300.0,
+            "lt_gains": 0.0,
+            "lt_losses": 0.0,
+            "net_st": -300.0,
+            "net_lt": 0.0,
+            "total_net": -300.0,
+            "transactions_count": 1,
+        }
+    },
+}
+
+
+def test_same_year_is_decided_by_1099_year_equals_dashboard_year():
+    assert is_same_year_1099_compare(2024, 2024) is True
+    assert is_same_year_1099_compare(2024, 2026) is False
+    assert is_same_year_1099_compare(2024, 2025) is False
+    assert is_same_year_1099_compare(None, 2024) is False
+    assert is_same_year_1099_compare(2024, None) is False
+
+
+def test_mismatch_2026_sample_plus_2024_fixture_is_previous_year_supplement():
+    payload = build_packet_payload(MISMATCH_2026_ANALYSIS, analysis_id="analysis-2026-sample")
+    assert payload["same_year_compare"] is False
+    assert payload["form_1099_tax_year"] == 2024
+    assert payload["analysis_tax_year"] == 2026
+    text = packet_plain_text(payload)
+    assert "previous-year supplement" in text
+    assert "included as a dedicated page" not in text
+    pdf_text = _pdf_text(render_packet_pdf(payload))
+    assert COMPARE_TITLE not in pdf_text
+    assert "settlement date" in pdf_text.lower()
+    reader = PdfReader(BytesIO(render_packet_pdf(payload)))
+    assert len(reader.pages) == 1
+
+
+def test_same_year_packet_pdf_has_two_column_compare_page():
+    payload = build_packet_payload(SAME_YEAR_ANALYSIS, analysis_id="analysis-same-year-2024")
+    assert payload["same_year_compare"] is True
+    assert payload["form_1099_tax_year"] == 2024
+    assert payload["analysis_tax_year"] == 2024
+    assert payload["short_term_net_gain"] == 34793.58
+    assert payload["export_short_term_net"] == -300.0
+    assert payload["export_wash_sale_disallowed"] == 300.0
+    assert payload["compare_gap_copy"] == COMPARE_GAP_COPY
+
+    compare = same_year_compare_plain_text(payload)
+    assert COMPARE_TITLE in compare
+    assert "Broker 1099 (settlement date)" in compare
+    assert "This export (trade date)" in compare
+    assert "$34,793.58" in compare
+    assert "$-300.00" in compare
+    assert "$17,442.80" in compare
+    assert "$300.00" in compare
+    assert COMPARE_GAP_COPY in compare
+    assert "SPX 12/31" in compare
+    assert "not a software bug" in compare
+    assert "r/options" in compare
+
+    pdf_bytes = render_packet_pdf(payload)
+    reader = PdfReader(BytesIO(pdf_bytes))
+    assert len(reader.pages) == 2
+    pdf_text = _pdf_text_normalized(pdf_bytes)
+    assert COMPARE_TITLE in pdf_text
+    assert "Broker 1099 (settlement date)" in pdf_text
+    assert "This export (trade date)" in pdf_text
+    assert "34,793.58" in pdf_text
+    assert "300.00" in pdf_text
+    assert "not a software bug" in pdf_text.lower()
+    assert "r/options" in pdf_text.lower()
+
+
+def test_same_year_compare_is_visible_without_payment_but_download_stays_gated(monkeypatch):
+    _test_stripe_env(monkeypatch)
+    main.remember_analysis("analysis-same-year-2024", "test-user-123", SAME_YEAR_ANALYSIS)
+    payload = build_packet_payload(SAME_YEAR_ANALYSIS)
+    assert payload["same_year_compare"] is True
+    unpaid = client.get("/api/year-close-packet/download?analysis_id=analysis-same-year-2024")
+    assert unpaid.status_code == 403
+    assert "payment" in unpaid.json()["detail"].lower()
+
+
+def test_tipjar_still_does_not_unlock_same_year_packet(monkeypatch):
+    _test_stripe_env(monkeypatch)
+    main.remember_analysis("analysis-same-year-2024", "test-user-123", SAME_YEAR_ANALYSIS)
+    tip_session = SimpleNamespace(
+        id="cs_test_tip_coffee",
+        payment_status="paid",
+        amount_total=300,
+        metadata={"product": "tip", "tier": "coffee"},
+    )
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda session_id, **_kwargs: tip_session,
+    )
+    confirm = client.post(
+        "/api/year-close-packet/confirm",
+        json={
+            "analysis_id": "analysis-same-year-2024",
+            "session_id": "cs_test_tip_coffee",
+        },
+    )
+    assert confirm.status_code == 403
+    unpaid = client.get("/api/year-close-packet/download?analysis_id=analysis-same-year-2024")
+    assert unpaid.status_code == 403

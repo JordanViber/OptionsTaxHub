@@ -16,6 +16,7 @@ import {
   Settings as SettingsIcon,
 } from "@mui/icons-material";
 import NextLink from "next/link";
+import { SUPPLEMENTAL_1099_FIRST_RUN_HINT } from "@/lib/supplemental1099";
 
 /**
  * First-run guidance shown on the dashboard before any analysis exists.
@@ -55,8 +56,7 @@ export default function FirstRunEmptyState({
                 above
               </Typography>
               <Typography component="li" variant="body2">
-                Optionally attach last year's Robinhood 1099 PDF next to the
-                CSV for reconciliation context — not a rebuild of lots
+                {SUPPLEMENTAL_1099_FIRST_RUN_HINT}
               </Typography>
             </Box>
           </Box>

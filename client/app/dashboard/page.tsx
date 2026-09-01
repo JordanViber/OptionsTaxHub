@@ -75,6 +75,14 @@ import {
 } from "@/lib/api";
 import FirstRunEmptyState from "../components/FirstRunEmptyState";
 import Supplemental1099InsightsPanel from "../components/Supplemental1099InsightsPanel";
+import {
+  SUPPLEMENTAL_1099_AFTER_FIRST_RUN_COPY,
+  SUPPLEMENTAL_1099_AFTER_FIRST_RUN_TITLE,
+  SUPPLEMENTAL_1099_CONTEXT_COPY,
+  SUPPLEMENTAL_1099_UPLOAD_TITLE,
+  csvWashSaleDisallowedTotal,
+  isSameYear1099Compare,
+} from "@/lib/supplemental1099";
 import YearClosePacketPanel, {
   isYearClosePacketPaid,
   rememberYearClosePacketPaid,
@@ -445,29 +453,35 @@ function getSupplemental1099HelperText({
   isRestoredAppliedSummary,
   hasSelectedFile,
   hasUploadedCsv,
+  sameYearCompare,
 }: {
   isApplied: boolean;
   isRestoredAppliedSummary: boolean;
   hasSelectedFile: boolean;
   hasUploadedCsv: boolean;
+  sameYearCompare: boolean;
 }): string {
   if (isRestoredAppliedSummary) {
-    return "This restored result already includes last year’s broker 1099 as reconciliation context, not a rebuild of lots. Upload the PDF again only if you want to refresh it.";
+    return sameYearCompare
+      ? "This restored result already includes 1099 vs this export (totals only) — reconciliation context, not lot history. Upload the PDF again only if you want to refresh it."
+      : "This restored result already includes a previous-year broker 1099 as reconciliation context, not lot history. Upload the PDF again only if you want to refresh it.";
   }
 
   if (isApplied) {
-    return "Included as reconciliation context from last year’s broker 1099 (totals only), not a rebuild of lots.";
+    return sameYearCompare
+      ? "Included as 1099 vs this export (totals only) — reconciliation context, not lot history."
+      : "Included as a previous-year 1099 supplement — reconciliation context, not lot history.";
   }
 
   if (hasSelectedFile && hasUploadedCsv) {
-    return "This PDF is being used with your latest CSV as reconciliation context, not a rebuild of lots. Replace it to automatically refresh the result.";
+    return "This PDF is being used with your latest CSV as reconciliation context, not lot history. Replace it to automatically refresh the result.";
   }
 
   if (hasSelectedFile) {
-    return "This PDF is ready and will be included the next time you analyze a CSV as reconciliation context, not a rebuild of lots.";
+    return "This PDF is ready and will be included the next time you analyze a CSV as reconciliation context, not lot history.";
   }
 
-  return "Optional last year’s broker 1099 for reconciliation context — not a rebuild of lots.";
+  return SUPPLEMENTAL_1099_CONTEXT_COPY;
 }
 
 function getSupplemental1099Status({
@@ -527,6 +541,7 @@ function getSupplemental1099Status({
 function Supplemental1099UploadPanel({
   selectedFileName,
   appliedSummary,
+  analysisTaxYear,
   analysisSource,
   hasUploadedCsv,
   canRemoveSupplement,
@@ -535,6 +550,7 @@ function Supplemental1099UploadPanel({
 }: Readonly<{
   selectedFileName: string | null;
   appliedSummary: PortfolioAnalysis["supplemental_1099"] | null | undefined;
+  analysisTaxYear?: number | null;
   analysisSource: AnalysisSource | null;
   hasUploadedCsv: boolean;
   canRemoveSupplement: boolean;
@@ -551,11 +567,16 @@ function Supplemental1099UploadPanel({
     !selectedFileName &&
     (analysisSource === "restored-session" ||
       analysisSource === "saved-history");
+  const sameYearCompare = isSameYear1099Compare(
+    appliedSummary?.tax_year,
+    analysisTaxYear,
+  );
   const helperText = getSupplemental1099HelperText({
     isApplied,
     isRestoredAppliedSummary,
     hasSelectedFile,
     hasUploadedCsv,
+    sameYearCompare,
   });
   const status = getSupplemental1099Status({
     isApplied,
@@ -585,7 +606,7 @@ function Supplemental1099UploadPanel({
         >
           <Box>
             <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
-              Previous year&apos;s Robinhood 1099 PDF
+              {SUPPLEMENTAL_1099_UPLOAD_TITLE}
             </Typography>
             <Typography variant="body2" color="text.secondary">
               {helperText}
@@ -759,6 +780,11 @@ function ResultsSection({
       {displayedAnalysis?.supplemental_1099 && (
         <Supplemental1099InsightsPanel
           summary={displayedAnalysis.supplemental_1099}
+          analysisTaxYear={displayedAnalysis.tax_profile?.tax_year ?? null}
+          realizedSummary={displayedAnalysis.summary?.realized_summary ?? null}
+          csvWashSaleDisallowed={csvWashSaleDisallowedTotal(
+            displayedAnalysis.wash_sale_flags,
+          )}
         />
       )}
 
@@ -769,9 +795,8 @@ function ResultsSection({
 
       {shouldPrompt1099Supplement && (
         <Alert severity="info" variant="outlined">
-          <AlertTitle>Optional prior-year 1099</AlertTitle>
-          Upload your previous year’s Robinhood 1099 PDF for reconciliation
-          context — not a rebuild of lots. We show broker-reported totals only.
+          <AlertTitle>{SUPPLEMENTAL_1099_AFTER_FIRST_RUN_TITLE}</AlertTitle>
+          {SUPPLEMENTAL_1099_AFTER_FIRST_RUN_COPY}
         </Alert>
       )}
 
@@ -1960,6 +1985,7 @@ export default function DashboardPage() {
                 <Supplemental1099UploadPanel
                   selectedFileName={supplemental1099File?.name ?? null}
                   appliedSummary={displayedAnalysis?.supplemental_1099}
+                  analysisTaxYear={displayedAnalysis?.tax_profile?.tax_year}
                   analysisSource={analysisSource}
                   hasUploadedCsv={Boolean(lastUploadedCsv)}
                   canRemoveSupplement={
@@ -1976,7 +2002,7 @@ export default function DashboardPage() {
                 />
                 {supplemental1099Warnings.length > 0 && (
                   <Alert severity="warning">
-                    <AlertTitle>Prior-year 1099 warning</AlertTitle>
+                    <AlertTitle>1099 warning</AlertTitle>
                     {supplemental1099Warnings.map((warning) => (
                       <Typography key={warning} variant="body2">
                         {warning}

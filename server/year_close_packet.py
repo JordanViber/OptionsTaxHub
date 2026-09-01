@@ -49,6 +49,21 @@ OPTIONS_WASH_SALE_FAQ = (
     "broker 1099. We show the 1099 wash-sale disallowed figure as reported."
 )
 
+COMPARE_TITLE = "1099 vs your export"
+COMPARE_INTRO = (
+    "Two columns, totals only. Broker 1099 uses settlement date; "
+    "this export uses trade date. ST/LT/wash as reported."
+)
+COMPARE_BROKER_HEADER = "Broker 1099 (settlement date)"
+COMPARE_EXPORT_HEADER = "This export (trade date)"
+COMPARE_GAP_COPY = (
+    "These totals often disagree. A year-end short option (for example SPX 12/31) "
+    "can print a gain on the 1099 while this export still shows a loss until January "
+    "settlement. That is not a software bug. We do not parse settlement lots from the PDF. "
+    "An incomplete export also shows up here. Traders on r/options have reported the "
+    "same gap -- a Robinhood 1099 showing +$2,699 while the export showed a $542 loss."
+)
+
 # In-memory entitlement + snapshot store. Sufficient for staging accept
 # (pay then immediately download) and unit tests. Download can also rebuild
 # from a client-supplied packet payload after Stripe session verification.
@@ -167,6 +182,41 @@ def combined_1099_wash_sale_disallowed(supplemental: dict[str, Any] | None) -> f
     )
 
 
+def is_same_year_1099_compare(
+    form_1099_tax_year: Any,
+    analysis_tax_year: Any,
+) -> bool:
+    """True only when 1099 tax year equals the dashboard/analysis tax year.
+
+    A 2024 fixture against a 2026 sample is a previous-year supplement, not a
+    same-year compare. Missing years never fake a match.
+    """
+    form_year = _as_int(form_1099_tax_year)
+    analysis_year = _as_int(analysis_tax_year)
+    return form_year is not None and analysis_year is not None and form_year == analysis_year
+
+
+def csv_wash_sale_disallowed_total(analysis: dict[str, Any]) -> float:
+    """Wash-sale disallowed as reported on CSV flags (trade date), not 1099 lots."""
+    return round(
+        sum(
+            _as_float(flag.get("disallowed_loss"))
+            for flag in analysis.get("wash_sale_flags") or []
+        ),
+        2,
+    )
+
+
+def export_realized_totals(analysis: dict[str, Any]) -> dict[str, float]:
+    summary = analysis.get("summary") or {}
+    realized = summary.get("realized_summary") or {}
+    return {
+        "short_term_net": _as_float(realized.get("net_st")),
+        "long_term_net": _as_float(realized.get("net_lt")),
+        "wash_sale_disallowed": csv_wash_sale_disallowed_total(analysis),
+    }
+
+
 def csv_wash_sale_lots(analysis: dict[str, Any]) -> list[dict[str, Any]]:
     """Wash-sale lots already computed on the analysis (CSV engine), not 1099 lots."""
     lots: list[dict[str, Any]] = []
@@ -232,17 +282,30 @@ def build_packet_payload(
     st_proceeds = _as_float((supplemental or {}).get("short_term_proceeds"))
     lt_proceeds = _as_float((supplemental or {}).get("long_term_proceeds"))
     wash_1099 = combined_1099_wash_sale_disallowed(supplemental)
+    analysis_tax_year = _as_int(tax_profile.get("tax_year"))
+    form_1099_tax_year = _as_int((supplemental or {}).get("tax_year"))
+    same_year = bool(supplemental) and is_same_year_1099_compare(
+        form_1099_tax_year, analysis_tax_year
+    )
+    export_totals = export_realized_totals(analysis)
     return {
         "analysis_id": analysis_id or analysis.get("analysis_id") or "",
         "product_name": PACKET_PRODUCT_NAME,
         "price_cents": PACKET_AMOUNT_CENTS,
         "disclaimer": PACKET_DISCLAIMER,
-        "analysis_tax_year": _as_int(tax_profile.get("tax_year")),
-        "form_1099_tax_year": _as_int((supplemental or {}).get("tax_year")),
+        "analysis_tax_year": analysis_tax_year,
+        "form_1099_tax_year": form_1099_tax_year,
         "form_1099_applied": bool(supplemental),
+        "same_year_compare": same_year,
         "broker_name": (supplemental or {}).get("broker_name") or "",
         "short_term_proceeds": st_proceeds,
         "long_term_proceeds": lt_proceeds,
+        "short_term_net_gain": _as_float(
+            (supplemental or {}).get("short_term_net_gain")
+        ),
+        "long_term_net_gain": _as_float(
+            (supplemental or {}).get("long_term_net_gain")
+        ),
         "short_term_wash_sale_disallowed": _as_float(
             (supplemental or {}).get("short_term_wash_sale_disallowed")
         ),
@@ -250,9 +313,13 @@ def build_packet_payload(
             (supplemental or {}).get("long_term_wash_sale_disallowed")
         ),
         "wash_sale_disallowed_1099": wash_1099,
+        "export_short_term_net": export_totals["short_term_net"],
+        "export_long_term_net": export_totals["long_term_net"],
+        "export_wash_sale_disallowed": export_totals["wash_sale_disallowed"],
         "csv_wash_sale_lots": wash_lots,
         "settlement_date_faq": SETTLEMENT_DATE_FAQ,
         "options_wash_sale_faq": OPTIONS_WASH_SALE_FAQ,
+        "compare_gap_copy": COMPARE_GAP_COPY if same_year else "",
     }
 
 
@@ -277,6 +344,13 @@ def packet_plain_text(payload: dict[str, Any]) -> str:
     analysis_year = payload.get("analysis_tax_year")
     if analysis_year is not None:
         lines.append(f"CSV analysis tax year: {analysis_year}")
+
+    if payload.get("same_year_compare"):
+        lines.append("1099 vs your export is included as a dedicated page.")
+    elif payload.get("form_1099_applied"):
+        lines.append(
+            "1099 tax year does not match this export; shown as a previous-year supplement."
+        )
 
     lines.append("Wash-sale lots from the CSV:")
     lots = payload.get("csv_wash_sale_lots") or []
@@ -324,10 +398,42 @@ def _wrap_pdf_line(line: str, width: int = 96) -> list[str]:
     return rows or [""]
 
 
-def render_packet_pdf(payload: dict[str, Any]) -> bytes:
-    """Server-side PDF from the structured payload (no extra PDF library)."""
+def _two_col_row(label: str, left_value: str, right_value: str) -> str:
+    return f"{label:<24}{left_value:>16}{right_value:>22}"
+
+
+def same_year_compare_plain_text(payload: dict[str, Any]) -> str:
+    """Dedicated two-column page body for same-year 1099 vs export."""
+    return "\n".join(
+        [
+            COMPARE_TITLE,
+            COMPARE_INTRO,
+            "",
+            f"{COMPARE_BROKER_HEADER:40}{COMPARE_EXPORT_HEADER}",
+            _two_col_row(
+                "Short-term",
+                _money(payload.get("short_term_net_gain") or 0),
+                _money(payload.get("export_short_term_net") or 0),
+            ),
+            _two_col_row(
+                "Long-term",
+                _money(payload.get("long_term_net_gain") or 0),
+                _money(payload.get("export_long_term_net") or 0),
+            ),
+            _two_col_row(
+                "Wash-sale disallowed",
+                _money(payload.get("wash_sale_disallowed_1099") or 0),
+                _money(payload.get("export_wash_sale_disallowed") or 0),
+            ),
+            "",
+            COMPARE_GAP_COPY,
+        ]
+    )
+
+
+def _page_content_stream(text: str) -> bytes:
     lines: list[str] = []
-    for raw in packet_plain_text(payload).split("\n"):
+    for raw in text.split("\n"):
         lines.extend(_wrap_pdf_line(raw))
 
     y = 720
@@ -344,39 +450,65 @@ def render_packet_pdf(payload: dict[str, Any]) -> bytes:
         if y < 48:
             break
     commands.append("ET")
-    stream = "\n".join(commands).encode("latin-1", errors="replace")
+    return "\n".join(commands).encode("latin-1", errors="replace")
 
-    objects = [
-        b"<< /Type /Catalog /Pages 2 0 R >>",
-        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        (
-            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
-            b"/Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>"
-        ),
-        b"<< /Length " + str(len(stream)).encode("ascii") + b" >>\nstream\n" + stream + b"\nendstream",
-        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-    ]
 
+def _assemble_pdf(page_streams: list[bytes]) -> bytes:
+    if not page_streams:
+        page_streams = [_page_content_stream("")]
+    n = len(page_streams)
+    page_ids = [3 + i * 2 for i in range(n)]
+    content_ids = [4 + i * 2 for i in range(n)]
+    font_id = 3 + n * 2
+    kids = " ".join(f"{pid} 0 R" for pid in page_ids)
+
+    objects: dict[int, bytes] = {
+        1: b"<< /Type /Catalog /Pages 2 0 R >>",
+        2: f"<< /Type /Pages /Kids [{kids}] /Count {n} >>".encode("ascii"),
+        font_id: b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    }
+    for page_id, content_id, stream in zip(page_ids, content_ids, page_streams):
+        objects[page_id] = (
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            f"/Contents {content_id} 0 R /Resources << /Font << /F1 {font_id} 0 R >> >> >>"
+        ).encode("ascii")
+        objects[content_id] = (
+            b"<< /Length "
+            + str(len(stream)).encode("ascii")
+            + b" >>\nstream\n"
+            + stream
+            + b"\nendstream"
+        )
+
+    ordered = [objects[i] for i in range(1, font_id + 1)]
     out = BytesIO()
     out.write(b"%PDF-1.4\n")
     offsets = [0]
-    for index, obj in enumerate(objects, start=1):
+    for index, obj in enumerate(ordered, start=1):
         offsets.append(out.tell())
         out.write(f"{index} 0 obj\n".encode("ascii"))
         out.write(obj)
         out.write(b"\nendobj\n")
     xref_pos = out.tell()
-    out.write(f"xref\n0 {len(objects) + 1}\n".encode("ascii"))
+    out.write(f"xref\n0 {len(ordered) + 1}\n".encode("ascii"))
     out.write(b"0000000000 65535 f \n")
     for offset in offsets[1:]:
         out.write(f"{offset:010d} 00000 n \n".encode("ascii"))
     out.write(
         (
-            f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n"
+            f"trailer\n<< /Size {len(ordered) + 1} /Root 1 0 R >>\n"
             f"startxref\n{xref_pos}\n%%EOF\n"
         ).encode("ascii")
     )
     return out.getvalue()
+
+
+def render_packet_pdf(payload: dict[str, Any]) -> bytes:
+    """Server-side PDF from the structured payload (no extra PDF library)."""
+    pages = [packet_plain_text(payload)]
+    if payload.get("same_year_compare"):
+        pages.append(same_year_compare_plain_text(payload))
+    return _assemble_pdf([_page_content_stream(page) for page in pages])
 
 
 def remember_analysis(analysis_id: str, user_id: str, analysis: dict[str, Any]) -> None:
