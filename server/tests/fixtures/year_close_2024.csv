@@ -1,0 +1,4 @@
+Activity Date,Process Date,Settle Date,Instrument,Description,Trans Code,Quantity,Price,Amount
+01/16/2024,01/16/2024,01/18/2024,AMD,Advanced Micro Devices,Buy,10,150.00,-1500.00
+07/15/2024,07/15/2024,07/17/2024,AMD,Advanced Micro Devices,Sell,10,120.00,1200.00
+07/24/2024,07/24/2024,07/26/2024,AMD,Advanced Micro Devices,Buy,10,125.00,-1250.00
