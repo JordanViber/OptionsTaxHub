@@ -1,0 +1,89 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length 1781 >>
+stream
+BT
+/F1 11 Tf
+50 760 Td
+(SAMPLE 2026 Robinhood Consolidated Tax Statement -- not a live tax form) Tj
+0 -16 Td
+(Enclosed is your 2026 Consolidated Tax Statement) Tj
+0 -16 Td
+(Robinhood Securities LLC) Tj
+0 -16 Td
+(Robinhood) Tj
+0 -16 Td
+() Tj
+0 -16 Td
+(SUMMARY OF PROCEEDS, GAINS & LOSSES, ADJUSTMENTS AND WITHHOLDING) Tj
+0 -16 Td
+(Term Form 8949 type Proceeds Cost basis Market discount Wash sale loss disallowed Net gain or loss\(-\)) Tj
+0 -16 Td
+(Short A \(basis reported to the IRS\) 8,315.00 6,540.00 0.00 924.00 2,699.00) Tj
+0 -16 Td
+(Short B \(basis not reported to the IRS\) 0.00 0.00 0.00 0.00 0.00) Tj
+0 -16 Td
+(Short C \(Form 1099-B not received\) 0.00 0.00 0.00 0.00 0.00) Tj
+0 -16 Td
+(Total Short-term 8,315.00 6,540.00 0.00 924.00 2,699.00) Tj
+0 -16 Td
+(Long D \(basis reported to the IRS\) 0.00 0.00 0.00 0.00 0.00) Tj
+0 -16 Td
+(Total Long-term 0.00 0.00 0.00 0.00 0.00) Tj
+0 -16 Td
+() Tj
+0 -16 Td
+(Broker 1099 short-term proceeds $8,315.00 cost_basis $6,540.00 market_discount $0.00 wash $924.00 net $2,699.00) Tj
+0 -16 Td
+(8315 - 6540 + 924 = 2699. Long-term totals $0.00.) Tj
+0 -16 Td
+() Tj
+0 -16 Td
+(Sample stock closes plus a settlement-date SPX not in the CSV export.) Tj
+0 -16 Td
+(/ Symbol: NVDA) Tj
+0 -16 Td
+(NVDA 12 sh sold 02/18/2026 settled 02/20/2026 proceeds 2,976.00 cost 3,360.00 wash 384.00) Tj
+0 -16 Td
+(/ Symbol: TSLA) Tj
+0 -16 Td
+(TSLA 4 sh sold 03/20/2026 settled 03/24/2026 proceeds 1,440.00 cost 1,680.00 wash 240.00) Tj
+0 -16 Td
+(/ Symbol: AMD) Tj
+0 -16 Td
+(AMD 10 sh sold 07/15/2026 settled 07/17/2026 proceeds 1,200.00 cost 1,500.00 wash 300.00) Tj
+0 -16 Td
+(/ Symbol: SPX) Tj
+0 -16 Td
+(SPX 12/31/2026 index option settlement date 01/02/2027 not in the trade-date CSV) Tj
+0 -16 Td
+(SPX proceeds 2,699.00 cost 0.00 wash 0.00 net 2,699.00) Tj
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000121 00000 n 
+0000000247 00000 n 
+0000002080 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+2150
+%%EOF
