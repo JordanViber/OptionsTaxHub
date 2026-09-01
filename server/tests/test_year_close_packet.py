@@ -25,7 +25,11 @@ from year_close_packet import (
     PACKET_METADATA_PRODUCT,
     PACKET_STORE,
     SETTLEMENT_DATE_FAQ,
+    UNKNOWN_1099_YEAR_COPY,
+    _two_col_row,
     build_packet_payload,
+    classified_csv_wash,
+    export_net_matching_1099,
     is_same_year_1099_compare,
     packet_plain_text,
     packet_requires_test_stripe,
@@ -704,6 +708,14 @@ def test_same_year_is_decided_by_1099_year_equals_dashboard_year():
     assert is_same_year_1099_compare(2024, None) is False
 
 
+def test_export_net_matching_1099_folds_classified_wash():
+    assert export_net_matching_1099(-300.0, 300.0) == 0.0
+    assert export_net_matching_1099(-300.0, 0.0) == -300.0
+    st_wash, lt_wash = classified_csv_wash(SAME_YEAR_ANALYSIS)
+    assert st_wash == 300.0
+    assert lt_wash == 0.0
+
+
 def test_mismatch_2026_sample_plus_2024_fixture_is_previous_year_supplement():
     payload = build_packet_payload(MISMATCH_2026_ANALYSIS, analysis_id="analysis-2026-sample")
     assert payload["same_year_compare"] is False
@@ -725,7 +737,7 @@ def test_same_year_packet_pdf_has_two_column_compare_page():
     assert payload["form_1099_tax_year"] == 2024
     assert payload["analysis_tax_year"] == 2024
     assert payload["short_term_net_gain"] == 34793.58
-    assert payload["export_short_term_net"] == -300.0
+    assert payload["export_short_term_net"] == 0.0
     assert payload["export_wash_sale_disallowed"] == 300.0
     assert payload["compare_gap_copy"] == COMPARE_GAP_COPY
 
@@ -734,7 +746,8 @@ def test_same_year_packet_pdf_has_two_column_compare_page():
     assert "Broker 1099 (settlement date)" in compare
     assert "This export (trade date)" in compare
     assert "$34,793.58" in compare
-    assert "$-300.00" in compare
+    assert "$0.00" in compare
+    assert "$-300.00" not in compare
     assert "$17,442.80" in compare
     assert "$300.00" in compare
     assert COMPARE_GAP_COPY in compare
@@ -753,6 +766,86 @@ def test_same_year_packet_pdf_has_two_column_compare_page():
     assert "300.00" in pdf_text
     assert "not a software bug" in pdf_text.lower()
     assert "r/options" in pdf_text.lower()
+
+
+WASH_ALIGNED_1099 = {
+    "source_filename": "wash-aligned.pdf",
+    "broker_name": "Robinhood",
+    "tax_year": 2024,
+    "short_term_proceeds": 1200.0,
+    "short_term_cost_basis": 1500.0,
+    "short_term_wash_sale_disallowed": 300.0,
+    "short_term_net_gain": 0.0,
+    "long_term_proceeds": 0.0,
+    "long_term_cost_basis": 0.0,
+    "long_term_wash_sale_disallowed": 0.0,
+    "long_term_net_gain": 0.0,
+}
+
+WASH_ALIGNED_ANALYSIS = {
+    **SAME_YEAR_ANALYSIS,
+    "analysis_id": "analysis-wash-aligned-2024",
+    "supplemental_1099": WASH_ALIGNED_1099,
+}
+
+UNKNOWN_YEAR_ANALYSIS = {
+    **SAMPLE_ANALYSIS,
+    "analysis_id": "analysis-unknown-year",
+    "tax_profile": {"tax_year": 2024, "filing_status": "single"},
+    "supplemental_1099": {
+        **SAMPLE_ANALYSIS["supplemental_1099"],
+        "tax_year": None,
+    },
+}
+
+
+def test_three_hundred_loss_plus_wash_does_not_look_like_settlement_gap():
+    payload = build_packet_payload(
+        WASH_ALIGNED_ANALYSIS, analysis_id="analysis-wash-aligned-2024"
+    )
+    assert payload["same_year_compare"] is True
+    assert payload["short_term_net_gain"] == 0.0
+    assert payload["export_short_term_net"] == 0.0
+    assert payload["wash_sale_disallowed_1099"] == 300.0
+    assert payload["export_wash_sale_disallowed"] == 300.0
+
+    compare = same_year_compare_plain_text(payload)
+    assert "Short-term" in compare
+    assert compare.count("$0.00") >= 2
+    assert "$-300.00" not in compare
+    assert "$300.00" in compare
+    assert _two_col_row("Short-term", "$0.00", "$0.00") in compare
+    assert _two_col_row("Wash-sale disallowed", "$300.00", "$300.00") in compare
+
+    pdf_text = _pdf_text(render_packet_pdf(payload))
+    assert COMPARE_TITLE in pdf_text
+    assert "$-300.00" not in pdf_text
+    assert "$0.00" in pdf_text
+    assert "$300.00" in pdf_text
+    reader = PdfReader(BytesIO(render_packet_pdf(payload)))
+    assert len(reader.pages) == 2
+
+
+def test_unknown_1099_year_is_not_previous_year_mismatch_or_same_year_compare():
+    payload = build_packet_payload(
+        UNKNOWN_YEAR_ANALYSIS, analysis_id="analysis-unknown-year"
+    )
+    assert payload["same_year_compare"] is False
+    assert payload["unknown_1099_year"] is True
+    assert payload["form_1099_tax_year"] is None
+    assert payload["form_1099_applied"] is True
+    text = packet_plain_text(payload)
+    assert UNKNOWN_1099_YEAR_COPY in text
+    assert "1099 tax year: unknown" in text
+    assert "previous-year supplement" not in text
+    assert "does not match this export" not in text
+    assert "included as a dedicated page" not in text
+    pdf_text = _pdf_text(render_packet_pdf(payload))
+    assert COMPARE_TITLE not in pdf_text
+    assert "could not be determined" in pdf_text
+    assert "not a previous-year mismatch" in pdf_text
+    reader = PdfReader(BytesIO(render_packet_pdf(payload)))
+    assert len(reader.pages) == 1
 
 
 def test_same_year_compare_is_visible_without_payment_but_download_stays_gated(monkeypatch):

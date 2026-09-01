@@ -79,9 +79,12 @@ import {
   SUPPLEMENTAL_1099_AFTER_FIRST_RUN_COPY,
   SUPPLEMENTAL_1099_AFTER_FIRST_RUN_TITLE,
   SUPPLEMENTAL_1099_CONTEXT_COPY,
+  SUPPLEMENTAL_1099_UNKNOWN_YEAR_HELPER,
+  SUPPLEMENTAL_1099_UNKNOWN_YEAR_RESTORED_HELPER,
   SUPPLEMENTAL_1099_UPLOAD_TITLE,
   csvWashSaleDisallowedTotal,
   isSameYear1099Compare,
+  isUnknown1099Year,
 } from "@/lib/supplemental1099";
 import YearClosePacketPanel, {
   isYearClosePacketPaid,
@@ -454,23 +457,33 @@ function getSupplemental1099HelperText({
   hasSelectedFile,
   hasUploadedCsv,
   sameYearCompare,
+  unknownYear,
 }: {
   isApplied: boolean;
   isRestoredAppliedSummary: boolean;
   hasSelectedFile: boolean;
   hasUploadedCsv: boolean;
   sameYearCompare: boolean;
+  unknownYear: boolean;
 }): string {
   if (isRestoredAppliedSummary) {
-    return sameYearCompare
-      ? "This restored result already includes 1099 vs this export (totals only) — reconciliation context, not lot history. Upload the PDF again only if you want to refresh it."
-      : "This restored result already includes a previous-year broker 1099 as reconciliation context, not lot history. Upload the PDF again only if you want to refresh it.";
+    if (sameYearCompare) {
+      return "This restored result already includes 1099 vs this export (totals only) — reconciliation context, not lot history. Upload the PDF again only if you want to refresh it.";
+    }
+    if (unknownYear) {
+      return SUPPLEMENTAL_1099_UNKNOWN_YEAR_RESTORED_HELPER;
+    }
+    return "This restored result already includes a previous-year broker 1099 as reconciliation context, not lot history. Upload the PDF again only if you want to refresh it.";
   }
 
   if (isApplied) {
-    return sameYearCompare
-      ? "Included as 1099 vs this export (totals only) — reconciliation context, not lot history."
-      : "Included as a previous-year 1099 supplement — reconciliation context, not lot history.";
+    if (sameYearCompare) {
+      return "Included as 1099 vs this export (totals only) — reconciliation context, not lot history.";
+    }
+    if (unknownYear) {
+      return SUPPLEMENTAL_1099_UNKNOWN_YEAR_HELPER;
+    }
+    return "Included as a previous-year 1099 supplement — reconciliation context, not lot history.";
   }
 
   if (hasSelectedFile && hasUploadedCsv) {
@@ -571,12 +584,15 @@ function Supplemental1099UploadPanel({
     appliedSummary?.tax_year,
     analysisTaxYear,
   );
+  const unknownYear =
+    Boolean(appliedSummary) && isUnknown1099Year(appliedSummary?.tax_year);
   const helperText = getSupplemental1099HelperText({
     isApplied,
     isRestoredAppliedSummary,
     hasSelectedFile,
     hasUploadedCsv,
     sameYearCompare,
+    unknownYear,
   });
   const status = getSupplemental1099Status({
     isApplied,
