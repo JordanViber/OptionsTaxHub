@@ -111,6 +111,36 @@ const UPLOAD_INTENT_KEY = "oth-upload-intent";
 const LOAD_SAMPLE_KEY = "oth-load-sample";
 const GUEST_UNSAVED_KEY = "oth-guest-unsaved";
 const GUEST_UNSAVED_FILENAME_KEY = "oth-guest-unsaved-filename";
+const SAMPLE_CSV_URL = "/sample-robinhood-transactions.csv";
+const SAMPLE_CSV_FILENAME = "sample-robinhood-transactions.csv";
+const SAMPLE_1099_URL = "/sample-robinhood-1099-2026.pdf";
+const SAMPLE_1099_FILENAME = "sample-robinhood-1099-2026.pdf";
+
+async function fetchSampleCsvAnd1099(): Promise<{
+  csvFile: File;
+  form1099File: File;
+}> {
+  const [csvResponse, pdfResponse] = await Promise.all([
+    fetch(SAMPLE_CSV_URL),
+    fetch(SAMPLE_1099_URL),
+  ]);
+  if (!csvResponse.ok) {
+    throw new Error("Could not load the sample CSV.");
+  }
+  if (!pdfResponse.ok) {
+    throw new Error("Could not load the sample 1099.");
+  }
+  const [csvBlob, pdfBlob] = await Promise.all([
+    csvResponse.blob(),
+    pdfResponse.blob(),
+  ]);
+  return {
+    csvFile: new File([csvBlob], SAMPLE_CSV_FILENAME, { type: "text/csv" }),
+    form1099File: new File([pdfBlob], SAMPLE_1099_FILENAME, {
+      type: "application/pdf",
+    }),
+  };
+}
 
 type AnalysisSource = "fresh-upload" | "saved-history" | "restored-session";
 
@@ -1347,23 +1377,20 @@ export default function DashboardPage() {
   const handleLoadSample = () => {
     void (async () => {
       try {
-        const response = await fetch("/sample-robinhood-transactions.csv");
-        if (!response.ok) {
-          throw new Error("Could not load the sample CSV.");
-        }
-        const blob = await response.blob();
-        const file = new File([blob], "sample-robinhood-transactions.csv", {
-          type: "text/csv",
-        });
+        const { csvFile, form1099File } = await fetchSampleCsvAnd1099();
         clearCurrentAnalysisView({
           setLoadedAnalysis,
           setAnalysisSource,
         });
         setForceEmpty(false);
-        runPortfolioAnalysis(file);
-      } catch {
+        setSupplemental1099File(form1099File);
+        runPortfolioAnalysis(csvFile, form1099File);
+      } catch (err) {
         setSnackbar({
-          message: "Could not load the sample CSV.",
+          message:
+            err instanceof Error
+              ? err.message
+              : "Could not load the 2026 sample.",
           severity: "error",
         });
       }
@@ -1384,14 +1411,7 @@ export default function DashboardPage() {
 
     void (async () => {
       try {
-        const response = await fetch("/sample-robinhood-transactions.csv");
-        if (!response.ok || cancelled) {
-          return;
-        }
-        const blob = await response.blob();
-        const file = new File([blob], "sample-robinhood-transactions.csv", {
-          type: "text/csv",
-        });
+        const { csvFile, form1099File } = await fetchSampleCsvAnd1099();
         if (cancelled) {
           return;
         }
@@ -1405,11 +1425,12 @@ export default function DashboardPage() {
           setAnalysisSource,
         });
         setForceEmpty(false);
-        runPortfolioAnalysis(file);
+        setSupplemental1099File(form1099File);
+        runPortfolioAnalysis(csvFile, form1099File);
       } catch {
         if (!cancelled) {
           setSnackbar({
-            message: "Could not load the sample CSV.",
+            message: "Could not load the 2026 sample.",
             severity: "error",
           });
         }

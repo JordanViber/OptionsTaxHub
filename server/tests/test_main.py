@@ -1955,6 +1955,82 @@ def test_analyze_same_year_1099_compare_vs_2026_sample_mismatch(monkeypatch):
     assert "previous-year supplement" in mismatch_text
 
 
+def test_analyze_2026_sample_csv_and_1099_is_same_year_compare(monkeypatch):
+    """Open-the-sample pair: 2026 CSV + 2026 1099 is a same-year compare."""
+    import pytest
+    from year_close_packet import COMPARE_TITLE, build_packet_payload, render_packet_pdf
+    from pypdf import PdfReader
+    from io import BytesIO
+
+    _stub_analyze_network(monkeypatch)
+
+    repo = Path(__file__).resolve().parents[2]
+    sample_csv = (repo / "client" / "public" / "sample-robinhood-transactions.csv").read_bytes()
+    sample_1099 = (repo / "client" / "public" / "sample-robinhood-1099-2026.pdf").read_bytes()
+    fixture_2024 = _make_supplemental_1099_upload()
+
+    same_year = client.post(
+        "/api/portfolio/analyze?tax_year=2026",
+        files={
+            "file": ("sample-robinhood-transactions.csv", sample_csv, "text/csv"),
+            "supplemental_1099": (
+                "sample-robinhood-1099-2026.pdf",
+                sample_1099,
+                "application/pdf",
+            ),
+        },
+    )
+    assert same_year.status_code == 200, same_year.text
+    same_body = same_year.json()
+    assert same_body["tax_profile"]["tax_year"] == 2026
+    summary = same_body["supplemental_1099"]
+    assert summary["tax_year"] == 2026
+    assert summary["broker_name"] == "Robinhood"
+    assert summary["short_term_proceeds"] == pytest.approx(8315.00)
+    assert summary["short_term_cost_basis"] == pytest.approx(6540.00)
+    assert summary["short_term_wash_sale_disallowed"] == pytest.approx(924.00)
+    assert summary["short_term_net_gain"] == pytest.approx(2699.00)
+    assert summary["long_term_net_gain"] == pytest.approx(0.00)
+    assert summary["matched_symbols"] == ["AMD", "NVDA", "TSLA"]
+    assert "SPX" in summary["referenced_symbols"]
+    same_payload = build_packet_payload(same_body)
+    assert same_payload["same_year_compare"] is True
+    assert same_payload["form_1099_tax_year"] == 2026
+    assert same_payload["analysis_tax_year"] == 2026
+    # Sample realized is -$924; folding CSV wash ($924) yields 1099-style ST net $0.
+    assert same_body["summary"]["realized_summary"]["net_st"] == pytest.approx(-924.00)
+    assert same_payload["export_short_term_net"] == pytest.approx(0.00)
+    assert same_payload["export_wash_sale_disallowed"] == pytest.approx(924.00)
+    assert same_payload["short_term_net_gain"] == pytest.approx(2699.00)
+    same_pdf = render_packet_pdf(same_payload)
+    same_text = "\n".join(
+        (page.extract_text() or "")
+        for page in PdfReader(BytesIO(same_pdf)).pages
+    )
+    assert COMPARE_TITLE in same_text
+    assert "Broker 1099 (settlement date)" in same_text
+    assert "$2,699.00" in same_text
+
+    mismatch = client.post(
+        "/api/portfolio/analyze?tax_year=2026",
+        files={
+            "file": ("sample-robinhood-transactions.csv", sample_csv, "text/csv"),
+            "supplemental_1099": fixture_2024,
+        },
+    )
+    assert mismatch.status_code == 200, mismatch.text
+    mismatch_body = mismatch.json()
+    assert mismatch_body["supplemental_1099"]["tax_year"] == 2024
+    mismatch_payload = build_packet_payload(mismatch_body)
+    assert mismatch_payload["same_year_compare"] is False
+    mismatch_text = "\n".join(
+        (page.extract_text() or "")
+        for page in PdfReader(BytesIO(render_packet_pdf(mismatch_payload))).pages
+    )
+    assert COMPARE_TITLE not in mismatch_text
+    assert "previous-year supplement" in mismatch_text
+
+
 def test_analyze_unknown_1099_year_is_not_mismatch_or_same_year_compare(monkeypatch):
     from io import BytesIO
 
