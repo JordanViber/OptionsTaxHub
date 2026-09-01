@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from datetime import date, datetime
 from io import BytesIO
 from typing import Any, Optional
 
@@ -223,28 +224,86 @@ def export_net_matching_1099(raw_fifo_net: float, wash_disallowed: float) -> flo
     return round(_as_float(raw_fifo_net) + _as_float(wash_disallowed), 2)
 
 
-def classified_csv_wash(analysis: dict[str, Any]) -> tuple[float, float]:
-    """Split CSV wash into ST/LT using realized loss buckets.
+# Same threshold as csv_parser / harvesting: held more than 365 days = long-term.
+LONG_TERM_HOLDING_DAYS = 365
 
-    Flags are not term-split. Allocate to ST losses first, then LT. Leftover
-    still folds into ST so classified wash cannot vanish from the compare.
+
+def _as_date(value: Any) -> Optional[date]:
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+def wash_flag_is_long_term(flag: dict[str, Any]) -> bool:
+    """True when the washed sale was held more than 365 days.
+
+    Holding term uses purchase_date vs sale_date, falling back to repurchase
+    on the existing flag object. Missing dates default to short-term so we
+    never invent a long-term bucket.
     """
-    realized = (analysis.get("summary") or {}).get("realized_summary") or {}
-    wash = max(csv_wash_sale_disallowed_total(analysis), 0.0)
-    st_loss_abs = abs(min(_as_float(realized.get("st_losses")), 0.0))
-    lt_loss_abs = abs(min(_as_float(realized.get("lt_losses")), 0.0))
-    remaining = wash
-    st_wash = min(remaining, st_loss_abs)
-    remaining = round(remaining - st_wash, 2)
-    lt_wash = min(remaining, lt_loss_abs)
-    remaining = round(remaining - lt_wash, 2)
-    return round(st_wash + remaining, 2), round(lt_wash, 2)
+    start = _as_date(flag.get("purchase_date"))
+    end = _as_date(flag.get("sale_date")) or _as_date(flag.get("repurchase_date"))
+    if start is None or end is None:
+        return False
+    return (end - start).days > LONG_TERM_HOLDING_DAYS
+
+
+def classified_csv_wash(analysis: dict[str, Any]) -> tuple[float, float]:
+    """Split CSV wash into ST/LT from each flag's underlying sale term.
+
+    Do not allocate to ST losses first. A long-term disallowed sale stays LT
+    even when short-term loss buckets have room.
+    """
+    short_term = 0.0
+    long_term = 0.0
+    for flag in analysis.get("wash_sale_flags") or []:
+        amount = max(_as_float(flag.get("disallowed_loss")), 0.0)
+        if amount <= 0:
+            continue
+        if wash_flag_is_long_term(flag):
+            long_term += amount
+        else:
+            short_term += amount
+    return round(short_term, 2), round(long_term, 2)
+
+
+def _realized_summary(analysis: dict[str, Any]) -> dict[str, Any] | None:
+    summary = analysis.get("summary")
+    if not isinstance(summary, dict):
+        return None
+    realized = summary.get("realized_summary")
+    if not isinstance(realized, dict):
+        return None
+    return realized
+
+
+def _has_realized_nets(realized: dict[str, Any] | None) -> bool:
+    if not realized:
+        return False
+    return realized.get("net_st") is not None or realized.get("net_lt") is not None
 
 
 def export_realized_totals(analysis: dict[str, Any]) -> dict[str, float]:
-    summary = analysis.get("summary") or {}
-    realized = summary.get("realized_summary") or {}
+    realized = _realized_summary(analysis)
     wash = csv_wash_sale_disallowed_total(analysis)
+    if not _has_realized_nets(realized):
+        # Missing/null realized_summary must stay $0, not leftover wash as +ST.
+        return {
+            "short_term_net": 0.0,
+            "long_term_net": 0.0,
+            "wash_sale_disallowed": wash,
+        }
+    assert realized is not None
     st_wash, lt_wash = classified_csv_wash(analysis)
     return {
         "short_term_net": export_net_matching_1099(realized.get("net_st"), st_wash),

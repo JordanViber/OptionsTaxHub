@@ -801,6 +801,7 @@ function ResultsSection({
           csvWashSaleDisallowed={csvWashSaleDisallowedTotal(
             displayedAnalysis.wash_sale_flags,
           )}
+          csvWashSaleFlags={displayedAnalysis.wash_sale_flags}
         />
       )}
 

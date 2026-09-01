@@ -70,6 +70,9 @@ export interface WashSaleFlag {
   disallowed_loss: number;
   adjusted_cost_basis: number;
   explanation: string;
+  // Original lot acquisition, when present on the flag. Used to classify
+  // the washed sale as ST vs LT without changing wash_sale.py.
+  purchase_date?: string | null;
 }
 
 // --- Tax Profile ---

@@ -106,6 +106,48 @@ export function roundCents(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
+export type WashSaleFlagLike = {
+  disallowed_loss?: number;
+  purchase_date?: string | null;
+  sale_date?: string | null;
+  repurchase_date?: string | null;
+};
+
+export type ClassifiedWashInput =
+  | WashSaleFlagLike[]
+  | number
+  | null
+  | undefined;
+
+// Same threshold as csv_parser / harvesting: held more than 365 days = long-term.
+const LONG_TERM_HOLDING_DAYS = 365;
+
+function parseFlagDate(value: string | null | undefined): Date | null {
+  if (value == null || value === "") {
+    return null;
+  }
+  const day = String(value).slice(0, 10);
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day);
+  if (!match) {
+    return null;
+  }
+  const parsed = new Date(
+    Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])),
+  );
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+export function washFlagIsLongTerm(flag: WashSaleFlagLike): boolean {
+  const start = parseFlagDate(flag.purchase_date);
+  const end =
+    parseFlagDate(flag.sale_date) ?? parseFlagDate(flag.repurchase_date);
+  if (!start || !end) {
+    return false;
+  }
+  const days = Math.round((end.getTime() - start.getTime()) / 86_400_000);
+  return days > LONG_TERM_HOLDING_DAYS;
+}
+
 export function csvWashSaleDisallowedTotal(
   flags: Array<{ disallowed_loss?: number }> | undefined,
 ): number {
@@ -115,43 +157,62 @@ export function csvWashSaleDisallowedTotal(
   );
 }
 
-export function classifiedExportWash(
+export function hasRealizedNets(
   realized: RealizedSummary | null | undefined,
-  csvWashSaleDisallowed = 0,
+): realized is RealizedSummary {
+  return realized != null && (realized.net_st != null || realized.net_lt != null);
+}
+
+export function classifiedExportWash(
+  flagsOrAmount: ClassifiedWashInput = 0,
 ): { shortTerm: number; longTerm: number } {
-  // 1099 net = (proceeds − basis) + wash-sale disallowed. CSV flags are not
-  // term-split, so allocate classified wash to ST losses first, then LT.
-  // Leftover still folds into ST so it cannot vanish from the compare.
-  const wash = Math.max(Number(csvWashSaleDisallowed) || 0, 0);
-  const stLossAbs = Math.abs(Math.min(realized?.st_losses ?? 0, 0));
-  const ltLossAbs = Math.abs(Math.min(realized?.lt_losses ?? 0, 0));
-  let remaining = wash;
-  const stWash = Math.min(remaining, stLossAbs);
-  remaining = roundCents(remaining - stWash);
-  const ltWash = Math.min(remaining, ltLossAbs);
-  remaining = roundCents(remaining - ltWash);
+  // Classify each CSV wash-sale flag by the holding term of its underlying
+  // sale (purchase_date vs sale_date, falling back to repurchase). A scalar
+  // total is treated as short-term. Do not dump long-term wash into ST
+  // just because ST loss buckets have room.
+  if (!Array.isArray(flagsOrAmount)) {
+    const wash = Math.max(Number(flagsOrAmount) || 0, 0);
+    return { shortTerm: roundCents(wash), longTerm: 0 };
+  }
+  let shortTerm = 0;
+  let longTerm = 0;
+  for (const flag of flagsOrAmount) {
+    const amount = Math.max(Number(flag.disallowed_loss) || 0, 0);
+    if (amount <= 0) {
+      continue;
+    }
+    if (washFlagIsLongTerm(flag)) {
+      longTerm += amount;
+    } else {
+      shortTerm += amount;
+    }
+  }
   return {
-    shortTerm: roundCents(stWash + remaining),
-    longTerm: roundCents(ltWash),
+    shortTerm: roundCents(shortTerm),
+    longTerm: roundCents(longTerm),
   };
 }
 
 export function exportShortTermNet(
   realized: RealizedSummary | null | undefined,
-  csvWashSaleDisallowed = 0,
+  flagsOrAmount: ClassifiedWashInput = 0,
 ): number {
+  if (!hasRealizedNets(realized)) {
+    return 0;
+  }
   return roundCents(
-    (realized?.net_st ?? 0) +
-      classifiedExportWash(realized, csvWashSaleDisallowed).shortTerm,
+    (realized.net_st ?? 0) + classifiedExportWash(flagsOrAmount).shortTerm,
   );
 }
 
 export function exportLongTermNet(
   realized: RealizedSummary | null | undefined,
-  csvWashSaleDisallowed = 0,
+  flagsOrAmount: ClassifiedWashInput = 0,
 ): number {
+  if (!hasRealizedNets(realized)) {
+    return 0;
+  }
   return roundCents(
-    (realized?.net_lt ?? 0) +
-      classifiedExportWash(realized, csvWashSaleDisallowed).longTerm,
+    (realized.net_lt ?? 0) + classifiedExportWash(flagsOrAmount).longTerm,
   );
 }
