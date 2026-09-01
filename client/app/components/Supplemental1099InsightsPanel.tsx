@@ -15,11 +15,14 @@ import {
   SUPPLEMENTAL_1099_UNKNOWN_YEAR_TITLE,
   SUPPLEMENTAL_1099_WASH_SALE_FAQ,
   combinedWashSaleDisallowed,
+  csvWashSaleDisallowedTotal,
   exportLongTermNet,
   exportShortTermNet,
   formatUsd,
   isSameYear1099Compare,
   isUnknown1099Year,
+  type ClassifiedWashInput,
+  type WashSaleFlagLike,
 } from "@/lib/supplemental1099";
 
 function TotalsColumn({
@@ -75,19 +78,27 @@ export default function Supplemental1099InsightsPanel({
   analysisTaxYear = null,
   realizedSummary = null,
   csvWashSaleDisallowed = 0,
+  csvWashSaleFlags,
 }: Readonly<{
   summary: Supplemental1099Summary;
   analysisTaxYear?: number | null;
   realizedSummary?: RealizedSummary | null;
   csvWashSaleDisallowed?: number;
+  csvWashSaleFlags?: WashSaleFlagLike[];
 }>) {
   const washSaleDisallowed = combinedWashSaleDisallowed(summary);
+  const exportWashInput: ClassifiedWashInput =
+    csvWashSaleFlags ?? csvWashSaleDisallowed;
+  const exportWashTotal =
+    csvWashSaleFlags != null
+      ? csvWashSaleDisallowedTotal(csvWashSaleFlags)
+      : csvWashSaleDisallowed;
   const sameYear = isSameYear1099Compare(summary.tax_year, analysisTaxYear);
   const unknownYear = isUnknown1099Year(summary.tax_year);
 
   if (sameYear) {
     const showWashFaq =
-      washSaleDisallowed > 0 || csvWashSaleDisallowed > 0;
+      washSaleDisallowed > 0 || exportWashTotal > 0;
 
     return (
       <Box
@@ -141,15 +152,9 @@ export default function Supplemental1099InsightsPanel({
             <TotalsColumn
               title={SUPPLEMENTAL_1099_EXPORT_COLUMN}
               testId="1099-export-column"
-              shortTerm={exportShortTermNet(
-                realizedSummary,
-                csvWashSaleDisallowed,
-              )}
-              longTerm={exportLongTermNet(
-                realizedSummary,
-                csvWashSaleDisallowed,
-              )}
-              washSale={csvWashSaleDisallowed}
+              shortTerm={exportShortTermNet(realizedSummary, exportWashInput)}
+              longTerm={exportLongTermNet(realizedSummary, exportWashInput)}
+              washSale={exportWashTotal}
             />
           </Stack>
           {showWashFaq && (

@@ -168,6 +168,9 @@ class WashSaleFlag(BaseModel):
     disallowed_loss: float  # Amount of loss disallowed
     adjusted_cost_basis: float  # New cost basis for replacement shares
     explanation: str = ""
+    # Original lot acquisition when present. Optional so wash_sale.py can stay
+    # unchanged; 1099 vs export classifies term from this vs sale/repurchase.
+    purchase_date: Optional[date] = None
 
 
 # --- Tax Profile Models ---

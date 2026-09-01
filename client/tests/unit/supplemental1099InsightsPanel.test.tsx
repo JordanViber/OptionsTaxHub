@@ -182,6 +182,75 @@ describe("Supplemental1099InsightsPanel", () => {
     expect(screen.getByText(SUPPLEMENTAL_1099_GAP_COPY)).toBeInTheDocument();
   });
 
+  it("classifies a long-term disallowed sale as LT on the export column", () => {
+    render(
+      <Supplemental1099InsightsPanel
+        summary={{
+          ...fixtureSummary,
+          short_term_proceeds: 5000,
+          short_term_cost_basis: 6000,
+          short_term_net_gain: -1000,
+          long_term_proceeds: 1200,
+          long_term_cost_basis: 1500,
+          long_term_net_gain: 0,
+          short_term_wash_sale_disallowed: 0,
+          long_term_wash_sale_disallowed: 300,
+        }}
+        analysisTaxYear={2024}
+        realizedSummary={{
+          ...realized2024,
+          st_gains: 0,
+          st_losses: -1000,
+          lt_gains: 0,
+          lt_losses: -300,
+          net_st: -1000,
+          net_lt: -300,
+          total_net: -1300,
+        }}
+        csvWashSaleFlags={[
+          {
+            purchase_date: "2023-01-01",
+            sale_date: "2024-07-15",
+            repurchase_date: "2024-07-24",
+            disallowed_loss: 300,
+          },
+        ]}
+      />,
+    );
+
+    const exportCol = screen.getByTestId("1099-export-column");
+    expect(exportCol.textContent).toMatch(/Short-term\s*-\$1,000\.00/);
+    expect(exportCol.textContent).toMatch(/Long-term\s*\$0\.00/);
+    expect(exportCol.textContent).not.toMatch(/Short-term\s*-\$700\.00/);
+    expect(exportCol).toHaveTextContent("$300.00");
+  });
+
+  it("does not synthesize +$300 ST net when realized_summary is missing", () => {
+    render(
+      <Supplemental1099InsightsPanel
+        summary={{
+          ...fixtureSummary,
+          short_term_proceeds: 1200,
+          short_term_cost_basis: 1500,
+          short_term_net_gain: 0,
+          long_term_proceeds: 0,
+          long_term_cost_basis: 0,
+          long_term_net_gain: 0,
+          short_term_wash_sale_disallowed: 300,
+          long_term_wash_sale_disallowed: 0,
+        }}
+        analysisTaxYear={2024}
+        realizedSummary={null}
+        csvWashSaleDisallowed={300}
+      />,
+    );
+
+    const exportCol = screen.getByTestId("1099-export-column");
+    expect(exportCol.textContent).toMatch(/Short-term\s*\$0\.00/);
+    expect(exportCol.textContent).not.toMatch(/Short-term\s*\$300\.00/);
+    expect(exportCol.textContent).toMatch(/Wash-sale disallowed\s*\$300\.00/);
+  });
+
   it("does not treat a $300 loss + $300 disallowed as a settlement gap", () => {
     render(
       <Supplemental1099InsightsPanel
