@@ -10,6 +10,8 @@ import {
   SUPPLEMENTAL_1099_EXPORT_COLUMN,
   SUPPLEMENTAL_1099_GAP_COPY,
   SUPPLEMENTAL_1099_SETTLEMENT_FAQ,
+  SUPPLEMENTAL_1099_UNKNOWN_YEAR_COPY,
+  SUPPLEMENTAL_1099_UNKNOWN_YEAR_TITLE,
   SUPPLEMENTAL_1099_WASH_SALE_FAQ,
 } from "../../lib/supplemental1099";
 
@@ -143,8 +145,11 @@ describe("Supplemental1099InsightsPanel", () => {
     expect(screen.getByTestId("1099-broker-column")).toHaveTextContent(
       "$17,442.80",
     );
-    expect(screen.getByTestId("1099-export-column")).toHaveTextContent("-$300.00");
+    expect(screen.getByTestId("1099-export-column")).toHaveTextContent("$0.00");
     expect(screen.getByTestId("1099-export-column")).toHaveTextContent("$300.00");
+    expect(screen.getByTestId("1099-export-column")).not.toHaveTextContent(
+      "-$300.00",
+    );
     expect(
       screen.queryByText(SUPPLEMENTAL_1099_APPLIED_TITLE),
     ).not.toBeInTheDocument();
@@ -161,7 +166,9 @@ describe("Supplemental1099InsightsPanel", () => {
       <Supplemental1099InsightsPanel
         summary={{
           ...fixtureSummary,
-          short_term_net_gain: -300,
+          short_term_proceeds: 1200,
+          short_term_cost_basis: 1500,
+          short_term_net_gain: 0,
           long_term_net_gain: 0,
           short_term_wash_sale_disallowed: 300,
           long_term_wash_sale_disallowed: 0,
@@ -173,6 +180,76 @@ describe("Supplemental1099InsightsPanel", () => {
     );
 
     expect(screen.getByText(SUPPLEMENTAL_1099_GAP_COPY)).toBeInTheDocument();
+  });
+
+  it("does not treat a $300 loss + $300 disallowed as a settlement gap", () => {
+    render(
+      <Supplemental1099InsightsPanel
+        summary={{
+          ...fixtureSummary,
+          short_term_proceeds: 1200,
+          short_term_cost_basis: 1500,
+          short_term_net_gain: 0,
+          long_term_proceeds: 0,
+          long_term_cost_basis: 0,
+          long_term_net_gain: 0,
+          short_term_wash_sale_disallowed: 300,
+          long_term_wash_sale_disallowed: 0,
+        }}
+        analysisTaxYear={2024}
+        realizedSummary={realized2024}
+        csvWashSaleDisallowed={300}
+      />,
+    );
+
+    const broker = screen.getByTestId("1099-broker-column");
+    const exportCol = screen.getByTestId("1099-export-column");
+    expect(broker).toHaveTextContent("$0.00");
+    expect(broker).toHaveTextContent("$300.00");
+    expect(exportCol).toHaveTextContent("$0.00");
+    expect(exportCol).toHaveTextContent("$300.00");
+    expect(exportCol).not.toHaveTextContent("-$300.00");
+    expect(broker).not.toHaveTextContent("-$300.00");
+  });
+
+  it("shows unknown 1099 year as distinct copy, not a mismatch or same-year compare", () => {
+    render(
+      <Supplemental1099InsightsPanel
+        summary={{
+          ...fixtureSummary,
+          tax_year: null,
+          insights: [],
+        }}
+        analysisTaxYear={2024}
+        realizedSummary={realized2024}
+        csvWashSaleDisallowed={300}
+      />,
+    );
+
+    expect(
+      screen.getByText(SUPPLEMENTAL_1099_UNKNOWN_YEAR_TITLE),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(SUPPLEMENTAL_1099_UNKNOWN_YEAR_COPY),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Using Robinhood 1099 PDF for tax year unknown/i),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("unknown-year-1099-supplement")).toBeInTheDocument();
+    expect(
+      screen.queryByText(SUPPLEMENTAL_1099_APPLIED_TITLE),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(SUPPLEMENTAL_1099_APPLIED_COPY),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/previous-year supplement/i),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(SUPPLEMENTAL_1099_COMPARE_TITLE),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId("1099-vs-export-panel")).not.toBeInTheDocument();
+    expect(screen.queryByText(/same year as this export/i)).not.toBeInTheDocument();
   });
 
   it("keeps 2026 sample + 2024 fixture as previous-year supplement, not a same-year compare", () => {

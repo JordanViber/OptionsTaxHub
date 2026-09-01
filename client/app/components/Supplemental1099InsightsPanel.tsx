@@ -11,12 +11,15 @@ import {
   SUPPLEMENTAL_1099_EXPORT_COLUMN,
   SUPPLEMENTAL_1099_GAP_COPY,
   SUPPLEMENTAL_1099_SETTLEMENT_FAQ,
+  SUPPLEMENTAL_1099_UNKNOWN_YEAR_COPY,
+  SUPPLEMENTAL_1099_UNKNOWN_YEAR_TITLE,
   SUPPLEMENTAL_1099_WASH_SALE_FAQ,
   combinedWashSaleDisallowed,
   exportLongTermNet,
   exportShortTermNet,
   formatUsd,
   isSameYear1099Compare,
+  isUnknown1099Year,
 } from "@/lib/supplemental1099";
 
 function TotalsColumn({
@@ -80,6 +83,7 @@ export default function Supplemental1099InsightsPanel({
 }>) {
   const washSaleDisallowed = combinedWashSaleDisallowed(summary);
   const sameYear = isSameYear1099Compare(summary.tax_year, analysisTaxYear);
+  const unknownYear = isUnknown1099Year(summary.tax_year);
 
   if (sameYear) {
     const showWashFaq =
@@ -137,8 +141,14 @@ export default function Supplemental1099InsightsPanel({
             <TotalsColumn
               title={SUPPLEMENTAL_1099_EXPORT_COLUMN}
               testId="1099-export-column"
-              shortTerm={exportShortTermNet(realizedSummary)}
-              longTerm={exportLongTermNet(realizedSummary)}
+              shortTerm={exportShortTermNet(
+                realizedSummary,
+                csvWashSaleDisallowed,
+              )}
+              longTerm={exportLongTermNet(
+                realizedSummary,
+                csvWashSaleDisallowed,
+              )}
               washSale={csvWashSaleDisallowed}
             />
           </Stack>
@@ -154,7 +164,11 @@ export default function Supplemental1099InsightsPanel({
 
   return (
     <Box
-      data-testid="previous-year-1099-supplement"
+      data-testid={
+        unknownYear
+          ? "unknown-year-1099-supplement"
+          : "previous-year-1099-supplement"
+      }
       sx={{
         border: "1px solid",
         borderColor: "info.light",
@@ -168,10 +182,14 @@ export default function Supplemental1099InsightsPanel({
       <Stack spacing={1.25}>
         <Box>
           <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-            {SUPPLEMENTAL_1099_APPLIED_TITLE}
+            {unknownYear
+              ? SUPPLEMENTAL_1099_UNKNOWN_YEAR_TITLE
+              : SUPPLEMENTAL_1099_APPLIED_TITLE}
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            {SUPPLEMENTAL_1099_APPLIED_COPY}
+            {unknownYear
+              ? SUPPLEMENTAL_1099_UNKNOWN_YEAR_COPY
+              : SUPPLEMENTAL_1099_APPLIED_COPY}
           </Typography>
         </Box>
         <Typography variant="body2">

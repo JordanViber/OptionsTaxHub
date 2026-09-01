@@ -52,7 +52,12 @@ OPTIONS_WASH_SALE_FAQ = (
 COMPARE_TITLE = "1099 vs your export"
 COMPARE_INTRO = (
     "Two columns, totals only. Broker 1099 uses settlement date; "
-    "this export uses trade date. ST/LT/wash as reported."
+    "this export uses trade date. ST/LT nets include wash-sale disallowed "
+    "(1099 definition); wash is also shown separately."
+)
+UNKNOWN_1099_YEAR_COPY = (
+    "1099 tax year could not be determined; shown as a supplement — "
+    "not a previous-year mismatch and not a same-year compare."
 )
 COMPARE_BROKER_HEADER = "Broker 1099 (settlement date)"
 COMPARE_EXPORT_HEADER = "This export (trade date)"
@@ -207,13 +212,44 @@ def csv_wash_sale_disallowed_total(analysis: dict[str, Any]) -> float:
     )
 
 
+def export_net_matching_1099(raw_fifo_net: float, wash_disallowed: float) -> float:
+    """Fold classified CSV wash into FIFO net so it matches 1099 net.
+
+    1099 net = (proceeds − basis) + wash-sale disallowed. Export net_st from
+    _compute_realized_summary is raw FIFO. Adding CSV wash_sale_flags
+    disallowed_loss aligns the export column with that definition. Do not use
+    1099 wash here — those lots are a different universe.
+    """
+    return round(_as_float(raw_fifo_net) + _as_float(wash_disallowed), 2)
+
+
+def classified_csv_wash(analysis: dict[str, Any]) -> tuple[float, float]:
+    """Split CSV wash into ST/LT using realized loss buckets.
+
+    Flags are not term-split. Allocate to ST losses first, then LT. Leftover
+    still folds into ST so classified wash cannot vanish from the compare.
+    """
+    realized = (analysis.get("summary") or {}).get("realized_summary") or {}
+    wash = max(csv_wash_sale_disallowed_total(analysis), 0.0)
+    st_loss_abs = abs(min(_as_float(realized.get("st_losses")), 0.0))
+    lt_loss_abs = abs(min(_as_float(realized.get("lt_losses")), 0.0))
+    remaining = wash
+    st_wash = min(remaining, st_loss_abs)
+    remaining = round(remaining - st_wash, 2)
+    lt_wash = min(remaining, lt_loss_abs)
+    remaining = round(remaining - lt_wash, 2)
+    return round(st_wash + remaining, 2), round(lt_wash, 2)
+
+
 def export_realized_totals(analysis: dict[str, Any]) -> dict[str, float]:
     summary = analysis.get("summary") or {}
     realized = summary.get("realized_summary") or {}
+    wash = csv_wash_sale_disallowed_total(analysis)
+    st_wash, lt_wash = classified_csv_wash(analysis)
     return {
-        "short_term_net": _as_float(realized.get("net_st")),
-        "long_term_net": _as_float(realized.get("net_lt")),
-        "wash_sale_disallowed": csv_wash_sale_disallowed_total(analysis),
+        "short_term_net": export_net_matching_1099(realized.get("net_st"), st_wash),
+        "long_term_net": export_net_matching_1099(realized.get("net_lt"), lt_wash),
+        "wash_sale_disallowed": wash,
     }
 
 
@@ -287,6 +323,7 @@ def build_packet_payload(
     same_year = bool(supplemental) and is_same_year_1099_compare(
         form_1099_tax_year, analysis_tax_year
     )
+    unknown_year = bool(supplemental) and form_1099_tax_year is None
     export_totals = export_realized_totals(analysis)
     return {
         "analysis_id": analysis_id or analysis.get("analysis_id") or "",
@@ -297,6 +334,7 @@ def build_packet_payload(
         "form_1099_tax_year": form_1099_tax_year,
         "form_1099_applied": bool(supplemental),
         "same_year_compare": same_year,
+        "unknown_1099_year": unknown_year,
         "broker_name": (supplemental or {}).get("broker_name") or "",
         "short_term_proceeds": st_proceeds,
         "long_term_proceeds": lt_proceeds,
@@ -347,6 +385,10 @@ def packet_plain_text(payload: dict[str, Any]) -> str:
 
     if payload.get("same_year_compare"):
         lines.append("1099 vs your export is included as a dedicated page.")
+    elif payload.get("unknown_1099_year") or (
+        payload.get("form_1099_applied") and payload.get("form_1099_tax_year") is None
+    ):
+        lines.append(UNKNOWN_1099_YEAR_COPY)
     elif payload.get("form_1099_applied"):
         lines.append(
             "1099 tax year does not match this export; shown as a previous-year supplement."
