@@ -75,6 +75,17 @@ import {
 } from "@/lib/api";
 import FirstRunEmptyState from "../components/FirstRunEmptyState";
 import Supplemental1099InsightsPanel from "../components/Supplemental1099InsightsPanel";
+import {
+  SUPPLEMENTAL_1099_AFTER_FIRST_RUN_COPY,
+  SUPPLEMENTAL_1099_AFTER_FIRST_RUN_TITLE,
+  SUPPLEMENTAL_1099_CONTEXT_COPY,
+  SUPPLEMENTAL_1099_UNKNOWN_YEAR_HELPER,
+  SUPPLEMENTAL_1099_UNKNOWN_YEAR_RESTORED_HELPER,
+  SUPPLEMENTAL_1099_UPLOAD_TITLE,
+  csvWashSaleDisallowedTotal,
+  isSameYear1099Compare,
+  isUnknown1099Year,
+} from "@/lib/supplemental1099";
 import YearClosePacketPanel, {
   isYearClosePacketPaid,
   rememberYearClosePacketPaid,
@@ -100,6 +111,36 @@ const UPLOAD_INTENT_KEY = "oth-upload-intent";
 const LOAD_SAMPLE_KEY = "oth-load-sample";
 const GUEST_UNSAVED_KEY = "oth-guest-unsaved";
 const GUEST_UNSAVED_FILENAME_KEY = "oth-guest-unsaved-filename";
+const SAMPLE_CSV_URL = "/sample-robinhood-transactions.csv";
+const SAMPLE_CSV_FILENAME = "sample-robinhood-transactions.csv";
+const SAMPLE_1099_URL = "/sample-robinhood-1099-2026.pdf";
+const SAMPLE_1099_FILENAME = "sample-robinhood-1099-2026.pdf";
+
+async function fetchSampleCsvAnd1099(): Promise<{
+  csvFile: File;
+  form1099File: File;
+}> {
+  const [csvResponse, pdfResponse] = await Promise.all([
+    fetch(SAMPLE_CSV_URL),
+    fetch(SAMPLE_1099_URL),
+  ]);
+  if (!csvResponse.ok) {
+    throw new Error("Could not load the sample CSV.");
+  }
+  if (!pdfResponse.ok) {
+    throw new Error("Could not load the sample 1099.");
+  }
+  const [csvBlob, pdfBlob] = await Promise.all([
+    csvResponse.blob(),
+    pdfResponse.blob(),
+  ]);
+  return {
+    csvFile: new File([csvBlob], SAMPLE_CSV_FILENAME, { type: "text/csv" }),
+    form1099File: new File([pdfBlob], SAMPLE_1099_FILENAME, {
+      type: "application/pdf",
+    }),
+  };
+}
 
 type AnalysisSource = "fresh-upload" | "saved-history" | "restored-session";
 
@@ -445,29 +486,45 @@ function getSupplemental1099HelperText({
   isRestoredAppliedSummary,
   hasSelectedFile,
   hasUploadedCsv,
+  sameYearCompare,
+  unknownYear,
 }: {
   isApplied: boolean;
   isRestoredAppliedSummary: boolean;
   hasSelectedFile: boolean;
   hasUploadedCsv: boolean;
+  sameYearCompare: boolean;
+  unknownYear: boolean;
 }): string {
   if (isRestoredAppliedSummary) {
-    return "This restored result already includes last year’s broker 1099 as reconciliation context, not a rebuild of lots. Upload the PDF again only if you want to refresh it.";
+    if (sameYearCompare) {
+      return "This restored result already includes 1099 vs this export (totals only) — reconciliation context, not lot history. Upload the PDF again only if you want to refresh it.";
+    }
+    if (unknownYear) {
+      return SUPPLEMENTAL_1099_UNKNOWN_YEAR_RESTORED_HELPER;
+    }
+    return "This restored result already includes a previous-year broker 1099 as reconciliation context, not lot history. Upload the PDF again only if you want to refresh it.";
   }
 
   if (isApplied) {
-    return "Included as reconciliation context from last year’s broker 1099 (totals only), not a rebuild of lots.";
+    if (sameYearCompare) {
+      return "Included as 1099 vs this export (totals only) — reconciliation context, not lot history.";
+    }
+    if (unknownYear) {
+      return SUPPLEMENTAL_1099_UNKNOWN_YEAR_HELPER;
+    }
+    return "Included as a previous-year 1099 supplement — reconciliation context, not lot history.";
   }
 
   if (hasSelectedFile && hasUploadedCsv) {
-    return "This PDF is being used with your latest CSV as reconciliation context, not a rebuild of lots. Replace it to automatically refresh the result.";
+    return "This PDF is being used with your latest CSV as reconciliation context, not lot history. Replace it to automatically refresh the result.";
   }
 
   if (hasSelectedFile) {
-    return "This PDF is ready and will be included the next time you analyze a CSV as reconciliation context, not a rebuild of lots.";
+    return "This PDF is ready and will be included the next time you analyze a CSV as reconciliation context, not lot history.";
   }
 
-  return "Optional last year’s broker 1099 for reconciliation context — not a rebuild of lots.";
+  return SUPPLEMENTAL_1099_CONTEXT_COPY;
 }
 
 function getSupplemental1099Status({
@@ -527,6 +584,7 @@ function getSupplemental1099Status({
 function Supplemental1099UploadPanel({
   selectedFileName,
   appliedSummary,
+  analysisTaxYear,
   analysisSource,
   hasUploadedCsv,
   canRemoveSupplement,
@@ -535,6 +593,7 @@ function Supplemental1099UploadPanel({
 }: Readonly<{
   selectedFileName: string | null;
   appliedSummary: PortfolioAnalysis["supplemental_1099"] | null | undefined;
+  analysisTaxYear?: number | null;
   analysisSource: AnalysisSource | null;
   hasUploadedCsv: boolean;
   canRemoveSupplement: boolean;
@@ -551,11 +610,19 @@ function Supplemental1099UploadPanel({
     !selectedFileName &&
     (analysisSource === "restored-session" ||
       analysisSource === "saved-history");
+  const sameYearCompare = isSameYear1099Compare(
+    appliedSummary?.tax_year,
+    analysisTaxYear,
+  );
+  const unknownYear =
+    Boolean(appliedSummary) && isUnknown1099Year(appliedSummary?.tax_year);
   const helperText = getSupplemental1099HelperText({
     isApplied,
     isRestoredAppliedSummary,
     hasSelectedFile,
     hasUploadedCsv,
+    sameYearCompare,
+    unknownYear,
   });
   const status = getSupplemental1099Status({
     isApplied,
@@ -585,7 +652,7 @@ function Supplemental1099UploadPanel({
         >
           <Box>
             <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
-              Previous year&apos;s Robinhood 1099 PDF
+              {SUPPLEMENTAL_1099_UPLOAD_TITLE}
             </Typography>
             <Typography variant="body2" color="text.secondary">
               {helperText}
@@ -759,6 +826,12 @@ function ResultsSection({
       {displayedAnalysis?.supplemental_1099 && (
         <Supplemental1099InsightsPanel
           summary={displayedAnalysis.supplemental_1099}
+          analysisTaxYear={displayedAnalysis.tax_profile?.tax_year ?? null}
+          realizedSummary={displayedAnalysis.summary?.realized_summary ?? null}
+          csvWashSaleDisallowed={csvWashSaleDisallowedTotal(
+            displayedAnalysis.wash_sale_flags,
+          )}
+          csvWashSaleFlags={displayedAnalysis.wash_sale_flags}
         />
       )}
 
@@ -769,9 +842,8 @@ function ResultsSection({
 
       {shouldPrompt1099Supplement && (
         <Alert severity="info" variant="outlined">
-          <AlertTitle>Optional prior-year 1099</AlertTitle>
-          Upload your previous year’s Robinhood 1099 PDF for reconciliation
-          context — not a rebuild of lots. We show broker-reported totals only.
+          <AlertTitle>{SUPPLEMENTAL_1099_AFTER_FIRST_RUN_TITLE}</AlertTitle>
+          {SUPPLEMENTAL_1099_AFTER_FIRST_RUN_COPY}
         </Alert>
       )}
 
@@ -1305,23 +1377,20 @@ export default function DashboardPage() {
   const handleLoadSample = () => {
     void (async () => {
       try {
-        const response = await fetch("/sample-robinhood-transactions.csv");
-        if (!response.ok) {
-          throw new Error("Could not load the sample CSV.");
-        }
-        const blob = await response.blob();
-        const file = new File([blob], "sample-robinhood-transactions.csv", {
-          type: "text/csv",
-        });
+        const { csvFile, form1099File } = await fetchSampleCsvAnd1099();
         clearCurrentAnalysisView({
           setLoadedAnalysis,
           setAnalysisSource,
         });
         setForceEmpty(false);
-        runPortfolioAnalysis(file);
-      } catch {
+        setSupplemental1099File(form1099File);
+        runPortfolioAnalysis(csvFile, form1099File);
+      } catch (err) {
         setSnackbar({
-          message: "Could not load the sample CSV.",
+          message:
+            err instanceof Error
+              ? err.message
+              : "Could not load the 2026 sample.",
           severity: "error",
         });
       }
@@ -1342,14 +1411,7 @@ export default function DashboardPage() {
 
     void (async () => {
       try {
-        const response = await fetch("/sample-robinhood-transactions.csv");
-        if (!response.ok || cancelled) {
-          return;
-        }
-        const blob = await response.blob();
-        const file = new File([blob], "sample-robinhood-transactions.csv", {
-          type: "text/csv",
-        });
+        const { csvFile, form1099File } = await fetchSampleCsvAnd1099();
         if (cancelled) {
           return;
         }
@@ -1363,11 +1425,12 @@ export default function DashboardPage() {
           setAnalysisSource,
         });
         setForceEmpty(false);
-        runPortfolioAnalysis(file);
+        setSupplemental1099File(form1099File);
+        runPortfolioAnalysis(csvFile, form1099File);
       } catch {
         if (!cancelled) {
           setSnackbar({
-            message: "Could not load the sample CSV.",
+            message: "Could not load the 2026 sample.",
             severity: "error",
           });
         }
@@ -1960,6 +2023,7 @@ export default function DashboardPage() {
                 <Supplemental1099UploadPanel
                   selectedFileName={supplemental1099File?.name ?? null}
                   appliedSummary={displayedAnalysis?.supplemental_1099}
+                  analysisTaxYear={displayedAnalysis?.tax_profile?.tax_year}
                   analysisSource={analysisSource}
                   hasUploadedCsv={Boolean(lastUploadedCsv)}
                   canRemoveSupplement={
@@ -1976,7 +2040,7 @@ export default function DashboardPage() {
                 />
                 {supplemental1099Warnings.length > 0 && (
                   <Alert severity="warning">
-                    <AlertTitle>Prior-year 1099 warning</AlertTitle>
+                    <AlertTitle>1099 warning</AlertTitle>
                     {supplemental1099Warnings.map((warning) => (
                       <Typography key={warning} variant="body2">
                         {warning}

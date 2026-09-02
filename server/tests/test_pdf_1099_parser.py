@@ -2,13 +2,13 @@ from pathlib import Path
 
 import pytest
 
-from pdf_1099_parser import parse_robinhood_1099_pdf
+from pdf_1099_parser import extract_text_from_pdf, parse_robinhood_1099_pdf
 
 
-PDF_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "docs"
-    / "c15f7458-e9d5-4dfb-a985-351df5a36cde.pdf"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+PDF_PATH = REPO_ROOT / "docs" / "c15f7458-e9d5-4dfb-a985-351df5a36cde.pdf"
+SAMPLE_2026_PDF_PATH = (
+    REPO_ROOT / "client" / "public" / "sample-robinhood-1099-2026.pdf"
 )
 
 
@@ -117,3 +117,41 @@ def test_parse_robinhood_1099_pdf_handles_negative_net_gain(monkeypatch):
     assert summary.long_term_proceeds == pytest.approx(2000.00)
     assert summary.long_term_cost_basis == pytest.approx(2050.00)
     assert summary.long_term_net_gain == pytest.approx(-50.00)
+
+
+def test_parse_2026_sample_robinhood_1099_pdf_extracts_locked_short_term_totals():
+    pdf_bytes = SAMPLE_2026_PDF_PATH.read_bytes()
+    text = extract_text_from_pdf(pdf_bytes)
+
+    assert "Enclosed is your 2026 Consolidated Tax Statement" in text
+    assert "Robinhood" in text
+    assert "$8,315.00" in text
+    assert "$6,540.00" in text
+    assert "$0.00" in text
+    assert "$924.00" in text
+    assert "$2,699.00" in text
+    assert "/ Symbol: SPX" in text
+    assert "/ Symbol: NVDA" in text
+    assert "/ Symbol: AMD" in text
+    assert "/ Symbol: TSLA" in text
+
+    summary = parse_robinhood_1099_pdf(
+        pdf_bytes,
+        current_symbols={"NVDA", "AMD", "TSLA", "AAPL", "META", "MSFT", "SPY"},
+        filename="sample-robinhood-1099-2026.pdf",
+        expected_previous_year=2025,
+    )
+
+    assert summary.source_filename == "sample-robinhood-1099-2026.pdf"
+    assert summary.broker_name == "Robinhood"
+    assert summary.tax_year == 2026
+    assert summary.short_term_proceeds == pytest.approx(8315.00)
+    assert summary.short_term_cost_basis == pytest.approx(6540.00)
+    assert summary.short_term_wash_sale_disallowed == pytest.approx(924.00)
+    assert summary.short_term_net_gain == pytest.approx(2699.00)
+    assert summary.long_term_proceeds == pytest.approx(0.00)
+    assert summary.long_term_cost_basis == pytest.approx(0.00)
+    assert summary.long_term_wash_sale_disallowed == pytest.approx(0.00)
+    assert summary.long_term_net_gain == pytest.approx(0.00)
+    assert summary.referenced_symbols == ["AMD", "NVDA", "SPX", "TSLA"]
+    assert summary.matched_symbols == ["AMD", "NVDA", "TSLA"]

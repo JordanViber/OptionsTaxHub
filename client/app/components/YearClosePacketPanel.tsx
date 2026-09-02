@@ -116,6 +116,9 @@ function compactAnalysis(analysis: PortfolioAnalysis) {
     tax_profile: analysis.tax_profile,
     supplemental_1099: analysis.supplemental_1099 ?? null,
     wash_sale_flags: analysis.wash_sale_flags,
+    summary: {
+      realized_summary: analysis.summary?.realized_summary ?? null,
+    },
     tax_lots: (analysis.tax_lots || []).map((lot) => ({
       symbol: lot.symbol,
       quantity: lot.quantity,

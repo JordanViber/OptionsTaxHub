@@ -37,8 +37,8 @@ export default function PrivacyPage() {
               What we process
             </Typography>
             <Typography variant="body1" paragraph>
-              When you upload a brokerage CSV (and optionally a prior-year 1099
-              PDF), we process that file to build portfolio analysis: open
+              When you upload a brokerage CSV (and optionally a 1099 PDF for
+              the tax year you are closing), we process that file to build portfolio analysis: open
               positions, tax lots, wash-sale flags, and federal tax-loss
               harvesting estimates.
             </Typography>

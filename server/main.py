@@ -759,22 +759,28 @@ def _is_empty_supplemental_summary(summary: Supplemental1099Summary) -> bool:
 async def _maybe_parse_supplemental_1099(
     supplemental_1099: UploadFile | None,
     current_symbols: set[str],
-    expected_previous_year: int,
+    dashboard_tax_year: int,
 ) -> tuple[Supplemental1099Summary | None, list[str]]:
-    """Parse the optional prior-year 1099 PDF and return any user-facing warnings."""
+    """Parse the optional 1099 PDF and return any user-facing warnings.
+
+    Same-year (1099 tax year == dashboard tax year) is a first-class compare.
+    Immediately prior year is a previous-year supplement. Any other year is
+    still shown as a previous-year supplement, with an honest mismatch warning.
+    """
     if supplemental_1099 is None:
         return None, []
 
     if not _is_pdf_upload(supplemental_1099):
         return None, ["Supplemental 1099 must be a PDF file (received unsupported content type)."]
 
+    expected_previous_year = dashboard_tax_year - 1
     try:
         supplemental_bytes = await supplemental_1099.read(_MAX_SUPPLEMENTAL_PDF_BYTES + 1)
         if len(supplemental_bytes) > _MAX_SUPPLEMENTAL_PDF_BYTES:
             return None, ["Supplemental 1099 PDF exceeds the 20 MB size limit and was ignored."]
         summary = _parse_supplemental_1099_summary(
             supplemental_bytes,
-            supplemental_1099.filename or "prior-year-1099.pdf",
+            supplemental_1099.filename or "1099.pdf",
             current_symbols,
             expected_previous_year,
         )
@@ -786,7 +792,10 @@ async def _maybe_parse_supplemental_1099(
         return None, ["Supplemental 1099 PDF could not be parsed and was ignored for this analysis."]
 
     warnings: list[str] = []
-    if summary.tax_year is not None and summary.tax_year != expected_previous_year:
+    if summary.tax_year is not None and summary.tax_year not in (
+        dashboard_tax_year,
+        expected_previous_year,
+    ):
         warnings.append(
             "The supplemental 1099 PDF was parsed successfully, but its tax year does not match the expected prior year for this analysis."
         )
@@ -1090,7 +1099,7 @@ async def _run_portfolio_analysis(
     supplemental_1099_summary, supplemental_1099_warnings = await _maybe_parse_supplemental_1099(
         supplemental_1099,
         {lot.symbol for lot in tax_lots},
-        (tax_profile.tax_year or 2026) - 1,
+        tax_profile.tax_year or 2026,
     )
     all_warnings.extend(supplemental_1099_warnings)
 

@@ -268,7 +268,7 @@ describe("DashboardPage", () => {
     await waitFor(() => {
       expect(screen.getByText(/Portfolio Analysis/i)).toBeInTheDocument();
       expect(
-        screen.getByText(/Previous year's Robinhood 1099 PDF/i),
+        screen.getByText(/Robinhood 1099 for the tax year you are closing/i),
       ).toBeInTheDocument();
     });
   });
@@ -441,7 +441,7 @@ describe("DashboardPage", () => {
         ),
       ).toBeInTheDocument();
       expect(
-        screen.getByText(/Upload your previous year’s Robinhood 1099 PDF/i),
+        screen.getByText(/Upload your Robinhood 1099 PDF for the tax year you are closing/i),
       ).toBeInTheDocument();
     });
   });
@@ -467,7 +467,7 @@ describe("DashboardPage", () => {
         screen.getByText("Previous-year 1099 supplement applied"),
       ).toBeInTheDocument();
       expect(
-        screen.getByText(/reconciliation context, not a rebuild of lots/i),
+        screen.getByText(/previous-year supplement — not a same-year 1099 vs export compare/i),
       ).toBeInTheDocument();
       expect(
         screen.getByText("Included in current analysis"),
@@ -694,26 +694,80 @@ describe("DashboardPage", () => {
       screen.getByRole("link", { name: /Download sample CSV/i }),
     ).toHaveAttribute("href", "/sample-robinhood-transactions.csv");
     expect(
-      screen.getByText(/Optionally attach last year's Robinhood 1099 PDF/i),
+      screen.getByText(
+        /attach the Robinhood 1099 PDF for the tax year you are closing next to the CSV/i,
+      ),
     ).toBeInTheDocument();
     expect(
       screen.getByText(/Savings estimates use your tax profile/i),
     ).toBeInTheDocument();
   });
 
+  it("Open the 2026 sample attaches the CSV and the 2026 1099 together", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("sample-robinhood-1099-2026.pdf")) {
+        return {
+          ok: true,
+          blob: async () =>
+            new Blob(["%PDF-1.4 sample"], { type: "application/pdf" }),
+        };
+      }
+      if (url.includes("sample-robinhood-transactions.csv")) {
+        return {
+          ok: true,
+          blob: async () =>
+            new Blob(["symbol,qty\nAAPL,1"], { type: "text/csv" }),
+        };
+      }
+      return { ok: false, blob: async () => new Blob([]) };
+    }) as typeof fetch;
 
-  it("prompts for an optional prior-year 1099 after first-run when none is attached", async () => {
+    try {
+      render(<DashboardPage />, { wrapper: createWrapper() });
+
+      fireEvent.click(
+        await screen.findByRole("button", { name: "Open the 2026 sample" }),
+      );
+
+      await waitFor(() => {
+        expect(mockAnalyzeMutate).toHaveBeenCalledTimes(1);
+      });
+      expect(mockAnalyzeMutate.mock.calls[0][0]).toMatchObject({
+        file: expect.objectContaining({
+          name: "sample-robinhood-transactions.csv",
+        }),
+        supplemental1099File: expect.objectContaining({
+          name: "sample-robinhood-1099-2026.pdf",
+        }),
+      });
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "/sample-robinhood-transactions.csv",
+      );
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "/sample-robinhood-1099-2026.pdf",
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+
+  it("prompts for an optional 1099 after first-run when none is attached", async () => {
     mockAnalyzeData = baseAnalysis;
 
     render(<DashboardPage />, { wrapper: createWrapper() });
 
     await waitFor(() => {
-      expect(screen.getByText("Optional prior-year 1099")).toBeInTheDocument();
       expect(
-        screen.getByText(/Upload your previous year’s Robinhood 1099 PDF/i),
+        screen.getByText("Optional: 1099 for the tax year you are closing"),
       ).toBeInTheDocument();
       expect(
-        screen.getAllByText(/not a rebuild of lots/i).length,
+        screen.getByText(/Upload your Robinhood 1099 PDF for the tax year you are closing/i),
+      ).toBeInTheDocument();
+      expect(
+        screen.getAllByText(/not lot history/i).length,
       ).toBeGreaterThan(0);
     });
   });
@@ -729,7 +783,7 @@ describe("DashboardPage", () => {
     render(<DashboardPage />, { wrapper: createWrapper() });
 
     await waitFor(() => {
-      expect(screen.getByText("Prior-year 1099 warning")).toBeInTheDocument();
+      expect(screen.getByText("1099 warning")).toBeInTheDocument();
       expect(
         screen.getAllByText(
           /Supplemental 1099 PDF could not be parsed and was ignored/i,
@@ -767,10 +821,288 @@ describe("DashboardPage", () => {
         screen.getByText(/not the expected prior year \(2024\)/i),
       ).toBeInTheDocument();
       expect(
-        screen.getByText("Prior-year 1099 warning"),
+        screen.getByText("1099 warning"),
       ).toBeInTheDocument();
       expect(
         screen.queryByText(/Using Robinhood 1099 PDF for tax year 2024/i),
+      ).not.toBeInTheDocument();
+      expect(screen.queryByText("1099 vs your export")).not.toBeInTheDocument();
+    });
+  });
+
+  it("shows 1099 vs export when the 1099 tax year matches the dashboard year", async () => {
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      tax_profile: { ...baseAnalysis.tax_profile, tax_year: 2024 },
+      wash_sale_flags: [
+        {
+          symbol: "AMD",
+          sale_date: "2024-07-15",
+          sale_quantity: 10,
+          sale_loss: 300,
+          repurchase_date: "2024-07-24",
+          repurchase_quantity: 10,
+          disallowed_loss: 300,
+          adjusted_cost_basis: 1550,
+          explanation: "Wash sale on AMD",
+        },
+      ],
+      summary: {
+        ...baseAnalysis.summary,
+        realized_summary: {
+          tax_year: 2024,
+          st_gains: 0,
+          st_losses: -300,
+          lt_gains: 0,
+          lt_losses: 0,
+          net_st: -300,
+          net_lt: 0,
+          total_net: -300,
+          transactions_count: 1,
+        },
+      },
+      supplemental_1099: {
+        ...baseSupplemental1099,
+        tax_year: 2024,
+      },
+    };
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByText("1099 vs your export")).toBeInTheDocument();
+      expect(screen.getByTestId("1099-broker-column")).toBeInTheDocument();
+      expect(screen.getByTestId("1099-export-column")).toBeInTheDocument();
+      expect(
+        screen.getByText(/Broker 1099 \(settlement date\)/i),
+      ).toBeInTheDocument();
+      expect(screen.getByText(/This export \(trade date\)/i)).toBeInTheDocument();
+      expect(
+        screen.getByText(/not a software bug/i),
+      ).toBeInTheDocument();
+      expect(screen.getByText(/r\/options/i)).toBeInTheDocument();
+      expect(screen.getByText(/\$2,699/)).toBeInTheDocument();
+      expect(
+        screen.queryByText("Previous-year 1099 supplement applied"),
+      ).not.toBeInTheDocument();
+      expect(screen.getByTestId("year-close-packet-panel")).toHaveTextContent(
+        "$49",
+      );
+    });
+  });
+
+  it("does not treat a $300 loss + $300 disallowed as a settlement gap on the dashboard compare", async () => {
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      tax_profile: { ...baseAnalysis.tax_profile, tax_year: 2024 },
+      wash_sale_flags: [
+        {
+          symbol: "AMD",
+          sale_date: "2024-07-15",
+          sale_quantity: 10,
+          sale_loss: 300,
+          repurchase_date: "2024-07-24",
+          repurchase_quantity: 10,
+          disallowed_loss: 300,
+          adjusted_cost_basis: 1550,
+          explanation: "Wash sale on AMD",
+        },
+      ],
+      summary: {
+        ...baseAnalysis.summary,
+        realized_summary: {
+          tax_year: 2024,
+          st_gains: 0,
+          st_losses: -300,
+          lt_gains: 0,
+          lt_losses: 0,
+          net_st: -300,
+          net_lt: 0,
+          total_net: -300,
+          transactions_count: 1,
+        },
+      },
+      supplemental_1099: {
+        ...baseSupplemental1099,
+        tax_year: 2024,
+        short_term_proceeds: 1200,
+        short_term_cost_basis: 1500,
+        short_term_net_gain: 0,
+        long_term_proceeds: 0,
+        long_term_cost_basis: 0,
+        long_term_net_gain: 0,
+        short_term_wash_sale_disallowed: 300,
+        long_term_wash_sale_disallowed: 0,
+      },
+    };
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByText("1099 vs your export")).toBeInTheDocument();
+      expect(screen.getByTestId("1099-broker-column")).toHaveTextContent("$0.00");
+      expect(screen.getByTestId("1099-broker-column")).toHaveTextContent(
+        "$300.00",
+      );
+      expect(screen.getByTestId("1099-export-column")).toHaveTextContent("$0.00");
+      expect(screen.getByTestId("1099-export-column")).toHaveTextContent(
+        "$300.00",
+      );
+      expect(screen.getByTestId("1099-export-column")).not.toHaveTextContent(
+        "-$300.00",
+      );
+    });
+  });
+
+  it("shows unknown 1099 year as distinct copy, not previous-year mismatch or a same-year compare", async () => {
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      tax_profile: { ...baseAnalysis.tax_profile, tax_year: 2024 },
+      supplemental_1099: {
+        ...baseSupplemental1099,
+        tax_year: null,
+      },
+    };
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByText("1099 tax year unknown")).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          /tax year could not be determined\. That is not a year mismatch/i,
+        ),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(/Using Robinhood 1099 PDF for tax year unknown/i),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          /tax year could not be determined, so this is not a same-year compare and not a previous-year mismatch/i,
+        ),
+      ).toBeInTheDocument();
+      expect(screen.getByTestId("unknown-year-1099-supplement")).toBeInTheDocument();
+      expect(
+        screen.queryByText("Previous-year 1099 supplement applied"),
+      ).not.toBeInTheDocument();
+      expect(screen.queryByText("1099 vs your export")).not.toBeInTheDocument();
+      expect(
+        screen.queryByText(/same year as this export/i),
+      ).not.toBeInTheDocument();
+    });
+  });
+
+  it("shows 2026 sample 1099 vs export as a same-year compare without unlocking download", async () => {
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      tax_profile: { ...baseAnalysis.tax_profile, tax_year: 2026 },
+      wash_sale_flags: [
+        {
+          symbol: "NVDA",
+          sale_date: "2026-02-18",
+          sale_quantity: 12,
+          sale_loss: 384,
+          repurchase_date: "2026-03-04",
+          repurchase_quantity: 12,
+          disallowed_loss: 384,
+          adjusted_cost_basis: 3408,
+          explanation: "Wash sale on NVDA",
+        },
+        {
+          symbol: "TSLA",
+          sale_date: "2026-03-20",
+          sale_quantity: 4,
+          sale_loss: 240,
+          repurchase_date: "2026-04-08",
+          repurchase_quantity: 4,
+          disallowed_loss: 240,
+          adjusted_cost_basis: 1700,
+          explanation: "Wash sale on TSLA",
+        },
+        {
+          symbol: "AMD",
+          sale_date: "2026-07-15",
+          sale_quantity: 10,
+          sale_loss: 300,
+          repurchase_date: "2026-07-24",
+          repurchase_quantity: 10,
+          disallowed_loss: 300,
+          adjusted_cost_basis: 1550,
+          explanation: "Wash sale on AMD",
+        },
+      ],
+      summary: {
+        ...baseAnalysis.summary,
+        realized_summary: {
+          tax_year: 2026,
+          st_gains: 0,
+          st_losses: -924,
+          lt_gains: 0,
+          lt_losses: 0,
+          net_st: -924,
+          net_lt: 0,
+          total_net: -924,
+          transactions_count: 3,
+        },
+      },
+      supplemental_1099: {
+        ...baseSupplemental1099,
+        source_filename: "sample-robinhood-1099-2026.pdf",
+        tax_year: 2026,
+        short_term_proceeds: 8315,
+        short_term_cost_basis: 6540,
+        short_term_wash_sale_disallowed: 924,
+        short_term_net_gain: 2699,
+        long_term_proceeds: 0,
+        long_term_cost_basis: 0,
+        long_term_wash_sale_disallowed: 0,
+        long_term_net_gain: 0,
+        referenced_symbols: ["AMD", "NVDA", "SPX", "TSLA"],
+        matched_symbols: ["AMD", "NVDA", "TSLA"],
+      },
+    };
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByText("1099 vs your export")).toBeInTheDocument();
+    });
+    expect(screen.getByTestId("1099-broker-column")).toHaveTextContent(
+      "$2,699.00",
+    );
+    expect(screen.getByTestId("1099-export-column")).toHaveTextContent("$0.00");
+    expect(
+      screen.queryByText("Previous-year 1099 supplement applied"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("year-close-packet-panel")).toHaveTextContent(
+      "$49",
+    );
+    expect(screen.getByRole("button", { name: "Pay $49" })).toBeInTheDocument();
+  });
+
+  it("keeps 2026 sample + 2024 fixture as previous-year supplement, not a same-year compare", async () => {
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      tax_profile: { ...baseAnalysis.tax_profile, tax_year: 2026 },
+      supplemental_1099: {
+        ...baseSupplemental1099,
+        tax_year: 2024,
+        source_filename: "c15f7458-e9d5-4dfb-a985-351df5a36cde.pdf",
+      },
+    };
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Previous-year 1099 supplement applied"),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(/Using Robinhood 1099 PDF for tax year 2024/i),
+      ).toBeInTheDocument();
+      expect(screen.queryByText("1099 vs your export")).not.toBeInTheDocument();
+      expect(
+        screen.queryByText(/same year as this export/i),
       ).not.toBeInTheDocument();
     });
   });

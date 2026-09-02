@@ -168,6 +168,9 @@ class WashSaleFlag(BaseModel):
     disallowed_loss: float  # Amount of loss disallowed
     adjusted_cost_basis: float  # New cost basis for replacement shares
     explanation: str = ""
+    # Original lot acquisition when present. Optional so wash_sale.py can stay
+    # unchanged; 1099 vs export classifies term from this vs sale/repurchase.
+    purchase_date: Optional[date] = None
 
 
 # --- Tax Profile Models ---
@@ -266,7 +269,7 @@ class HarvestingSuggestion(BaseModel):
 
 
 class Supplemental1099Summary(BaseModel):
-    """Parsed reconciliation context from an optional prior-year Robinhood 1099 PDF."""
+    """Parsed reconciliation context from an optional Robinhood 1099 PDF."""
 
     source_filename: str = ""
     broker_name: str = ""

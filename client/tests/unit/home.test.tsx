@@ -150,9 +150,19 @@ const sampleAnalysis = {
 };
 
 function mockSampleCsvFetch() {
-  globalThis.fetch = jest.fn().mockResolvedValue({
-    ok: true,
-    blob: async () => new Blob(["symbol,qty\nAAPL,1"], { type: "text/csv" }),
+  globalThis.fetch = jest.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("sample-robinhood-1099-2026.pdf")) {
+      return {
+        ok: true,
+        blob: async () =>
+          new Blob(["%PDF-1.4 sample"], { type: "application/pdf" }),
+      };
+    }
+    return {
+      ok: true,
+      blob: async () => new Blob(["symbol,qty\nAAPL,1"], { type: "text/csv" }),
+    };
   }) as typeof fetch;
 }
 
@@ -553,9 +563,14 @@ describe("Home page", () => {
     await waitFor(() => {
       expect(mutate).toHaveBeenCalled();
     });
-    expect(mutate.mock.calls[0][0].file.name).toBe(
-      "sample-robinhood-transactions.csv",
-    );
+    expect(mutate.mock.calls[0][0]).toMatchObject({
+      file: expect.objectContaining({
+        name: "sample-robinhood-transactions.csv",
+      }),
+      supplemental1099File: expect.objectContaining({
+        name: "sample-robinhood-1099-2026.pdf",
+      }),
+    });
     expect(sessionStorage.getItem("oth-load-sample")).toBeNull();
   });
 
@@ -569,6 +584,14 @@ describe("Home page", () => {
 
     await waitFor(() => {
       expect(mutate).toHaveBeenCalledTimes(1);
+    });
+    expect(mutate.mock.calls[0][0]).toMatchObject({
+      file: expect.objectContaining({
+        name: "sample-robinhood-transactions.csv",
+      }),
+      supplemental1099File: expect.objectContaining({
+        name: "sample-robinhood-1099-2026.pdf",
+      }),
     });
 
     const pdfInput = container.querySelector(
