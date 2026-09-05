@@ -1,9 +1,11 @@
 """Landing preview must match analyze of the in-app 2026 sample.
 
 DeskPreview.tsx is a static snapshot of
-client/public/sample-robinhood-transactions.csv at guest defaults
-(single, $75k, tax year 2026) using the quotes below. Live quotes can
-move the dollar amount; wash-sale count and AMD $300 must stay true.
+client/public/sample-robinhood-transactions.csv plus
+client/public/sample-robinhood-1099-2026.pdf at guest defaults
+(single, $75k, tax year 2026). Advertised broker ST / export ST / wash
+must match the same-year 1099 vs export compare. Live quotes do not
+move these totals.
 """
 
 from __future__ import annotations
@@ -20,9 +22,13 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SAMPLE_CSV_PATH = (
     REPO_ROOT / "client" / "public" / "sample-robinhood-transactions.csv"
 )
+SAMPLE_1099_PATH = (
+    REPO_ROOT / "client" / "public" / "sample-robinhood-1099-2026.pdf"
+)
 DESK_PREVIEW_PATH = REPO_ROOT / "client" / "app" / "components" / "DeskPreview.tsx"
 
-# Snapshot quotes used to paint DeskPreview.tsx (late-Aug 2026 market).
+# Snapshot quotes keep analyze stable; advertised landing dollars are
+# 1099 vs export totals, not harvest estimates.
 SAMPLE_PREVIEW_PRICES = {
     "AAPL": 315.0,
     "AMD": 477.0,
@@ -36,17 +42,20 @@ SAMPLE_PREVIEW_PRICES = {
 client = TestClient(main.app)
 
 
-def _advertised_preview() -> tuple[int, int]:
-    """Parse hero dollars and wash-sale count from the landing snapshot."""
+def _parse_preview_dollars(name: str) -> int:
     text = DESK_PREVIEW_PATH.read_text(encoding="utf-8")
-    hero = re.search(
-        r"\$([0-9,]+)\s*</Typography>\s*<Typography[^>]*>\s*Federal harvest still on the table",
-        text,
+    match = re.search(rf'{name} = "\$([0-9,]+)"', text)
+    assert match, f"DeskPreview.tsx is missing {name}"
+    return int(match.group(1).replace(",", ""))
+
+
+def _advertised_compare() -> tuple[int, int, int]:
+    """Parse broker ST, export ST, and wash from the landing snapshot."""
+    return (
+        _parse_preview_dollars("SAMPLE_BROKER_ST"),
+        _parse_preview_dollars("SAMPLE_EXPORT_ST"),
+        _parse_preview_dollars("SAMPLE_WASH"),
     )
-    washes = re.search(r'"(\d+) wash sales"', text)
-    assert hero, "DeskPreview.tsx is missing a hero dollar amount"
-    assert washes, "DeskPreview.tsx is missing a wash-sale count"
-    return int(hero.group(1).replace(",", "")), int(washes.group(1))
 
 
 def test_public_sample_analyze_matches_landing_preview(monkeypatch):
@@ -69,22 +78,38 @@ def test_public_sample_analyze_matches_landing_preview(monkeypatch):
                 "sample-robinhood-transactions.csv",
                 SAMPLE_CSV_PATH.read_bytes(),
                 "text/csv",
-            )
+            ),
+            "supplemental_1099": (
+                "sample-robinhood-1099-2026.pdf",
+                SAMPLE_1099_PATH.read_bytes(),
+                "application/pdf",
+            ),
         },
     )
 
     assert response.status_code == 200, response.text
     data = response.json()
-    summary = data["summary"]
+    form_1099 = data["supplemental_1099"]
     flags = data["wash_sale_flags"]
-    advertised_savings, advertised_washes = _advertised_preview()
+    advertised_broker_st, advertised_export_st, advertised_wash = (
+        _advertised_compare()
+    )
 
     assert data["tax_profile"]["tax_year"] == 2026
-    assert round(summary["estimated_tax_savings"]) == advertised_savings
-    assert summary["wash_sale_flags_count"] == advertised_washes
-    assert advertised_washes == 3
-    assert summary["total_harvestable_losses"] > 0
-    assert data["suggestions"]
+    assert form_1099["tax_year"] == 2026
+
+    broker_st = round(form_1099["short_term_net_gain"])
+    broker_wash = round(
+        form_1099["short_term_wash_sale_disallowed"]
+        + form_1099["long_term_wash_sale_disallowed"]
+    )
+    csv_wash = round(sum(float(flag["disallowed_loss"]) for flag in flags))
+    export_st = round(data["summary"]["realized_summary"]["net_st"] + csv_wash)
+
+    assert broker_st == advertised_broker_st == 2699
+    assert export_st == advertised_export_st == 0
+    assert broker_wash == advertised_wash == 924
+    assert csv_wash == advertised_wash
 
     symbols = {flag["symbol"] for flag in flags}
     assert symbols == {"AMD", "NVDA", "TSLA"}
@@ -94,7 +119,3 @@ def test_public_sample_analyze_matches_landing_preview(monkeypatch):
     assert amd_flags[0]["disallowed_loss"] == pytest.approx(300.0)
     assert amd_flags[0]["sale_date"] == "2026-07-15"
     assert amd_flags[0]["repurchase_date"] == "2026-07-24"
-
-    nvda = next(position for position in data["positions"] if position["symbol"] == "NVDA")
-    assert (nvda["unrealized_pnl"] or 0) < 0
-    assert any(suggestion["symbol"] == "NVDA" for suggestion in data["suggestions"])
