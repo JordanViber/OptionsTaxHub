@@ -58,11 +58,19 @@ describe("LandingPage", () => {
     renderWithClient(<LandingPage />);
 
     expect(
-      screen.getByText(/Keep more of what you trade/),
+      screen.getByRole("heading", {
+        name: /Your 1099 and your export will disagree/,
+      }),
     ).toBeInTheDocument();
     expect(
-      screen.getByText(/year-end tax desk/i),
+      screen.getByText(/Broker 1099 uses settlement date/i),
     ).toBeInTheDocument();
+    expect(screen.getByText(/your export uses trade date/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/SPX 12\/31/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/not a software bug/i).length).toBeGreaterThan(0);
+    expect(
+      screen.queryByText(/Keep more of what you trade/),
+    ).not.toBeInTheDocument();
   });
 
   it("renders navigation with Sign In and Open desk", () => {
@@ -117,16 +125,20 @@ describe("LandingPage", () => {
     ).toBeInTheDocument();
   });
 
-  it("preview shows the 2026 sample harvest and wash-sale counts", () => {
+  it("preview shows the 2026 sample 1099 vs export totals", () => {
     mockUseAuth.mockReturnValue({ user: null, loading: false });
 
     renderWithClient(<LandingPage />);
 
-    expect(screen.getByText("$2,086")).toBeInTheDocument();
-    expect(screen.getByText("3 wash sales")).toBeInTheDocument();
-    expect(screen.getByText("NVDA")).toBeInTheDocument();
-    expect(screen.getByText("META")).toBeInTheDocument();
-    expect(screen.getByText(/Federal harvest still on the table/i)).toBeInTheDocument();
+    expect(screen.getByTestId("landing-1099-broker")).toHaveTextContent("$2,699");
+    expect(screen.getByTestId("landing-1099-broker")).toHaveTextContent("Wash $924");
+    expect(screen.getByTestId("landing-1099-export")).toHaveTextContent("$0");
+    expect(screen.getByTestId("landing-1099-export")).toHaveTextContent("Wash $924");
+    expect(screen.getAllByText(/1099 vs your export/i).length).toBeGreaterThan(0);
+    expect(
+      screen.queryByText(/Federal harvest still on the table/i),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("$2,086")).not.toBeInTheDocument();
   });
 
   it("sample and CSV CTAs go to the desk with the right intent", () => {
@@ -168,6 +180,23 @@ describe("LandingPage", () => {
     expect(
       screen.getAllByText(/saved to your account history/i).length,
     ).toBeGreaterThan(0);
+  });
+
+  it("does not claim Form 8949 filing, lot rebuild, or full lot-matching", () => {
+    mockUseAuth.mockReturnValue({ user: null, loading: false });
+    renderWithClient(<LandingPage />);
+
+    expect(
+      screen.getByText(
+        /not a filed Form 8949 and not a rebuild of lots from the PDF/i,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/file your Form 8949/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/full lot rebuild from the PDF/i),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/full lot-matching/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/lot-matched 1099-B/i)).not.toBeInTheDocument();
   });
 
   it("does not render a card field on the marketing home page", () => {
