@@ -136,7 +136,7 @@ export default function LandingPage() {
                 color: "text.secondary",
               }}
             >
-              Tax year 2026 · FIFO · Wash-sale window 30d
+              Tax year 2026 · 1099 vs your export
             </Typography>
             <Typography
               variant="h1"
@@ -146,7 +146,7 @@ export default function LandingPage() {
                 lineHeight: 1.05,
               }}
             >
-              Keep more of what you trade.
+              Your 1099 and your export will disagree.
             </Typography>
             <Typography
               sx={{
@@ -157,10 +157,11 @@ export default function LandingPage() {
                 lineHeight: 1.65,
               }}
             >
-              OptionsTaxHub is a year-end tax desk: upload a brokerage CSV, see
-              harvestable lots, catch wash-sale traps, and know the federal
-              dollars still on the table — before December 31. State tax is not
-              included.
+              Broker 1099 uses settlement date. Your export uses trade date. A
+              year-end short option — SPX 12/31 — can print a gain on the 1099
+              while the export still shows a loss. That is not a software bug.
+              Totals only — not a filed Form 8949 and not a rebuild of lots
+              from the PDF.
             </Typography>
             <Stack
               direction={{ xs: "column", sm: "row" }}
@@ -189,7 +190,7 @@ export default function LandingPage() {
               sx={{ mt: 2, color: "text.secondary", opacity: 0.85 }}
             >
               Sample loads instantly. Sign in only if you want tax year and
-              saved runs waiting on the next device.
+              saved runs waiting on the next device. State tax is not included.
             </Typography>
           </Box>
           <DeskPreview />
@@ -249,7 +250,7 @@ export default function LandingPage() {
           variant="h2"
           sx={{ mt: 1.5, maxWidth: 640, fontSize: { xs: "1.75rem", md: "2.25rem" } }}
         >
-          Three moves. Then you know what to sell.
+          Three moves. Then you see why they split.
         </Typography>
         <Box
           component="ol"
@@ -272,7 +273,7 @@ export default function LandingPage() {
             {
               n: "02",
               t: "Read the desk",
-              d: "One number at the top: federal harvest still available. Then the queue, the wash sales, the ledger.",
+              d: "1099 vs your export first — settlement date against trade date. Then the harvest queue, wash sales, and the lot ledger.",
             },
             {
               n: "03",

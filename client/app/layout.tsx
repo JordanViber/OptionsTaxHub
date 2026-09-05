@@ -25,7 +25,7 @@ const plexMono = IBM_Plex_Mono({
 export const metadata: Metadata = {
   title: "OptionsTaxHub",
   description:
-    "A year-end tax desk for options traders: harvest lots, catch wash sales, keep more of what you trade.",
+    "Broker 1099 uses settlement date; your export uses trade date. A year-end short option can print a gain on the 1099 while the export still shows a loss.",
   manifest: "/manifest.json",
   appleWebApp: {
     capable: true,
