@@ -771,8 +771,8 @@ describe("DashboardPage", () => {
         screen.getByText(/Upload your Robinhood 1099 PDF for the tax year you are closing/i),
       ).toBeInTheDocument();
       expect(
-        screen.getAllByText(/not lot history/i).length,
-      ).toBeGreaterThan(0);
+        screen.getByText(/Totals compare stays free/i),
+      ).toBeInTheDocument();
     });
   });
 
@@ -895,6 +895,102 @@ describe("DashboardPage", () => {
     });
   });
 
+  it("keeps unpaid non-sample lot-match as counts teaser without a lot table", async () => {
+    Object.defineProperty(globalThis, "sessionStorage", {
+      value: {
+        getItem: jest.fn(() => mockSessionValue),
+        setItem: jest.fn(),
+        removeItem: jest.fn(),
+        clear: jest.fn(),
+      },
+      writable: true,
+    });
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      sample_run: false,
+      packet_unlocked: false,
+      tax_profile: { ...baseAnalysis.tax_profile, tax_year: 2024 },
+      supplemental_1099: {
+        ...baseSupplemental1099,
+        tax_year: 2024,
+        source_filename: "c15f7458-e9d5-4dfb-a985-351df5a36cde.pdf",
+      },
+      lot_match_report: {
+        matched: [],
+        gap: [],
+        unmatched: [],
+        matched_count: 0,
+        gap_count: 2,
+        unmatched_count: 4,
+      },
+    };
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByText("1099 vs your export")).toBeInTheDocument();
+    });
+    expect(screen.getByTestId("lot-match-counts")).toHaveTextContent(
+      "Matched 0 · Gap 2 · Unmatched 4",
+    );
+    expect(
+      screen.getByText(/Pay \$49 for lot-matched 1099-B/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("lot-match-row-NVDA")).not.toBeInTheDocument();
+    expect(screen.queryByText("1099_only")).not.toBeInTheDocument();
+  });
+
+  it("guest unpaid non-sample lot-match stays counts teaser without a lot table", async () => {
+    const previousUser = mockAuthState.user;
+    mockAuthState.user = null;
+    Object.defineProperty(globalThis, "sessionStorage", {
+      value: {
+        getItem: jest.fn(() => mockSessionValue),
+        setItem: jest.fn(),
+        removeItem: jest.fn(),
+        clear: jest.fn(),
+      },
+      writable: true,
+    });
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      sample_run: false,
+      packet_unlocked: false,
+      tax_profile: { ...baseAnalysis.tax_profile, tax_year: 2024 },
+      supplemental_1099: {
+        ...baseSupplemental1099,
+        tax_year: 2024,
+        source_filename: "c15f7458-e9d5-4dfb-a985-351df5a36cde.pdf",
+      },
+      lot_match_report: {
+        matched: [],
+        gap: [],
+        unmatched: [],
+        matched_count: 0,
+        gap_count: 2,
+        unmatched_count: 4,
+      },
+    };
+
+    try {
+      render(<DashboardPage />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.getByText("1099 vs your export")).toBeInTheDocument();
+      });
+      expect(screen.getByTestId("lot-match-counts")).toHaveTextContent(
+        "Matched 0 · Gap 2 · Unmatched 4",
+      );
+      expect(
+        screen.getByText(/Pay \$49 for lot-matched 1099-B/i),
+      ).toBeInTheDocument();
+      expect(screen.queryByTestId("lot-match-row-NVDA")).not.toBeInTheDocument();
+      expect(screen.queryByText("1099_only")).not.toBeInTheDocument();
+    } finally {
+      mockAuthState.user = previousUser;
+    }
+  });
+
   it("does not treat a $300 loss + $300 disallowed as a settlement gap on the dashboard compare", async () => {
     mockAnalyzeData = {
       ...baseAnalysis,
@@ -997,8 +1093,19 @@ describe("DashboardPage", () => {
   });
 
   it("shows 2026 sample 1099 vs export as a same-year compare without unlocking download", async () => {
+    Object.defineProperty(globalThis, "sessionStorage", {
+      value: {
+        getItem: jest.fn(() => mockSessionValue),
+        setItem: jest.fn(),
+        removeItem: jest.fn(),
+        clear: jest.fn(),
+      },
+      writable: true,
+    });
     mockAnalyzeData = {
       ...baseAnalysis,
+      sample_run: true,
+      packet_unlocked: false,
       tax_profile: { ...baseAnalysis.tax_profile, tax_year: 2026 },
       wash_sale_flags: [
         {
@@ -1064,6 +1171,52 @@ describe("DashboardPage", () => {
         referenced_symbols: ["AMD", "NVDA", "SPX", "TSLA"],
         matched_symbols: ["AMD", "NVDA", "TSLA"],
       },
+      lot_match_report: {
+        matched: [],
+        gap: [
+          {
+            status: "matched_settlement_gap",
+            symbol: "NVDA",
+            quantity: 12,
+            date_sold_1099: "2026-02-20",
+            export_trade_date: "2026-02-18",
+            proceeds_1099: 2976,
+            proceeds_export: 2976,
+          },
+          {
+            status: "matched_settlement_gap",
+            symbol: "TSLA",
+            quantity: 4,
+            date_sold_1099: "2026-03-22",
+            export_trade_date: "2026-03-20",
+            proceeds_1099: 1460,
+            proceeds_export: 1460,
+          },
+          {
+            status: "matched_settlement_gap",
+            symbol: "AMD",
+            quantity: 10,
+            date_sold_1099: "2026-07-17",
+            export_trade_date: "2026-07-15",
+            proceeds_1099: 1200,
+            proceeds_export: 1200,
+          },
+        ],
+        unmatched: [
+          {
+            status: "1099_only",
+            symbol: "SPX",
+            quantity: 1,
+            date_sold_1099: "2027-01-02",
+            export_trade_date: null,
+            proceeds_1099: 2699,
+            proceeds_export: 0,
+          },
+        ],
+        matched_count: 0,
+        gap_count: 3,
+        unmatched_count: 1,
+      },
     };
 
     render(<DashboardPage />, { wrapper: createWrapper() });
@@ -1075,6 +1228,21 @@ describe("DashboardPage", () => {
       "$2,699.00",
     );
     expect(screen.getByTestId("1099-export-column")).toHaveTextContent("$0.00");
+    expect(screen.getByTestId("lot-match-counts")).toHaveTextContent(
+      "Matched 0 · Gap 3 · Unmatched 1",
+    );
+    expect(screen.getByTestId("lot-match-row-NVDA")).toHaveTextContent(
+      "matched_settlement_gap",
+    );
+    const spxRow = screen.getByTestId("lot-match-row-SPX");
+    expect(spxRow).toHaveTextContent("1099_only");
+    expect(spxRow).toHaveTextContent("$2,699.00");
+    expect(
+      screen.queryByText(/Pay \$49 for lot-matched 1099-B/i),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getAllByText(/not a filed Form 8949/i).length,
+    ).toBeGreaterThan(0);
     expect(
       screen.queryByText("Previous-year 1099 supplement applied"),
     ).not.toBeInTheDocument();

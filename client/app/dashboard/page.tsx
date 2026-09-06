@@ -85,6 +85,7 @@ import {
   csvWashSaleDisallowedTotal,
   isSameYear1099Compare,
   isUnknown1099Year,
+  redactUnpaidLotMatch,
 } from "@/lib/supplemental1099";
 import YearClosePacketPanel, {
   isYearClosePacketPaid,
@@ -259,7 +260,10 @@ function restoreAnalysisFromStorage(): PortfolioAnalysis | null {
 // Helper function: save analysis to session storage
 function saveAnalysisToStorage(analysis: PortfolioAnalysis): void {
   try {
-    sessionStorage.setItem("optionstaxhub-analysis", JSON.stringify(analysis));
+    sessionStorage.setItem(
+      "optionstaxhub-analysis",
+      JSON.stringify(redactUnpaidLotMatch(analysis)),
+    );
   } catch {
     // Storage full — ignore
   }
@@ -498,30 +502,30 @@ function getSupplemental1099HelperText({
 }): string {
   if (isRestoredAppliedSummary) {
     if (sameYearCompare) {
-      return "This restored result already includes 1099 vs this export (totals only) — reconciliation context, not lot history. Upload the PDF again only if you want to refresh it.";
+      return "This restored result already includes 1099 vs this export (totals stay free). Lot-matched 1099-B is in the $49 packet. Upload the PDF again only if you want to refresh it.";
     }
     if (unknownYear) {
       return SUPPLEMENTAL_1099_UNKNOWN_YEAR_RESTORED_HELPER;
     }
-    return "This restored result already includes a previous-year broker 1099 as reconciliation context, not lot history. Upload the PDF again only if you want to refresh it.";
+    return "This restored result already includes a previous-year broker 1099 as a supplement. Upload the PDF again only if you want to refresh it.";
   }
 
   if (isApplied) {
     if (sameYearCompare) {
-      return "Included as 1099 vs this export (totals only) — reconciliation context, not lot history.";
+      return "Included as 1099 vs this export (totals stay free). Lot-matched 1099-B is in the $49 packet.";
     }
     if (unknownYear) {
       return SUPPLEMENTAL_1099_UNKNOWN_YEAR_HELPER;
     }
-    return "Included as a previous-year 1099 supplement — reconciliation context, not lot history.";
+    return "Included as a previous-year 1099 supplement — not a same-year lot match.";
   }
 
   if (hasSelectedFile && hasUploadedCsv) {
-    return "This PDF is being used with your latest CSV as reconciliation context, not lot history. Replace it to automatically refresh the result.";
+    return "This PDF is being used with your latest CSV. Totals compare stays free; lot-matched 1099-B is in the $49 packet. Replace it to automatically refresh the result.";
   }
 
   if (hasSelectedFile) {
-    return "This PDF is ready and will be included the next time you analyze a CSV as reconciliation context, not lot history.";
+    return "This PDF is ready and will be included the next time you analyze a CSV. Totals compare stays free; lot-matched 1099-B is in the $49 packet.";
   }
 
   return SUPPLEMENTAL_1099_CONTEXT_COPY;
@@ -832,6 +836,8 @@ function ResultsSection({
             displayedAnalysis.wash_sale_flags,
           )}
           csvWashSaleFlags={displayedAnalysis.wash_sale_flags}
+          lotMatchReport={displayedAnalysis.lot_match_report ?? null}
+          locked={!packetUnlocked}
         />
       )}
 
@@ -1215,16 +1221,23 @@ export default function DashboardPage() {
   // --- State persistence: restore analysis from sessionStorage on mount ---
   useEffect(() => {
     let wantsUpload = false;
+    let wantsSample = false;
     try {
       wantsUpload = sessionStorage.getItem(UPLOAD_INTENT_KEY) === "1";
+      wantsSample = sessionStorage.getItem(LOAD_SAMPLE_KEY) === "1";
       if (wantsUpload) {
         sessionStorage.removeItem(UPLOAD_INTENT_KEY);
       }
     } catch {
       wantsUpload = false;
+      wantsSample = false;
     }
 
     const saved = restoreAnalysisFromStorage();
+    if (wantsSample) {
+      // Open the 2026 sample must not keep a prior restore that lacks lot counts.
+      return;
+    }
     if (wantsUpload) {
       setForceEmpty(true);
       if (saved) {
@@ -1334,6 +1347,7 @@ export default function DashboardPage() {
       },
       {
         onSuccess: (data) => {
+          setLoadedAnalysis(null);
           setForceEmpty(false);
           if (data.packet_unlocked && data.packet_session_id) {
             rememberYearClosePacketPaid(
@@ -1661,7 +1675,8 @@ export default function DashboardPage() {
   const confidenceSummary = displayedAnalysis
     ? getConfidenceSummary(displayedAnalysis)
     : null;
-  const packetUnlocked = isSampleRun || packetPaid;
+  const packetUnlocked =
+    isSampleRun || packetPaid || Boolean(displayedAnalysis?.sample_run);
   const tradeBook = savedTradeBook(history);
   const recommendedNextSteps = displayedAnalysis
     ? getRecommendedNextSteps(displayedAnalysis, packetUnlocked)

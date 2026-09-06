@@ -32,6 +32,7 @@ from models import (
     AssetType,
     FilingStatus,
     ActivityBookSummary,
+    LotMatchReport,
     PortfolioAnalysis,
     RealizedSummary,
     Supplemental1099Summary,
@@ -59,8 +60,10 @@ from year_close_packet import (
     upsert_payload,
 )
 from csv_parser import parse_csv, RealizedEvent, transactions_to_tax_lots
+from lot_matcher import match_1099b_lots
 from ledger import (
     is_sample_csv_filename,
+    is_trusted_in_app_sample,
     merge_transaction_books,
     merge_warning,
     strip_book_transactions_dict,
@@ -760,7 +763,7 @@ async def _maybe_parse_supplemental_1099(
     supplemental_1099: UploadFile | None,
     current_symbols: set[str],
     dashboard_tax_year: int,
-) -> tuple[Supplemental1099Summary | None, list[str]]:
+) -> tuple[Supplemental1099Summary | None, list[str], bytes]:
     """Parse the optional 1099 PDF and return any user-facing warnings.
 
     Same-year (1099 tax year == dashboard tax year) is a first-class compare.
@@ -768,16 +771,17 @@ async def _maybe_parse_supplemental_1099(
     still shown as a previous-year supplement, with an honest mismatch warning.
     """
     if supplemental_1099 is None:
-        return None, []
+        return None, [], b""
 
     if not _is_pdf_upload(supplemental_1099):
-        return None, ["Supplemental 1099 must be a PDF file (received unsupported content type)."]
+        return None, ["Supplemental 1099 must be a PDF file (received unsupported content type)."], b""
 
     expected_previous_year = dashboard_tax_year - 1
+    supplemental_bytes = b""
     try:
         supplemental_bytes = await supplemental_1099.read(_MAX_SUPPLEMENTAL_PDF_BYTES + 1)
         if len(supplemental_bytes) > _MAX_SUPPLEMENTAL_PDF_BYTES:
-            return None, ["Supplemental 1099 PDF exceeds the 20 MB size limit and was ignored."]
+            return None, ["Supplemental 1099 PDF exceeds the 20 MB size limit and was ignored."], b""
         summary = _parse_supplemental_1099_summary(
             supplemental_bytes,
             supplemental_1099.filename or "1099.pdf",
@@ -786,10 +790,10 @@ async def _maybe_parse_supplemental_1099(
         )
     except Exception as exc:
         logger.warning("Failed to parse supplemental 1099 PDF: %s", exc, exc_info=True)
-        return None, ["Supplemental 1099 PDF could not be parsed and was ignored for this analysis."]
+        return None, ["Supplemental 1099 PDF could not be parsed and was ignored for this analysis."], supplemental_bytes
 
     if _is_empty_supplemental_summary(summary):
-        return None, ["Supplemental 1099 PDF could not be parsed and was ignored for this analysis."]
+        return None, ["Supplemental 1099 PDF could not be parsed and was ignored for this analysis."], supplemental_bytes
 
     warnings: list[str] = []
     if summary.tax_year is not None and summary.tax_year not in (
@@ -800,7 +804,7 @@ async def _maybe_parse_supplemental_1099(
             "The supplemental 1099 PDF was parsed successfully, but its tax year does not match the expected prior year for this analysis."
         )
 
-    return summary, warnings
+    return summary, warnings, supplemental_bytes
 
 
 def _apply_live_prices_to_tax_lots(tax_lots: list, all_warnings: list[str]) -> list:
@@ -885,14 +889,42 @@ def _normalize_merge_mode(value: object) -> str:
     return "replace" if raw == "replace" else "auto"
 
 
-def _public_analysis(result: PortfolioAnalysis) -> PortfolioAnalysis:
-    """Hide raw trades from the browser payload; they stay in saved history."""
-    book = result.activity_book
-    if not book or not book.transactions:
-        return result
-    return result.model_copy(
-        update={"activity_book": book.model_copy(update={"transactions": []})}
+def _counts_only_lot_match_report(report: LotMatchReport) -> LotMatchReport:
+    """Keep teaser counts; drop lot rows until the $49 packet is unlocked."""
+    return report.model_copy(
+        update={"matched": [], "gap": [], "unmatched": []}
     )
+
+
+def _public_analysis(
+    result: PortfolioAnalysis,
+    *,
+    keep_lot_rows: bool = False,
+) -> PortfolioAnalysis:
+    """Hide raw trades and unpaid lot-level 1099-B rows from the browser payload.
+
+    Unpaid/guest analyze JSON (and anything persisted from it) must not include
+    lot dates, amounts, or statuses. Counts stay so the $49 teaser still works.
+    The in-app 2026 sample keeps lot rows so the desk can show the table;
+    packet_unlocked stays false so download remains $49 gated.
+    """
+    updates: dict = {}
+    book = result.activity_book
+    if book and book.transactions:
+        updates["activity_book"] = book.model_copy(update={"transactions": []})
+    if not result.packet_unlocked and not keep_lot_rows:
+        if result.lot_match_report is not None:
+            updates["lot_match_report"] = _counts_only_lot_match_report(
+                result.lot_match_report
+            )
+        supplemental = result.supplemental_1099
+        if supplemental is not None and supplemental.lots:
+            updates["supplemental_1099"] = supplemental.model_copy(
+                update={"lots": []}
+            )
+    if not updates:
+        return result
+    return result.model_copy(update=updates)
 
 
 def _apply_packet_year_grant(result: PortfolioAnalysis, user_id: str) -> PortfolioAnalysis:
@@ -1096,7 +1128,11 @@ async def _run_portfolio_analysis(
     tax_profile = _tax_profile_from_query(filing_status, estimated_income, tax_year)
 
     all_warnings = list(parse_errors)
-    supplemental_1099_summary, supplemental_1099_warnings = await _maybe_parse_supplemental_1099(
+    (
+        supplemental_1099_summary,
+        supplemental_1099_warnings,
+        supplemental_bytes,
+    ) = await _maybe_parse_supplemental_1099(
         supplemental_1099,
         {lot.symbol for lot in tax_lots},
         tax_profile.tax_year or 2026,
@@ -1155,6 +1191,26 @@ async def _run_portfolio_analysis(
         summary.activity_last_date = activity_book.last_activity_date
         summary.activity_transaction_count = activity_book.transaction_count
 
+    lot_match_report = None
+    if supplemental_1099_summary is not None:
+        lot_match_report = match_1099b_lots(
+            supplemental_1099_summary.lots,
+            realized_events,
+            form_1099_tax_year=supplemental_1099_summary.tax_year,
+            analysis_tax_year=tax_profile.tax_year,
+            short_term_proceeds=supplemental_1099_summary.short_term_proceeds,
+            long_term_proceeds=supplemental_1099_summary.long_term_proceeds,
+            short_term_cost_basis=supplemental_1099_summary.short_term_cost_basis,
+            long_term_cost_basis=supplemental_1099_summary.long_term_cost_basis,
+            short_term_wash=supplemental_1099_summary.short_term_wash_sale_disallowed,
+            long_term_wash=supplemental_1099_summary.long_term_wash_sale_disallowed,
+        )
+        if lot_match_report is not None and not lot_match_report.totals_ok:
+            all_warnings.append(
+                "Parsed 1099-B lots do not sum to the broker ST/LT totals. "
+                "Summary totals are unchanged; lot rows are still listed."
+            )
+
     analysis_id = str(uuid.uuid4())
     result = PortfolioAnalysis(
         positions=positions,
@@ -1164,22 +1220,26 @@ async def _run_portfolio_analysis(
         summary=summary,
         tax_profile=tax_profile,
         supplemental_1099=supplemental_1099_summary,
+        lot_match_report=lot_match_report,
         analysis_id=analysis_id,
         activity_book=activity_book,
         warnings=_summarize_warnings(all_warnings),
     )
     result = _apply_packet_year_grant(result, user_id)
-    public_result = _public_analysis(result)
-    remember_analysis(
-        analysis_id,
-        user_id,
-        public_result.model_dump(mode="json")
-        if hasattr(public_result, "model_dump")
-        else dict(public_result),
+    keep_lot_rows = is_trusted_in_app_sample(contents, supplemental_bytes)
+    if keep_lot_rows:
+        result = result.model_copy(update={"sample_run": True})
+    full_dump = (
+        result.model_dump(mode="json")
+        if hasattr(result, "model_dump")
+        else dict(result)
     )
+    remember_analysis(analysis_id, user_id, full_dump)
+    public_result = _public_analysis(result, keep_lot_rows=keep_lot_rows)
 
-    # Save analysis to history for authenticated user (includes the trade book).
-    _save_history_best_effort(user_id, filename, summary, result)
+    # History follows the public payload so unpaid restore cannot leak lot rows.
+    # Full rows remain in PACKET_STORE for the paid PDF.
+    _save_history_best_effort(user_id, filename, summary, public_result)
 
     return public_result
 

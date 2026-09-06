@@ -16,6 +16,7 @@ from stripe import StripeObject
 from year_close_packet import (
     COMPARE_GAP_COPY,
     COMPARE_TITLE,
+    LOT_MATCH_TITLE,
     OPTIONS_WASH_SALE_FAQ,
     PACKET_AMOUNT_CENTS,
     PACKET_CHECKOUT_DESCRIPTION,
@@ -36,9 +37,11 @@ from year_close_packet import (
     packet_plain_text,
     packet_requires_test_stripe,
     purge_packet_store,
+    get_payload,
     remember_analysis,
     render_packet_pdf,
     reset_packet_store,
+    upsert_payload,
     resolve_packet_stripe_secret_key,
     same_year_compare_plain_text,
     session_grants_packet,
@@ -152,7 +155,8 @@ def test_payload_and_pdf_contain_1099_totals_amd_and_faqs():
     assert OPTIONS_WASH_SALE_FAQ in text
     assert PACKET_DISCLAIMER in text
     assert "not a filed Form 8949" in text
-    assert "not a rebuild of lots" in text
+    assert "Lot-matched 1099-B" in PACKET_DISCLAIMER
+    assert "we do not parse settlement-date lots" not in text.lower()
 
     pdf_bytes = render_packet_pdf(payload)
     pdf_text = _pdf_text(pdf_bytes)
@@ -996,3 +1000,189 @@ def test_tipjar_still_does_not_unlock_same_year_packet(monkeypatch):
     assert confirm.status_code == 403
     unpaid = client.get("/api/year-close-packet/download?analysis_id=analysis-same-year-2024")
     assert unpaid.status_code == 403
+
+
+LOT_MATCH_ANALYSIS = {
+    **SAME_YEAR_ANALYSIS,
+    "analysis_id": "analysis-lot-match-2024",
+    "lot_match_report": {
+        "matched": [
+            {
+                "status": "matched",
+                "symbol": "AMD",
+                "quantity": 10,
+                "date_sold_1099": "2026-07-15",
+                "export_trade_date": "2026-07-15",
+                "proceeds_1099": 1200.0,
+                "proceeds_export": 1200.0,
+            }
+        ],
+        "gap": [
+            {
+                "status": "matched_settlement_gap",
+                "symbol": "NVDA",
+                "quantity": 12,
+                "date_sold_1099": "2026-02-20",
+                "export_trade_date": "2026-02-18",
+                "proceeds_1099": 2976.0,
+                "proceeds_export": 2976.0,
+            }
+        ],
+        "unmatched": [
+            {
+                "status": "1099_only",
+                "symbol": "SPX",
+                "quantity": 1,
+                "date_sold_1099": "2027-01-02",
+                "export_trade_date": None,
+                "proceeds_1099": 2699.0,
+                "proceeds_export": 0.0,
+            },
+            {
+                "status": "csv_only",
+                "symbol": "META",
+                "quantity": 4,
+                "date_sold_1099": None,
+                "export_trade_date": "2026-03-20",
+                "proceeds_1099": 0.0,
+                "proceeds_export": 2880.0,
+            },
+        ],
+        "matched_count": 1,
+        "gap_count": 1,
+        "unmatched_count": 2,
+        "totals_ok": True,
+    },
+}
+
+
+def test_paid_pdf_has_matched_gap_unmatched_lot_sections():
+    payload = build_packet_payload(
+        LOT_MATCH_ANALYSIS, analysis_id="analysis-lot-match-2024"
+    )
+    text = packet_plain_text(payload)
+    assert LOT_MATCH_TITLE in text
+    assert "1 matched" in text
+    assert "1 gap" in text
+    pdf_text = _pdf_text(render_packet_pdf(payload))
+    assert LOT_MATCH_TITLE in pdf_text
+    assert "Matched (1)" in pdf_text
+    assert "Gap (1)" in pdf_text
+    assert "Unmatched (2)" in pdf_text
+    assert "matched AMD" in pdf_text
+    assert "matched_settlement_gap NVDA" in pdf_text
+    assert "1099_only SPX" in pdf_text
+    assert "csv_only META" in pdf_text
+    assert "not a filed Form 8949" in pdf_text
+    assert "we do not parse settlement" not in pdf_text.lower()
+
+
+def test_lot_match_pdf_paginates_instead_of_dropping_rows():
+    rows = [
+        {
+            "status": "matched",
+            "symbol": f"S{i:03d}",
+            "quantity": 1,
+            "date_sold_1099": "2026-01-02",
+            "export_trade_date": "2026-01-01",
+            "proceeds_1099": 10.0 + i,
+            "proceeds_export": 10.0 + i,
+        }
+        for i in range(55)
+    ]
+    analysis = {
+        **LOT_MATCH_ANALYSIS,
+        "lot_match_report": {
+            "matched": rows,
+            "gap": [],
+            "unmatched": [],
+            "matched_count": 55,
+            "gap_count": 0,
+            "unmatched_count": 0,
+            "totals_ok": True,
+        },
+    }
+    pdf_bytes = render_packet_pdf(build_packet_payload(analysis, analysis_id="many-lots"))
+    reader = PdfReader(BytesIO(pdf_bytes))
+    assert len(reader.pages) > 2
+    pdf_text = _pdf_text(pdf_bytes)
+    assert "S000" in pdf_text
+    assert "S054" in pdf_text
+
+
+def test_counts_only_client_payload_does_not_wipe_server_lot_rows():
+    """Paid PDF keeps full rows even if checkout/confirm sends redacted analyze JSON."""
+    analysis_id = "analysis-preserve-rows"
+    full = {
+        **LOT_MATCH_ANALYSIS,
+        "analysis_id": analysis_id,
+    }
+    remember_analysis(analysis_id, "test-user-123", full)
+    counts_only = {
+        **full,
+        "lot_match_report": {
+            "matched": [],
+            "gap": [],
+            "unmatched": [],
+            "matched_count": 1,
+            "gap_count": 1,
+            "unmatched_count": 1,
+            "totals_ok": True,
+        },
+    }
+    remember_analysis(analysis_id, "test-user-123", counts_only)
+    upsert_payload(analysis_id, "test-user-123", counts_only)
+    payload = get_payload(analysis_id)
+    assert payload is not None
+    report = payload["lot_match_report"]
+    assert any(row["symbol"] == "NVDA" for row in report["gap"])
+    assert any(row["symbol"] == "SPX" for row in report["unmatched"])
+    pdf_text = _pdf_text(render_packet_pdf(payload))
+    assert "NVDA" in pdf_text
+    assert "1099_only SPX" in pdf_text
+
+
+def test_paid_download_uses_server_lot_rows_not_redacted_client_json(monkeypatch):
+    _test_stripe_env(monkeypatch)
+    analysis_id = "analysis-paid-server-rows"
+    remember_analysis(analysis_id, "test-user-123", LOT_MATCH_ANALYSIS)
+    mark_paid(analysis_id, "cs_test_paid_rows", user_id="test-user-123")
+    paid_session = SimpleNamespace(
+        id="cs_test_paid_rows",
+        payment_status="paid",
+        amount_total=PACKET_AMOUNT_CENTS,
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": analysis_id,
+        },
+    )
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda session_id, **_kwargs: paid_session,
+    )
+    redacted = {
+        **LOT_MATCH_ANALYSIS,
+        "analysis_id": analysis_id,
+        "lot_match_report": {
+            "matched": [],
+            "gap": [],
+            "unmatched": [],
+            "matched_count": 1,
+            "gap_count": 1,
+            "unmatched_count": 1,
+        },
+    }
+    response = client.post(
+        "/api/year-close-packet/download",
+        json={
+            "analysis_id": analysis_id,
+            "session_id": "cs_test_paid_rows",
+            "analysis": redacted,
+        },
+    )
+    assert response.status_code == 200
+    pdf_text = _pdf_text(response.content)
+    assert "NVDA" in pdf_text
+    assert "SPX" in pdf_text
+    assert "1099_only" in pdf_text

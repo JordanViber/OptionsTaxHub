@@ -3,7 +3,8 @@
 Builds a PDF from analysis JSON already returned by /api/portfolio/analyze.
 Does not re-parse 1099 PDFs or rebuild wash-sale lots.
 
-This is a reconciliation packet, not a filed Form 8949 and not a rebuild of lots.
+This is a reconciliation packet, not a filed Form 8949. Lot-matched 1099-B
+is a worksheet for this run.
 """
 
 from __future__ import annotations
@@ -24,9 +25,9 @@ PACKET_METADATA_PRODUCT = "year_close_packet"
 # the download so the $49 page is not a blank "Year-close packet" label.
 PACKET_CHECKOUT_NAME = "Year-close packet — ready for your CPA"
 PACKET_CHECKOUT_DESCRIPTION = (
-    "Walk into tax season with this run already organized: wash-sale flags on "
-    "replacement lots, harvesting opportunities with estimated tax savings, "
-    "lot-level P&L, and a printable reconciliation you can send your CPA. "
+    "Walk into tax season with this run already organized: lot-matched 1099-B, "
+    "wash-sale flags on replacement lots, harvesting opportunities with estimated "
+    "tax savings, and a printable reconciliation you can send your CPA. "
     "One-time $49. Instant PDF when you return. Not a filed Form 8949 — a "
     "working packet for this analysis."
 )
@@ -35,15 +36,26 @@ PACKET_CHECKOUT_SUBMIT_MESSAGE = (
 )
 
 PACKET_DISCLAIMER = (
-    "This is a reconciliation packet, not a filed Form 8949 and not a rebuild of lots."
+    "This is a reconciliation packet, not a filed Form 8949. "
+    "Lot-matched 1099-B is a worksheet for this run."
 )
 
 SETTLEMENT_DATE_FAQ = (
     "Robinhood 1099 uses settlement date, so a year-end short option "
     "(for example SPX 12/31) can show a gain on the 1099 for a trade that "
-    "does not settle until January. Totals only -- we do not parse "
-    "settlement-date lots from the PDF."
+    "does not settle until January. Matched lots still show both dates so "
+    "the split is visible."
 )
+
+LOT_MATCH_TITLE = "Lot-matched 1099-B"
+LOT_MATCH_INTRO = (
+    "Reconciliation worksheet, not a filed Form 8949. "
+    "Matched: paired lots whose 1099 sold date equals the export trade date. "
+    "Gap: paired lots with a settlement vs trade-date split (matched_settlement_gap). "
+    "Unmatched: 1099_only (on the 1099, not in the export) and csv_only "
+    "(in the export, not on the 1099)."
+)
+LINES_PER_PDF_PAGE = 42
 
 OPTIONS_WASH_SALE_FAQ = (
     "Options and credit-spread wash-sale treatment can differ from the "
@@ -65,9 +77,10 @@ COMPARE_EXPORT_HEADER = "This export (trade date)"
 COMPARE_GAP_COPY = (
     "These totals often disagree. A year-end short option (for example SPX 12/31) "
     "can print a gain on the 1099 while this export still shows a loss until January "
-    "settlement. That is not a software bug. We do not parse settlement lots from the PDF. "
-    "An incomplete export also shows up here. Traders on r/options have reported the "
-    "same gap -- a Robinhood 1099 showing +$2,699 while the export showed a $542 loss."
+    "settlement. That is not a software bug. The $49 packet lists matched, gap, and "
+    "unmatched lots. An incomplete export also shows up here. Traders on r/options have "
+    "reported the same gap -- a Robinhood 1099 showing +$2,699 while the export showed "
+    "a $542 loss."
 )
 
 # In-memory entitlement + snapshot store. Sufficient for staging accept
@@ -384,6 +397,7 @@ def build_packet_payload(
     )
     unknown_year = bool(supplemental) and form_1099_tax_year is None
     export_totals = export_realized_totals(analysis)
+    lot_report = _lot_match_payload(analysis.get("lot_match_report"))
     return {
         "analysis_id": analysis_id or analysis.get("analysis_id") or "",
         "product_name": PACKET_PRODUCT_NAME,
@@ -414,10 +428,81 @@ def build_packet_payload(
         "export_long_term_net": export_totals["long_term_net"],
         "export_wash_sale_disallowed": export_totals["wash_sale_disallowed"],
         "csv_wash_sale_lots": wash_lots,
+        "lot_match_report": lot_report,
         "settlement_date_faq": SETTLEMENT_DATE_FAQ,
         "options_wash_sale_faq": OPTIONS_WASH_SALE_FAQ,
         "compare_gap_copy": COMPARE_GAP_COPY if same_year else "",
     }
+
+
+def _lot_match_payload(raw: Any) -> dict[str, Any] | None:
+    if raw is None:
+        return None
+    if hasattr(raw, "model_dump"):
+        dumped = raw.model_dump(mode="json")
+        return dumped if isinstance(dumped, dict) else None
+    if isinstance(raw, dict):
+        return raw
+    return None
+
+
+def _report_rows(report: dict[str, Any] | None, key: str) -> list[dict[str, Any]]:
+    if not report:
+        return []
+    rows = report.get(key) or []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _fmt_date(value: Any) -> str:
+    if value is None or value == "":
+        return "-"
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    text = str(value).strip()
+    return text[:10] if text else "—"
+
+
+def _lot_line(row: dict[str, Any]) -> str:
+    symbol = row.get("symbol") or row.get("description") or "UNKNOWN"
+    qty = _as_float(row.get("quantity"))
+    status = row.get("status") or ""
+    return (
+        f"{status} {symbol} qty {qty:g}  "
+        f"1099 {_fmt_date(row.get('date_sold_1099'))} {_money(row.get('proceeds_1099') or 0)}  "
+        f"export {_fmt_date(row.get('export_trade_date'))} {_money(row.get('proceeds_export') or 0)}"
+    )
+
+
+def lot_match_plain_text(payload: dict[str, Any]) -> str:
+    """Paid packet page: matched / gap / unmatched 1099-B lots."""
+    report = payload.get("lot_match_report") or {}
+    matched = _report_rows(report, "matched")
+    gap = _report_rows(report, "gap")
+    unmatched = _report_rows(report, "unmatched")
+    lines = [
+        LOT_MATCH_TITLE,
+        LOT_MATCH_INTRO,
+        "",
+        f"Matched ({len(matched)})",
+    ]
+    if matched:
+        lines.extend(_lot_line(row) for row in matched)
+    else:
+        lines.append("None.")
+    lines.extend(["", f"Gap ({len(gap)})"])
+    if gap:
+        lines.extend(_lot_line(row) for row in gap)
+    else:
+        lines.append("None.")
+    lines.extend(["", f"Unmatched ({len(unmatched)})"])
+    if unmatched:
+        lines.extend(_lot_line(row) for row in unmatched)
+    else:
+        lines.append("None.")
+    lines.extend(["", "FAQ", SETTLEMENT_DATE_FAQ])
+    return "\n".join(lines)
 
 
 def packet_plain_text(payload: dict[str, Any]) -> str:
@@ -469,6 +554,15 @@ def packet_plain_text(payload: dict[str, Any]) -> str:
                 extra.append(f"repurchase {lot['repurchase_date']}")
             if extra:
                 lines.append("  " + ", ".join(extra))
+
+    report = payload.get("lot_match_report")
+    if report:
+        lines.append(
+            f"{LOT_MATCH_TITLE}: "
+            f"{_as_int(report.get('matched_count')) or len(_report_rows(report, 'matched'))} matched, "
+            f"{_as_int(report.get('gap_count')) or len(_report_rows(report, 'gap'))} gap, "
+            f"{_as_int(report.get('unmatched_count')) or len(_report_rows(report, 'unmatched'))} unmatched."
+        )
 
     lines.append("FAQ")
     lines.append(SETTLEMENT_DATE_FAQ)
@@ -532,11 +626,15 @@ def same_year_compare_plain_text(payload: dict[str, Any]) -> str:
     )
 
 
-def _page_content_stream(text: str) -> bytes:
+def _wrapped_pdf_lines(text: str) -> list[str]:
     lines: list[str] = []
     for raw in text.split("\n"):
         lines.extend(_wrap_pdf_line(raw))
+    return lines or [""]
 
+
+def _page_content_stream(text: str) -> bytes:
+    lines = _wrapped_pdf_lines(text)
     y = 720
     commands = ["BT", "/F1 11 Tf"]
     first = True
@@ -552,6 +650,22 @@ def _page_content_stream(text: str) -> bytes:
             break
     commands.append("ET")
     return "\n".join(commands).encode("latin-1", errors="replace")
+
+
+def _page_streams_from_text(text: str) -> list[bytes]:
+    lines = _wrapped_pdf_lines(text)
+    chunks: list[list[str]] = []
+    current: list[str] = []
+    for line in lines:
+        if len(current) >= LINES_PER_PDF_PAGE:
+            chunks.append(current)
+            current = []
+        current.append(line)
+    if current:
+        chunks.append(current)
+    return [_page_content_stream("\n".join(chunk)) for chunk in chunks] or [
+        _page_content_stream("")
+    ]
 
 
 def _assemble_pdf(page_streams: list[bytes]) -> bytes:
@@ -609,14 +723,45 @@ def render_packet_pdf(payload: dict[str, Any]) -> bytes:
     pages = [packet_plain_text(payload)]
     if payload.get("same_year_compare"):
         pages.append(same_year_compare_plain_text(payload))
-    return _assemble_pdf([_page_content_stream(page) for page in pages])
+    if payload.get("lot_match_report"):
+        pages.append(lot_match_plain_text(payload))
+    streams: list[bytes] = []
+    for page in pages:
+        streams.extend(_page_streams_from_text(page))
+    return _assemble_pdf(streams)
+
+
+def _lot_report_has_rows(report: Any) -> bool:
+    if not isinstance(report, dict):
+        return False
+    return bool(report.get("matched") or report.get("gap") or report.get("unmatched"))
+
+
+def _analysis_preserving_lot_rows(
+    existing_payload: dict[str, Any] | None,
+    analysis: dict[str, Any],
+) -> dict[str, Any]:
+    """Do not let a counts-only client payload wipe server-side lot rows."""
+    incoming = analysis.get("lot_match_report")
+    if _lot_report_has_rows(incoming):
+        return analysis
+    stored = (existing_payload or {}).get("lot_match_report")
+    if not _lot_report_has_rows(stored):
+        return analysis
+    merged = dict(analysis)
+    merged["lot_match_report"] = stored
+    return merged
 
 
 def remember_analysis(analysis_id: str, user_id: str, analysis: dict[str, Any]) -> None:
     existing = PACKET_STORE.get(analysis_id) or {}
+    existing_payload = existing.get("payload")
+    if not isinstance(existing_payload, dict):
+        existing_payload = None
+    preserved = _analysis_preserving_lot_rows(existing_payload, analysis)
     PACKET_STORE[analysis_id] = _new_packet_record(
         user_id,
-        payload=build_packet_payload(analysis, analysis_id=analysis_id),
+        payload=build_packet_payload(preserved, analysis_id=analysis_id),
         paid=bool(existing.get("paid")),
         session_ids=set(existing.get("session_ids") or []),
         created_at=existing.get("created_at"),

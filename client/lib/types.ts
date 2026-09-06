@@ -118,6 +118,58 @@ export interface HarvestingSuggestion {
   priority: number;
 }
 
+export interface Form1099BLot {
+  symbol: string;
+  cusip?: string;
+  description?: string;
+  quantity: number;
+  date_sold?: string | null;
+  date_acquired?: string | null;
+  proceeds: number;
+  cost_basis: number;
+  wash_sale_disallowed: number;
+  gain_or_loss?: number;
+  term?: string;
+  covered?: boolean;
+  form_8949_box?: string;
+  additional_info?: string;
+  is_aggregate?: boolean;
+}
+
+export type LotMatchStatus =
+  | "matched"
+  | "matched_settlement_gap"
+  | "1099_only"
+  | "csv_only";
+
+export interface LotMatchRow {
+  status: LotMatchStatus | string;
+  symbol: string;
+  description?: string;
+  quantity: number;
+  date_sold_1099?: string | null;
+  export_trade_date?: string | null;
+  export_settle_date?: string | null;
+  proceeds_1099: number;
+  proceeds_export: number;
+  cost_basis_1099?: number;
+  cost_basis_export?: number;
+  wash_sale_disallowed?: number;
+}
+
+export interface LotMatchReport {
+  matched: LotMatchRow[];
+  gap: LotMatchRow[];
+  unmatched: LotMatchRow[];
+  matched_count: number;
+  gap_count: number;
+  unmatched_count: number;
+  totals_ok?: boolean;
+  lot_proceeds_total?: number;
+  lot_cost_basis_total?: number;
+  lot_wash_total?: number;
+}
+
 export interface Supplemental1099Summary {
   source_filename: string;
   broker_name: string;
@@ -133,6 +185,7 @@ export interface Supplemental1099Summary {
   referenced_symbols: string[];
   matched_symbols: string[];
   insights: string[];
+  lots?: Form1099BLot[];
 }
 
 // --- Portfolio Analysis Response ---
@@ -189,10 +242,12 @@ export interface PortfolioAnalysis {
   summary: PortfolioSummary;
   tax_profile: TaxProfile | null;
   supplemental_1099?: Supplemental1099Summary | null;
+  lot_match_report?: LotMatchReport | null;
   analysis_id?: string | null;
   activity_book?: ActivityBookSummary | null;
   packet_unlocked?: boolean;
   packet_session_id?: string | null;
+  sample_run?: boolean;
   disclaimer: string;
   errors: string[];
   warnings: string[];

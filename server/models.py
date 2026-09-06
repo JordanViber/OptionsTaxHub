@@ -268,6 +268,58 @@ class HarvestingSuggestion(BaseModel):
     )
 
 
+class Form1099BLot(BaseModel):
+    """One 1099-B proceeds row parsed from a Robinhood consolidated statement."""
+
+    symbol: str = ""
+    cusip: str = ""
+    description: str = ""
+    quantity: float = 0.0
+    date_sold: Optional[date] = None
+    date_acquired: Optional[date] = None
+    proceeds: float = 0.0
+    cost_basis: float = 0.0
+    wash_sale_disallowed: float = 0.0
+    gain_or_loss: float = 0.0
+    term: str = "short"
+    covered: bool = True
+    form_8949_box: str = ""
+    additional_info: str = ""
+    is_aggregate: bool = False
+
+
+class LotMatchRow(BaseModel):
+    """One row of the lot-matched 1099-B worksheet."""
+
+    status: str
+    symbol: str = ""
+    description: str = ""
+    quantity: float = 0.0
+    date_sold_1099: Optional[date] = None
+    export_trade_date: Optional[date] = None
+    export_settle_date: Optional[date] = None
+    proceeds_1099: float = 0.0
+    proceeds_export: float = 0.0
+    cost_basis_1099: float = 0.0
+    cost_basis_export: float = 0.0
+    wash_sale_disallowed: float = 0.0
+
+
+class LotMatchReport(BaseModel):
+    """Same-year 1099-B lots matched to CSV FIFO closes."""
+
+    matched: list[LotMatchRow] = Field(default_factory=list)
+    gap: list[LotMatchRow] = Field(default_factory=list)
+    unmatched: list[LotMatchRow] = Field(default_factory=list)
+    matched_count: int = 0
+    gap_count: int = 0
+    unmatched_count: int = 0
+    totals_ok: bool = True
+    lot_proceeds_total: float = 0.0
+    lot_cost_basis_total: float = 0.0
+    lot_wash_total: float = 0.0
+
+
 class Supplemental1099Summary(BaseModel):
     """Parsed reconciliation context from an optional Robinhood 1099 PDF."""
 
@@ -285,6 +337,7 @@ class Supplemental1099Summary(BaseModel):
     referenced_symbols: list[str] = []
     matched_symbols: list[str] = []
     insights: list[str] = []
+    lots: list[Form1099BLot] = Field(default_factory=list)
 
 
 # --- Portfolio Analysis Response ---
@@ -356,10 +409,14 @@ class PortfolioAnalysis(BaseModel):
     summary: PortfolioSummary = PortfolioSummary()
     tax_profile: Optional[TaxProfile] = None
     supplemental_1099: Optional[Supplemental1099Summary] = None
+    lot_match_report: Optional[LotMatchReport] = None
     analysis_id: Optional[str] = None
     activity_book: Optional[ActivityBookSummary] = None
     packet_unlocked: bool = False
     packet_session_id: Optional[str] = None
+    # In-app 2026 sample: lot rows stay on the public payload for desk preview.
+    # Download still requires packet_unlocked / $49.
+    sample_run: bool = False
     disclaimer: str = (
         "This analysis is for educational and simulation purposes only. "
         "It does not constitute financial, tax, or investment advice. "

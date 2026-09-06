@@ -4,9 +4,10 @@ import {
   exportShortTermNet,
   isSameYear1099Compare,
   isUnknown1099Year,
+  redactUnpaidLotMatch,
   washFlagIsLongTerm,
 } from "../../lib/supplemental1099";
-import type { RealizedSummary } from "../../lib/types";
+import type { PortfolioAnalysis, RealizedSummary } from "../../lib/types";
 
 const realized: RealizedSummary = {
   tax_year: 2024,
@@ -118,5 +119,153 @@ describe("supplemental1099 helpers", () => {
     expect(isUnknown1099Year(2024)).toBe(false);
     expect(isSameYear1099Compare(null, 2024)).toBe(false);
     expect(isSameYear1099Compare(undefined, 2024)).toBe(false);
+  });
+
+  it("strips lot-level dates/amounts/statuses from unpaid browser storage", () => {
+    const analysis = {
+      packet_unlocked: false,
+      positions: [],
+      tax_lots: [],
+      suggestions: [],
+      wash_sale_flags: [],
+      summary: {},
+      tax_profile: null,
+      disclaimer: "",
+      errors: [],
+      warnings: [],
+      supplemental_1099: {
+        source_filename: "sample.pdf",
+        broker_name: "Robinhood",
+        tax_year: 2026,
+        short_term_proceeds: 8315,
+        short_term_cost_basis: 0,
+        short_term_wash_sale_disallowed: 0,
+        short_term_net_gain: 2699,
+        long_term_proceeds: 0,
+        long_term_cost_basis: 0,
+        long_term_wash_sale_disallowed: 0,
+        long_term_net_gain: 0,
+        referenced_symbols: ["SPX"],
+        matched_symbols: [],
+        insights: [],
+        lots: [
+          {
+            symbol: "SPX",
+            quantity: 1,
+            date_sold: "2027-01-02",
+            proceeds: 2699,
+            cost_basis: 0,
+            wash_sale_disallowed: 0,
+          },
+        ],
+      },
+      lot_match_report: {
+        matched: [],
+        gap: [
+          {
+            status: "matched_settlement_gap",
+            symbol: "NVDA",
+            quantity: 12,
+            date_sold_1099: "2026-02-20",
+            proceeds_1099: 2976,
+            proceeds_export: 2976,
+          },
+        ],
+        unmatched: [
+          {
+            status: "1099_only",
+            symbol: "SPX",
+            quantity: 1,
+            proceeds_1099: 2699,
+            proceeds_export: 0,
+          },
+        ],
+        matched_count: 0,
+        gap_count: 1,
+        unmatched_count: 1,
+      },
+    } as unknown as PortfolioAnalysis;
+
+    const redacted = redactUnpaidLotMatch(analysis);
+    expect(redacted.lot_match_report?.gap).toEqual([]);
+    expect(redacted.lot_match_report?.unmatched).toEqual([]);
+    expect(redacted.lot_match_report?.gap_count).toBe(1);
+    expect(redacted.supplemental_1099?.lots).toEqual([]);
+    expect(redacted.supplemental_1099?.short_term_net_gain).toBe(2699);
+    expect(JSON.stringify(redacted)).not.toContain("matched_settlement_gap");
+    expect(JSON.stringify(redacted)).not.toContain("2026-02-20");
+  });
+
+  it("keeps lot rows when the packet is unlocked", () => {
+    const analysis = {
+      packet_unlocked: true,
+      positions: [],
+      tax_lots: [],
+      suggestions: [],
+      wash_sale_flags: [],
+      summary: {},
+      tax_profile: null,
+      disclaimer: "",
+      errors: [],
+      warnings: [],
+      lot_match_report: {
+        matched: [],
+        gap: [
+          {
+            status: "matched_settlement_gap",
+            symbol: "NVDA",
+            quantity: 12,
+            proceeds_1099: 2976,
+            proceeds_export: 2976,
+          },
+        ],
+        unmatched: [],
+        matched_count: 0,
+        gap_count: 1,
+        unmatched_count: 0,
+      },
+    } as unknown as PortfolioAnalysis;
+    expect(redactUnpaidLotMatch(analysis).lot_match_report?.gap).toHaveLength(1);
+  });
+
+  it("keeps lot rows for the in-app 2026 sample 1099", () => {
+    const analysis = {
+      packet_unlocked: false,
+      sample_run: true,
+      positions: [],
+      tax_lots: [],
+      suggestions: [],
+      wash_sale_flags: [],
+      summary: {},
+      tax_profile: null,
+      disclaimer: "",
+      errors: [],
+      warnings: [],
+      supplemental_1099: {
+        source_filename: "sample-robinhood-1099-2026.pdf",
+        broker_name: "Robinhood",
+        tax_year: 2026,
+        short_term_net_gain: 2699,
+        lots: [{ symbol: "SPX", quantity: 1, proceeds: 2699 }],
+      },
+      lot_match_report: {
+        matched: [],
+        gap: [
+          {
+            status: "matched_settlement_gap",
+            symbol: "NVDA",
+            quantity: 12,
+            proceeds_1099: 2976,
+            proceeds_export: 2976,
+          },
+        ],
+        unmatched: [],
+        matched_count: 0,
+        gap_count: 1,
+        unmatched_count: 0,
+      },
+    } as unknown as PortfolioAnalysis;
+    expect(redactUnpaidLotMatch(analysis).lot_match_report?.gap).toHaveLength(1);
+    expect(redactUnpaidLotMatch(analysis).supplemental_1099?.lots).toHaveLength(1);
   });
 });
