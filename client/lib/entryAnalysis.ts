@@ -284,12 +284,15 @@ export function buildEntryContextLine(
       : parts[0];
 
   const contracts = proposal.quantity ?? 0;
+  // No short-commitment flag on public positions. If any same-symbol option
+  // is already open, do not claim this short call may be covered.
   const covered =
     proposal.side === "sell" &&
     proposal.right === "call" &&
     Number.isInteger(contracts) &&
     contracts >= 1 &&
-    stockQty >= contracts * CONTRACT_MULTIPLIER;
+    stockQty >= contracts * CONTRACT_MULTIPLIER &&
+    optionPositions.length === 0;
   if (covered) {
     line = `${line} — this short call may be covered if you keep the shares`;
   }

@@ -285,6 +285,22 @@ describe("buildEntryContextLine", () => {
     );
   });
 
+  it("does not claim covered when any same-symbol option is already open", () => {
+    const tsla = stockPosition("TSLA", 100);
+    const option = optionPosition("TSLA", "TSLA 1/16/2027 Put $200.00");
+    const line = buildEntryContextLine(
+      proposal({
+        symbol: "TSLA",
+        right: "call",
+        side: "sell",
+        quantity: 1,
+      }),
+      [tsla, option],
+    );
+    expect(line).toBe("Open TSLA: 100 sh and 1 option position");
+    expect(line).not.toMatch(/may be covered/i);
+  });
+
   it("does not claim covered when share count is short of 100 per contract", () => {
     const tsla = stockPosition("TSLA", 4);
     expect(
