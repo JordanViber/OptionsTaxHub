@@ -771,8 +771,8 @@ describe("DashboardPage", () => {
         screen.getByText(/Upload your Robinhood 1099 PDF for the tax year you are closing/i),
       ).toBeInTheDocument();
       expect(
-        screen.getAllByText(/not lot history/i).length,
-      ).toBeGreaterThan(0);
+        screen.getByText(/Totals compare stays free/i),
+      ).toBeInTheDocument();
     });
   });
 

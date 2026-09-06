@@ -2,6 +2,8 @@ from pathlib import Path
 
 import pytest
 
+from datetime import date
+
 from pdf_1099_parser import extract_text_from_pdf, parse_robinhood_1099_pdf
 
 
@@ -43,6 +45,17 @@ def test_parse_robinhood_1099_pdf_extracts_summary_and_symbols(
     assert any("expected prior tax year (2024)" in insight for insight in summary.insights)
     assert any("$17,442.80" in insight for insight in summary.insights)
 
+    matchable = [lot for lot in summary.lots if not lot.is_aggregate]
+    assert matchable, "expected 1099-B lots from the 2024 fixture"
+    first = matchable[0]
+    assert "BITFARMS" in (first.description or "").upper()
+    assert first.cusip == "09173B107"
+    assert first.date_sold == date(2024, 1, 2)
+    assert first.quantity == pytest.approx(88.757)
+    assert first.proceeds == pytest.approx(294.66)
+    assert first.wash_sale_disallowed == pytest.approx(1.30)
+    assert all(lot.proceeds != pytest.approx(8903.04) for lot in matchable)
+
 
 def test_parse_robinhood_1099_pdf_handles_missing_totals_and_unknown_year(monkeypatch):
     monkeypatch.setattr(
@@ -65,6 +78,7 @@ def test_parse_robinhood_1099_pdf_handles_missing_totals_and_unknown_year(monkey
     assert summary.referenced_symbols == []
     assert summary.matched_symbols == []
     assert summary.insights == []
+    assert summary.lots == []
 
 
 def test_parse_robinhood_1099_pdf_reports_year_mismatch_and_unmatched_symbols(monkeypatch):
@@ -155,3 +169,17 @@ def test_parse_2026_sample_robinhood_1099_pdf_extracts_locked_short_term_totals(
     assert summary.long_term_net_gain == pytest.approx(0.00)
     assert summary.referenced_symbols == ["AMD", "NVDA", "SPX", "TSLA"]
     assert summary.matched_symbols == ["AMD", "NVDA", "TSLA"]
+
+    by_symbol = {lot.symbol: lot for lot in summary.lots if not lot.is_aggregate}
+    assert set(by_symbol) == {"AMD", "NVDA", "SPX", "TSLA"}
+    assert by_symbol["NVDA"].quantity == pytest.approx(12)
+    assert by_symbol["NVDA"].date_sold == date(2026, 2, 20)
+    assert by_symbol["NVDA"].proceeds == pytest.approx(2976.00)
+    assert by_symbol["NVDA"].cost_basis == pytest.approx(3360.00)
+    assert by_symbol["NVDA"].wash_sale_disallowed == pytest.approx(384.00)
+    assert by_symbol["TSLA"].quantity == pytest.approx(4)
+    assert by_symbol["AMD"].quantity == pytest.approx(10)
+    assert by_symbol["AMD"].wash_sale_disallowed == pytest.approx(300.00)
+    assert by_symbol["SPX"].proceeds == pytest.approx(2699.00)
+    assert by_symbol["SPX"].cost_basis == pytest.approx(0.00)
+    assert by_symbol["SPX"].date_sold == date(2027, 1, 2)

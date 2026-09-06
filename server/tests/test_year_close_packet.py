@@ -16,6 +16,7 @@ from stripe import StripeObject
 from year_close_packet import (
     COMPARE_GAP_COPY,
     COMPARE_TITLE,
+    LOT_MATCH_TITLE,
     OPTIONS_WASH_SALE_FAQ,
     PACKET_AMOUNT_CENTS,
     PACKET_CHECKOUT_DESCRIPTION,
@@ -152,7 +153,8 @@ def test_payload_and_pdf_contain_1099_totals_amd_and_faqs():
     assert OPTIONS_WASH_SALE_FAQ in text
     assert PACKET_DISCLAIMER in text
     assert "not a filed Form 8949" in text
-    assert "not a rebuild of lots" in text
+    assert "Lot-matched 1099-B" in PACKET_DISCLAIMER
+    assert "we do not parse settlement-date lots" not in text.lower()
 
     pdf_bytes = render_packet_pdf(payload)
     pdf_text = _pdf_text(pdf_bytes)
@@ -996,3 +998,100 @@ def test_tipjar_still_does_not_unlock_same_year_packet(monkeypatch):
     assert confirm.status_code == 403
     unpaid = client.get("/api/year-close-packet/download?analysis_id=analysis-same-year-2024")
     assert unpaid.status_code == 403
+
+
+LOT_MATCH_ANALYSIS = {
+    **SAME_YEAR_ANALYSIS,
+    "analysis_id": "analysis-lot-match-2024",
+    "lot_match_report": {
+        "matched": [
+            {
+                "status": "matched",
+                "symbol": "NVDA",
+                "quantity": 12,
+                "date_sold_1099": "2026-02-20",
+                "export_trade_date": "2026-02-18",
+                "proceeds_1099": 2976.0,
+                "proceeds_export": 2976.0,
+            }
+        ],
+        "gap": [
+            {
+                "status": "gap",
+                "symbol": "SPX",
+                "quantity": 1,
+                "date_sold_1099": "2027-01-02",
+                "export_trade_date": None,
+                "proceeds_1099": 2699.0,
+                "proceeds_export": 0.0,
+            }
+        ],
+        "unmatched": [
+            {
+                "status": "unmatched",
+                "symbol": "META",
+                "quantity": 4,
+                "date_sold_1099": None,
+                "export_trade_date": "2026-03-20",
+                "proceeds_1099": 0.0,
+                "proceeds_export": 2880.0,
+            }
+        ],
+        "matched_count": 1,
+        "gap_count": 1,
+        "unmatched_count": 1,
+        "totals_ok": True,
+    },
+}
+
+
+def test_paid_pdf_has_matched_gap_unmatched_lot_sections():
+    payload = build_packet_payload(
+        LOT_MATCH_ANALYSIS, analysis_id="analysis-lot-match-2024"
+    )
+    text = packet_plain_text(payload)
+    assert LOT_MATCH_TITLE in text
+    assert "1 matched" in text
+    assert "1 gap" in text
+    pdf_text = _pdf_text(render_packet_pdf(payload))
+    assert LOT_MATCH_TITLE in pdf_text
+    assert "Matched (1)" in pdf_text
+    assert "Gap (1)" in pdf_text
+    assert "Unmatched (1)" in pdf_text
+    assert "NVDA" in pdf_text
+    assert "SPX" in pdf_text
+    assert "not a filed Form 8949" in pdf_text
+    assert "we do not parse settlement" not in pdf_text.lower()
+
+
+def test_lot_match_pdf_paginates_instead_of_dropping_rows():
+    rows = [
+        {
+            "status": "matched",
+            "symbol": f"S{i:03d}",
+            "quantity": 1,
+            "date_sold_1099": "2026-01-02",
+            "export_trade_date": "2026-01-01",
+            "proceeds_1099": 10.0 + i,
+            "proceeds_export": 10.0 + i,
+        }
+        for i in range(55)
+    ]
+    analysis = {
+        **LOT_MATCH_ANALYSIS,
+        "lot_match_report": {
+            "matched": rows,
+            "gap": [],
+            "unmatched": [],
+            "matched_count": 55,
+            "gap_count": 0,
+            "unmatched_count": 0,
+            "totals_ok": True,
+        },
+    }
+    pdf_bytes = render_packet_pdf(build_packet_payload(analysis, analysis_id="many-lots"))
+    reader = PdfReader(BytesIO(pdf_bytes))
+    assert len(reader.pages) > 2
+    pdf_text = _pdf_text(pdf_bytes)
+    assert "S000" in pdf_text
+    assert "S054" in pdf_text

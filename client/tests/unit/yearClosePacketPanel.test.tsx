@@ -86,6 +86,7 @@ describe("YearClosePacketPanel", () => {
     render(<YearClosePacketPanel analysis={analysis} />);
     expect(screen.getByText(YEAR_CLOSE_PACKET_TITLE)).toBeInTheDocument();
     expect(screen.getByText(/reconciliation packet, not a filed Form 8949/i)).toBeInTheDocument();
+    expect(screen.getByText(/Lot-matched 1099-B is a worksheet for this run/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Download/i })).toBeInTheDocument();
     expect(screen.queryByText("Coffee")).not.toBeInTheDocument();

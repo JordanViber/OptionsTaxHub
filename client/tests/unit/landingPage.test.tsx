@@ -232,21 +232,16 @@ describe("LandingPage", () => {
     ).toBeGreaterThan(0);
   });
 
-  it("does not claim Form 8949 filing, lot rebuild, or full lot-matching", () => {
+  it("claims lot-matched 1099-B on the packet and does not claim Form 8949 filing", () => {
     mockUseAuth.mockReturnValue({ user: null, loading: false });
     renderWithClient(<LandingPage />);
 
-    expect(
-      screen.getByText(
-        /not a filed Form 8949 and not a rebuild of lots from the PDF/i,
-      ),
-    ).toBeInTheDocument();
+    expect(screen.getAllByText(/lot-matched 1099-B/i).length).toBeGreaterThan(0);
+    expect(screen.getByText(/not a filed Form 8949/i)).toBeInTheDocument();
     expect(screen.queryByText(/file your Form 8949/i)).not.toBeInTheDocument();
     expect(
       screen.queryByText(/full lot rebuild from the PDF/i),
     ).not.toBeInTheDocument();
-    expect(screen.queryByText(/full lot-matching/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/lot-matched 1099-B/i)).not.toBeInTheDocument();
   });
 
   it("does not render a card field on the marketing home page", () => {

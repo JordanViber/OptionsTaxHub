@@ -57,8 +57,11 @@ describe("Supplemental1099InsightsPanel", () => {
     expect(screen.getByText(SUPPLEMENTAL_1099_SETTLEMENT_FAQ)).toBeInTheDocument();
     expect(screen.getByText(/SPX 12\/31/i)).toBeInTheDocument();
     expect(
-      screen.getByText(/do not parse settlement-date lots from the PDF/i),
+      screen.getByText(/Matched lots still show both dates/i),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/do not parse settlement-date lots from the PDF/i),
+    ).not.toBeInTheDocument();
   });
 
   it("shows the wash-sale gray-area FAQ when the 1099 reported disallowed wash-sale", () => {
@@ -345,5 +348,73 @@ describe("Supplemental1099InsightsPanel", () => {
     expect(screen.queryByText(SUPPLEMENTAL_1099_GAP_COPY)).not.toBeInTheDocument();
     expect(screen.queryByTestId("1099-vs-export-panel")).not.toBeInTheDocument();
     expect(screen.getByTestId("previous-year-1099-supplement")).toBeInTheDocument();
+    expect(screen.queryByTestId("lot-matched-1099b")).not.toBeInTheDocument();
+  });
+
+  const sampleReport = {
+    matched: [
+      {
+        status: "matched",
+        symbol: "NVDA",
+        quantity: 12,
+        date_sold_1099: "2026-02-20",
+        export_trade_date: "2026-02-18",
+        proceeds_1099: 2976,
+        proceeds_export: 2976,
+      },
+    ],
+    gap: [
+      {
+        status: "gap",
+        symbol: "SPX",
+        quantity: 1,
+        date_sold_1099: "2027-01-02",
+        export_trade_date: null,
+        proceeds_1099: 2699,
+        proceeds_export: 0,
+      },
+    ],
+    unmatched: [],
+    matched_count: 1,
+    gap_count: 1,
+    unmatched_count: 0,
+  };
+
+  it("keeps totals free and teasers lot-matched 1099-B when locked", () => {
+    render(
+      <Supplemental1099InsightsPanel
+        summary={{ ...fixtureSummary, tax_year: 2026 }}
+        analysisTaxYear={2026}
+        lotMatchReport={sampleReport}
+        locked
+      />,
+    );
+
+    expect(screen.getByTestId("1099-vs-export-panel")).toBeInTheDocument();
+    expect(screen.getByTestId("lot-matched-1099b")).toBeInTheDocument();
+    expect(screen.getByTestId("lot-match-counts")).toHaveTextContent(
+      "Matched 1 · Gap 1 · Unmatched 0",
+    );
+    expect(
+      screen.getByText(/Pay \$49 for lot-matched 1099-B/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("NVDA")).not.toBeInTheDocument();
+  });
+
+  it("shows matched and gap lot rows when unlocked", () => {
+    render(
+      <Supplemental1099InsightsPanel
+        summary={{ ...fixtureSummary, tax_year: 2026 }}
+        analysisTaxYear={2026}
+        lotMatchReport={sampleReport}
+        locked={false}
+      />,
+    );
+
+    expect(screen.getByText("NVDA")).toBeInTheDocument();
+    expect(screen.getByText("SPX")).toBeInTheDocument();
+    expect(
+      screen.queryByText(/Pay \$49 for lot-matched 1099-B/i),
+    ).not.toBeInTheDocument();
   });
 });

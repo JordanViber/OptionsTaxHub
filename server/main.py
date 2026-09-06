@@ -59,6 +59,7 @@ from year_close_packet import (
     upsert_payload,
 )
 from csv_parser import parse_csv, RealizedEvent, transactions_to_tax_lots
+from lot_matcher import match_1099b_lots
 from ledger import (
     is_sample_csv_filename,
     merge_transaction_books,
@@ -1155,6 +1156,26 @@ async def _run_portfolio_analysis(
         summary.activity_last_date = activity_book.last_activity_date
         summary.activity_transaction_count = activity_book.transaction_count
 
+    lot_match_report = None
+    if supplemental_1099_summary is not None:
+        lot_match_report = match_1099b_lots(
+            supplemental_1099_summary.lots,
+            realized_events,
+            form_1099_tax_year=supplemental_1099_summary.tax_year,
+            analysis_tax_year=tax_profile.tax_year,
+            short_term_proceeds=supplemental_1099_summary.short_term_proceeds,
+            long_term_proceeds=supplemental_1099_summary.long_term_proceeds,
+            short_term_cost_basis=supplemental_1099_summary.short_term_cost_basis,
+            long_term_cost_basis=supplemental_1099_summary.long_term_cost_basis,
+            short_term_wash=supplemental_1099_summary.short_term_wash_sale_disallowed,
+            long_term_wash=supplemental_1099_summary.long_term_wash_sale_disallowed,
+        )
+        if lot_match_report is not None and not lot_match_report.totals_ok:
+            all_warnings.append(
+                "Parsed 1099-B lots do not sum to the broker ST/LT totals. "
+                "Summary totals are unchanged; lot rows are still listed."
+            )
+
     analysis_id = str(uuid.uuid4())
     result = PortfolioAnalysis(
         positions=positions,
@@ -1164,6 +1185,7 @@ async def _run_portfolio_analysis(
         summary=summary,
         tax_profile=tax_profile,
         supplemental_1099=supplemental_1099_summary,
+        lot_match_report=lot_match_report,
         analysis_id=analysis_id,
         activity_book=activity_book,
         warnings=_summarize_warnings(all_warnings),

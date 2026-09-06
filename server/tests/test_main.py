@@ -1925,12 +1925,15 @@ def test_analyze_same_year_1099_compare_vs_2026_sample_mismatch(monkeypatch):
     assert same_payload["export_wash_sale_disallowed"] == 300.0
     same_pdf = render_packet_pdf(same_payload)
     same_reader = PdfReader(BytesIO(same_pdf))
-    assert len(same_reader.pages) == 2
+    assert len(same_reader.pages) >= 2
     same_text = "\n".join((page.extract_text() or "") for page in same_reader.pages)
     assert COMPARE_TITLE in same_text
     assert "Broker 1099 (settlement date)" in same_text
     assert "This export (trade date)" in same_text
     assert "$-300.00" not in same_text
+    assert "Lot-matched 1099-B" in same_text
+    assert same_body["lot_match_report"] is not None
+    assert same_body["lot_match_report"]["gap_count"] + same_body["lot_match_report"]["matched_count"] >= 1
 
     mismatch = client.post(
         "/api/portfolio/analyze?tax_year=2026",
@@ -2010,6 +2013,15 @@ def test_analyze_2026_sample_csv_and_1099_is_same_year_compare(monkeypatch):
     assert COMPARE_TITLE in same_text
     assert "Broker 1099 (settlement date)" in same_text
     assert "$2,699.00" in same_text
+    report = same_body["lot_match_report"]
+    assert report is not None
+    assert report["matched_count"] >= 3
+    assert any(row["symbol"] == "SPX" for row in report["gap"])
+    assert "Lot-matched 1099-B" in same_text
+    assert "Matched (" in same_text
+    assert "Gap (" in same_text
+    assert "Unmatched (" in same_text
+    assert "NVDA" in same_text
 
     mismatch = client.post(
         "/api/portfolio/analyze?tax_year=2026",

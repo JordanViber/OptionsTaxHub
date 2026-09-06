@@ -153,8 +153,9 @@ export default function LandingPage() {
             >
               Broker 1099 uses settlement date. Your export uses trade date. A
               year-end short — SPX 12/31 — can print a gain on the 1099 while
-              the export still shows a loss. Not a software bug. Totals only —
-              not a filed Form 8949 and not a rebuild of lots from the PDF.
+              the export still shows a loss. Not a software bug. Totals stay
+              free. The $49 packet adds lot-matched 1099-B — not a filed Form
+              8949.
             </Typography>
             <Stack
               direction={{ xs: "column", sm: "row" }}
@@ -271,7 +272,7 @@ export default function LandingPage() {
             {
               n: "03",
               t: "Take the packet",
-              d: "Settlement-date FAQ on the desk. $49 unlocks the CPA PDF for that tax year.",
+              d: "Settlement-date FAQ on the desk. $49 unlocks lot-matched 1099-B and the CPA PDF for that tax year.",
             },
           ].map((step) => (
             <Box
