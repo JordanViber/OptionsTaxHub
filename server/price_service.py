@@ -591,8 +591,9 @@ def fetch_option_chain_window(
     """
     Fetch listed option contracts in an expiry window.
 
+    Scores every listed expiration in the window (no silent sample/cap).
     Does not snap to a nearest expiration (harvest-only behavior).
-    Caps the number of yfinance chain calls. Failed expirations are skipped.
+    Failed expirations are skipped; the rest are still ranked.
     """
     symbol = symbol.upper().strip()
     right = right.lower().strip()
