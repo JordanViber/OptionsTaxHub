@@ -123,6 +123,18 @@ def _matchable_lots(lots: list[Form1099BLot]) -> list[Form1099BLot]:
     return [lot for lot in lots if not lot.is_aggregate]
 
 
+def _realized_in_tax_year(
+    realized: list[RealizedEvent] | None,
+    tax_year: int,
+) -> list[RealizedEvent]:
+    """Same year filter as realized_summary: export trade date in the compared year."""
+    return [
+        event
+        for event in realized or []
+        if event.sale_date is not None and event.sale_date.year == tax_year
+    ]
+
+
 def match_1099b_lots(
     lots: list[Form1099BLot] | None,
     realized: list[RealizedEvent] | None,
@@ -146,7 +158,7 @@ def match_1099b_lots(
     if not parsed:
         return None
 
-    events = list(realized or [])
+    events = _realized_in_tax_year(realized, int(analysis_tax_year))
     used: set[int] = set()
     matched: list[LotMatchRow] = []
     gap: list[LotMatchRow] = []

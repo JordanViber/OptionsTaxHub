@@ -138,6 +138,34 @@ def test_trade_date_alignment_is_matched():
     assert report.totals_ok is True
 
 
+def test_prior_year_realized_closes_are_not_export_candidates():
+    report = match_1099b_lots(
+        [_lot()],
+        [
+            _event(),
+            _event(
+                sale_date=date(2023, 7, 15),
+                settle_date=date(2023, 7, 17),
+                symbol="NVDA",
+                sale_proceeds=2976.0,
+                quantity=12,
+                cost_basis=3360.0,
+            ),
+        ],
+        form_1099_tax_year=2024,
+        analysis_tax_year=2024,
+        short_term_proceeds=1200.0,
+        short_term_cost_basis=1500.0,
+        short_term_wash=300.0,
+    )
+    assert report is not None
+    assert all(row.symbol != "NVDA" for row in report.unmatched)
+    assert all(
+        row.export_trade_date is None or row.export_trade_date.year == 2024
+        for row in (*report.matched, *report.gap, *report.unmatched)
+    )
+
+
 def test_settle_vs_trade_split_is_matched_settlement_gap():
     report = match_1099b_lots(
         [_lot()],
