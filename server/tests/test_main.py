@@ -1980,7 +1980,7 @@ def test_analyze_same_year_1099_compare_vs_2026_sample_mismatch(monkeypatch):
     assert mismatch_payload.get("harvest_opportunities")
     mismatch_pdf = render_packet_pdf(mismatch_payload)
     mismatch_reader = PdfReader(BytesIO(mismatch_pdf))
-    assert len(mismatch_reader.pages) >= 2
+    assert len(mismatch_reader.pages) == 2
     mismatch_text = "\n".join(
         (page.extract_text() or "") for page in mismatch_reader.pages
     )
@@ -2096,7 +2096,7 @@ def test_analyze_2026_sample_csv_and_1099_is_same_year_compare(monkeypatch):
     assert mismatch_payload.get("harvest_opportunities")
     mismatch_pdf = render_packet_pdf(mismatch_payload)
     mismatch_reader = PdfReader(BytesIO(mismatch_pdf))
-    assert len(mismatch_reader.pages) >= 2
+    assert len(mismatch_reader.pages) == 2
     mismatch_text = "\n".join(
         (page.extract_text() or "") for page in mismatch_reader.pages
     )
@@ -2415,7 +2415,7 @@ def test_analyze_unknown_1099_year_is_not_mismatch_or_same_year_compare(monkeypa
     assert COMPARE_TITLE not in pdf_text
     assert "could not be determined" in pdf_text
     reader = PdfReader(BytesIO(render_packet_pdf(payload)))
-    assert len(reader.pages) >= 2
+    assert len(reader.pages) == 2
 
 
 def test_get_prices_empty_symbols():
