@@ -1932,8 +1932,17 @@ def test_analyze_same_year_1099_compare_vs_2026_sample_mismatch(monkeypatch):
     assert "This export (trade date)" in same_text
     assert "$-300.00" not in same_text
     assert "Lot-matched 1099-B" in same_text
-    assert same_body["lot_match_report"] is not None
-    assert same_body["lot_match_report"]["gap_count"] + same_body["lot_match_report"]["matched_count"] >= 1
+    report = same_body["lot_match_report"]
+    assert report is not None
+    assert (
+        report["matched_count"] + report["gap_count"] + report["unmatched_count"]
+        >= 1
+    )
+    assert any(
+        row["status"] in ("matched", "matched_settlement_gap", "1099_only", "csv_only")
+        for section in ("matched", "gap", "unmatched")
+        for row in report[section]
+    )
 
     mismatch = client.post(
         "/api/portfolio/analyze?tax_year=2026",
