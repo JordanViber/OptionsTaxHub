@@ -63,6 +63,7 @@ LOT_MATCH_INTRO = (
     "(in the export, not on the 1099)."
 )
 LINES_PER_PDF_PAGE = 42
+PDF_WRAP_WIDTH = 96
 
 OPTIONS_WASH_SALE_FAQ = (
     "Options and credit-spread wash-sale treatment can differ from the "
@@ -377,17 +378,27 @@ def harvest_opportunities(analysis: dict[str, Any]) -> list[dict[str, Any]]:
         loss = round(_as_float(suggestion.get("estimated_loss")), 2)
         if savings <= 0 and loss <= 0:
             continue
-        symbol = (
-            suggestion.get("display_label")
-            or suggestion.get("symbol")
-            or "UNKNOWN"
-        )
+        ticker = suggestion.get("symbol") or "UNKNOWN"
+        label = suggestion.get("display_label") or ticker
+        suggestion_id = str(suggestion.get("suggestion_id") or "")
         rows.append(
             {
-                "symbol": symbol,
+                "symbol": ticker,
+                "display_label": label,
+                "suggestion_id": suggestion_id,
+                "lot_details": str(suggestion.get("lot_details") or ""),
+                "quantity": _as_float(suggestion.get("quantity")),
+                "purchase_date": _purchase_date_from_row(suggestion),
+                "cost_basis_per_share": _as_float(
+                    suggestion.get("cost_basis_per_share")
+                ),
                 "term": "LT" if suggestion.get("is_long_term") else "ST",
                 "estimated_federal_savings": savings,
                 "estimated_loss": loss,
+                "wash_sale_risk": bool(suggestion.get("wash_sale_risk")),
+                "wash_sale_explanation": str(
+                    suggestion.get("wash_sale_explanation") or ""
+                ),
             }
         )
     return rows
@@ -490,20 +501,103 @@ def _wash_event_line(lot: dict[str, Any]) -> str:
     )
 
 
-def _harvest_line(row: dict[str, Any]) -> str:
-    symbol = row.get("symbol") or "UNKNOWN"
+def _iso_date_token(value: Any) -> str:
+    token = str(value or "").strip()[:10]
+    if len(token) != 10:
+        return ""
+    try:
+        date.fromisoformat(token)
+        return token
+    except ValueError:
+        return ""
+
+
+def _purchase_date_from_row(row: dict[str, Any]) -> str:
+    """ISO purchase date from compact JSON or suggestion_id. No engine rewrite."""
+    explicit = _iso_date_token(row.get("purchase_date"))
+    if explicit:
+        return explicit
+    sid = str(row.get("suggestion_id") or "").strip()
+    parts = [part for part in sid.split("::") if part]
+    if len(parts) >= 4:
+        return _iso_date_token(parts[3])
+    return ""
+
+
+def _harvest_lot_key(row: dict[str, Any]) -> str:
+    """lot_details when present, else suggestion_id — one unique lot token."""
+    details = str(row.get("lot_details") or "").strip()
+    if details:
+        return details
+    return str(row.get("suggestion_id") or "").strip()
+
+
+def _harvest_symbol_term_key(row: dict[str, Any]) -> tuple[str, str]:
+    label = str(row.get("display_label") or row.get("symbol") or "UNKNOWN")
+    term = str(row.get("term") or "ST")
+    return (label, term)
+
+
+def _harvest_collision_keys(rows: list[dict[str, Any]]) -> set[tuple[str, str]]:
+    counts: dict[tuple[str, str], int] = {}
+    for row in rows:
+        key = _harvest_symbol_term_key(row)
+        counts[key] = counts.get(key, 0) + 1
+    return {key for key, count in counts.items() if count > 1}
+
+
+def _harvest_lines(row: dict[str, Any], *, colliding: bool = False) -> list[str]:
+    """Each harvest row keeps qty + purchase date + lot_details/suggestion_id.
+
+    Purchase date stays on the first line so two AMD ST qty-10 lots cannot
+    wrap into identical symbol/term/qty lines. Explanation is never appended
+    onto the savings/risk phrase.
+    """
+    label = row.get("display_label") or row.get("symbol") or "UNKNOWN"
     term = row.get("term") or "ST"
-    return (
-        f"{symbol}  {term}  estimated federal savings "
-        f"{_money(row.get('estimated_federal_savings') or 0)}"
+    qty = _as_float(row.get("quantity"))
+    identity = f"{label}  {term}  qty {qty:g}"
+    opened = _purchase_date_from_row(row)
+    if opened:
+        identity = f"{identity}  {opened}"
+    elif colliding:
+        basis = _as_float(row.get("cost_basis_per_share"))
+        if basis:
+            identity = f"{identity}  basis {_money(basis)}"
+    lot_key = _harvest_lot_key(row)
+    lot_key_on_identity = False
+    if lot_key and len(f"{identity}  {lot_key}") <= PDF_WRAP_WIDTH:
+        identity = f"{identity}  {lot_key}"
+        lot_key_on_identity = True
+    savings = _money(row.get("estimated_federal_savings") or 0)
+    money = (
+        f"wash-sale risk - not clean federal savings {savings}"
+        if row.get("wash_sale_risk")
+        else f"estimated federal savings {savings}"
     )
+    combined = f"{identity}  {money}"
+    lines = (
+        [combined]
+        if len(combined) <= PDF_WRAP_WIDTH
+        else [identity, money]
+    )
+    if lot_key and not lot_key_on_identity:
+        lines.insert(1, lot_key)
+    if row.get("wash_sale_risk"):
+        explanation = str(row.get("wash_sale_explanation") or "").strip()
+        if explanation:
+            lines.append(explanation)
+    return lines
 
 
 def harvest_plain_text(payload: dict[str, Any]) -> str:
     rows = payload.get("harvest_opportunities") or []
     lines = [HARVEST_TITLE, HARVEST_INTRO, ""]
     if rows:
-        lines.extend(_harvest_line(row) for row in rows)
+        collisions = _harvest_collision_keys(rows)
+        for row in rows:
+            colliding = _harvest_symbol_term_key(row) in collisions
+            lines.extend(_harvest_lines(row, colliding=colliding))
     else:
         lines.append("None this run.")
     return "\n".join(lines)
@@ -610,7 +704,7 @@ def _escape_pdf(text: str) -> str:
     return text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
 
 
-def _wrap_pdf_line(line: str, width: int = 96) -> list[str]:
+def _wrap_pdf_line(line: str, width: int = PDF_WRAP_WIDTH) -> list[str]:
     if len(line) <= width:
         return [line]
     words = line.split(" ")
@@ -791,15 +885,34 @@ def _analysis_preserving_lot_rows(
     return merged
 
 
+def _payload_preserving_harvest(
+    existing_payload: dict[str, Any] | None,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Do not let compact client JSON wipe harvest rows rebuilt from suggestions."""
+    if payload.get("harvest_opportunities"):
+        return payload
+    stored = (existing_payload or {}).get("harvest_opportunities")
+    if not stored:
+        return payload
+    merged = dict(payload)
+    merged["harvest_opportunities"] = stored
+    return merged
+
+
 def remember_analysis(analysis_id: str, user_id: str, analysis: dict[str, Any]) -> None:
     existing = PACKET_STORE.get(analysis_id) or {}
     existing_payload = existing.get("payload")
     if not isinstance(existing_payload, dict):
         existing_payload = None
     preserved = _analysis_preserving_lot_rows(existing_payload, analysis)
+    payload = _payload_preserving_harvest(
+        existing_payload,
+        build_packet_payload(preserved, analysis_id=analysis_id),
+    )
     PACKET_STORE[analysis_id] = _new_packet_record(
         user_id,
-        payload=build_packet_payload(preserved, analysis_id=analysis_id),
+        payload=payload,
         paid=bool(existing.get("paid")),
         session_ids=set(existing.get("session_ids") or []),
         created_at=existing.get("created_at"),

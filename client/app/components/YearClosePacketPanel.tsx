@@ -110,7 +110,15 @@ async function authHeaders(): Promise<HeadersInit> {
   };
 }
 
-function compactAnalysis(analysis: PortfolioAnalysis) {
+export function purchaseDateFromSuggestionId(
+  suggestionId?: string,
+): string | undefined {
+  const parts = (suggestionId || "").split("::").filter(Boolean);
+  const token = parts[3];
+  return token && /^\d{4}-\d{2}-\d{2}$/.test(token) ? token : undefined;
+}
+
+export function compactAnalysis(analysis: PortfolioAnalysis) {
   return {
     analysis_id: analysis.analysis_id,
     tax_profile: analysis.tax_profile,
@@ -126,6 +134,20 @@ function compactAnalysis(analysis: PortfolioAnalysis) {
       wash_sale_disallowed: lot.wash_sale_disallowed,
     })),
     lot_match_report: analysis.lot_match_report ?? null,
+    suggestions: (analysis.suggestions || []).map((suggestion) => ({
+      symbol: suggestion.symbol,
+      display_label: suggestion.display_label,
+      suggestion_id: suggestion.suggestion_id,
+      lot_details: suggestion.lot_details,
+      quantity: suggestion.quantity,
+      purchase_date: purchaseDateFromSuggestionId(suggestion.suggestion_id),
+      cost_basis_per_share: suggestion.cost_basis_per_share,
+      estimated_loss: suggestion.estimated_loss,
+      tax_savings_estimate: suggestion.tax_savings_estimate,
+      is_long_term: suggestion.is_long_term,
+      wash_sale_risk: suggestion.wash_sale_risk,
+      wash_sale_explanation: suggestion.wash_sale_explanation,
+    })),
   };
 }
 

@@ -1,5 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import YearClosePacketPanel, {
+  compactAnalysis,
+  purchaseDateFromSuggestionId,
   PACKET_CHECKOUT_CANCELED_COPY,
   PACKET_CHECKOUT_INFLIGHT_KEY,
   YEAR_CLOSE_PACKET_TITLE,
@@ -91,6 +93,165 @@ describe("YearClosePacketPanel", () => {
     expect(screen.getByRole("button", { name: /Download/i })).toBeInTheDocument();
     expect(screen.queryByText("Coffee")).not.toBeInTheDocument();
     expect(screen.queryByText("Buy us a coffee")).not.toBeInTheDocument();
+  });
+
+  it("compact checkout payload includes harvest suggestions for reconstruct", () => {
+    const withHarvest: PortfolioAnalysis = {
+      ...analysis,
+      suggestions: [
+        {
+          symbol: "TSLA",
+          display_label: "TSLA",
+          suggestion_id: "TSLA::stock::stock-lot::2025-01-01::250::1",
+          lot_details: "Tax lot opened Jan 01, 2025 at $250.00/share",
+          action: "SELL",
+          quantity: 1,
+          current_price: 200,
+          cost_basis_per_share: 250,
+          estimated_loss: 50,
+          tax_savings_estimate: 12,
+          holding_period_days: 120,
+          is_long_term: false,
+          wash_sale_risk: true,
+          wash_sale_explanation: "Recent TSLA buy inside 30 days.",
+          replacement_candidates: [],
+          ai_explanation: "",
+          ai_generated: false,
+          priority: 1,
+        },
+      ],
+    };
+    const compact = compactAnalysis(withHarvest);
+    expect(compact.suggestions).toHaveLength(1);
+    expect(compact.suggestions[0]).toMatchObject({
+      symbol: "TSLA",
+      suggestion_id: "TSLA::stock::stock-lot::2025-01-01::250::1",
+      lot_details: "Tax lot opened Jan 01, 2025 at $250.00/share",
+      quantity: 1,
+      purchase_date: "2025-01-01",
+      tax_savings_estimate: 12,
+      is_long_term: false,
+      wash_sale_risk: true,
+      wash_sale_explanation: "Recent TSLA buy inside 30 days.",
+    });
+  });
+
+  it("compact checkout payload keeps two same-ticker lots distinct", () => {
+    const amdLot = (
+      id: string,
+      details: string,
+      costBasis: number,
+    ) => ({
+      symbol: "AMD",
+      display_label: "AMD",
+      suggestion_id: id,
+      lot_details: details,
+      action: "SELL" as const,
+      quantity: 10,
+      current_price: 90,
+      cost_basis_per_share: costBasis,
+      estimated_loss: 40,
+      tax_savings_estimate: 10,
+      holding_period_days: 120,
+      is_long_term: false,
+      wash_sale_risk: false,
+      wash_sale_explanation: "",
+      replacement_candidates: [],
+      ai_explanation: "",
+      ai_generated: false,
+      priority: 1,
+    });
+    const compact = compactAnalysis({
+      ...analysis,
+      suggestions: [
+        amdLot(
+          "AMD::stock::stock-lot::2024-01-02::100::10",
+          "Tax lot opened Jan 02, 2024 at $100.00/share",
+          100,
+        ),
+        amdLot(
+          "AMD::stock::stock-lot::2025-06-01::125::10",
+          "Tax lot opened Jun 01, 2025 at $125.00/share",
+          125,
+        ),
+      ],
+    });
+    expect(compact.suggestions).toHaveLength(2);
+    expect(compact.suggestions[0].suggestion_id).not.toBe(
+      compact.suggestions[1].suggestion_id,
+    );
+    expect(compact.suggestions[0].quantity).toBe(compact.suggestions[1].quantity);
+    expect(compact.suggestions[0].is_long_term).toBe(false);
+    expect(compact.suggestions[1].is_long_term).toBe(false);
+    expect(compact.suggestions[0]).toMatchObject({
+      symbol: "AMD",
+      suggestion_id: "AMD::stock::stock-lot::2024-01-02::100::10",
+      quantity: 10,
+      purchase_date: "2024-01-02",
+      cost_basis_per_share: 100,
+      lot_details: "Tax lot opened Jan 02, 2024 at $100.00/share",
+    });
+    expect(compact.suggestions[1]).toMatchObject({
+      symbol: "AMD",
+      suggestion_id: "AMD::stock::stock-lot::2025-06-01::125::10",
+      quantity: 10,
+      purchase_date: "2025-06-01",
+      cost_basis_per_share: 125,
+      lot_details: "Tax lot opened Jun 01, 2025 at $125.00/share",
+    });
+  });
+
+  it("compact payload keeps purchase date and suggestion_id when lot_details is empty", () => {
+    const amdLot = (id: string, costBasis: number) => ({
+      symbol: "AMD",
+      display_label: "AMD",
+      suggestion_id: id,
+      lot_details: "",
+      action: "SELL" as const,
+      quantity: 10,
+      current_price: 90,
+      cost_basis_per_share: costBasis,
+      estimated_loss: 40,
+      tax_savings_estimate: 10,
+      holding_period_days: 120,
+      is_long_term: false,
+      wash_sale_risk: false,
+      wash_sale_explanation: "",
+      replacement_candidates: [],
+      ai_explanation: "",
+      ai_generated: false,
+      priority: 1,
+    });
+    const compact = compactAnalysis({
+      ...analysis,
+      suggestions: [
+        amdLot("AMD::stock::stock-lot::2024-01-02::100::10", 100),
+        amdLot("AMD::stock::stock-lot::2025-06-01::125::10", 125),
+      ],
+    });
+    expect(compact.suggestions).toHaveLength(2);
+    expect(compact.suggestions[0].lot_details).toBe("");
+    expect(compact.suggestions[1].lot_details).toBe("");
+    expect(compact.suggestions[0].quantity).toBe(10);
+    expect(compact.suggestions[1].quantity).toBe(10);
+    expect(compact.suggestions[0].purchase_date).toBe("2024-01-02");
+    expect(compact.suggestions[1].purchase_date).toBe("2025-06-01");
+    expect(compact.suggestions[0].suggestion_id).toBe(
+      "AMD::stock::stock-lot::2024-01-02::100::10",
+    );
+    expect(compact.suggestions[1].suggestion_id).toBe(
+      "AMD::stock::stock-lot::2025-06-01::125::10",
+    );
+  });
+
+  it("parses purchase date from suggestion_id", () => {
+    expect(
+      purchaseDateFromSuggestionId(
+        "AMD::stock::stock-lot::2024-01-02::100::10",
+      ),
+    ).toBe("2024-01-02");
+    expect(purchaseDateFromSuggestionId("amd-lot-jan")).toBeUndefined();
+    expect(purchaseDateFromSuggestionId("")).toBeUndefined();
   });
 
   it("skips a second $49 when the tax year is already unlocked", () => {
