@@ -201,6 +201,10 @@ describe("Home page", () => {
 
     expect(mockPush).not.toHaveBeenCalledWith("/auth/signin");
     expect(screen.getByText("Portfolio Analysis")).toBeInTheDocument();
+    expect(screen.getByTestId("entry-analysis-panel")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: /Analyze a new option/i }),
+    ).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Sign In" })).toHaveAttribute(
       "href",
       "/auth/signin",
