@@ -27,6 +27,7 @@ client = TestClient(main.app)
 def setup_function():
     main.push_subscriptions.clear()
     main.reset_guest_analyze_quota()
+    main.reset_guest_leap_rank_quota()
     from year_close_packet import reset_packet_store
 
     reset_packet_store()
@@ -1479,6 +1480,171 @@ def test_get_prices_with_warnings(monkeypatch):
     assert response.status_code == 200
     data = response.json()
     assert len(data["warnings"]) == 1
+
+
+def _future_leap_window():
+    from datetime import datetime, timedelta, timezone
+
+    as_of = datetime.now(timezone.utc).date()
+    start = as_of + timedelta(days=365)
+    end = as_of + timedelta(days=730)
+    return start.isoformat(), end.isoformat()
+
+
+def test_leap_rank_success_unauthenticated(monkeypatch):
+    """Guests can rank LEAPs with no packet / auth gate."""
+    start, end = _future_leap_window()
+
+    monkeypatch.setattr(
+        "main.fetch_current_prices",
+        lambda symbols, fb=None: ({"NVDA": 100.0}, []),
+    )
+    monkeypatch.setattr(
+        "main.fetch_option_chain_window",
+        lambda symbol, right, expiry_from, expiry_to, as_of=None: (
+            [
+                {
+                    "strike": 90.0,
+                    "expiration": start,
+                    "bid": 11.9,
+                    "ask": 12.1,
+                    "last": 12.0,
+                    "open_interest": 40,
+                },
+                {
+                    "strike": 95.0,
+                    "expiration": start,
+                    "bid": 9.9,
+                    "ask": 10.1,
+                    "last": 10.0,
+                    "open_interest": 40,
+                },
+                {
+                    "strike": 100.0,
+                    "expiration": start,
+                    "bid": 7.9,
+                    "ask": 8.1,
+                    "last": 8.0,
+                    "open_interest": 40,
+                },
+            ],
+            [start],
+            [],
+        ),
+    )
+
+    main.app.dependency_overrides.pop(get_optional_user, None)
+    try:
+        response = client.get(
+            f"/api/options/leap-rank?symbol=nvda&right=call&expiry_from={start}&expiry_to={end}"
+        )
+    finally:
+        main.app.dependency_overrides[get_optional_user] = mock_get_current_user
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["ok"] is True
+    assert data["symbol"] == "NVDA"
+    assert len(data["ranks"]) == 3
+    assert data["ranks"][0]["implied_cagr"] <= data["ranks"][1]["implied_cagr"]
+    assert "annualized move" in data["ranks"][0]["why_vs_stock"]
+    assert "higher CAGR" not in data["ranks"][0]["why_vs_stock"]
+    assert "packet" not in response.text.lower()
+    assert "$49" not in response.text
+
+
+def test_leap_rank_no_quote_is_honest_empty(monkeypatch):
+    start, end = _future_leap_window()
+    monkeypatch.setattr(
+        "main.fetch_current_prices",
+        lambda symbols, fb=None: ({}, ["No prices available for: NVDA"]),
+    )
+    chain_called = {"value": False}
+
+    def _should_not_chain(*args, **kwargs):
+        chain_called["value"] = True
+        return [], [], ["should not run"]
+
+    monkeypatch.setattr("main.fetch_option_chain_window", _should_not_chain)
+    response = client.get(
+        f"/api/options/leap-rank?symbol=NVDA&right=call&expiry_from={start}&expiry_to={end}"
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["ok"] is False
+    assert data["reason"] == "no_quote"
+    assert data["ranks"] == []
+    assert "do not invent prices" in data["message"]
+    assert chain_called["value"] is False
+
+
+def test_leap_rank_no_chain_is_honest_empty(monkeypatch):
+    start, end = _future_leap_window()
+    monkeypatch.setattr(
+        "main.fetch_current_prices",
+        lambda symbols, fb=None: ({"NVDA": 100.0}, []),
+    )
+    monkeypatch.setattr(
+        "main.fetch_option_chain_window",
+        lambda *args, **kwargs: ([], [], ["yahoo down"]),
+    )
+    response = client.get(
+        f"/api/options/leap-rank?symbol=NVDA&right=call&expiry_from={start}&expiry_to={end}"
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["ok"] is False
+    assert data["reason"] == "no_chain"
+    assert data["ranks"] == []
+
+
+def test_leap_rank_rejects_bad_input():
+    start, end = _future_leap_window()
+    bad_symbol = client.get(
+        f"/api/options/leap-rank?symbol=NVDA%20INC&right=call&expiry_from={start}&expiry_to={end}"
+    )
+    assert bad_symbol.status_code == 400
+
+    bad_right = client.get(
+        f"/api/options/leap-rank?symbol=NVDA&right=straddle&expiry_from={start}&expiry_to={end}"
+    )
+    assert bad_right.status_code == 400
+
+    inverted = client.get(
+        f"/api/options/leap-rank?symbol=NVDA&right=call&expiry_from={end}&expiry_to={start}"
+    )
+    assert inverted.status_code == 400
+
+
+def test_guest_leap_rank_quota_returns_429(monkeypatch):
+    start, end = _future_leap_window()
+    monkeypatch.setattr(
+        "main.fetch_current_prices",
+        lambda symbols, fb=None: ({"NVDA": 100.0}, []),
+    )
+    monkeypatch.setattr(
+        "main.fetch_option_chain_window",
+        lambda *args, **kwargs: ([], [], ["none"]),
+    )
+    monkeypatch.setattr(main, "_GUEST_LEAP_RANK_MAX_PER_WINDOW", 2)
+    main.app.dependency_overrides.pop(get_optional_user, None)
+    try:
+        first = client.get(
+            f"/api/options/leap-rank?symbol=NVDA&right=call&expiry_from={start}&expiry_to={end}"
+        )
+        second = client.get(
+            f"/api/options/leap-rank?symbol=NVDA&right=call&expiry_from={start}&expiry_to={end}"
+        )
+        third = client.get(
+            f"/api/options/leap-rank?symbol=NVDA&right=call&expiry_from={start}&expiry_to={end}"
+        )
+    finally:
+        main.app.dependency_overrides[get_optional_user] = mock_get_current_user
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert third.status_code == 429
+    assert "too many leap lookups" in third.json()["detail"].lower()
 
 
 def test_analyze_portfolio_applies_live_option_prices(monkeypatch):

@@ -1,6 +1,19 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import EntryAnalysisPanel from "../../app/components/EntryAnalysisPanel";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import type { LeapRankResponse } from "../../lib/types";
 import type { Position } from "../../lib/types";
+
+const mockLeapRankMutateAsync = jest.fn();
+const mockLeapRankPending = { value: false };
+
+jest.mock("../../lib/api", () => ({
+  useLeapRankMutation: () => ({
+    mutateAsync: mockLeapRankMutateAsync,
+    isPending: mockLeapRankPending.value,
+    reset: jest.fn(),
+  }),
+}));
+
+import EntryAnalysisPanel from "../../app/components/EntryAnalysisPanel";
 
 function futureIso(): string {
   const date = new Date();
@@ -44,7 +57,100 @@ const nvdaStock: Position = {
   wash_sale_risk: false,
 };
 
+function mockRankSuccess(): LeapRankResponse {
+  return {
+    ok: true,
+    symbol: "NVDA",
+    right: "call",
+    spot: 100,
+    as_of: "2026-09-06",
+    expiry_from: "2027-09-06",
+    expiry_to: "2028-09-06",
+    expirations_used: ["2027-09-17"],
+    candidates_considered: 3,
+    warnings: [],
+    ranks: [
+      {
+        rank: 1,
+        contract_label: "NVDA 9/17/2027 Call $90.00",
+        symbol: "NVDA",
+        right: "call",
+        strike: 90,
+        expiration: "2027-09-17",
+        premium: 4.2,
+        premium_source: "mid",
+        bid: 4.1,
+        ask: 4.3,
+        last: 4.2,
+        dte: 376,
+        implied_cagr: 0.042,
+        leverage: 23.81,
+        intrinsic: 10,
+        extrinsic: 0,
+        extrinsic_yield: 0,
+        breakeven: 94.2,
+        why_vs_stock:
+          "Needs a 4.2% annualized move in NVDA to break even vs owning shares at $100.00. This LEAP costs $420.00 vs $10,000.00 for 100 shares (23.8× less capital). Time value is $0.00 (0.0% per year).",
+        why_vs_richer:
+          "Less annualized move to break even than the NVDA 9/17/2027 Call $95.00 (4.2% vs 6.1%) because a lower strike.",
+      },
+      {
+        rank: 2,
+        contract_label: "NVDA 9/17/2027 Call $95.00",
+        symbol: "NVDA",
+        right: "call",
+        strike: 95,
+        expiration: "2027-09-17",
+        premium: 5,
+        premium_source: "mid",
+        bid: 4.9,
+        ask: 5.1,
+        last: 5,
+        dte: 376,
+        implied_cagr: 0.061,
+        leverage: 20,
+        intrinsic: 5,
+        extrinsic: 0,
+        extrinsic_yield: 0,
+        breakeven: 100,
+        why_vs_stock:
+          "Needs a 6.1% annualized move in NVDA to break even vs owning shares at $100.00.",
+        why_vs_richer:
+          "Less annualized move to break even than the NVDA 9/17/2027 Call $100.00 (6.1% vs 8.0%) because a lower strike.",
+      },
+      {
+        rank: 3,
+        contract_label: "NVDA 9/17/2027 Call $100.00",
+        symbol: "NVDA",
+        right: "call",
+        strike: 100,
+        expiration: "2027-09-17",
+        premium: 8,
+        premium_source: "mid",
+        bid: 7.9,
+        ask: 8.1,
+        last: 8,
+        dte: 376,
+        implied_cagr: 0.08,
+        leverage: 12.5,
+        intrinsic: 0,
+        extrinsic: 8,
+        extrinsic_yield: 0.08,
+        breakeven: 108,
+        why_vs_stock:
+          "Needs a 8.0% annualized move in NVDA to break even vs owning shares at $100.00.",
+        why_vs_richer: null,
+      },
+    ],
+  };
+}
+
 describe("EntryAnalysisPanel", () => {
+  beforeEach(() => {
+    mockLeapRankMutateAsync.mockReset();
+    mockLeapRankPending.value = false;
+  });
+
   it("renders Analyze a new option with no analysis and no packet unlock", () => {
     render(<EntryAnalysisPanel />);
 
@@ -53,15 +159,21 @@ describe("EntryAnalysisPanel", () => {
       screen.getByRole("heading", { name: /Analyze a new option/i }),
     ).toBeInTheDocument();
     expect(screen.getByText(/What-if · single-leg/i)).toBeInTheDocument();
+    expect(screen.getByTestId("entry-rank-find")).toBeInTheDocument();
+    expect(screen.getByTestId("entry-rank-empty")).toHaveTextContent(
+      /smallest annualized move to break even vs owning the stock/i,
+    );
     expect(screen.getByTestId("entry-empty")).toHaveTextContent(
       /Enter premium to see max gain, max loss, and breakeven/i,
     );
     expect(screen.queryByTestId("entry-results")).not.toBeInTheDocument();
     expect(screen.queryByTestId("entry-context")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("entry-rank-1")).not.toBeInTheDocument();
     expect(
       screen.getByText(/not a filed Form 8949/i),
     ).toBeInTheDocument();
     expect(screen.getByText(/not the year-close packet/i)).toBeInTheDocument();
+    expect(screen.queryByText(/\$49/)).not.toBeInTheDocument();
   });
 
   it("stacks fields instead of using a table", () => {
@@ -185,5 +297,96 @@ describe("EntryAnalysisPanel", () => {
     expect(screen.getByTestId("entry-error")).toHaveTextContent(
       /Strike, quantity, and premium must be valid numbers/,
     );
+  });
+
+  it("ranks three long calls and fills v1 payoff when #1 is selected", async () => {
+    mockLeapRankMutateAsync.mockResolvedValue(mockRankSuccess());
+    render(<EntryAnalysisPanel />);
+    fireEvent.change(screen.getByTestId("entry-symbol"), {
+      target: { value: "NVDA" },
+    });
+    fireEvent.click(screen.getByTestId("entry-rank-find"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("entry-rank-list")).toBeInTheDocument();
+    });
+    expect(screen.getByTestId("entry-rank-1")).toHaveTextContent(
+      /4\.2% annualized to break even/,
+    );
+    expect(screen.getByTestId("entry-rank-1")).toHaveTextContent(
+      /annualized move in NVDA to break even vs owning shares/,
+    );
+    expect(screen.getByTestId("entry-rank-1")).not.toHaveTextContent(
+      /higher CAGR/i,
+    );
+    expect(screen.getByTestId("entry-rank-2")).toBeInTheDocument();
+    expect(screen.getByTestId("entry-rank-3")).toBeInTheDocument();
+    expect(mockLeapRankMutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        symbol: "NVDA",
+        right: "call",
+      }),
+    );
+
+    fireEvent.click(screen.getByTestId("entry-rank-1"));
+    expect(screen.getByTestId("entry-results")).toBeInTheDocument();
+    expect(screen.getByTestId("entry-max-loss")).toHaveTextContent("$420.00");
+    expect(screen.getByTestId("entry-max-gain")).toHaveTextContent("Unlimited");
+    expect(screen.getByTestId("entry-breakeven")).toHaveTextContent("$94.20");
+  });
+
+  it("shows an honest empty rank list when quotes fail", async () => {
+    mockLeapRankMutateAsync.mockResolvedValue({
+      ok: false,
+      reason: "no_quote",
+      message:
+        "Could not fetch a live NVDA quote. Rankings are hidden so we do not invent prices.",
+      ranks: [],
+    });
+    render(<EntryAnalysisPanel />);
+    fireEvent.change(screen.getByTestId("entry-symbol"), {
+      target: { value: "NVDA" },
+    });
+    fireEvent.click(screen.getByTestId("entry-rank-find"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("entry-rank-error")).toHaveTextContent(
+        /do not invent prices/i,
+      );
+    });
+    expect(screen.queryByTestId("entry-rank-1")).not.toBeInTheDocument();
+  });
+
+  it("shows the 429 lookup message without fake ranks", async () => {
+    mockLeapRankMutateAsync.mockRejectedValue(
+      new Error(
+        "Too many LEAP lookups from this network. Sign in or try again later.",
+      ),
+    );
+    render(<EntryAnalysisPanel />);
+    fireEvent.change(screen.getByTestId("entry-symbol"), {
+      target: { value: "SPY" },
+    });
+    fireEvent.click(screen.getByTestId("entry-rank-find"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("entry-rank-error")).toHaveTextContent(
+        /too many leap lookups/i,
+      );
+    });
+    expect(screen.queryByTestId("entry-rank-1")).not.toBeInTheDocument();
+  });
+
+  it("does not require a loaded book to rank", async () => {
+    mockLeapRankMutateAsync.mockResolvedValue(mockRankSuccess());
+    render(<EntryAnalysisPanel positions={[]} />);
+    fireEvent.change(screen.getByTestId("entry-symbol"), {
+      target: { value: "NVDA" },
+    });
+    fireEvent.click(screen.getByTestId("entry-rank-find"));
+    await waitFor(() => {
+      expect(screen.getByTestId("entry-rank-1")).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId("entry-context")).not.toBeInTheDocument();
   });
 });

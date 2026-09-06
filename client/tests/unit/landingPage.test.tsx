@@ -252,6 +252,18 @@ describe("LandingPage", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("does not render the options what-if on the tax-first landing page", () => {
+    mockUseAuth.mockReturnValue({ user: null, loading: false });
+    renderWithClient(<LandingPage />);
+    expect(screen.queryByTestId("entry-analysis-panel")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("entry-rank-find")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", {
+        name: /Your 1099 and your export will disagree/,
+      }),
+    ).toBeInTheDocument();
+  });
+
   it("does not render a card field on the marketing home page", () => {
     mockUseAuth.mockReturnValue({ user: null, loading: false });
     const { container } = renderWithClient(<LandingPage />);
