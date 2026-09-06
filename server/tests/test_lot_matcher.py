@@ -166,6 +166,29 @@ def test_prior_year_realized_closes_are_not_export_candidates():
     )
 
 
+def test_multi_year_activity_book_does_not_false_match_prior_year_amd():
+    """Signed-in books replay FIFO on all years. A 2023 AMD close with the
+    same qty/proceeds must not steal the 2024 1099 pair or show as csv_only.
+    """
+    report = match_1099b_lots(
+        [_lot()],
+        [
+            _event(sale_date=date(2023, 7, 15), settle_date=date(2023, 7, 17)),
+            _event(),
+        ],
+        form_1099_tax_year=2024,
+        analysis_tax_year=2024,
+        short_term_proceeds=1200.0,
+        short_term_cost_basis=1500.0,
+        short_term_wash=300.0,
+    )
+    assert report is not None
+    assert report.unmatched_count == 0
+    paired = report.matched + report.gap
+    assert len(paired) == 1
+    assert paired[0].export_trade_date == date(2024, 7, 15)
+
+
 def test_settle_vs_trade_split_is_matched_settlement_gap():
     report = match_1099b_lots(
         [_lot()],
