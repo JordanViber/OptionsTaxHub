@@ -127,7 +127,10 @@ def _realized_in_tax_year(
     realized: list[RealizedEvent] | None,
     tax_year: int,
 ) -> list[RealizedEvent]:
-    """Same year filter as realized_summary: export trade date in the compared year."""
+    """Same year filter as realized_summary: export trade date (sale_date), not settle_date.
+
+    A December trade that settles in January stays in the trade-date year.
+    """
     return [
         event
         for event in realized or []

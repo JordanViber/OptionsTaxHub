@@ -189,6 +189,47 @@ def test_multi_year_activity_book_does_not_false_match_prior_year_amd():
     assert paired[0].export_trade_date == date(2024, 7, 15)
 
 
+def test_candidate_year_follows_trade_date_not_settlement():
+    """Realized summary keys the year off sale_date, not settle_date.
+
+    A 2023-12-29 trade that settles 2024-01-02 must not pair with a 2024
+    1099 lot or dump as csv_only. A 2024-12-30 trade that settles 2025-01-02
+    stays in the 2024 candidate set.
+    """
+    report = match_1099b_lots(
+        [_lot(date_sold=date(2024, 1, 2))],
+        [
+            _event(sale_date=date(2023, 12, 29), settle_date=date(2024, 1, 2)),
+            _event(
+                sale_date=date(2024, 12, 30),
+                settle_date=date(2025, 1, 2),
+                symbol="NVDA",
+                sale_proceeds=2976.0,
+                quantity=12,
+                cost_basis=3360.0,
+            ),
+        ],
+        form_1099_tax_year=2024,
+        analysis_tax_year=2024,
+        short_term_proceeds=1200.0,
+        short_term_cost_basis=1500.0,
+        short_term_wash=300.0,
+    )
+    assert report is not None
+    all_rows = (*report.matched, *report.gap, *report.unmatched)
+    assert all(
+        row.export_trade_date is None or row.export_trade_date.year == 2024
+        for row in all_rows
+    )
+    assert any(row.status == "1099_only" and row.symbol == "AMD" for row in report.unmatched)
+    assert any(
+        row.status == "csv_only"
+        and row.symbol == "NVDA"
+        and row.export_trade_date == date(2024, 12, 30)
+        for row in report.unmatched
+    )
+
+
 def test_settle_vs_trade_split_is_matched_settlement_gap():
     report = match_1099b_lots(
         [_lot()],
