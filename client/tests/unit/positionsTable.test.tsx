@@ -1078,6 +1078,73 @@ describe("PositionsTable compact layout (~390px)", () => {
     );
   });
 
+  it("sorts compact cards by unrealized_pnl ascending (loss-first), not CSV order", () => {
+    const gain: Position = {
+      ...compactPosition,
+      symbol: "WINNER",
+      display_label: "WINNER",
+      unrealized_pnl: 5000,
+      tax_lots: [],
+    };
+    const loss: Position = {
+      ...compactPosition,
+      symbol: "LOSER",
+      display_label: "LOSER",
+      unrealized_pnl: -2500,
+      tax_lots: [],
+    };
+    const breakeven: Position = {
+      ...compactPosition,
+      symbol: "BREAKEVEN",
+      display_label: "BREAKEVEN",
+      unrealized_pnl: 0,
+      tax_lots: [],
+    };
+
+    render(<PositionsTable positions={[gain, loss, breakeven]} />);
+
+    const stack = screen.getByTestId("positions-cards");
+    const rows = [
+      ...stack.querySelectorAll('[data-testid^="position-row-"]'),
+    ];
+    expect(rows.map((row) => row.getAttribute("data-testid"))).toEqual([
+      "position-row-LOSER",
+      "position-row-BREAKEVEN",
+      "position-row-WINNER",
+    ]);
+  });
+
+  it("renders lots collapse directly under the selected card, not after the stack", () => {
+    const top: Position = {
+      ...compactPosition,
+      symbol: "LOSER",
+      display_label: "LOSER",
+      unrealized_pnl: -2500,
+    };
+    const bottom: Position = {
+      ...compactPosition,
+      symbol: "WINNER",
+      display_label: "WINNER",
+      unrealized_pnl: 5000,
+      tax_lots: [],
+    };
+
+    render(<PositionsTable positions={[top, bottom]} />);
+    fireEvent.click(screen.getByTestId("position-row-LOSER"));
+
+    const card = screen.getByTestId("position-row-LOSER");
+    const panel = screen.getByTestId("tax-lots-panel-LOSER");
+    const nextCard = screen.getByTestId("position-row-WINNER");
+    const stack = screen.getByTestId("positions-cards");
+
+    expect(stack).toContainElement(panel);
+    expect(card.nextElementSibling).toContainElement(panel);
+    expect(
+      panel.compareDocumentPosition(nextCard) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
   it("wraps expanded wash-sale details on a compact lot card", () => {
     const amdReplacementLot: TaxLot = {
       symbol: "AMD",

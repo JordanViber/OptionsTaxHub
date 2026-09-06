@@ -334,7 +334,11 @@ export default function LandingPage() {
             >
               Sign in for the year that follows you — not a velvet rope.
             </Typography>
-            <Button variant="outlined" component={Link} href="/auth/signin">
+            <Button
+              variant="outlined"
+              component={Link}
+              href={user ? "/dashboard" : "/auth/signin"}
+            >
               See what's kept
             </Button>
           </Stack>
