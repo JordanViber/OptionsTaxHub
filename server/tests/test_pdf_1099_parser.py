@@ -92,6 +92,42 @@ def test_option_security_header_with_blank_cusip_parses_option_sale():
     assert lot.is_aggregate is False
 
 
+def test_live_2024_blank_cusip_option_lots_reach_the_worksheet(
+    robinhood_1099_bytes: bytes,
+):
+    from lot_matcher import match_1099b_lots
+    from year_close_packet import lot_match_plain_text
+
+    summary = parse_robinhood_1099_pdf(
+        robinhood_1099_bytes,
+        current_symbols={"CLSK", "BTDR"},
+        filename="2024-robinhood-1099.pdf",
+    )
+    report = match_1099b_lots(
+        summary.lots,
+        [],
+        form_1099_tax_year=2024,
+        analysis_tax_year=2024,
+        short_term_proceeds=summary.short_term_proceeds,
+        long_term_proceeds=summary.long_term_proceeds,
+        short_term_cost_basis=summary.short_term_cost_basis,
+        long_term_cost_basis=summary.long_term_cost_basis,
+        short_term_wash=summary.short_term_wash_sale_disallowed,
+        long_term_wash=summary.long_term_wash_sale_disallowed,
+    )
+    assert report is not None
+    option_rows = [
+        row
+        for row in report.unmatched
+        if row.status == "1099_only" and row.symbol in {"CLSK", "BTDR"}
+    ]
+    assert option_rows, "blank-CUSIP option lots should appear on the worksheet"
+    text = lot_match_plain_text(
+        {"lot_match_report": report.model_dump(mode="json")}
+    )
+    assert "1099_only CLSK" in text or "1099_only BTDR" in text
+
+
 def test_parse_robinhood_1099_pdf_handles_missing_totals_and_unknown_year(monkeypatch):
     monkeypatch.setattr(
         "pdf_1099_parser.extract_text_from_pdf",
