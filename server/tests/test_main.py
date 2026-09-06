@@ -2015,12 +2015,16 @@ def test_analyze_2026_sample_csv_and_1099_is_same_year_compare(monkeypatch):
     assert "$2,699.00" in same_text
     report = same_body["lot_match_report"]
     assert report is not None
-    assert report["matched_count"] >= 3
-    assert any(row["symbol"] == "SPX" for row in report["gap"])
+    assert report["gap_count"] >= 3
+    assert {row["symbol"] for row in report["gap"]} >= {"NVDA", "TSLA", "AMD"}
+    assert all(row["status"] == "matched_settlement_gap" for row in report["gap"])
+    assert any(row["symbol"] == "SPX" and row["status"] == "1099_only" for row in report["unmatched"])
     assert "Lot-matched 1099-B" in same_text
     assert "Matched (" in same_text
     assert "Gap (" in same_text
     assert "Unmatched (" in same_text
+    assert "matched_settlement_gap" in same_text
+    assert "1099_only" in same_text
     assert "NVDA" in same_text
 
     mismatch = client.post(

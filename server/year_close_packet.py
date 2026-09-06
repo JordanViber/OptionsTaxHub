@@ -50,9 +50,10 @@ SETTLEMENT_DATE_FAQ = (
 LOT_MATCH_TITLE = "Lot-matched 1099-B"
 LOT_MATCH_INTRO = (
     "Reconciliation worksheet, not a filed Form 8949. "
-    "Matched lots paired to this export; gap lots are on the 1099 and missing "
-    "from the export (often settlement timing); unmatched lots are in the "
-    "export and missing from the 1099."
+    "Matched: paired lots whose 1099 sold date equals the export trade date. "
+    "Gap: paired lots with a settlement vs trade-date split (matched_settlement_gap). "
+    "Unmatched: 1099_only (on the 1099, not in the export) and csv_only "
+    "(in the export, not on the 1099)."
 )
 LINES_PER_PDF_PAGE = 42
 
@@ -466,8 +467,9 @@ def _fmt_date(value: Any) -> str:
 def _lot_line(row: dict[str, Any]) -> str:
     symbol = row.get("symbol") or row.get("description") or "UNKNOWN"
     qty = _as_float(row.get("quantity"))
+    status = row.get("status") or ""
     return (
-        f"{symbol} qty {qty:g}  "
+        f"{status} {symbol} qty {qty:g}  "
         f"1099 {_fmt_date(row.get('date_sold_1099'))} {_money(row.get('proceeds_1099') or 0)}  "
         f"export {_fmt_date(row.get('export_trade_date'))} {_money(row.get('proceeds_export') or 0)}"
     )

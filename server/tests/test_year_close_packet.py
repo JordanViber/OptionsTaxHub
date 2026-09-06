@@ -1007,6 +1007,17 @@ LOT_MATCH_ANALYSIS = {
         "matched": [
             {
                 "status": "matched",
+                "symbol": "AMD",
+                "quantity": 10,
+                "date_sold_1099": "2026-07-15",
+                "export_trade_date": "2026-07-15",
+                "proceeds_1099": 1200.0,
+                "proceeds_export": 1200.0,
+            }
+        ],
+        "gap": [
+            {
+                "status": "matched_settlement_gap",
                 "symbol": "NVDA",
                 "quantity": 12,
                 "date_sold_1099": "2026-02-20",
@@ -1015,31 +1026,29 @@ LOT_MATCH_ANALYSIS = {
                 "proceeds_export": 2976.0,
             }
         ],
-        "gap": [
+        "unmatched": [
             {
-                "status": "gap",
+                "status": "1099_only",
                 "symbol": "SPX",
                 "quantity": 1,
                 "date_sold_1099": "2027-01-02",
                 "export_trade_date": None,
                 "proceeds_1099": 2699.0,
                 "proceeds_export": 0.0,
-            }
-        ],
-        "unmatched": [
+            },
             {
-                "status": "unmatched",
+                "status": "csv_only",
                 "symbol": "META",
                 "quantity": 4,
                 "date_sold_1099": None,
                 "export_trade_date": "2026-03-20",
                 "proceeds_1099": 0.0,
                 "proceeds_export": 2880.0,
-            }
+            },
         ],
         "matched_count": 1,
         "gap_count": 1,
-        "unmatched_count": 1,
+        "unmatched_count": 2,
         "totals_ok": True,
     },
 }
@@ -1057,9 +1066,11 @@ def test_paid_pdf_has_matched_gap_unmatched_lot_sections():
     assert LOT_MATCH_TITLE in pdf_text
     assert "Matched (1)" in pdf_text
     assert "Gap (1)" in pdf_text
-    assert "Unmatched (1)" in pdf_text
-    assert "NVDA" in pdf_text
-    assert "SPX" in pdf_text
+    assert "Unmatched (2)" in pdf_text
+    assert "matched AMD" in pdf_text
+    assert "matched_settlement_gap NVDA" in pdf_text
+    assert "1099_only SPX" in pdf_text
+    assert "csv_only META" in pdf_text
     assert "not a filed Form 8949" in pdf_text
     assert "we do not parse settlement" not in pdf_text.lower()
 

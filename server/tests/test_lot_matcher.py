@@ -47,7 +47,7 @@ def _event(**overrides) -> RealizedEvent:
     return RealizedEvent(**payload)
 
 
-def test_2026_sample_matches_nvda_tsla_amd_and_spx_is_gap():
+def test_2026_sample_pairs_as_settlement_gap_and_spx_is_1099_only():
     csv_text = SAMPLE_CSV.read_text()
     _lots, _txns, _warnings, realized = parse_csv(csv_text)
     summary = parse_robinhood_1099_pdf(
@@ -68,11 +68,11 @@ def test_2026_sample_matches_nvda_tsla_amd_and_spx_is_gap():
         long_term_wash=summary.long_term_wash_sale_disallowed,
     )
     assert report is not None
-    matched_symbols = {row.symbol for row in report.matched}
-    assert {"NVDA", "TSLA", "AMD"} <= matched_symbols
-    assert any(row.symbol == "SPX" for row in report.gap)
-    assert report.matched_count >= 3
-    assert report.gap_count >= 1
+    gap_symbols = {row.symbol for row in report.gap}
+    assert {"NVDA", "TSLA", "AMD"} <= gap_symbols
+    assert all(row.status == "matched_settlement_gap" for row in report.gap)
+    assert any(row.symbol == "SPX" and row.status == "1099_only" for row in report.unmatched)
+    assert report.gap_count >= 3
     assert report.totals_ok is True
 
 
@@ -97,9 +97,11 @@ def test_csv_only_sell_is_unmatched():
         short_term_wash=300.0,
     )
     assert report is not None
-    assert report.matched_count == 1
+    assert report.gap_count == 1
+    assert report.gap[0].status == "matched_settlement_gap"
     assert report.unmatched_count == 1
     assert report.unmatched[0].symbol == "NVDA"
+    assert report.unmatched[0].status == "csv_only"
 
 
 def test_two_1099_lots_cannot_reuse_one_csv_close():
@@ -113,13 +115,15 @@ def test_two_1099_lots_cannot_reuse_one_csv_close():
         short_term_wash=600.0,
     )
     assert report is not None
-    assert report.matched_count == 1
     assert report.gap_count == 1
+    assert report.gap[0].status == "matched_settlement_gap"
+    assert report.unmatched_count == 1
+    assert report.unmatched[0].status == "1099_only"
 
 
-def test_aligned_amd_wash_is_matched_not_gap():
+def test_trade_date_alignment_is_matched():
     report = match_1099b_lots(
-        [_lot()],
+        [_lot(date_sold=date(2024, 7, 15))],
         [_event()],
         form_1099_tax_year=2024,
         analysis_tax_year=2024,
@@ -131,4 +135,21 @@ def test_aligned_amd_wash_is_matched_not_gap():
     assert report.matched_count == 1
     assert report.gap_count == 0
     assert report.matched[0].status == "matched"
+    assert report.totals_ok is True
+
+
+def test_settle_vs_trade_split_is_matched_settlement_gap():
+    report = match_1099b_lots(
+        [_lot()],
+        [_event()],
+        form_1099_tax_year=2024,
+        analysis_tax_year=2024,
+        short_term_proceeds=1200.0,
+        short_term_cost_basis=1500.0,
+        short_term_wash=300.0,
+    )
+    assert report is not None
+    assert report.matched_count == 0
+    assert report.gap_count == 1
+    assert report.gap[0].status == "matched_settlement_gap"
     assert report.totals_ok is True

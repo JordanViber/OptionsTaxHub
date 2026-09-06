@@ -79,6 +79,15 @@ def _candidate_score(lot: Form1099BLot, event: RealizedEvent) -> Optional[tuple[
     return (_date_score(lot, event), basis_bonus, 0)
 
 
+def _paired_status(lot: Form1099BLot, event: RealizedEvent) -> str:
+    """matched if 1099 sold date equals export trade date; else settlement gap."""
+    sold = lot.date_sold
+    trade = event.sale_date
+    if sold is None or trade is None or sold == trade:
+        return "matched"
+    return "matched_settlement_gap"
+
+
 def _row(
     *,
     status: str,
@@ -141,6 +150,7 @@ def match_1099b_lots(
     used: set[int] = set()
     matched: list[LotMatchRow] = []
     gap: list[LotMatchRow] = []
+    unmatched: list[LotMatchRow] = []
 
     for lot in parsed:
         best_idx: int | None = None
@@ -155,16 +165,22 @@ def match_1099b_lots(
                 best_score = score
                 best_idx = index
         if best_idx is None:
-            gap.append(_row(status="gap", lot=lot))
+            unmatched.append(_row(status="1099_only", lot=lot))
             continue
         used.add(best_idx)
-        matched.append(_row(status="matched", lot=lot, event=events[best_idx]))
+        event = events[best_idx]
+        status = _paired_status(lot, event)
+        row = _row(status=status, lot=lot, event=event)
+        if status == "matched_settlement_gap":
+            gap.append(row)
+        else:
+            matched.append(row)
 
-    unmatched: list[LotMatchRow] = [
-        _row(status="unmatched", event=event)
+    unmatched.extend(
+        _row(status="csv_only", event=event)
         for index, event in enumerate(events)
         if index not in used
-    ]
+    )
 
     lot_proceeds = _round_cents(sum(lot.proceeds for lot in parsed))
     lot_basis = _round_cents(sum(lot.cost_basis for lot in parsed))

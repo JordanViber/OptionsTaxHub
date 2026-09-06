@@ -355,6 +355,17 @@ describe("Supplemental1099InsightsPanel", () => {
     matched: [
       {
         status: "matched",
+        symbol: "AMD",
+        quantity: 10,
+        date_sold_1099: "2026-07-15",
+        export_trade_date: "2026-07-15",
+        proceeds_1099: 1200,
+        proceeds_export: 1200,
+      },
+    ],
+    gap: [
+      {
+        status: "matched_settlement_gap",
         symbol: "NVDA",
         quantity: 12,
         date_sold_1099: "2026-02-20",
@@ -363,9 +374,9 @@ describe("Supplemental1099InsightsPanel", () => {
         proceeds_export: 2976,
       },
     ],
-    gap: [
+    unmatched: [
       {
-        status: "gap",
+        status: "1099_only",
         symbol: "SPX",
         quantity: 1,
         date_sold_1099: "2027-01-02",
@@ -374,10 +385,9 @@ describe("Supplemental1099InsightsPanel", () => {
         proceeds_export: 0,
       },
     ],
-    unmatched: [],
     matched_count: 1,
     gap_count: 1,
-    unmatched_count: 0,
+    unmatched_count: 1,
   };
 
   it("keeps totals free and teasers lot-matched 1099-B when locked", () => {
@@ -393,7 +403,7 @@ describe("Supplemental1099InsightsPanel", () => {
     expect(screen.getByTestId("1099-vs-export-panel")).toBeInTheDocument();
     expect(screen.getByTestId("lot-matched-1099b")).toBeInTheDocument();
     expect(screen.getByTestId("lot-match-counts")).toHaveTextContent(
-      "Matched 1 · Gap 1 · Unmatched 0",
+      "Matched 1 · Gap 1 · Unmatched 1",
     );
     expect(
       screen.getByText(/Pay \$49 for lot-matched 1099-B/i),
@@ -411,8 +421,11 @@ describe("Supplemental1099InsightsPanel", () => {
       />,
     );
 
+    expect(screen.getByText("AMD")).toBeInTheDocument();
     expect(screen.getByText("NVDA")).toBeInTheDocument();
     expect(screen.getByText("SPX")).toBeInTheDocument();
+    expect(screen.getByText("matched_settlement_gap")).toBeInTheDocument();
+    expect(screen.getByText("1099_only")).toBeInTheDocument();
     expect(
       screen.queryByText(/Pay \$49 for lot-matched 1099-B/i),
     ).not.toBeInTheDocument();

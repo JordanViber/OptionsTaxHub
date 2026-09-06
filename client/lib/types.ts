@@ -136,7 +136,11 @@ export interface Form1099BLot {
   is_aggregate?: boolean;
 }
 
-export type LotMatchStatus = "matched" | "gap" | "unmatched";
+export type LotMatchStatus =
+  | "matched"
+  | "matched_settlement_gap"
+  | "1099_only"
+  | "csv_only";
 
 export interface LotMatchRow {
   status: LotMatchStatus | string;

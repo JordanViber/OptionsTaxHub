@@ -44,7 +44,7 @@ export const LOT_MATCHED_1099B_LOCKED_COPY =
   "Pay $49 for lot-matched 1099-B — matched, gap, and unmatched lots on the year-close PDF.";
 
 export const LOT_MATCHED_1099B_UNLOCKED_COPY =
-  "Matched lots paired to this export. Gap lots are on the 1099 and missing from the export. Unmatched lots are in the export and missing from the 1099. Not a filed Form 8949.";
+  "Matched: 1099 sold date equals export trade date. Gap: paired lots with a settlement vs trade-date split (matched_settlement_gap). Unmatched: 1099_only and csv_only. Not a filed Form 8949.";
 
 export const SUPPLEMENTAL_1099_WASH_SALE_FAQ =
   "Options and credit-spread wash-sale treatment can differ from the broker 1099. We show the 1099 wash-sale disallowed figure as reported.";
