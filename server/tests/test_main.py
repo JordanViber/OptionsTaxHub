@@ -1631,32 +1631,6 @@ def test_leap_rank_returns_fewer_than_three(monkeypatch):
     assert data["ranks"][0]["rank"] == 1
 
 
-def test_leap_rank_accepts_hyphen_and_dot_tickers(monkeypatch):
-    start, end = _future_leap_window()
-    monkeypatch.setattr(
-        "main.fetch_current_prices",
-        lambda symbols, fb=None: ({"BRK-B": 100.0}, []),
-    )
-    monkeypatch.setattr(
-        "main.fetch_option_chain_window",
-        lambda *args, **kwargs: ([], [], ["none"]),
-    )
-    hyphen = client.get(
-        f"/api/options/leap-rank?symbol=BRK-B&right=call&expiry_from={start}&expiry_to={end}"
-    )
-    assert hyphen.status_code == 200
-    assert hyphen.json()["ok"] is False
-
-    monkeypatch.setattr(
-        "main.fetch_current_prices",
-        lambda symbols, fb=None: ({"BRK.B": 100.0}, []),
-    )
-    dotted = client.get(
-        f"/api/options/leap-rank?symbol=BRK.B&right=call&expiry_from={start}&expiry_to={end}"
-    )
-    assert dotted.status_code == 200
-
-
 def test_leap_rank_rejects_bad_input():
     start, end = _future_leap_window()
     bad_symbol = client.get(

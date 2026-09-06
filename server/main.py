@@ -128,8 +128,7 @@ _AUTH_LEAP_RANK_MAX_PER_WINDOW = 60
 _LEAP_RANK_MAX_BUCKETS = 4096
 _guest_leap_rank_hits: dict[str, list[float]] = defaultdict(list)
 _auth_leap_rank_hits: dict[str, list[float]] = defaultdict(list)
-# Letters, digits, period, hyphen — same class as 1099 symbol parsing (BRK-B, BRK.B).
-_LEAP_RANK_SYMBOL_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")
+_LEAP_RANK_SYMBOL_RE = re.compile(r"^[A-Z]{1,10}$")
 _LEAP_RANK_MAX_WINDOW_DAYS = 800
 
 @asynccontextmanager
@@ -1509,7 +1508,7 @@ async def get_leap_rank(
     if not _LEAP_RANK_SYMBOL_RE.fullmatch(symbol_clean):
         raise HTTPException(
             status_code=400,
-            detail="Underlying ticker must be 1–10 characters (letters, digits, period, or hyphen).",
+            detail="Underlying ticker must be 1–10 letters.",
         )
     if right_clean not in ("call", "put"):
         raise HTTPException(
