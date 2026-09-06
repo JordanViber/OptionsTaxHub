@@ -46,17 +46,20 @@ def test_implied_cagr_call_one_year():
 
 
 def test_implied_cagr_put_one_year():
-    # S=100, K=110, C=12 → BE=98 → (98/100) - 1
+    # S=100, K=110, C=12 → BE=98 → 1 - 98/100 = 2% decline
     assert implied_cagr_to_breakeven(
         right="put", spot=100, strike=110, premium=12, years=1,
-    ) == pytest.approx(98 / 100 - 1)
+    ) == pytest.approx(1 - 98 / 100)
 
 
 def test_implied_cagr_put_is_spot_to_breakeven_not_reciprocal():
     # $100 → $50 in one year is a 50% decline, not the 100% reciprocal growth.
     assert implied_cagr_to_breakeven(
         right="put", spot=100, strike=60, premium=10, years=1,
-    ) == pytest.approx(-0.5)
+    ) == pytest.approx(0.5)
+    assert implied_cagr_to_breakeven(
+        right="put", spot=100, strike=60, premium=10, years=1,
+    ) != pytest.approx(1.0)
 
 
 def test_extract_rank_premium_prefers_mid():
@@ -144,7 +147,7 @@ def test_put_score_and_copy():
     )
     assert row is not None
     assert row.breakeven == pytest.approx(98)
-    assert row.implied_cagr == pytest.approx(98 / 100 - 1)
+    assert row.implied_cagr == pytest.approx(1 - 98 / 100)
     why = why_vs_stock(row, 100)
     assert "annualized decline" in why
     assert "break even" in why

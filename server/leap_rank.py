@@ -86,18 +86,25 @@ def implied_cagr_to_breakeven(
     premium: float,
     years: float,
 ) -> Optional[float]:
-    """Primary score: (BE / S) ** (1 / T) - 1. Lower is better (less move to BE)."""
+    """Annualized underlying move from spot to breakeven. Lower is better.
+
+    Call (upside): (BE / S) ** (1 / T) - 1
+    Put (decline): 1 - (BE / S) ** (1 / T)
+    A $100 → $50 put in one year is 50%, not the 100% reciprocal.
+    """
     if spot <= 0 or years <= 0 or premium < 0:
         return None
     if right == "call":
         breakeven = strike + premium
-    elif right == "put":
+        if breakeven <= 0:
+            return None
+        return (breakeven / spot) ** (1 / years) - 1
+    if right == "put":
         breakeven = strike - premium
-    else:
-        return None
-    if breakeven <= 0:
-        return None
-    return (breakeven / spot) ** (1 / years) - 1
+        if breakeven <= 0:
+            return None
+        return 1 - (breakeven / spot) ** (1 / years)
+    return None
 
 
 def format_usd(value: float) -> str:
