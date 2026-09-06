@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from csv_parser import RealizedEvent
-from models import Form1099BLot, LotMatchReport, LotMatchRow
+from models import AssetType, Form1099BLot, LotMatchReport, LotMatchRow
 from year_close_packet import is_same_year_1099_compare
 
 QTY_EPS = 1e-4
@@ -29,6 +29,51 @@ def _as_float(value: Any, default: float = 0.0) -> float:
 
 def _round_cents(value: float) -> float:
     return round(_as_float(value), 2)
+
+
+def _cents_close(left: Any, right: Any) -> bool:
+    return abs(_as_float(left) - _as_float(right)) <= CENTS
+
+
+def _is_option_event(event: RealizedEvent) -> bool:
+    return event.asset_type == AssetType.OPTION
+
+
+def _event_is_short_option(event: RealizedEvent) -> bool:
+    """FIFO STO/BTC: pnl = premium (cost_basis) - buyback (sale_proceeds)."""
+    if not _is_option_event(event):
+        return False
+    cost = _as_float(event.cost_basis)
+    proceeds = _as_float(event.sale_proceeds)
+    pnl = _as_float(event.pnl)
+    short_pnl = cost - proceeds
+    long_pnl = proceeds - cost
+    return _cents_close(pnl, short_pnl) and not _cents_close(pnl, long_pnl)
+
+
+def _sto_btc_proceeds_alignment(lot: Form1099BLot, event: RealizedEvent) -> bool:
+    """1099 proceeds are premium collected; FIFO stored that as cost_basis."""
+    if not _is_option_event(event):
+        return False
+    if _cents_close(lot.proceeds, event.sale_proceeds):
+        return False
+    return _cents_close(lot.proceeds, event.cost_basis)
+
+
+def _export_proceeds_and_basis(
+    lot: Form1099BLot | None,
+    event: RealizedEvent | None,
+) -> tuple[float, float]:
+    if event is None:
+        return 0.0, 0.0
+    swap = (
+        _sto_btc_proceeds_alignment(lot, event)
+        if lot is not None
+        else _event_is_short_option(event)
+    )
+    if swap:
+        return _round_cents(event.cost_basis), _round_cents(event.sale_proceeds)
+    return _round_cents(event.sale_proceeds), _round_cents(event.cost_basis)
 
 
 def _qty_compatible(lot: Form1099BLot, event: RealizedEvent) -> bool:
@@ -67,15 +112,12 @@ def _date_score(lot: Form1099BLot, event: RealizedEvent) -> int:
 def _candidate_score(lot: Form1099BLot, event: RealizedEvent) -> Optional[tuple[int, int, int]]:
     if not _qty_compatible(lot, event):
         return None
-    if abs(_as_float(lot.proceeds) - _as_float(event.sale_proceeds)) > CENTS:
+    export_proceeds, export_basis = _export_proceeds_and_basis(lot, event)
+    if abs(_as_float(lot.proceeds) - export_proceeds) > CENTS:
         return None
     if not _symbol_compatible(lot, event):
         return None
-    basis_bonus = (
-        1
-        if abs(_as_float(lot.cost_basis) - _as_float(event.cost_basis)) <= CENTS
-        else 0
-    )
+    basis_bonus = 1 if _cents_close(lot.cost_basis, export_basis) else 0
     return (_date_score(lot, event), basis_bonus, 0)
 
 
@@ -103,6 +145,7 @@ def _row(
     quantity = _as_float(lot.quantity if lot else None)
     if quantity <= 0 and event is not None:
         quantity = _as_float(event.quantity)
+    proceeds_export, cost_basis_export = _export_proceeds_and_basis(lot, event)
     return LotMatchRow(
         status=status,
         symbol=symbol,
@@ -112,9 +155,9 @@ def _row(
         export_trade_date=event.sale_date if event else None,
         export_settle_date=event.settle_date if event else None,
         proceeds_1099=_round_cents(lot.proceeds if lot else 0.0),
-        proceeds_export=_round_cents(event.sale_proceeds if event else 0.0),
+        proceeds_export=proceeds_export,
         cost_basis_1099=_round_cents(lot.cost_basis if lot else 0.0),
-        cost_basis_export=_round_cents(event.cost_basis if event else 0.0),
+        cost_basis_export=cost_basis_export,
         wash_sale_disallowed=_round_cents(lot.wash_sale_disallowed if lot else 0.0),
     )
 
