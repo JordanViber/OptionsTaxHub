@@ -32,6 +32,7 @@ from models import (
     AssetType,
     FilingStatus,
     ActivityBookSummary,
+    LotMatchReport,
     PortfolioAnalysis,
     RealizedSummary,
     Supplemental1099Summary,
@@ -886,14 +887,26 @@ def _normalize_merge_mode(value: object) -> str:
     return "replace" if raw == "replace" else "auto"
 
 
-def _public_analysis(result: PortfolioAnalysis) -> PortfolioAnalysis:
-    """Hide raw trades from the browser payload; they stay in saved history."""
-    book = result.activity_book
-    if not book or not book.transactions:
-        return result
-    return result.model_copy(
-        update={"activity_book": book.model_copy(update={"transactions": []})}
+def _counts_only_lot_match_report(report: LotMatchReport) -> LotMatchReport:
+    """Keep teaser counts; drop lot rows until the $49 packet is unlocked."""
+    return report.model_copy(
+        update={"matched": [], "gap": [], "unmatched": []}
     )
+
+
+def _public_analysis(result: PortfolioAnalysis) -> PortfolioAnalysis:
+    """Hide raw trades and unpaid lot rows from the browser payload."""
+    updates: dict = {}
+    book = result.activity_book
+    if book and book.transactions:
+        updates["activity_book"] = book.model_copy(update={"transactions": []})
+    if not result.packet_unlocked and result.lot_match_report is not None:
+        updates["lot_match_report"] = _counts_only_lot_match_report(
+            result.lot_match_report
+        )
+    if not updates:
+        return result
+    return result.model_copy(update=updates)
 
 
 def _apply_packet_year_grant(result: PortfolioAnalysis, user_id: str) -> PortfolioAnalysis:
@@ -1191,14 +1204,13 @@ async def _run_portfolio_analysis(
         warnings=_summarize_warnings(all_warnings),
     )
     result = _apply_packet_year_grant(result, user_id)
-    public_result = _public_analysis(result)
-    remember_analysis(
-        analysis_id,
-        user_id,
-        public_result.model_dump(mode="json")
-        if hasattr(public_result, "model_dump")
-        else dict(public_result),
+    full_dump = (
+        result.model_dump(mode="json")
+        if hasattr(result, "model_dump")
+        else dict(result)
     )
+    remember_analysis(analysis_id, user_id, full_dump)
+    public_result = _public_analysis(result)
 
     # Save analysis to history for authenticated user (includes the trade book).
     _save_history_best_effort(user_id, filename, summary, result)

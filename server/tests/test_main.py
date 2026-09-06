@@ -27,6 +27,9 @@ client = TestClient(main.app)
 def setup_function():
     main.push_subscriptions.clear()
     main.reset_guest_analyze_quota()
+    from year_close_packet import reset_packet_store
+
+    reset_packet_store()
 
 
 def test_health():
@@ -1916,13 +1919,34 @@ def test_analyze_same_year_1099_compare_vs_2026_sample_mismatch(monkeypatch):
     same_body = same_year.json()
     assert same_body["tax_profile"]["tax_year"] == 2024
     assert same_body["supplemental_1099"]["tax_year"] == 2024
-    same_payload = build_packet_payload(same_body)
+    public_report = same_body["lot_match_report"]
+    assert public_report is not None
+    assert public_report["matched"] == []
+    assert public_report["gap"] == []
+    assert public_report["unmatched"] == []
+    assert (
+        public_report["matched_count"]
+        + public_report["gap_count"]
+        + public_report["unmatched_count"]
+        >= 1
+    )
+
+    from year_close_packet import get_payload
+
+    stored = get_payload(same_body["analysis_id"])
+    same_payload = stored or build_packet_payload(same_body)
     assert same_payload["same_year_compare"] is True
     assert same_payload["form_1099_tax_year"] == 2024
     assert same_payload["analysis_tax_year"] == 2024
     # year_close_2024.csv is a $300 ST loss + $300 wash; fold into 1099-style net.
     assert same_payload["export_short_term_net"] == 0.0
     assert same_payload["export_wash_sale_disallowed"] == 300.0
+    stored_report = same_payload.get("lot_match_report") or {}
+    assert any(
+        row["status"] in ("matched", "matched_settlement_gap", "1099_only", "csv_only")
+        for section in ("matched", "gap", "unmatched")
+        for row in stored_report.get(section) or []
+    )
     same_pdf = render_packet_pdf(same_payload)
     same_reader = PdfReader(BytesIO(same_pdf))
     assert len(same_reader.pages) >= 2
@@ -1932,17 +1956,6 @@ def test_analyze_same_year_1099_compare_vs_2026_sample_mismatch(monkeypatch):
     assert "This export (trade date)" in same_text
     assert "$-300.00" not in same_text
     assert "Lot-matched 1099-B" in same_text
-    report = same_body["lot_match_report"]
-    assert report is not None
-    assert (
-        report["matched_count"] + report["gap_count"] + report["unmatched_count"]
-        >= 1
-    )
-    assert any(
-        row["status"] in ("matched", "matched_settlement_gap", "1099_only", "csv_only")
-        for section in ("matched", "gap", "unmatched")
-        for row in report[section]
-    )
 
     mismatch = client.post(
         "/api/portfolio/analyze?tax_year=2026",
@@ -2005,7 +2018,18 @@ def test_analyze_2026_sample_csv_and_1099_is_same_year_compare(monkeypatch):
     assert summary["long_term_net_gain"] == pytest.approx(0.00)
     assert summary["matched_symbols"] == ["AMD", "NVDA", "TSLA"]
     assert "SPX" in summary["referenced_symbols"]
-    same_payload = build_packet_payload(same_body)
+    public_report = same_body["lot_match_report"]
+    assert public_report is not None
+    assert public_report["matched"] == []
+    assert public_report["gap"] == []
+    assert public_report["unmatched"] == []
+    assert public_report["gap_count"] >= 3
+    assert public_report["unmatched_count"] >= 1
+    assert same_body["packet_unlocked"] is False
+
+    from year_close_packet import get_payload
+
+    same_payload = get_payload(same_body["analysis_id"]) or build_packet_payload(same_body)
     assert same_payload["same_year_compare"] is True
     assert same_payload["form_1099_tax_year"] == 2026
     assert same_payload["analysis_tax_year"] == 2026
@@ -2014,6 +2038,13 @@ def test_analyze_2026_sample_csv_and_1099_is_same_year_compare(monkeypatch):
     assert same_payload["export_short_term_net"] == pytest.approx(0.00)
     assert same_payload["export_wash_sale_disallowed"] == pytest.approx(924.00)
     assert same_payload["short_term_net_gain"] == pytest.approx(2699.00)
+    report = same_payload.get("lot_match_report") or {}
+    assert {row["symbol"] for row in report.get("gap") or []} >= {"NVDA", "TSLA", "AMD"}
+    assert all(row["status"] == "matched_settlement_gap" for row in report.get("gap") or [])
+    assert any(
+        row["symbol"] == "SPX" and row["status"] == "1099_only"
+        for row in report.get("unmatched") or []
+    )
     same_pdf = render_packet_pdf(same_payload)
     same_text = "\n".join(
         (page.extract_text() or "")
@@ -2022,12 +2053,6 @@ def test_analyze_2026_sample_csv_and_1099_is_same_year_compare(monkeypatch):
     assert COMPARE_TITLE in same_text
     assert "Broker 1099 (settlement date)" in same_text
     assert "$2,699.00" in same_text
-    report = same_body["lot_match_report"]
-    assert report is not None
-    assert report["gap_count"] >= 3
-    assert {row["symbol"] for row in report["gap"]} >= {"NVDA", "TSLA", "AMD"}
-    assert all(row["status"] == "matched_settlement_gap" for row in report["gap"])
-    assert any(row["symbol"] == "SPX" and row["status"] == "1099_only" for row in report["unmatched"])
     assert "Lot-matched 1099-B" in same_text
     assert "Matched (" in same_text
     assert "Gap (" in same_text
@@ -2054,6 +2079,71 @@ def test_analyze_2026_sample_csv_and_1099_is_same_year_compare(monkeypatch):
     )
     assert COMPARE_TITLE not in mismatch_text
     assert "previous-year supplement" in mismatch_text
+
+
+def test_unpaid_analyze_lot_match_report_is_counts_only(monkeypatch):
+    """Unpaid/guest analyze keeps teaser counts and redacts lot rows."""
+    from year_close_packet import get_payload
+
+    _stub_analyze_network(monkeypatch)
+    repo = Path(__file__).resolve().parents[2]
+    sample_csv = (repo / "client" / "public" / "sample-robinhood-transactions.csv").read_bytes()
+    sample_1099 = (repo / "client" / "public" / "sample-robinhood-1099-2026.pdf").read_bytes()
+    response = client.post(
+        "/api/portfolio/analyze?tax_year=2026",
+        files={
+            "file": ("sample-robinhood-transactions.csv", sample_csv, "text/csv"),
+            "supplemental_1099": (
+                "sample-robinhood-1099-2026.pdf",
+                sample_1099,
+                "application/pdf",
+            ),
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["packet_unlocked"] is False
+    report = body["lot_match_report"]
+    assert report["matched"] == []
+    assert report["gap"] == []
+    assert report["unmatched"] == []
+    assert report["gap_count"] >= 3
+    stored = get_payload(body["analysis_id"])
+    assert stored is not None
+    stored_report = stored["lot_match_report"]
+    assert stored_report["gap"]
+    assert any(row["symbol"] == "NVDA" for row in stored_report["gap"])
+
+
+def test_paid_year_analyze_includes_lot_match_rows(monkeypatch):
+    """A paid tax year keeps full lot rows on later analyze responses."""
+    from year_close_packet import mark_paid
+
+    _stub_analyze_network(monkeypatch)
+    repo = Path(__file__).resolve().parents[2]
+    sample_csv = (repo / "client" / "public" / "sample-robinhood-transactions.csv").read_bytes()
+    sample_1099 = (repo / "client" / "public" / "sample-robinhood-1099-2026.pdf").read_bytes()
+    files = {
+        "file": ("sample-robinhood-transactions.csv", sample_csv, "text/csv"),
+        "supplemental_1099": (
+            "sample-robinhood-1099-2026.pdf",
+            sample_1099,
+            "application/pdf",
+        ),
+    }
+    first = client.post("/api/portfolio/analyze?tax_year=2026", files=files)
+    assert first.status_code == 200, first.text
+    first_id = first.json()["analysis_id"]
+    mark_paid(first_id, "cs_test_year_grant", user_id="test-user-123")
+
+    second = client.post("/api/portfolio/analyze?tax_year=2026", files=files)
+    assert second.status_code == 200, second.text
+    body = second.json()
+    assert body["packet_unlocked"] is True
+    report = body["lot_match_report"]
+    assert report["gap"]
+    assert {row["symbol"] for row in report["gap"]} >= {"NVDA", "TSLA", "AMD"}
+    assert any(row["symbol"] == "SPX" for row in report["unmatched"])
 
 
 def test_analyze_unknown_1099_year_is_not_mismatch_or_same_year_compare(monkeypatch):
