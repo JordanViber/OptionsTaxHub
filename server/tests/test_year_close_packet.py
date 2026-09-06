@@ -37,9 +37,11 @@ from year_close_packet import (
     packet_plain_text,
     packet_requires_test_stripe,
     purge_packet_store,
+    get_payload,
     remember_analysis,
     render_packet_pdf,
     reset_packet_store,
+    upsert_payload,
     resolve_packet_stripe_secret_key,
     same_year_compare_plain_text,
     session_grants_packet,
@@ -1106,3 +1108,81 @@ def test_lot_match_pdf_paginates_instead_of_dropping_rows():
     pdf_text = _pdf_text(pdf_bytes)
     assert "S000" in pdf_text
     assert "S054" in pdf_text
+
+
+def test_counts_only_client_payload_does_not_wipe_server_lot_rows():
+    """Paid PDF keeps full rows even if checkout/confirm sends redacted analyze JSON."""
+    analysis_id = "analysis-preserve-rows"
+    full = {
+        **LOT_MATCH_ANALYSIS,
+        "analysis_id": analysis_id,
+    }
+    remember_analysis(analysis_id, "test-user-123", full)
+    counts_only = {
+        **full,
+        "lot_match_report": {
+            "matched": [],
+            "gap": [],
+            "unmatched": [],
+            "matched_count": 1,
+            "gap_count": 1,
+            "unmatched_count": 1,
+            "totals_ok": True,
+        },
+    }
+    remember_analysis(analysis_id, "test-user-123", counts_only)
+    upsert_payload(analysis_id, "test-user-123", counts_only)
+    payload = get_payload(analysis_id)
+    assert payload is not None
+    report = payload["lot_match_report"]
+    assert any(row["symbol"] == "NVDA" for row in report["gap"])
+    assert any(row["symbol"] == "SPX" for row in report["unmatched"])
+    pdf_text = _pdf_text(render_packet_pdf(payload))
+    assert "NVDA" in pdf_text
+    assert "1099_only SPX" in pdf_text
+
+
+def test_paid_download_uses_server_lot_rows_not_redacted_client_json(monkeypatch):
+    _test_stripe_env(monkeypatch)
+    analysis_id = "analysis-paid-server-rows"
+    remember_analysis(analysis_id, "test-user-123", LOT_MATCH_ANALYSIS)
+    mark_paid(analysis_id, "cs_test_paid_rows", user_id="test-user-123")
+    paid_session = SimpleNamespace(
+        id="cs_test_paid_rows",
+        payment_status="paid",
+        amount_total=PACKET_AMOUNT_CENTS,
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": analysis_id,
+        },
+    )
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda session_id, **_kwargs: paid_session,
+    )
+    redacted = {
+        **LOT_MATCH_ANALYSIS,
+        "analysis_id": analysis_id,
+        "lot_match_report": {
+            "matched": [],
+            "gap": [],
+            "unmatched": [],
+            "matched_count": 1,
+            "gap_count": 1,
+            "unmatched_count": 1,
+        },
+    }
+    response = client.post(
+        "/api/year-close-packet/download",
+        json={
+            "analysis_id": analysis_id,
+            "session_id": "cs_test_paid_rows",
+            "analysis": redacted,
+        },
+    )
+    assert response.status_code == 200
+    pdf_text = _pdf_text(response.content)
+    assert "NVDA" in pdf_text
+    assert "SPX" in pdf_text
+    assert "1099_only" in pdf_text

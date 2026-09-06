@@ -731,11 +731,37 @@ def render_packet_pdf(payload: dict[str, Any]) -> bytes:
     return _assemble_pdf(streams)
 
 
+def _lot_report_has_rows(report: Any) -> bool:
+    if not isinstance(report, dict):
+        return False
+    return bool(report.get("matched") or report.get("gap") or report.get("unmatched"))
+
+
+def _analysis_preserving_lot_rows(
+    existing_payload: dict[str, Any] | None,
+    analysis: dict[str, Any],
+) -> dict[str, Any]:
+    """Do not let a counts-only client payload wipe server-side lot rows."""
+    incoming = analysis.get("lot_match_report")
+    if _lot_report_has_rows(incoming):
+        return analysis
+    stored = (existing_payload or {}).get("lot_match_report")
+    if not _lot_report_has_rows(stored):
+        return analysis
+    merged = dict(analysis)
+    merged["lot_match_report"] = stored
+    return merged
+
+
 def remember_analysis(analysis_id: str, user_id: str, analysis: dict[str, Any]) -> None:
     existing = PACKET_STORE.get(analysis_id) or {}
+    existing_payload = existing.get("payload")
+    if not isinstance(existing_payload, dict):
+        existing_payload = None
+    preserved = _analysis_preserving_lot_rows(existing_payload, analysis)
     PACKET_STORE[analysis_id] = _new_packet_record(
         user_id,
-        payload=build_packet_payload(analysis, analysis_id=analysis_id),
+        payload=build_packet_payload(preserved, analysis_id=analysis_id),
         paid=bool(existing.get("paid")),
         session_ids=set(existing.get("session_ids") or []),
         created_at=existing.get("created_at"),
