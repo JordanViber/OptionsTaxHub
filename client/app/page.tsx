@@ -19,22 +19,14 @@ const UPLOAD_INTENT_KEY = "oth-upload-intent";
 
 export default function LandingPage() {
   const router = useRouter();
-  const { user, loading } = useAuth();
+  const { user } = useAuth();
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
     setMounted(true);
   }, []);
 
-  useEffect(() => {
-    if (!loading && user) {
-      router.push("/dashboard");
-    }
-  }, [loading, user, router]);
-
   if (!mounted) return null;
-  if (loading) return null;
-  if (user) return null;
 
   const openSample = () => {
     try {
@@ -108,9 +100,11 @@ export default function LandingPage() {
           >
             Open desk
           </Button>
-          <Button component={Link} href="/auth/signin" size="small">
-            Sign In
-          </Button>
+          {!user && (
+            <Button component={Link} href="/auth/signin" size="small">
+              Sign In
+            </Button>
+          )}
         </Stack>
       </Box>
 
@@ -154,14 +148,13 @@ export default function LandingPage() {
                 maxWidth: 560,
                 fontSize: { xs: "1.05rem", sm: "1.15rem" },
                 color: "text.secondary",
-                lineHeight: 1.65,
+                lineHeight: 1.55,
               }}
             >
               Broker 1099 uses settlement date. Your export uses trade date. A
-              year-end short option — SPX 12/31 — can print a gain on the 1099
-              while the export still shows a loss. That is not a software bug.
-              Totals only — not a filed Form 8949 and not a rebuild of lots
-              from the PDF.
+              year-end short — SPX 12/31 — can print a gain on the 1099 while
+              the export still shows a loss. Not a software bug. Totals only —
+              not a filed Form 8949 and not a rebuild of lots from the PDF.
             </Typography>
             <Stack
               direction={{ xs: "column", sm: "row" }}
@@ -189,8 +182,8 @@ export default function LandingPage() {
               variant="body2"
               sx={{ mt: 2, color: "text.secondary", opacity: 0.85 }}
             >
-              Sample loads instantly. Sign in only if you want tax year and
-              saved runs waiting on the next device. State tax is not included.
+              Sample loads instantly. Sign in to keep tax year and saved runs.
+              State tax is not included.
             </Typography>
           </Box>
           <DeskPreview />
@@ -217,15 +210,15 @@ export default function LandingPage() {
           >
             <Feature
               title="Harvest queue"
-              body="Losing lots ranked by federal savings at your bracket. Short-term first. Wash-sale risk called out before you click."
+              body="Losing lots ranked by federal savings. Short-term first. Wash-sale risk before you click."
             />
             <Feature
               title="Wash-sale radar"
-              body="Same-symbol buys inside 30 days get grouped by ticker with disallowed loss and the basis bump on the replacement lot."
+              body="Same-symbol buys inside 30 days, with disallowed loss and the replacement-lot basis bump."
             />
             <Feature
               title="Lot ledger"
-              body="FIFO tax lots under every position. Holding period in English. ST / LT. Expand a row — every lot, not a spreadsheet dump."
+              body="FIFO lots under every position. Expand a row for ST / LT, holding period, and wash detail."
             />
           </Box>
         </Container>
@@ -248,7 +241,7 @@ export default function LandingPage() {
         </Typography>
         <Typography
           variant="h2"
-          sx={{ mt: 1.5, maxWidth: 640, fontSize: { xs: "1.75rem", md: "2.25rem" } }}
+          sx={{ mt: 1.5, maxWidth: 560, fontSize: { xs: "1.6rem", md: "2rem" } }}
         >
           Three moves. Then you see why they split.
         </Typography>
@@ -268,17 +261,17 @@ export default function LandingPage() {
             {
               n: "01",
               t: "Drop a CSV",
-              d: "Robinhood transaction export, or our 2026 sample. Parsed into FIFO lots in seconds.",
+              d: "Robinhood export or the 2026 sample. FIFO lots in seconds.",
             },
             {
               n: "02",
               t: "Read the desk",
-              d: "1099 vs your export first — settlement date against trade date. Then the harvest queue, wash sales, and the lot ledger.",
+              d: "1099 vs export first — settlement date vs trade date. Then harvest, wash sales, and lots.",
             },
             {
               n: "03",
               t: "Take the packet",
-              d: "1099 vs CSV wash lots and settlement-date FAQ on the desk. $49 unlocks the CPA PDF for that tax year.",
+              d: "Settlement-date FAQ on the desk. $49 unlocks the CPA PDF for that tax year.",
             },
           ].map((step) => (
             <Box
@@ -337,7 +330,7 @@ export default function LandingPage() {
           >
             <Typography
               variant="h2"
-              sx={{ maxWidth: 640, fontSize: { xs: "1.75rem", md: "2.25rem" } }}
+              sx={{ maxWidth: 560, fontSize: { xs: "1.6rem", md: "2rem" } }}
             >
               Sign in for the year that follows you — not a velvet rope.
             </Typography>
@@ -355,23 +348,19 @@ export default function LandingPage() {
           >
             <Feature
               title="Tax year travels"
-              body="Filing status, income, state, and TY 2024–2026 sync to your account. Switch years without retyping the profile."
+              body="Filing status, income, and TY 2024–2026 sync. Switch years without retyping."
             />
             <Feature
               title="Saved runs"
-              body="Named past analyses reopen without the original file. Harvest, wash sales, and packet unlocks follow the tax year. Analyses are saved to your account history so you can reopen or delete them."
+              body="Named analyses reopen without the original file. Saved to your account history so you can reopen or delete them."
             />
             <Feature
               title="Update the book"
-              body="Full history once. Later this year, send only new activity plus a little overlap — we merge the trades and skip a second $49 for that tax year."
+              body="Full history once. Later, send new activity plus overlap — we merge trades. No second $49 for that year."
             />
           </Box>
         </Container>
       </Box>
-
-      <Container maxWidth="md" sx={{ position: "relative", zIndex: 10, py: 4 }}>
-        <TaxDisclaimer />
-      </Container>
 
       <Box
         component="footer"
@@ -395,23 +384,19 @@ export default function LandingPage() {
         >
           <Box sx={{ maxWidth: 520 }}>
             <Wordmark />
-            <Typography
-              variant="caption"
-              sx={{ display: "block", mt: 2, color: "text.secondary", lineHeight: 1.6 }}
-            >
-              This tool is for educational and informational purposes only. It
-              does not constitute financial, tax, or legal advice. Consult a
-              qualified professional before making tax decisions. Analyses are
-              saved to your account history and can be deleted.
-            </Typography>
+            <Box sx={{ mt: 2 }}>
+              <TaxDisclaimer />
+            </Box>
           </Box>
           <Stack direction="row" spacing={3} sx={{ color: "text.secondary" }}>
             <Link href="/privacy" style={{ color: "inherit" }}>
               Privacy
             </Link>
-            <Link href="/auth/signin" style={{ color: "inherit" }}>
-              Sign in
-            </Link>
+            {!user && (
+              <Link href="/auth/signin" style={{ color: "inherit" }}>
+                Sign in
+              </Link>
+            )}
             <Link href="/dashboard" style={{ color: "inherit" }}>
               Desk
             </Link>

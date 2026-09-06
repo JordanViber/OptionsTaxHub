@@ -902,6 +902,29 @@ describe("PositionsTable", () => {
       expect(washRow).toHaveTextContent("Sold Jul 15, 2025");
       expect(washRow).toHaveTextContent("replaced Jul 25, 2025");
       expect(screen.getByTestId("tax-lot-AMD-1")).toHaveTextContent("$300.00");
+
+      const banner = screen.getByTestId("lot-wash-banner");
+      expect(banner).toHaveClass("lot-wash-banner");
+      expect(banner).toHaveTextContent("Disallowed loss $300.00");
+      expect(banner).toHaveTextContent("Replacement-lot basis bump +$300.00");
+      expect(banner).toHaveTextContent("30-day window");
+      expect(banner).toHaveTextContent("Sold Jul 15, 2025");
+    });
+
+    it("wraps wash-sale gold-chip copy instead of clipping at the right edge", () => {
+      const source = readFileSync(
+        join(__dirname, "../../app/components/PositionsTable.tsx"),
+        "utf8",
+      );
+      expect(source).toContain('className="lot-wash-banner"');
+      expect(source).toContain('flexWrap: "wrap"');
+      expect(source).toContain('overflowWrap: "anywhere"');
+      expect(source).toContain('whiteSpace: "normal"');
+      expect(source).toContain('wordBreak: "break-word"');
+      expect(source).toContain("Disallowed loss");
+      expect(source).toContain("Replacement-lot basis bump");
+      expect(source).toContain("30-day window");
+      expect(source).toContain("Sold ");
     });
 
     it("keeps a clean lot list when no wash sale is present", () => {
@@ -948,6 +971,183 @@ describe("PositionsTable", () => {
       expect(screen.queryByText(/Replacement-lot basis bump/i)).not.toBeInTheDocument();
       expect(screen.getByTestId("tax-lot-MSFT-0")).toHaveTextContent("Jun 2, 2025");
     });
+  });
+});
+
+function stubMatchMedia(matches: boolean) {
+  Object.defineProperty(window, "matchMedia", {
+    writable: true,
+    value: jest.fn().mockImplementation((query: string) => ({
+      matches,
+      media: query,
+      onchange: null,
+      addListener: jest.fn(),
+      removeListener: jest.fn(),
+      addEventListener: jest.fn(),
+      removeEventListener: jest.fn(),
+      dispatchEvent: jest.fn(),
+    })),
+  });
+}
+
+describe("PositionsTable compact layout (~390px)", () => {
+  beforeEach(() => {
+    stubMatchMedia(true);
+  });
+
+  afterEach(() => {
+    stubMatchMedia(false);
+  });
+
+  const compactPosition: Position = {
+    symbol: "AAPL",
+    display_label: "AAPL",
+    quantity: 15,
+    avg_cost_basis: 180,
+    current_price: 190,
+    market_value: 2850,
+    unrealized_pnl: 150,
+    unrealized_pnl_pct: 5.5,
+    holding_period_days: 400,
+    is_long_term: true,
+    wash_sale_risk: false,
+    asset_type: "stock",
+    total_cost_basis: 2700,
+    earliest_purchase_date: "2024-07-01",
+    tax_lots: [
+      {
+        symbol: "AAPL",
+        quantity: 10,
+        cost_basis_per_share: 185.5,
+        total_cost_basis: 1855,
+        purchase_date: "2024-07-01",
+        current_price: 190,
+        asset_type: "stock",
+        unrealized_pnl: 45,
+        unrealized_pnl_pct: 2.4,
+        holding_period_days: 400,
+        is_long_term: true,
+        wash_sale_disallowed: 0,
+      },
+      {
+        symbol: "AAPL",
+        quantity: 5,
+        cost_basis_per_share: 172.2,
+        total_cost_basis: 861,
+        purchase_date: "2025-03-10",
+        current_price: 190,
+        asset_type: "stock",
+        unrealized_pnl: 89,
+        unrealized_pnl_pct: 10.3,
+        holding_period_days: 90,
+        is_long_term: false,
+        wash_sale_disallowed: 25.5,
+      },
+    ],
+  };
+
+  it("renders a card stack with symbol, qty, P&L, and harvest — not a wide grid", () => {
+    render(<PositionsTable positions={[compactPosition]} />);
+
+    expect(screen.getByTestId("positions-cards")).toBeInTheDocument();
+    expect(screen.queryByTestId("positions-table")).not.toBeInTheDocument();
+
+    const card = screen.getByTestId("position-row-AAPL");
+    expect(card).toHaveTextContent("AAPL");
+    expect(card).toHaveTextContent("Qty");
+    expect(card).toHaveTextContent("15");
+    expect(card).toHaveTextContent("P&L");
+    expect(card).toHaveTextContent("Harvest");
+    expect(card).toHaveTextContent("2 lots");
+  });
+
+  it("still reaches lots when a compact card is expanded", () => {
+    render(<PositionsTable positions={[compactPosition]} />);
+
+    expect(
+      screen.queryByTestId("tax-lots-panel-AAPL"),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("position-row-AAPL"));
+
+    expect(screen.getByTestId("tax-lots-panel-AAPL")).toBeInTheDocument();
+    expect(screen.getByTestId("tax-lot-AAPL-0")).toHaveTextContent("10");
+    expect(screen.getByTestId("tax-lot-AAPL-1")).toHaveTextContent("$25.50");
+    expect(screen.getByTestId("tax-lot-AAPL-0")).toHaveTextContent(
+      "Jul 1, 2024",
+    );
+  });
+
+  it("wraps expanded wash-sale details on a compact lot card", () => {
+    const amdReplacementLot: TaxLot = {
+      symbol: "AMD",
+      quantity: 10,
+      cost_basis_per_share: 155,
+      total_cost_basis: 1550,
+      purchase_date: "2025-07-25",
+      current_price: 130,
+      asset_type: "stock",
+      unrealized_pnl: -250,
+      unrealized_pnl_pct: -16.1,
+      holding_period_days: 20,
+      is_long_term: false,
+      wash_sale_disallowed: 300,
+    };
+    const amdOriginalLot: TaxLot = {
+      symbol: "AMD",
+      quantity: 4,
+      cost_basis_per_share: 150,
+      total_cost_basis: 600,
+      purchase_date: "2025-06-01",
+      current_price: 130,
+      asset_type: "stock",
+      unrealized_pnl: -80,
+      unrealized_pnl_pct: -13.3,
+      holding_period_days: 70,
+      is_long_term: false,
+      wash_sale_disallowed: 0,
+    };
+    const amdWashFlag: WashSaleFlag = {
+      symbol: "AMD",
+      sale_date: "2025-07-15",
+      sale_quantity: 10,
+      sale_loss: 300,
+      repurchase_date: "2025-07-25",
+      repurchase_quantity: 10,
+      disallowed_loss: 300,
+      adjusted_cost_basis: 1550,
+      explanation:
+        "Wash sale: Sold 10 AMD on 07/15/2025 at a loss of $300.00, then repurchased 10 shares on 07/25/2025.",
+    };
+    const amdPosition: Position = {
+      symbol: "AMD",
+      quantity: 14,
+      avg_cost_basis: 153.57,
+      current_price: 130,
+      market_value: 1820,
+      unrealized_pnl: -330,
+      unrealized_pnl_pct: -15.3,
+      holding_period_days: 70,
+      is_long_term: false,
+      wash_sale_risk: false,
+      asset_type: "stock",
+      total_cost_basis: 2150,
+      earliest_purchase_date: "2025-06-01",
+      tax_lots: [amdOriginalLot, amdReplacementLot],
+    };
+
+    render(
+      <PositionsTable positions={[amdPosition]} washSaleFlags={[amdWashFlag]} />,
+    );
+    fireEvent.click(screen.getByTestId("position-row-AMD"));
+
+    const washRow = screen.getByTestId("tax-lot-wash-AMD-1");
+    expect(washRow).toHaveTextContent("Disallowed loss $300.00");
+    expect(washRow).toHaveTextContent("Replacement-lot basis bump +$300.00");
+    expect(washRow).toHaveTextContent("30-day window Jun 15, 2025");
+    expect(washRow).toHaveTextContent("Aug 14, 2025");
+    expect(washRow).toHaveTextContent("Sold Jul 15, 2025");
+    expect(screen.getByTestId("lot-wash-banner")).toHaveClass("lot-wash-banner");
   });
 });
 
