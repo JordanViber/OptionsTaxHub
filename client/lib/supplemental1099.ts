@@ -62,8 +62,21 @@ export const SUPPLEMENTAL_1099_AFTER_FIRST_RUN_COPY =
 export const SUPPLEMENTAL_1099_FIRST_RUN_HINT =
   "You can also attach the Robinhood 1099 PDF for the tax year you are closing next to the CSV. Totals compare stays free; lot-matched 1099-B is in the $49 packet.";
 
+const IN_APP_SAMPLE_1099 = "sample-robinhood-1099-2026.pdf";
+
+export function isInAppSampleAnalysis(
+  analysis: { supplemental_1099?: { source_filename?: string } | null } | null | undefined,
+): boolean {
+  const name = (analysis?.supplemental_1099?.source_filename || "").toLowerCase();
+  return name.endsWith(IN_APP_SAMPLE_1099);
+}
+
 export function redactUnpaidLotMatch(analysis: PortfolioAnalysis): PortfolioAnalysis {
-  if (analysis.packet_unlocked) {
+  if (
+    analysis.packet_unlocked ||
+    analysis.sample_run ||
+    isInAppSampleAnalysis(analysis)
+  ) {
     return analysis;
   }
   const report = analysis.lot_match_report;

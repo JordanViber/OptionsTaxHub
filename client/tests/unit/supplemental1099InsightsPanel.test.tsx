@@ -390,6 +390,30 @@ describe("Supplemental1099InsightsPanel", () => {
     unmatched_count: 1,
   };
 
+  it("shows match counts for a counts-only sample report with empty row arrays", () => {
+    render(
+      <Supplemental1099InsightsPanel
+        summary={{ ...fixtureSummary, tax_year: 2026 }}
+        analysisTaxYear={2026}
+        lotMatchReport={{
+          matched: [],
+          gap: [],
+          unmatched: [],
+          matched_count: 0,
+          gap_count: 3,
+          unmatched_count: 1,
+        }}
+        locked
+      />,
+    );
+
+    expect(screen.getByTestId("1099-vs-export-panel")).toBeInTheDocument();
+    expect(screen.getByTestId("lot-match-counts")).toHaveTextContent(
+      "Matched 0 · Gap 3 · Unmatched 1",
+    );
+    expect(screen.queryByText("NVDA")).not.toBeInTheDocument();
+  });
+
   it("keeps totals free and teasers lot-matched 1099-B when locked", () => {
     render(
       <Supplemental1099InsightsPanel
@@ -423,7 +447,8 @@ describe("Supplemental1099InsightsPanel", () => {
 
     expect(screen.getByText("AMD")).toBeInTheDocument();
     expect(screen.getByText("NVDA")).toBeInTheDocument();
-    expect(screen.getByText("SPX")).toBeInTheDocument();
+    expect(screen.getByTestId("lot-match-row-SPX")).toHaveTextContent("1099_only");
+    expect(screen.getByTestId("lot-match-row-SPX")).toHaveTextContent("$2,699.00");
     expect(screen.getByText("matched_settlement_gap")).toBeInTheDocument();
     expect(screen.getByText("1099_only")).toBeInTheDocument();
     expect(

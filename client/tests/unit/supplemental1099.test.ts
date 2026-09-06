@@ -227,4 +227,45 @@ describe("supplemental1099 helpers", () => {
     } as unknown as PortfolioAnalysis;
     expect(redactUnpaidLotMatch(analysis).lot_match_report?.gap).toHaveLength(1);
   });
+
+  it("keeps lot rows for the in-app 2026 sample 1099", () => {
+    const analysis = {
+      packet_unlocked: false,
+      sample_run: true,
+      positions: [],
+      tax_lots: [],
+      suggestions: [],
+      wash_sale_flags: [],
+      summary: {},
+      tax_profile: null,
+      disclaimer: "",
+      errors: [],
+      warnings: [],
+      supplemental_1099: {
+        source_filename: "sample-robinhood-1099-2026.pdf",
+        broker_name: "Robinhood",
+        tax_year: 2026,
+        short_term_net_gain: 2699,
+        lots: [{ symbol: "SPX", quantity: 1, proceeds: 2699 }],
+      },
+      lot_match_report: {
+        matched: [],
+        gap: [
+          {
+            status: "matched_settlement_gap",
+            symbol: "NVDA",
+            quantity: 12,
+            proceeds_1099: 2976,
+            proceeds_export: 2976,
+          },
+        ],
+        unmatched: [],
+        matched_count: 0,
+        gap_count: 1,
+        unmatched_count: 0,
+      },
+    } as unknown as PortfolioAnalysis;
+    expect(redactUnpaidLotMatch(analysis).lot_match_report?.gap).toHaveLength(1);
+    expect(redactUnpaidLotMatch(analysis).supplemental_1099?.lots).toHaveLength(1);
+  });
 });
