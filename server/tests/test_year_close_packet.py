@@ -115,6 +115,18 @@ def _pdf_text_normalized(pdf_bytes: bytes) -> str:
     return " ".join(_pdf_text(pdf_bytes).split())
 
 
+def _expected_packet_pdf_pages(payload: dict) -> int:
+    """Match render_packet_pdf: cover + Harvest + compare + lot-match."""
+    count = 1
+    if payload.get("harvest_opportunities"):
+        count += 1
+    if payload.get("same_year_compare"):
+        count += 1
+    if payload.get("lot_match_report"):
+        count += 1
+    return count
+
+
 def _assert_three_identity(
     row: dict,
     pdf_text: str,
@@ -889,7 +901,39 @@ def test_mismatch_2026_sample_plus_2024_fixture_is_previous_year_supplement():
     assert COMPARE_TITLE not in pdf_text
     assert "settlement date" in pdf_text.lower()
     reader = PdfReader(BytesIO(pdf_bytes))
-    assert len(reader.pages) >= 2
+    assert len(reader.pages) == _expected_packet_pdf_pages(payload)
+
+
+def test_harvest_opportunities_add_a_packet_pdf_page():
+    """render_packet_pdf appends Harvest when harvest_opportunities are present."""
+    bare = build_packet_payload(
+        MISMATCH_2026_ANALYSIS, analysis_id="analysis-mismatch-no-harvest"
+    )
+    harvested = build_packet_payload(
+        {
+            **MISMATCH_2026_ANALYSIS,
+            "suggestions": [
+                {
+                    "symbol": "AMD",
+                    "display_label": "AMD",
+                    "quantity": 10,
+                    "estimated_loss": 250.0,
+                    "tax_savings_estimate": 37.5,
+                    "is_long_term": True,
+                }
+            ],
+        },
+        analysis_id="analysis-mismatch-harvest",
+    )
+    assert not bare.get("harvest_opportunities")
+    assert harvested.get("harvest_opportunities")
+    bare_pdf = render_packet_pdf(bare)
+    harvested_pdf = render_packet_pdf(harvested)
+    assert len(PdfReader(BytesIO(bare_pdf)).pages) == 1
+    assert len(PdfReader(BytesIO(harvested_pdf)).pages) == 2
+    assert HARVEST_TITLE not in _pdf_text(bare_pdf)
+    assert HARVEST_TITLE in _pdf_text(harvested_pdf)
+    assert COMPARE_TITLE not in _pdf_text(harvested_pdf)
 
 
 def test_same_year_packet_pdf_has_two_column_compare_page():
@@ -918,7 +962,7 @@ def test_same_year_packet_pdf_has_two_column_compare_page():
 
     pdf_bytes = render_packet_pdf(payload)
     reader = PdfReader(BytesIO(pdf_bytes))
-    assert len(reader.pages) == 2
+    assert len(reader.pages) == _expected_packet_pdf_pages(payload)
     pdf_text = _pdf_text_normalized(pdf_bytes)
     assert COMPARE_TITLE in pdf_text
     assert "Broker 1099 (settlement date)" in pdf_text
@@ -984,7 +1028,7 @@ def test_three_hundred_loss_plus_wash_does_not_look_like_settlement_gap():
     assert "$0.00" in pdf_text
     assert "$300.00" in pdf_text
     reader = PdfReader(BytesIO(render_packet_pdf(payload)))
-    assert len(reader.pages) == 2
+    assert len(reader.pages) == _expected_packet_pdf_pages(payload)
 
 
 def test_unknown_1099_year_is_not_previous_year_mismatch_or_same_year_compare():
@@ -1020,7 +1064,7 @@ def test_unknown_1099_year_is_not_previous_year_mismatch_or_same_year_compare():
     assert "could not be determined" in pdf_text
     assert "not a previous-year mismatch" in pdf_text
     reader = PdfReader(BytesIO(pdf_bytes))
-    assert len(reader.pages) >= 2
+    assert len(reader.pages) == _expected_packet_pdf_pages(payload)
 
 
 def test_same_year_compare_is_visible_without_payment_but_download_stays_gated(monkeypatch):
