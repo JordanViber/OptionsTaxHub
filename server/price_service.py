@@ -567,6 +567,7 @@ def _rows_from_option_table(table, expiration: str) -> list[dict[str, Any]]:
         return []
 
     has_oi = "openInterest" in table.columns
+    has_volume = "volume" in table.columns
     rows: list[dict[str, Any]] = []
     for _, row in table.iterrows():
         strike = _coerce_price(row.get("strike"))
@@ -584,6 +585,9 @@ def _rows_from_option_table(table, expiration: str) -> list[dict[str, Any]]:
             ),
             "open_interest": (
                 _coerce_open_interest(row.get("openInterest")) if has_oi else None
+            ),
+            "volume": (
+                _coerce_open_interest(row.get("volume")) if has_volume else None
             ),
         }
         rows.append(item)

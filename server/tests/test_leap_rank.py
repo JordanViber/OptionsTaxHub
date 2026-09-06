@@ -46,10 +46,10 @@ def test_implied_cagr_call_one_year():
 
 
 def test_implied_cagr_put_one_year():
-    # S=100, K=110, C=12 → BE=98 → 100/98 - 1
+    # S=100, K=110, C=12 → BE=98 → (98/100) - 1
     assert implied_cagr_to_breakeven(
         right="put", spot=100, strike=110, premium=12, years=1,
-    ) == pytest.approx(100 / 98 - 1)
+    ) == pytest.approx(98 / 100 - 1)
 
 
 def test_extract_rank_premium_prefers_mid():
@@ -137,7 +137,7 @@ def test_put_score_and_copy():
     )
     assert row is not None
     assert row.breakeven == pytest.approx(98)
-    assert row.implied_cagr == pytest.approx(100 / 98 - 1)
+    assert row.implied_cagr == pytest.approx(98 / 100 - 1)
     why = why_vs_stock(row, 100)
     assert "annualized decline" in why
     assert "break even" in why
@@ -166,6 +166,22 @@ def test_tie_break_lower_extrinsic_yield_wins():
     assert ranked[0].implied_cagr == pytest.approx(ranked[1].implied_cagr)
     assert ranked[0].extrinsic_yield < ranked[1].extrinsic_yield
     assert ranked[0].expiration == EXPIRY
+
+
+def test_requires_leap_dte():
+    short = score_contract(
+        symbol="NVDA",
+        right="call",
+        spot=100,
+        as_of=AS_OF,
+        expiration="2027-03-06",
+        strike=90,
+        bid=11.9,
+        ask=12.1,
+        last=12.0,
+        open_interest=10,
+    )
+    assert short is None
 
 
 def test_filters_wide_spread_cheap_premium_otm_and_leverage():

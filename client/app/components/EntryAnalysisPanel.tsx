@@ -92,8 +92,7 @@ function isEntryFail(
 }
 
 function formatImpliedMove(rate: number): string {
-  const pct = `${(rate * 100).toFixed(1)}%`;
-  if (rate <= 0) return "At or beyond breakeven vs spot";
+  const pct = `${(Math.abs(rate) * 100).toFixed(1)}%`;
   return `${pct} annualized to break even`;
 }
 

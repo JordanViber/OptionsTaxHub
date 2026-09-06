@@ -1598,6 +1598,39 @@ def test_leap_rank_no_chain_is_honest_empty(monkeypatch):
     assert data["ranks"] == []
 
 
+def test_leap_rank_returns_fewer_than_three(monkeypatch):
+    start, end = _future_leap_window()
+    monkeypatch.setattr(
+        "main.fetch_current_prices",
+        lambda symbols, fb=None: ({"NVDA": 100.0}, []),
+    )
+    monkeypatch.setattr(
+        "main.fetch_option_chain_window",
+        lambda *args, **kwargs: (
+            [
+                {
+                    "strike": 90.0,
+                    "expiration": start,
+                    "bid": 11.9,
+                    "ask": 12.1,
+                    "last": 12.0,
+                    "open_interest": 40,
+                }
+            ],
+            [start],
+            [],
+        ),
+    )
+    response = client.get(
+        f"/api/options/leap-rank?symbol=NVDA&right=call&expiry_from={start}&expiry_to={end}"
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["ok"] is True
+    assert len(data["ranks"]) == 1
+    assert data["ranks"][0]["rank"] == 1
+
+
 def test_leap_rank_rejects_bad_input():
     start, end = _future_leap_window()
     bad_symbol = client.get(

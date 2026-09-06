@@ -17,6 +17,7 @@ YEAR_BASIS = 365
 MIN_PREMIUM = 0.10
 MAX_RELATIVE_SPREAD = 0.35
 MIN_LEVERAGE = 1.15
+MIN_DTE = 365
 CALL_MONEYNESS = (0.60, 1.10)
 PUT_MONEYNESS = (0.90, 1.40)
 MAX_RANKS = 3
@@ -85,20 +86,18 @@ def implied_cagr_to_breakeven(
     premium: float,
     years: float,
 ) -> Optional[float]:
-    """Annualized underlying move required for the long option to break even."""
+    """Primary score: (BE / S) ** (1 / T) - 1. Lower is better (less move to BE)."""
     if spot <= 0 or years <= 0 or premium < 0:
         return None
     if right == "call":
         breakeven = strike + premium
-        if breakeven <= 0:
-            return None
-        return (breakeven / spot) ** (1 / years) - 1
-    if right == "put":
+    elif right == "put":
         breakeven = strike - premium
-        if breakeven <= 0:
-            return None
-        return (spot / breakeven) ** (1 / years) - 1
-    return None
+    else:
+        return None
+    if breakeven <= 0:
+        return None
+    return (breakeven / spot) ** (1 / years) - 1
 
 
 def format_usd(value: float) -> str:
@@ -154,6 +153,7 @@ class ScoredContract:
     extrinsic_yield: float
     spread: Optional[float]
     open_interest: Optional[int]
+    volume: Optional[int]
     contract_label: str
 
 
@@ -169,6 +169,7 @@ def score_contract(
     ask: Optional[float] = None,
     last: Optional[float] = None,
     open_interest: Optional[int] = None,
+    volume: Optional[int] = None,
     expiry_from: Optional[date] = None,
     expiry_to: Optional[date] = None,
 ) -> Optional[ScoredContract]:
@@ -186,6 +187,10 @@ def score_contract(
     if expiry_to is not None and expiry > expiry_to:
         return None
     if expiry < as_of:
+        return None
+
+    dte = (expiry - as_of).days
+    if dte < MIN_DTE:
         return None
 
     spread = relative_spread(bid, ask)
@@ -208,7 +213,6 @@ def score_contract(
     if leverage < MIN_LEVERAGE:
         return None
 
-    dte = (expiry - as_of).days
     years = years_to_expiry(dte)
     cagr = implied_cagr_to_breakeven(
         right=right,
@@ -252,14 +256,17 @@ def score_contract(
         extrinsic_yield=extrinsic_yield,
         spread=spread,
         open_interest=open_interest,
+        volume=volume,
         contract_label=format_contract_label(symbol.upper(), expiration, right, strike),
     )
 
 
-def _sort_key(row: ScoredContract) -> tuple[float, float, float, int]:
+def _sort_key(row: ScoredContract) -> tuple[float, float, float, int, int]:
+    # Rank by less |annualized move| so #1 is never “higher CAGR”.
     spread = row.spread if row.spread is not None else float("inf")
     oi = row.open_interest if row.open_interest is not None else -1
-    return (row.implied_cagr, row.extrinsic_yield, spread, -oi)
+    volume = row.volume if row.volume is not None else -1
+    return (abs(row.implied_cagr), row.extrinsic_yield, spread, -oi, -volume)
 
 
 def _richer_reason(winner: ScoredContract, richer: ScoredContract) -> str:
@@ -281,19 +288,20 @@ def why_vs_stock(row: ScoredContract, spot: float) -> str:
     extrinsic = format_usd(row.extrinsic)
     ey = format_pct(row.extrinsic_yield)
     spot_txt = format_usd(round_cents(spot))
-    if row.implied_cagr <= 0:
+    move = format_pct(abs(row.implied_cagr))
+    if row.right == "put":
+        lead = (
+            f"Needs a {move} annualized decline in "
+            f"{row.symbol} to break even vs spot {spot_txt}."
+        )
+    elif row.implied_cagr <= 0:
         lead = (
             f"Breaks even at or below today's {row.symbol} price vs owning shares "
             f"at {spot_txt}."
         )
-    elif row.right == "put":
-        lead = (
-            f"Needs a {format_pct(row.implied_cagr)} annualized decline in "
-            f"{row.symbol} to break even vs spot {spot_txt}."
-        )
     else:
         lead = (
-            f"Needs a {format_pct(row.implied_cagr)} annualized move in "
+            f"Needs a {move} annualized move in "
             f"{row.symbol} to break even vs owning shares at {spot_txt}."
         )
     if row.right == "put":
@@ -315,7 +323,7 @@ def why_vs_richer(row: ScoredContract, richer: Optional[ScoredContract]) -> Opti
     reason = _richer_reason(row, richer)
     return (
         f"Less annualized move to break even than the {richer.contract_label} "
-        f"({format_pct(row.implied_cagr)} vs {format_pct(richer.implied_cagr)}) "
+        f"({format_pct(abs(row.implied_cagr))} vs {format_pct(abs(richer.implied_cagr))}) "
         f"because {reason}."
     )
 
@@ -374,6 +382,7 @@ def rank_contracts(
             ask=raw.get("ask"),
             last=raw.get("last"),
             open_interest=raw.get("open_interest"),
+            volume=raw.get("volume"),
             expiry_from=expiry_from,
             expiry_to=expiry_to,
         )

@@ -333,6 +333,9 @@ describe("EntryAnalysisPanel", () => {
     expect(screen.getByTestId("entry-max-loss")).toHaveTextContent("$420.00");
     expect(screen.getByTestId("entry-max-gain")).toHaveTextContent("Unlimited");
     expect(screen.getByTestId("entry-breakeven")).toHaveTextContent("$94.20");
+    expect(
+      screen.getByTestId("entry-analysis-panel").querySelector("table"),
+    ).toBeNull();
   });
 
   it("shows an honest empty rank list when quotes fail", async () => {
