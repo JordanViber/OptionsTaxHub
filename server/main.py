@@ -1603,7 +1603,27 @@ def _grant_packet_from_session(session, analysis_id: str, user_id: str = "") -> 
     return True
 
 
+def _analysis_with_history_suggestions(
+    analysis_id: str,
+    user_id: str,
+    analysis: Optional[dict],
+) -> Optional[dict]:
+    """Fill harvest suggestions from saved analysis when compact JSON omits them."""
+    if analysis and analysis.get("suggestions"):
+        return analysis
+    if not analysis_id or not user_id:
+        return analysis
+    record = get_analysis_by_id(analysis_id, user_id)
+    result = record.get("result") if isinstance(record, dict) else None
+    if not isinstance(result, dict) or not result.get("suggestions"):
+        return analysis
+    merged = dict(analysis or {})
+    merged["suggestions"] = result["suggestions"]
+    return merged
+
+
 def _payload_for_download(analysis_id: str, user_id: str, analysis: Optional[dict]):
+    analysis = _analysis_with_history_suggestions(analysis_id, user_id, analysis)
     rec = upsert_payload(analysis_id, user_id, analysis)
     payload = rec.get("payload") if rec else None
     if payload:
@@ -1640,7 +1660,11 @@ async def create_year_close_packet_checkout(
     if not analysis_id:
         raise HTTPException(status_code=400, detail="analysis_id is required")
 
-    upsert_payload(analysis_id, user_id, body.analysis)
+    upsert_payload(
+        analysis_id,
+        user_id,
+        _analysis_with_history_suggestions(analysis_id, user_id, body.analysis),
+    )
     _configure_packet_stripe()
 
     success_url = (
@@ -1702,7 +1726,11 @@ async def confirm_year_close_packet(
     if not analysis_id:
         raise HTTPException(status_code=400, detail="analysis_id is required")
 
-    upsert_payload(analysis_id, user_id, body.analysis)
+    upsert_payload(
+        analysis_id,
+        user_id,
+        _analysis_with_history_suggestions(analysis_id, user_id, body.analysis),
+    )
 
     if not _grant_packet_from_session(session, analysis_id, user_id=user_id):
         logger.info(

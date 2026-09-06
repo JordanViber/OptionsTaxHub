@@ -16,6 +16,7 @@ from stripe import StripeObject
 from year_close_packet import (
     COMPARE_GAP_COPY,
     COMPARE_TITLE,
+    HARVEST_TITLE,
     LOT_MATCH_TITLE,
     OPTIONS_WASH_SALE_FAQ,
     PACKET_AMOUNT_CENTS,
@@ -34,6 +35,8 @@ from year_close_packet import (
     export_realized_totals,
     is_same_year_1099_compare,
     wash_flag_is_long_term,
+    _harvest_lines,
+    harvest_plain_text,
     packet_plain_text,
     packet_requires_test_stripe,
     purge_packet_store,
@@ -112,6 +115,38 @@ def _pdf_text_normalized(pdf_bytes: bytes) -> str:
     return " ".join(_pdf_text(pdf_bytes).split())
 
 
+def _expected_packet_pdf_pages(payload: dict) -> int:
+    """Match render_packet_pdf: cover + Harvest + compare + lot-match."""
+    count = 1
+    if payload.get("harvest_opportunities"):
+        count += 1
+    if payload.get("same_year_compare"):
+        count += 1
+    if payload.get("lot_match_report"):
+        count += 1
+    return count
+
+
+def _assert_three_identity(
+    row: dict,
+    pdf_text: str,
+    *,
+    qty: float,
+    opened: str,
+    suggestion_id: str,
+    lot_details: str = "",
+) -> None:
+    """quantity, purchase date, and suggestion_id/lot_details all present."""
+    assert row["quantity"] == qty
+    assert row["purchase_date"] == opened
+    assert row["suggestion_id"] == suggestion_id
+    assert str(row.get("lot_details") or "") == lot_details
+    assert f"qty {qty:g}  {opened}" in pdf_text
+    lot_key = lot_details or suggestion_id
+    pdf_norm = " ".join(pdf_text.split())
+    assert lot_key in pdf_text or lot_key in pdf_norm
+
+
 @pytest.fixture(autouse=True)
 def _clean_store():
     reset_packet_store()
@@ -151,6 +186,10 @@ def test_payload_and_pdf_contain_1099_totals_amd_and_faqs():
     assert "$281,823.83" in text
     assert "$17,442.80" in text
     assert "AMD $300.00 disallowed" in text
+    assert text.count("AMD $300.00 disallowed") == 1
+    assert "sale 2025-07-15" in text
+    assert "repurchase 2025-07-25" in text
+    assert "Replacement lot with wash-sale disallowed" not in text
     assert SETTLEMENT_DATE_FAQ in text
     assert OPTIONS_WASH_SALE_FAQ in text
     assert PACKET_DISCLAIMER in text
@@ -835,18 +874,66 @@ def test_missing_realized_summary_does_not_synthesize_short_term_net():
 
 
 def test_mismatch_2026_sample_plus_2024_fixture_is_previous_year_supplement():
-    payload = build_packet_payload(MISMATCH_2026_ANALYSIS, analysis_id="analysis-2026-sample")
+    analysis = {
+        **MISMATCH_2026_ANALYSIS,
+        "suggestions": [
+            {
+                "symbol": "AMD",
+                "display_label": "AMD",
+                "quantity": 10,
+                "estimated_loss": 250.0,
+                "tax_savings_estimate": 37.5,
+                "is_long_term": True,
+            }
+        ],
+    }
+    payload = build_packet_payload(analysis, analysis_id="analysis-2026-sample")
     assert payload["same_year_compare"] is False
     assert payload["form_1099_tax_year"] == 2024
     assert payload["analysis_tax_year"] == 2026
+    assert payload.get("harvest_opportunities")
     text = packet_plain_text(payload)
     assert "previous-year supplement" in text
     assert "included as a dedicated page" not in text
-    pdf_text = _pdf_text(render_packet_pdf(payload))
+    pdf_bytes = render_packet_pdf(payload)
+    pdf_text = _pdf_text(pdf_bytes)
+    assert HARVEST_TITLE in pdf_text
     assert COMPARE_TITLE not in pdf_text
     assert "settlement date" in pdf_text.lower()
-    reader = PdfReader(BytesIO(render_packet_pdf(payload)))
-    assert len(reader.pages) == 1
+    reader = PdfReader(BytesIO(pdf_bytes))
+    assert len(reader.pages) == _expected_packet_pdf_pages(payload)
+
+
+def test_harvest_opportunities_add_a_packet_pdf_page():
+    """render_packet_pdf appends Harvest when harvest_opportunities are present."""
+    bare = build_packet_payload(
+        MISMATCH_2026_ANALYSIS, analysis_id="analysis-mismatch-no-harvest"
+    )
+    harvested = build_packet_payload(
+        {
+            **MISMATCH_2026_ANALYSIS,
+            "suggestions": [
+                {
+                    "symbol": "AMD",
+                    "display_label": "AMD",
+                    "quantity": 10,
+                    "estimated_loss": 250.0,
+                    "tax_savings_estimate": 37.5,
+                    "is_long_term": True,
+                }
+            ],
+        },
+        analysis_id="analysis-mismatch-harvest",
+    )
+    assert not bare.get("harvest_opportunities")
+    assert harvested.get("harvest_opportunities")
+    bare_pdf = render_packet_pdf(bare)
+    harvested_pdf = render_packet_pdf(harvested)
+    assert len(PdfReader(BytesIO(bare_pdf)).pages) == 1
+    assert len(PdfReader(BytesIO(harvested_pdf)).pages) == 2
+    assert HARVEST_TITLE not in _pdf_text(bare_pdf)
+    assert HARVEST_TITLE in _pdf_text(harvested_pdf)
+    assert COMPARE_TITLE not in _pdf_text(harvested_pdf)
 
 
 def test_same_year_packet_pdf_has_two_column_compare_page():
@@ -875,7 +962,7 @@ def test_same_year_packet_pdf_has_two_column_compare_page():
 
     pdf_bytes = render_packet_pdf(payload)
     reader = PdfReader(BytesIO(pdf_bytes))
-    assert len(reader.pages) == 2
+    assert len(reader.pages) == _expected_packet_pdf_pages(payload)
     pdf_text = _pdf_text_normalized(pdf_bytes)
     assert COMPARE_TITLE in pdf_text
     assert "Broker 1099 (settlement date)" in pdf_text
@@ -941,29 +1028,43 @@ def test_three_hundred_loss_plus_wash_does_not_look_like_settlement_gap():
     assert "$0.00" in pdf_text
     assert "$300.00" in pdf_text
     reader = PdfReader(BytesIO(render_packet_pdf(payload)))
-    assert len(reader.pages) == 2
+    assert len(reader.pages) == _expected_packet_pdf_pages(payload)
 
 
 def test_unknown_1099_year_is_not_previous_year_mismatch_or_same_year_compare():
-    payload = build_packet_payload(
-        UNKNOWN_YEAR_ANALYSIS, analysis_id="analysis-unknown-year"
-    )
+    analysis = {
+        **UNKNOWN_YEAR_ANALYSIS,
+        "suggestions": [
+            {
+                "symbol": "AMD",
+                "display_label": "AMD",
+                "quantity": 10,
+                "estimated_loss": 250.0,
+                "tax_savings_estimate": 37.5,
+                "is_long_term": True,
+            }
+        ],
+    }
+    payload = build_packet_payload(analysis, analysis_id="analysis-unknown-year")
     assert payload["same_year_compare"] is False
     assert payload["unknown_1099_year"] is True
     assert payload["form_1099_tax_year"] is None
     assert payload["form_1099_applied"] is True
+    assert payload.get("harvest_opportunities")
     text = packet_plain_text(payload)
     assert UNKNOWN_1099_YEAR_COPY in text
     assert "1099 tax year: unknown" in text
     assert "previous-year supplement" not in text
     assert "does not match this export" not in text
     assert "included as a dedicated page" not in text
-    pdf_text = _pdf_text(render_packet_pdf(payload))
+    pdf_bytes = render_packet_pdf(payload)
+    pdf_text = _pdf_text(pdf_bytes)
+    assert HARVEST_TITLE in pdf_text
     assert COMPARE_TITLE not in pdf_text
     assert "could not be determined" in pdf_text
     assert "not a previous-year mismatch" in pdf_text
-    reader = PdfReader(BytesIO(render_packet_pdf(payload)))
-    assert len(reader.pages) == 1
+    reader = PdfReader(BytesIO(pdf_bytes))
+    assert len(reader.pages) == _expected_packet_pdf_pages(payload)
 
 
 def test_same_year_compare_is_visible_without_payment_but_download_stays_gated(monkeypatch):
@@ -1077,6 +1178,115 @@ def test_paid_pdf_has_matched_gap_unmatched_lot_sections():
     assert "we do not parse settlement" not in pdf_text.lower()
 
 
+def test_paid_pdf_has_harvest_rows_and_single_wash_event():
+    analysis = {
+        **LOT_MATCH_ANALYSIS,
+        "suggestions": [
+            {
+                "symbol": "TSLA",
+                "display_label": "TSLA",
+                "action": "SELL",
+                "quantity": 1,
+                "cost_basis_per_share": 250,
+                "estimated_loss": 50,
+                "tax_savings_estimate": 12.0,
+                "holding_period_days": 120,
+                "is_long_term": False,
+            },
+            {
+                "symbol": "AMD",
+                "display_label": "AMD",
+                "action": "SELL",
+                "quantity": 10,
+                "cost_basis_per_share": 125,
+                "estimated_loss": 300,
+                "tax_savings_estimate": 74.0,
+                "holding_period_days": 400,
+                "is_long_term": True,
+                "wash_sale_risk": True,
+                "wash_sale_explanation": "Recent AMD buy inside 30 days.",
+            },
+        ],
+    }
+    payload = build_packet_payload(analysis, analysis_id="analysis-harvest")
+    harvest = payload["harvest_opportunities"]
+    assert len(harvest) == 2
+    assert harvest[0]["symbol"] == "TSLA"
+    assert harvest[0]["term"] == "ST"
+    assert harvest[0]["estimated_federal_savings"] == 12.0
+    assert harvest[0]["wash_sale_risk"] is False
+    assert harvest[1]["term"] == "LT"
+    assert harvest[1]["wash_sale_risk"] is True
+    pdf_text = _pdf_text(render_packet_pdf(payload))
+    pdf_norm = _pdf_text_normalized(render_packet_pdf(payload))
+    assert HARVEST_TITLE in pdf_text
+    assert "TSLA  ST  qty 1  estimated federal savings $12.00" in pdf_text
+    assert "AMD  LT  qty 10  wash-sale risk - not clean federal savings $74.00" in pdf_text
+    assert "Recent AMD buy inside 30 days." in pdf_text
+    assert "Recent AMD buy inside 30 days." in pdf_norm
+    assert "AMD  LT  estimated federal savings $74.00" not in pdf_text
+    assert pdf_text.count("AMD $300.00 disallowed") == 1
+    assert "sale 2024-07-15" in pdf_text
+    assert "repurchase 2024-07-24" in pdf_text
+    assert LOT_MATCH_TITLE in pdf_text
+    assert COMPARE_TITLE in pdf_text
+    assert "not a filed Form 8949" in pdf_text
+
+
+def test_harvest_pdf_rows_keep_per_lot_identity():
+    analysis = {
+        **LOT_MATCH_ANALYSIS,
+        "suggestions": [
+            {
+                "symbol": "AMD",
+                "display_label": "AMD",
+                "suggestion_id": "AMD::stock::stock-lot::2024-01-02::100::10",
+                "lot_details": "Tax lot opened Jan 02, 2024 at $100.00/share",
+                "quantity": 10,
+                "cost_basis_per_share": 100.0,
+                "estimated_loss": 40,
+                "tax_savings_estimate": 10.0,
+                "is_long_term": False,
+            },
+            {
+                "symbol": "AMD",
+                "display_label": "AMD",
+                "suggestion_id": "AMD::stock::stock-lot::2025-06-01::125::10",
+                "lot_details": "Tax lot opened Jun 01, 2025 at $125.00/share",
+                "quantity": 10,
+                "cost_basis_per_share": 125.0,
+                "estimated_loss": 40,
+                "tax_savings_estimate": 10.0,
+                "is_long_term": False,
+            },
+        ],
+    }
+    payload = build_packet_payload(analysis, analysis_id="analysis-two-amd-lots")
+    harvest = payload["harvest_opportunities"]
+    assert len(harvest) == 2
+    assert harvest[0]["term"] == harvest[1]["term"] == "ST"
+    first_lines = [_harvest_lines(row)[0] for row in harvest]
+    assert first_lines[0] != first_lines[1]
+    pdf_text = _pdf_text(render_packet_pdf(payload))
+    _assert_three_identity(
+        harvest[0],
+        pdf_text,
+        qty=10.0,
+        opened="2024-01-02",
+        suggestion_id="AMD::stock::stock-lot::2024-01-02::100::10",
+        lot_details="Tax lot opened Jan 02, 2024 at $100.00/share",
+    )
+    _assert_three_identity(
+        harvest[1],
+        pdf_text,
+        qty=10.0,
+        opened="2025-06-01",
+        suggestion_id="AMD::stock::stock-lot::2025-06-01::125::10",
+        lot_details="Tax lot opened Jun 01, 2025 at $125.00/share",
+    )
+    assert pdf_text.count("AMD  ST  qty 10") == 2
+
+
 def test_lot_match_pdf_paginates_instead_of_dropping_rows():
     rows = [
         {
@@ -1140,6 +1350,397 @@ def test_counts_only_client_payload_does_not_wipe_server_lot_rows():
     pdf_text = _pdf_text(render_packet_pdf(payload))
     assert "NVDA" in pdf_text
     assert "1099_only SPX" in pdf_text
+
+
+def test_compact_client_payload_does_not_wipe_harvest_rows():
+    analysis_id = "analysis-preserve-harvest"
+    full = {
+        **LOT_MATCH_ANALYSIS,
+        "analysis_id": analysis_id,
+        "suggestions": [
+            {
+                "symbol": "TSLA",
+                "display_label": "TSLA",
+                "estimated_loss": 50,
+                "tax_savings_estimate": 12.0,
+                "is_long_term": False,
+                "wash_sale_risk": False,
+            }
+        ],
+    }
+    remember_analysis(analysis_id, "test-user-123", full)
+    compact = {k: v for k, v in full.items() if k != "suggestions"}
+    remember_analysis(analysis_id, "test-user-123", compact)
+    payload = get_payload(analysis_id)
+    assert payload is not None
+    harvest = payload["harvest_opportunities"]
+    assert harvest
+    assert harvest[0]["symbol"] == "TSLA"
+    assert harvest[0]["estimated_federal_savings"] == 12.0
+    pdf_text = _pdf_text(render_packet_pdf(payload))
+    assert HARVEST_TITLE in pdf_text
+    assert "TSLA  ST  qty" in pdf_text
+    assert "estimated federal savings $12.00" in pdf_text
+
+
+def test_reconstruct_harvest_from_compact_suggestions():
+    compact = {
+        **LOT_MATCH_ANALYSIS,
+        "suggestions": [
+            {
+                "symbol": "TSLA",
+                "display_label": "TSLA",
+                "suggestion_id": "TSLA::stock::stock-lot::2025-01-01::250::1",
+                "lot_details": "Tax lot opened Jan 01, 2025 at $250.00/share",
+                "quantity": 1,
+                "estimated_loss": 50,
+                "tax_savings_estimate": 12.0,
+                "is_long_term": False,
+                "wash_sale_risk": True,
+                "wash_sale_explanation": "Recent TSLA buy inside 30 days.",
+            }
+        ],
+    }
+    payload = build_packet_payload(compact, analysis_id="analysis-compact-harvest")
+    harvest = payload["harvest_opportunities"]
+    assert len(harvest) == 1
+    assert harvest[0]["wash_sale_risk"] is True
+    pdf_text = _pdf_text(render_packet_pdf(payload))
+    pdf_norm = _pdf_text_normalized(render_packet_pdf(payload))
+    _assert_three_identity(
+        harvest[0],
+        pdf_text,
+        qty=1.0,
+        opened="2025-01-01",
+        suggestion_id="TSLA::stock::stock-lot::2025-01-01::250::1",
+        lot_details="Tax lot opened Jan 01, 2025 at $250.00/share",
+    )
+    assert "wash-sale risk - not clean federal savings $12.00" in pdf_text
+    assert "Recent TSLA buy inside 30 days." in pdf_text
+    assert "Recent TSLA buy inside 30 days." in pdf_norm
+
+
+def test_reconstruct_two_amd_lots_from_compact_suggestions():
+    """Compact checkout JSON still yields two distinct AMD harvest rows."""
+    compact = {
+        **LOT_MATCH_ANALYSIS,
+        "suggestions": [
+            {
+                "symbol": "AMD",
+                "display_label": "AMD",
+                "suggestion_id": "AMD::stock::stock-lot::2024-01-02::100::10",
+                "lot_details": "Tax lot opened Jan 02, 2024 at $100.00/share",
+                "quantity": 10,
+                "purchase_date": "2024-01-02",
+                "cost_basis_per_share": 100.0,
+                "estimated_loss": 40,
+                "tax_savings_estimate": 10.0,
+                "is_long_term": False,
+                "wash_sale_risk": False,
+            },
+            {
+                "symbol": "AMD",
+                "display_label": "AMD",
+                "suggestion_id": "AMD::stock::stock-lot::2025-06-01::125::10",
+                "lot_details": "Tax lot opened Jun 01, 2025 at $125.00/share",
+                "quantity": 10,
+                "purchase_date": "2025-06-01",
+                "cost_basis_per_share": 125.0,
+                "estimated_loss": 40,
+                "tax_savings_estimate": 10.0,
+                "is_long_term": False,
+                "wash_sale_risk": False,
+            },
+        ],
+    }
+    payload = build_packet_payload(compact, analysis_id="analysis-compact-two-amd")
+    harvest = payload["harvest_opportunities"]
+    assert [row["term"] for row in harvest] == ["ST", "ST"]
+    first_lines = [_harvest_lines(row)[0] for row in harvest]
+    assert first_lines[0] != first_lines[1]
+    pdf_text = _pdf_text(render_packet_pdf(payload))
+    _assert_three_identity(
+        harvest[0],
+        pdf_text,
+        qty=10.0,
+        opened="2024-01-02",
+        suggestion_id="AMD::stock::stock-lot::2024-01-02::100::10",
+        lot_details="Tax lot opened Jan 02, 2024 at $100.00/share",
+    )
+    _assert_three_identity(
+        harvest[1],
+        pdf_text,
+        qty=10.0,
+        opened="2025-06-01",
+        suggestion_id="AMD::stock::stock-lot::2025-06-01::125::10",
+        lot_details="Tax lot opened Jun 01, 2025 at $125.00/share",
+    )
+    assert pdf_text.count("AMD  ST  qty 10") == 2
+
+
+def test_same_symbol_same_term_lots_distinct_without_lot_details():
+    """Compact JSON that omitted lot_details still cannot collapse two AMD ST lots."""
+    compact = {
+        **LOT_MATCH_ANALYSIS,
+        "suggestions": [
+            {
+                "symbol": "AMD",
+                "display_label": "AMD",
+                "suggestion_id": "AMD::stock::stock-lot::2024-01-02::100.000000::10.000000",
+                "quantity": 10,
+                "cost_basis_per_share": 100.0,
+                "estimated_loss": 40,
+                "tax_savings_estimate": 10.0,
+                "is_long_term": False,
+            },
+            {
+                "symbol": "AMD",
+                "display_label": "AMD",
+                "suggestion_id": "AMD::stock::stock-lot::2025-06-01::125.000000::10.000000",
+                "quantity": 10,
+                "cost_basis_per_share": 125.0,
+                "estimated_loss": 40,
+                "tax_savings_estimate": 10.0,
+                "is_long_term": False,
+            },
+        ],
+    }
+    payload = build_packet_payload(compact, analysis_id="analysis-amd-st-no-details")
+    harvest = payload["harvest_opportunities"]
+    first_lines = [_harvest_lines(row)[0] for row in harvest]
+    assert first_lines[0] != first_lines[1]
+    pdf_text = _pdf_text(render_packet_pdf(payload))
+    _assert_three_identity(
+        harvest[0],
+        pdf_text,
+        qty=10.0,
+        opened="2024-01-02",
+        suggestion_id="AMD::stock::stock-lot::2024-01-02::100.000000::10.000000",
+    )
+    _assert_three_identity(
+        harvest[1],
+        pdf_text,
+        qty=10.0,
+        opened="2025-06-01",
+        suggestion_id="AMD::stock::stock-lot::2025-06-01::125.000000::10.000000",
+    )
+    assert pdf_text.count("AMD  ST  qty 10") == 2
+
+
+def test_harvest_plain_text_same_qty_rows_keep_qty_date_and_lot_details():
+    payload = build_packet_payload(
+        {
+            **LOT_MATCH_ANALYSIS,
+            "suggestions": [
+                {
+                    "symbol": "AMD",
+                    "display_label": "AMD",
+                    "suggestion_id": "AMD::stock::stock-lot::2024-01-02::100::10",
+                    "lot_details": "Tax lot opened Jan 02, 2024 at $100.00/share",
+                    "quantity": 10,
+                    "purchase_date": "2024-01-02",
+                    "estimated_loss": 40,
+                    "tax_savings_estimate": 10.0,
+                    "is_long_term": False,
+                },
+                {
+                    "symbol": "AMD",
+                    "display_label": "AMD",
+                    "suggestion_id": "AMD::stock::stock-lot::2025-06-01::125::10",
+                    "lot_details": "Tax lot opened Jun 01, 2025 at $125.00/share",
+                    "quantity": 10,
+                    "purchase_date": "2025-06-01",
+                    "estimated_loss": 40,
+                    "tax_savings_estimate": 10.0,
+                    "is_long_term": False,
+                },
+            ],
+        },
+        analysis_id="analysis-harvest-plain-identity",
+    )
+    harvest = payload["harvest_opportunities"]
+    text = harvest_plain_text(payload)
+    identity = [
+        line for line in text.splitlines() if line.startswith("AMD  ST  qty 10")
+    ]
+    assert len(identity) == 2
+    assert identity[0] != identity[1]
+    _assert_three_identity(
+        harvest[0],
+        text,
+        qty=10.0,
+        opened="2024-01-02",
+        suggestion_id="AMD::stock::stock-lot::2024-01-02::100::10",
+        lot_details="Tax lot opened Jan 02, 2024 at $100.00/share",
+    )
+    _assert_three_identity(
+        harvest[1],
+        text,
+        qty=10.0,
+        opened="2025-06-01",
+        suggestion_id="AMD::stock::stock-lot::2025-06-01::125::10",
+        lot_details="Tax lot opened Jun 01, 2025 at $125.00/share",
+    )
+
+
+def test_long_lot_details_do_not_drop_purchase_date_from_first_line():
+    """Wrap cannot collapse two AMD ST qty-10 lots to the same first line."""
+    long_a = "Tax lot opened Jan 02, 2024 at $100.00/share " + ("note-a " * 16)
+    long_b = "Tax lot opened Jun 01, 2025 at $125.00/share " + ("note-b " * 16)
+    payload = build_packet_payload(
+        {
+            **LOT_MATCH_ANALYSIS,
+            "suggestions": [
+                {
+                    "symbol": "AMD",
+                    "display_label": "AMD",
+                    "suggestion_id": "AMD::stock::stock-lot::2024-01-02::100::10",
+                    "lot_details": long_a,
+                    "quantity": 10,
+                    "estimated_loss": 40,
+                    "tax_savings_estimate": 10.0,
+                    "is_long_term": False,
+                },
+                {
+                    "symbol": "AMD",
+                    "display_label": "AMD",
+                    "suggestion_id": "AMD::stock::stock-lot::2025-06-01::125::10",
+                    "lot_details": long_b,
+                    "quantity": 10,
+                    "estimated_loss": 40,
+                    "tax_savings_estimate": 10.0,
+                    "is_long_term": False,
+                },
+            ],
+        },
+        analysis_id="analysis-harvest-wrap-identity",
+    )
+    harvest = payload["harvest_opportunities"]
+    first_a = _harvest_lines(harvest[0], colliding=True)[0]
+    first_b = _harvest_lines(harvest[1], colliding=True)[0]
+    assert first_a != first_b
+    pdf_text = _pdf_text(render_packet_pdf(payload))
+    _assert_three_identity(
+        harvest[0],
+        pdf_text,
+        qty=10.0,
+        opened="2024-01-02",
+        suggestion_id="AMD::stock::stock-lot::2024-01-02::100::10",
+        lot_details=long_a,
+    )
+    _assert_three_identity(
+        harvest[1],
+        pdf_text,
+        qty=10.0,
+        opened="2025-06-01",
+        suggestion_id="AMD::stock::stock-lot::2025-06-01::125::10",
+        lot_details=long_b,
+    )
+    assert "note-a" in pdf_text
+    assert "note-b" in pdf_text
+
+
+def test_compact_explicit_purchase_date_distinguishes_lots():
+    """Compact JSON can send purchase_date even when suggestion_id is not parseable."""
+    compact = {
+        **LOT_MATCH_ANALYSIS,
+        "suggestions": [
+            {
+                "symbol": "AMD",
+                "display_label": "AMD",
+                "suggestion_id": "amd-lot-jan",
+                "quantity": 10,
+                "purchase_date": "2024-01-02",
+                "estimated_loss": 40,
+                "tax_savings_estimate": 10.0,
+                "is_long_term": False,
+            },
+            {
+                "symbol": "AMD",
+                "display_label": "AMD",
+                "suggestion_id": "amd-lot-jun",
+                "quantity": 10,
+                "purchase_date": "2025-06-01",
+                "estimated_loss": 40,
+                "tax_savings_estimate": 10.0,
+                "is_long_term": False,
+            },
+        ],
+    }
+    payload = build_packet_payload(compact, analysis_id="analysis-explicit-dates")
+    harvest = payload["harvest_opportunities"]
+    pdf_text = _pdf_text(render_packet_pdf(payload))
+    _assert_three_identity(
+        harvest[0],
+        pdf_text,
+        qty=10.0,
+        opened="2024-01-02",
+        suggestion_id="amd-lot-jan",
+    )
+    _assert_three_identity(
+        harvest[1],
+        pdf_text,
+        qty=10.0,
+        opened="2025-06-01",
+        suggestion_id="amd-lot-jun",
+    )
+
+
+def test_paid_download_reloads_suggestions_from_history_on_store_miss(monkeypatch):
+    _test_stripe_env(monkeypatch)
+    analysis_id = "analysis-history-harvest"
+    reset_packet_store()
+    mark_paid(analysis_id, "cs_test_hist_harvest", user_id="test-user-123")
+    compact = {
+        **LOT_MATCH_ANALYSIS,
+        "analysis_id": analysis_id,
+        "suggestions": [],
+    }
+    monkeypatch.setattr(
+        "main.get_analysis_by_id",
+        lambda aid, uid, client=None: {
+            "id": aid,
+            "result": {
+                "suggestions": [
+                    {
+                        "symbol": "TSLA",
+                        "display_label": "TSLA",
+                        "estimated_loss": 50,
+                        "tax_savings_estimate": 12.0,
+                        "is_long_term": False,
+                        "wash_sale_risk": False,
+                    }
+                ]
+            },
+        },
+    )
+    paid_session = SimpleNamespace(
+        id="cs_test_hist_harvest",
+        payment_status="paid",
+        amount_total=PACKET_AMOUNT_CENTS,
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": analysis_id,
+        },
+    )
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda session_id, **_kwargs: paid_session,
+    )
+    response = client.post(
+        "/api/year-close-packet/download",
+        json={
+            "analysis_id": analysis_id,
+            "session_id": "cs_test_hist_harvest",
+            "analysis": compact,
+        },
+    )
+    assert response.status_code == 200
+    pdf_text = _pdf_text(response.content)
+    assert HARVEST_TITLE in pdf_text
+    assert "TSLA  ST  qty" in pdf_text
+    assert "estimated federal savings $12.00" in pdf_text
 
 
 def test_paid_download_uses_server_lot_rows_not_redacted_client_json(monkeypatch):
