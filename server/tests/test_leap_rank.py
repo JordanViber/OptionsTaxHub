@@ -52,6 +52,13 @@ def test_implied_cagr_put_one_year():
     ) == pytest.approx(98 / 100 - 1)
 
 
+def test_implied_cagr_put_is_spot_to_breakeven_not_reciprocal():
+    # $100 → $50 in one year is a 50% decline, not the 100% reciprocal growth.
+    assert implied_cagr_to_breakeven(
+        right="put", spot=100, strike=60, premium=10, years=1,
+    ) == pytest.approx(-0.5)
+
+
 def test_extract_rank_premium_prefers_mid():
     premium, source = extract_rank_premium(11.9, 12.1, 99.0)
     assert source == "mid"

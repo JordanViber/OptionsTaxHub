@@ -27,7 +27,6 @@ _price_cache: dict[str, tuple[float, float]] = {}
 _option_price_cache: dict[str, tuple[float, float]] = {}
 # Chain snapshots: {(symbol, expiration, right): (rows, timestamp)}
 _chain_cache: dict[tuple[str, str, str], tuple[list[dict[str, Any]], float]] = {}
-MAX_WINDOW_EXPIRATIONS = 6
 
 OPTION_LABEL_PATTERN = re.compile(
     r"^(?P<symbol>[A-Z]+)\s+(?P<expiry>\d{1,2}/\d{1,2}/\d{4})\s+"
@@ -491,29 +490,17 @@ def _coerce_open_interest(value) -> Optional[int]:
     return int(number)
 
 
-def _cap_expirations(dates: list[str], max_n: int = MAX_WINDOW_EXPIRATIONS) -> list[str]:
-    """Evenly sample listed dates, always including first and last."""
-    if max_n <= 0 or len(dates) <= max_n:
-        return list(dates)
-    n = len(dates)
-    picked: list[str] = []
-    seen: set[int] = set()
-    for i in range(max_n):
-        idx = round(i * (n - 1) / (max_n - 1))
-        if idx in seen:
-            continue
-        seen.add(idx)
-        picked.append(dates[idx])
-    return picked
-
-
 def listed_expirations_in_window(
     available: list[str],
     expiry_from: str,
     expiry_to: str,
     as_of: str,
 ) -> list[str]:
-    """Filter ISO listed expirations to [from, to] and not before as_of. No 7-day snap."""
+    """Filter ISO listed expirations to [from, to] and not before as_of.
+
+    Every listed date in the window is kept so ranking is the true top 3,
+    not a sampled subset. No harvest 7-day snap.
+    """
     as_of_date = _parse_iso_expiration(as_of)
     start = _parse_iso_expiration(expiry_from)
     end = _parse_iso_expiration(expiry_to)
@@ -531,7 +518,7 @@ def listed_expirations_in_window(
             continue
         in_window.append(expiration)
     in_window.sort()
-    return _cap_expirations(in_window)
+    return in_window
 
 
 def _get_cached_chain(

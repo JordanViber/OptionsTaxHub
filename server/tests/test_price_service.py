@@ -382,15 +382,18 @@ class TestFetchSinglePrice:
 
 
 class TestOptionChainWindow:
-    def test_filters_and_caps_listed_expirations(self):
+    def test_keeps_every_listed_expiration_in_the_window(self):
         available = [
             "2026-10-16",
             "2027-01-15",
             "2027-03-19",
             "2027-06-18",
             "2027-09-17",
+            "2027-10-15",
+            "2027-11-19",
             "2027-12-17",
             "2028-01-21",
+            "2028-03-17",
             "2028-06-16",
             "2028-12-15",
         ]
@@ -400,12 +403,19 @@ class TestOptionChainWindow:
             expiry_to="2028-09-06",
             as_of="2026-09-06",
         )
-        assert selected[0] == "2027-09-17"
-        assert selected[-1] == "2028-06-16"
-        assert len(selected) <= 6
+        assert selected == [
+            "2027-09-17",
+            "2027-10-15",
+            "2027-11-19",
+            "2027-12-17",
+            "2028-01-21",
+            "2028-03-17",
+            "2028-06-16",
+        ]
         # Harvest 7-day snap must not pull 2027-01-15 into a Sep 2027 window.
         assert "2027-01-15" not in selected
         assert "2026-10-16" not in selected
+        assert "2028-12-15" not in selected
 
     def test_does_not_snap_outside_window(self):
         selected = listed_expirations_in_window(
