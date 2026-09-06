@@ -91,6 +91,12 @@ function isEntryFail(
   return result.ok === false;
 }
 
+function isLeapRankFail(
+  result: LeapRankResponse,
+): result is Extract<LeapRankResponse, { ok: false }> {
+  return result.ok === false;
+}
+
 function formatImpliedMove(rate: number, right: "call" | "put"): string {
   const pct = `${(Math.abs(rate) * 100).toFixed(1)}%`;
   if (right === "put") {
@@ -185,8 +191,9 @@ export default function EntryAnalysisPanel({
         expiry_to: expiryTo,
       });
       setRankResult(result);
-      if (!result.ok) {
-        setRankError(result.message);
+      if (isLeapRankFail(result)) {
+        const fail = result;
+        setRankError(fail.message);
       }
     } catch (error) {
       setRankResult(null);
@@ -245,7 +252,7 @@ export default function EntryAnalysisPanel({
   }
 
   const successfulRanks =
-    rankResult && rankResult.ok ? rankResult.ranks : [];
+    rankResult && !isLeapRankFail(rankResult) ? rankResult.ranks : [];
   const showRankList = successfulRanks.length > 0;
   const showRankError = Boolean(rankError);
   const showRankIdle = !showRankList && !showRankError;
