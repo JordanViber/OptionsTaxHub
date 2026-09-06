@@ -89,6 +89,11 @@ jest.mock("../../lib/api", () => ({
   cleanupOrphanHistory: mockCleanupOrphanHistory,
   deleteAnalysis: mockDeleteAnalysis,
   persistGuestAnalysis: jest.fn(() => Promise.resolve(true)),
+  useLeapRankMutation: () => ({
+    mutateAsync: jest.fn(),
+    isPending: false,
+    reset: jest.fn(),
+  }),
   getAnalysisErrorMessage: (error: unknown) =>
     error instanceof Error ? error.message : "An error occurred",
   getBackendUnreachableMessage: () =>
@@ -1295,6 +1300,8 @@ describe("DashboardPage", () => {
     expect(
       screen.getByText(/Enter premium to see max gain, max loss, and breakeven/i),
     ).toBeInTheDocument();
+    expect(screen.getByTestId("entry-rank-find")).toBeInTheDocument();
+    expect(screen.getByTestId("entry-rank-empty")).toBeInTheDocument();
     expect(screen.queryByTestId("entry-context")).not.toBeInTheDocument();
     expect(screen.queryByTestId("entry-results")).not.toBeInTheDocument();
   });

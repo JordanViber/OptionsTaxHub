@@ -35,6 +35,8 @@ from price_service import (
     fetch_option_prices,
     fetch_current_prices,
     fetch_single_price,
+    listed_expirations_in_window,
+    fetch_option_chain_window,
     CACHE_TTL_SECONDS,
 )
 
@@ -377,3 +379,214 @@ class TestFetchSinglePrice:
     def test_returns_none_when_missing(self):
         with patch("price_service.fetch_current_prices", return_value=({}, ["not found"])):
             assert fetch_single_price("AAPL") is None
+
+
+class TestOptionChainWindow:
+    def test_keeps_every_listed_expiration_in_the_window(self):
+        available = [
+            "2026-10-16",
+            "2027-01-15",
+            "2027-03-19",
+            "2027-06-18",
+            "2027-09-17",
+            "2027-10-15",
+            "2027-11-19",
+            "2027-12-17",
+            "2028-01-21",
+            "2028-03-17",
+            "2028-06-16",
+            "2028-12-15",
+        ]
+        selected = listed_expirations_in_window(
+            available,
+            expiry_from="2027-09-06",
+            expiry_to="2028-09-06",
+            as_of="2026-09-06",
+        )
+        assert selected == [
+            "2027-09-17",
+            "2027-10-15",
+            "2027-11-19",
+            "2027-12-17",
+            "2028-01-21",
+            "2028-03-17",
+            "2028-06-16",
+        ]
+        # Harvest 7-day snap must not pull 2027-01-15 into a Sep 2027 window.
+        assert "2027-01-15" not in selected
+        assert "2026-10-16" not in selected
+        assert "2028-12-15" not in selected
+
+    def test_does_not_snap_outside_window(self):
+        selected = listed_expirations_in_window(
+            ["2027-01-15", "2028-01-21"],
+            expiry_from="2027-06-01",
+            expiry_to="2027-06-30",
+            as_of="2026-09-06",
+        )
+        assert selected == []
+
+    def test_fetch_success_and_cache(self):
+        calls = pd.DataFrame(
+            [
+                {
+                    "strike": 90.0,
+                    "lastPrice": 12.0,
+                    "bid": 11.9,
+                    "ask": 12.1,
+                    "openInterest": 40,
+                }
+            ]
+        )
+        mock_chain = MagicMock(calls=calls, puts=pd.DataFrame())
+        mock_ticker = MagicMock()
+        mock_ticker.options = ["2027-09-17"]
+        mock_ticker.option_chain.return_value = mock_chain
+        mock_yf = MagicMock()
+        mock_yf.Ticker.return_value = mock_ticker
+
+        with patch.dict("sys.modules", {"yfinance": mock_yf}):
+            import importlib
+
+            importlib.reload(price_service)
+            rows, used, warnings = price_service.fetch_option_chain_window(
+                "nvda",
+                "call",
+                "2027-09-01",
+                "2027-09-30",
+                as_of="2026-09-06",
+            )
+            assert used == ["2027-09-17"]
+            assert warnings == []
+            assert len(rows) == 1
+            assert rows[0]["strike"] == pytest.approx(90.0)
+            assert rows[0]["bid"] == pytest.approx(11.9)
+            assert mock_ticker.option_chain.call_count == 1
+
+            rows2, used2, _ = price_service.fetch_option_chain_window(
+                "NVDA",
+                "call",
+                "2027-09-01",
+                "2027-09-30",
+                as_of="2026-09-06",
+            )
+            assert used2 == ["2027-09-17"]
+            assert len(rows2) == 1
+            assert mock_ticker.option_chain.call_count == 1
+
+    def test_fetch_scores_every_listed_expiration_in_the_window(self):
+        in_window = [
+            "2027-09-17",
+            "2027-10-15",
+            "2027-11-19",
+            "2027-12-17",
+            "2028-01-21",
+            "2028-03-17",
+            "2028-06-16",
+            "2028-09-01",
+        ]
+        calls = pd.DataFrame(
+            [{"strike": 90.0, "lastPrice": 12.0, "bid": 11.9, "ask": 12.1}]
+        )
+        mock_chain = MagicMock(calls=calls, puts=pd.DataFrame())
+        mock_ticker = MagicMock()
+        mock_ticker.options = ["2026-10-16", *in_window, "2028-12-15"]
+        mock_ticker.option_chain.return_value = mock_chain
+        mock_yf = MagicMock()
+        mock_yf.Ticker.return_value = mock_ticker
+
+        with patch.dict("sys.modules", {"yfinance": mock_yf}):
+            import importlib
+
+            importlib.reload(price_service)
+            rows, used, warnings = price_service.fetch_option_chain_window(
+                "NVDA",
+                "call",
+                "2027-09-06",
+                "2028-09-06",
+                as_of="2026-09-06",
+            )
+            assert used == in_window
+            assert warnings == []
+            assert mock_ticker.option_chain.call_count == len(in_window)
+            assert [call.args[0] for call in mock_ticker.option_chain.call_args_list] == (
+                in_window
+            )
+            assert len(rows) == len(in_window)
+
+    def test_skips_failed_expiration_and_fails_closed_when_all_fail(self):
+        mock_ticker = MagicMock()
+        mock_ticker.options = ["2027-09-17", "2027-12-17"]
+        mock_ticker.option_chain.side_effect = RuntimeError("yahoo down")
+        mock_yf = MagicMock()
+        mock_yf.Ticker.return_value = mock_ticker
+
+        with patch.dict("sys.modules", {"yfinance": mock_yf}):
+            import importlib
+
+            importlib.reload(price_service)
+            rows, used, warnings = price_service.fetch_option_chain_window(
+                "NVDA",
+                "call",
+                "2027-09-01",
+                "2027-12-31",
+                as_of="2026-09-06",
+            )
+            assert rows == []
+            assert used == []
+            assert warnings
+            assert all("Could not fetch" in warning for warning in warnings)
+
+    def test_skips_one_failed_expiration(self):
+        calls = pd.DataFrame(
+            [{"strike": 100.0, "lastPrice": 8.0, "bid": 7.9, "ask": 8.1}]
+        )
+        mock_chain = MagicMock(calls=calls, puts=pd.DataFrame())
+        mock_ticker = MagicMock()
+        mock_ticker.options = ["2027-09-17", "2027-12-17"]
+
+        def _chain(expiration):
+            if expiration == "2027-09-17":
+                raise RuntimeError("timeout")
+            return mock_chain
+
+        mock_ticker.option_chain.side_effect = _chain
+        mock_yf = MagicMock()
+        mock_yf.Ticker.return_value = mock_ticker
+
+        with patch.dict("sys.modules", {"yfinance": mock_yf}):
+            import importlib
+
+            importlib.reload(price_service)
+            rows, used, warnings = price_service.fetch_option_chain_window(
+                "NVDA",
+                "call",
+                "2027-09-01",
+                "2027-12-31",
+                as_of="2026-09-06",
+            )
+            assert used == ["2027-12-17"]
+            assert len(rows) == 1
+            assert any("2027-09-17" in warning for warning in warnings)
+
+    def test_empty_options_list(self):
+        mock_ticker = MagicMock()
+        mock_ticker.options = []
+        mock_yf = MagicMock()
+        mock_yf.Ticker.return_value = mock_ticker
+
+        with patch.dict("sys.modules", {"yfinance": mock_yf}):
+            import importlib
+
+            importlib.reload(price_service)
+            rows, used, warnings = price_service.fetch_option_chain_window(
+                "NVDA",
+                "call",
+                "2027-09-01",
+                "2028-09-01",
+                as_of="2026-09-06",
+            )
+            assert rows == []
+            assert used == []
+            assert any("No listed expirations" in warning for warning in warnings)
+
