@@ -295,6 +295,75 @@ def test_short_option_sto_btc_pairs_premium_as_1099_proceeds():
     assert row.cost_basis_export == pytest.approx(400.0)
 
 
+def test_short_option_mapped_amounts_are_matched_not_false_gap():
+    """Same trade date as 1099 sold date: amount flip is not a settlement gap."""
+    report = match_1099b_lots(
+        [
+            _lot(
+                symbol="CLSK",
+                quantity=1,
+                date_sold=date(2024, 7, 15),
+                proceeds=1500.0,
+                cost_basis=400.0,
+                wash_sale_disallowed=0.0,
+                additional_info="Option sale",
+            )
+        ],
+        [
+            _event(
+                symbol="CLSK",
+                quantity=1,
+                sale_date=date(2024, 7, 15),
+                settle_date=date(2024, 7, 17),
+                cost_basis=1500.0,
+                sale_proceeds=400.0,
+                pnl=1100.0,
+                purchase_date=date(2024, 6, 11),
+                asset_type=AssetType.OPTION,
+            )
+        ],
+        form_1099_tax_year=2024,
+        analysis_tax_year=2024,
+        short_term_proceeds=1500.0,
+        short_term_cost_basis=400.0,
+    )
+    assert report is not None
+    assert report.matched_count == 1
+    assert report.gap_count == 0
+    assert report.unmatched_count == 0
+    row = report.matched[0]
+    assert row.status == "matched"
+    assert row.proceeds_export == pytest.approx(1500.0)
+    assert row.cost_basis_export == pytest.approx(400.0)
+
+
+def test_csv_only_short_option_export_columns_use_1099_orientation():
+    report = match_1099b_lots(
+        [_lot()],
+        [
+            _event(
+                symbol="CLSK",
+                quantity=1,
+                cost_basis=1500.0,
+                sale_proceeds=400.0,
+                pnl=1100.0,
+                asset_type=AssetType.OPTION,
+            )
+        ],
+        form_1099_tax_year=2024,
+        analysis_tax_year=2024,
+        short_term_proceeds=1200.0,
+        short_term_cost_basis=1500.0,
+        short_term_wash=300.0,
+    )
+    assert report is not None
+    csv_only = [row for row in report.unmatched if row.status == "csv_only"]
+    assert len(csv_only) == 1
+    assert csv_only[0].symbol == "CLSK"
+    assert csv_only[0].proceeds_export == pytest.approx(1500.0)
+    assert csv_only[0].cost_basis_export == pytest.approx(400.0)
+
+
 def test_short_option_oexp_pairs_premium_against_zero_buyback():
     report = match_1099b_lots(
         [
@@ -326,11 +395,11 @@ def test_short_option_oexp_pairs_premium_against_zero_buyback():
         short_term_cost_basis=0.0,
     )
     assert report is not None
+    assert report.matched_count == 1
+    assert report.gap_count == 0
     assert report.unmatched_count == 0
-    paired = report.matched + report.gap
-    assert len(paired) == 1
-    assert paired[0].proceeds_export == pytest.approx(2699.0)
-    assert paired[0].cost_basis_export == pytest.approx(0.0)
+    assert report.matched[0].proceeds_export == pytest.approx(2699.0)
+    assert report.matched[0].cost_basis_export == pytest.approx(0.0)
 
 
 def test_long_option_stc_still_pairs_on_direct_proceeds():
