@@ -69,6 +69,9 @@ describe("LandingPage", () => {
       "/dashboard",
     );
     expect(
+      screen.getByRole("link", { name: "See what's kept" }),
+    ).toHaveAttribute("href", "/dashboard");
+    expect(
       screen.queryByRole("link", { name: /Sign In/i }),
     ).not.toBeInTheDocument();
   });
@@ -134,6 +137,25 @@ describe("LandingPage", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("Saved runs")).toBeInTheDocument();
     expect(screen.getByText("Update the book")).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "See what's kept" }),
+    ).toHaveAttribute("href", "/auth/signin");
+  });
+
+  it("sends signed-in See what's kept to the desk, not sign-in", () => {
+    mockUseAuth.mockReturnValue({
+      user: { email: "test@example.com" },
+      loading: false,
+    });
+
+    renderWithClient(<LandingPage />);
+
+    expect(
+      screen.getByRole("link", { name: "See what's kept" }),
+    ).toHaveAttribute("href", "/dashboard");
+    expect(
+      screen.getByRole("link", { name: "See what's kept" }),
+    ).not.toHaveAttribute("href", "/auth/signin");
   });
 
   it("renders one disclaimer only — TaxDisclaimer, not a second footer legal", () => {

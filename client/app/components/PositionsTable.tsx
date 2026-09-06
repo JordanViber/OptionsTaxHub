@@ -48,6 +48,16 @@ function getPositionRowId(row: Position): string {
   return row.position_id ?? `${row.symbol}:${row.asset_type}`;
 }
 
+/** Loss-first, matching the desktop DataGrid `unrealized_pnl` asc sort. Nulls last. */
+function compareUnrealizedPnlAsc(a: Position, b: Position): number {
+  const aPnl = a.unrealized_pnl;
+  const bPnl = b.unrealized_pnl;
+  if (aPnl == null && bPnl == null) return 0;
+  if (aPnl == null) return 1;
+  if (bPnl == null) return -1;
+  return aPnl - bPnl;
+}
+
 /** Phone-width desk (~390px): cards instead of a wide grid. */
 function useCompactLayout(): boolean {
   const theme = useTheme();
@@ -927,6 +937,11 @@ export default function PositionsTable({
     [expandedId, togglePosition],
   );
 
+  const sortedPositions = useMemo(
+    () => [...positions].sort(compareUnrealizedPnlAsc),
+    [positions],
+  );
+
   const expandedPosition = positions.find(
     (position) => getPositionRowId(position) === expandedId,
   );
@@ -946,15 +961,26 @@ export default function PositionsTable({
           data-testid="positions-cards"
           sx={{ minWidth: 0, maxWidth: "100%" }}
         >
-          {positions.map((position) => (
-            <PositionCard
-              key={getPositionRowId(position)}
-              position={position}
-              expanded={expandedId === getPositionRowId(position)}
-              lotDetailsUnlocked={lotDetailsUnlocked}
-              onToggle={togglePosition}
-            />
-          ))}
+          {sortedPositions.map((position) => {
+            const rowId = getPositionRowId(position);
+            const isExpanded = expandedId === rowId;
+            return (
+              <Box key={rowId} sx={{ minWidth: 0, maxWidth: "100%" }}>
+                <PositionCard
+                  position={position}
+                  expanded={isExpanded}
+                  lotDetailsUnlocked={lotDetailsUnlocked}
+                  onToggle={togglePosition}
+                />
+                <Collapse in={isExpanded} unmountOnExit>
+                  <TaxLotsPanel
+                    position={position}
+                    washSaleFlags={washSaleFlags}
+                  />
+                </Collapse>
+              </Box>
+            );
+          })}
         </Stack>
       ) : (
         <DataGrid
@@ -1001,14 +1027,16 @@ export default function PositionsTable({
           }
         />
       )}
-      <Collapse in={Boolean(expandedPosition)} unmountOnExit>
-        {expandedPosition && (
-          <TaxLotsPanel
-            position={expandedPosition}
-            washSaleFlags={washSaleFlags}
-          />
-        )}
-      </Collapse>
+      {!compact && (
+        <Collapse in={Boolean(expandedPosition)} unmountOnExit>
+          {expandedPosition && (
+            <TaxLotsPanel
+              position={expandedPosition}
+              washSaleFlags={washSaleFlags}
+            />
+          )}
+        </Collapse>
+      )}
     </Box>
   );
 }
