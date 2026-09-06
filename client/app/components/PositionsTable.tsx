@@ -5,6 +5,7 @@ import {
   Box,
   Chip,
   Collapse,
+  Stack,
   Table,
   TableBody,
   TableCell,
@@ -12,6 +13,8 @@ import {
   TableRow,
   Tooltip,
   Typography,
+  useMediaQuery,
+  useTheme,
 } from "@mui/material";
 import { DataGrid, type GridColDef, type GridRowParams } from "@mui/x-data-grid";
 import {
@@ -43,6 +46,22 @@ interface PositionsTableProps {
 
 function getPositionRowId(row: Position): string {
   return row.position_id ?? `${row.symbol}:${row.asset_type}`;
+}
+
+/** Loss-first, matching the desktop DataGrid `unrealized_pnl` asc sort. Nulls last. */
+function compareUnrealizedPnlAsc(a: Position, b: Position): number {
+  const aPnl = a.unrealized_pnl;
+  const bPnl = b.unrealized_pnl;
+  if (aPnl == null && bPnl == null) return 0;
+  if (aPnl == null) return 1;
+  if (bPnl == null) return -1;
+  return aPnl - bPnl;
+}
+
+/** Phone-width desk (~390px): cards instead of a wide grid. */
+function useCompactLayout(): boolean {
+  const theme = useTheme();
+  return useMediaQuery(theme.breakpoints.down("sm"), { noSsr: true });
 }
 
 export function getPositionHarvestLabel(
@@ -193,6 +212,157 @@ function PnlCell({
   );
 }
 
+function gainLossClassName(pnl: number | null | undefined): string {
+  if (pnl != null && pnl < 0) return "loss-row";
+  if (pnl != null && pnl > 0) return "gain-row";
+  return "";
+}
+
+function positionCardBg(rowClass: string): string {
+  if (rowClass === "loss-row") return "error.dark";
+  if (rowClass === "gain-row") return "success.dark";
+  return "background.paper";
+}
+
+function LotExpandIcon({
+  lotCount,
+  expanded,
+}: Readonly<{ lotCount: number; expanded: boolean }>) {
+  if (lotCount === 0) {
+    return <Box sx={{ width: 18, flexShrink: 0 }} aria-hidden />;
+  }
+  if (expanded) {
+    return (
+      <CollapseIcon
+        sx={{ fontSize: 18, color: "text.secondary", flexShrink: 0 }}
+      />
+    );
+  }
+  return (
+    <ExpandIcon
+      sx={{ fontSize: 18, color: "text.secondary", flexShrink: 0 }}
+    />
+  );
+}
+
+function LotWashBanner({ wash }: Readonly<{ wash: LotWashDetails }>) {
+  return (
+    <Box
+      className="lot-wash-banner"
+      data-testid="lot-wash-banner"
+      sx={{
+        display: "flex",
+        flexWrap: "wrap",
+        flexDirection: { xs: "column", sm: "row" },
+        alignItems: { xs: "flex-start", sm: "center" },
+        columnGap: 1.5,
+        rowGap: 0.75,
+        minWidth: 0,
+        maxWidth: "100%",
+        width: "100%",
+        boxSizing: "border-box",
+        px: 1,
+        py: 1,
+        borderRadius: 1,
+        bgcolor: "warning.light",
+        overflow: "visible",
+        whiteSpace: "normal",
+      }}
+    >
+      <Chip
+        icon={<WarnIcon sx={{ fontSize: 14 }} />}
+        label="Wash sale"
+        size="small"
+        color="warning"
+        sx={{ height: 22, flexShrink: 0 }}
+      />
+      <Typography
+        variant="caption"
+        sx={{
+          fontWeight: 600,
+          whiteSpace: "normal",
+          overflowWrap: "anywhere",
+          wordBreak: "break-word",
+          minWidth: 0,
+          maxWidth: "100%",
+          flex: { xs: "1 1 100%", sm: "1 1 10rem" },
+        }}
+      >
+        Disallowed loss {formatCurrency(wash.disallowedLoss)}
+      </Typography>
+      <Typography
+        variant="caption"
+        sx={{
+          fontWeight: 600,
+          whiteSpace: "normal",
+          overflowWrap: "anywhere",
+          wordBreak: "break-word",
+          minWidth: 0,
+          maxWidth: "100%",
+          flex: { xs: "1 1 100%", sm: "1 1 12rem" },
+        }}
+      >
+        Replacement-lot basis bump +{formatCurrency(wash.basisBump)}
+      </Typography>
+      {wash.windowStart && wash.windowEnd && (
+        <Typography
+          variant="caption"
+          sx={{
+            whiteSpace: "normal",
+            overflowWrap: "anywhere",
+            wordBreak: "break-word",
+            minWidth: 0,
+            maxWidth: "100%",
+            flex: { xs: "1 1 100%", sm: "1 1 14rem" },
+          }}
+        >
+          30-day window {formatAcquiredDate(wash.windowStart)} –{" "}
+          {formatAcquiredDate(wash.windowEnd)}
+        </Typography>
+      )}
+      {wash.saleDate && (
+        <Typography
+          variant="caption"
+          color="text.secondary"
+          sx={{
+            whiteSpace: "normal",
+            overflowWrap: "anywhere",
+            wordBreak: "break-word",
+            minWidth: 0,
+            maxWidth: "100%",
+            flex: { xs: "1 1 100%", sm: "1 1 14rem" },
+          }}
+        >
+          Sold {formatAcquiredDate(wash.saleDate)}
+          {wash.repurchaseDate
+            ? ` · replaced ${formatAcquiredDate(wash.repurchaseDate)}`
+            : ""}
+        </Typography>
+      )}
+    </Box>
+  );
+}
+
+function HarvestChip({ position }: Readonly<{ position: Position }>) {
+  const label = getPositionHarvestLabel(position);
+  if (!label) {
+    return (
+      <Typography variant="body2" color="text.secondary">
+        —
+      </Typography>
+    );
+  }
+  return (
+    <Chip
+      label={label}
+      size="small"
+      color={label === "Wait" ? "warning" : "error"}
+      variant={label === "Wait" ? "outlined" : "filled"}
+      sx={{ height: 22, fontSize: "0.7rem", fontWeight: 700 }}
+    />
+  );
+}
+
 function TermChip({ isLong }: Readonly<{ isLong: boolean | null }>) {
   if (isLong == null) {
     return (
@@ -219,11 +389,103 @@ function TermChip({ isLong }: Readonly<{ isLong: boolean | null }>) {
   );
 }
 
+function WashAdjValue({
+  wash,
+}: Readonly<{ wash: LotWashDetails | null }>) {
+  if (!wash) {
+    return (
+      <Typography variant="body2" color="text.secondary">
+        —
+      </Typography>
+    );
+  }
+  return (
+    <Tooltip title="Wash-sale disallowed loss added to this lot's cost basis">
+      <Typography
+        variant="body2"
+        sx={{ color: "warning.dark", fontWeight: 600 }}
+      >
+        +{formatCurrency(wash.basisBump)}
+      </Typography>
+    </Tooltip>
+  );
+}
+
+function CompactLotCard({
+  position,
+  lot,
+  index,
+  wash,
+}: Readonly<{
+  position: Position;
+  lot: TaxLot;
+  index: number;
+  wash: LotWashDetails | null;
+}>) {
+  const lotCurrent =
+    lot.current_price == null ? null : lot.current_price * lot.quantity;
+  return (
+    <Box
+      sx={{
+        minWidth: 0,
+        maxWidth: "100%",
+        p: 1.25,
+        border: 1,
+        borderColor: "divider",
+        borderRadius: 1.5,
+      }}
+    >
+      <Box data-testid={`tax-lot-${position.symbol}-${index}`}>
+        <Stack
+          direction="row"
+          justifyContent="space-between"
+          alignItems="center"
+          gap={1}
+          sx={{ minWidth: 0 }}
+        >
+          <Typography variant="body2" sx={{ fontWeight: 700, minWidth: 0 }}>
+            {formatAcquiredDate(lot.purchase_date)}
+          </Typography>
+          <TermChip isLong={lot.is_long_term} />
+        </Stack>
+        <Typography variant="body2" sx={{ mt: 0.75 }}>
+          Qty {lot.quantity}
+        </Typography>
+        <Typography variant="body2">
+          Cost {formatCurrency(lot.cost_basis_per_share)}/sh · basis{" "}
+          {formatCurrency(lot.total_cost_basis)}
+        </Typography>
+        <Typography variant="body2">
+          Current {formatCurrency(lotCurrent)}
+          {lot.current_price != null
+            ? ` (${formatCurrency(lot.current_price)}/sh)`
+            : ""}
+        </Typography>
+        <Box sx={{ mt: 0.5 }}>
+          <Typography variant="caption" color="text.secondary">
+            Wash-sale adj.
+          </Typography>
+          <WashAdjValue wash={wash} />
+        </Box>
+      </Box>
+      {wash && (
+        <Box
+          data-testid={`tax-lot-wash-${position.symbol}-${index}`}
+          sx={{ mt: 1, minWidth: 0, maxWidth: "100%" }}
+        >
+          <LotWashBanner wash={wash} />
+        </Box>
+      )}
+    </Box>
+  );
+}
+
 export function TaxLotsPanel({
   position,
   washSaleFlags = [],
 }: Readonly<{ position: Position; washSaleFlags?: WashSaleFlag[] }>) {
   const lots: TaxLot[] = position.tax_lots ?? [];
+  const compact = useCompactLayout();
 
   return (
     <Box
@@ -235,6 +497,9 @@ export function TaxLotsPanel({
         borderColor: "divider",
         borderRadius: 2,
         bgcolor: "background.default",
+        minWidth: 0,
+        maxWidth: "100%",
+        overflow: "hidden",
       }}
     >
       <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1 }}>
@@ -244,134 +509,107 @@ export function TaxLotsPanel({
         <Typography variant="body2" color="text.secondary">
           No open tax lots are recorded for this position.
         </Typography>
+      ) : compact ? (
+        <Stack spacing={1.25} sx={{ minWidth: 0, maxWidth: "100%" }}>
+          {lots.map((lot, index) => (
+            <CompactLotCard
+              key={`${lot.symbol}-${lot.purchase_date}-${index}`}
+              position={position}
+              lot={lot}
+              index={index}
+              wash={getLotWashDetails(lot, washSaleFlags)}
+            />
+          ))}
+        </Stack>
       ) : (
-        <Table size="small" aria-label={`Tax lots for ${position.symbol}`}>
-          <TableHead>
-            <TableRow>
-              <TableCell>Acquired</TableCell>
-              <TableCell align="right">Qty</TableCell>
-              <TableCell align="right">Cost / share</TableCell>
-              <TableCell align="right">Cost basis</TableCell>
-              <TableCell align="right">Current</TableCell>
-              <TableCell>Term</TableCell>
-              <TableCell align="right">Wash-sale adj.</TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {lots.map((lot, index) => {
-              const lotCurrent =
-                lot.current_price == null
-                  ? null
-                  : lot.current_price * lot.quantity;
-              const wash = getLotWashDetails(lot, washSaleFlags);
-              const hasWashAdj = wash != null;
-              return (
-                <Fragment
-                  key={`${lot.symbol}-${lot.purchase_date}-${index}`}
-                >
-                  <TableRow
-                    data-testid={`tax-lot-${position.symbol}-${index}`}
+        <Box sx={{ width: "100%", maxWidth: "100%", overflow: "hidden" }}>
+          <Table
+            size="small"
+            aria-label={`Tax lots for ${position.symbol}`}
+            sx={{ tableLayout: "fixed", width: "100%" }}
+          >
+            <TableHead>
+              <TableRow>
+                <TableCell>Acquired</TableCell>
+                <TableCell align="right">Qty</TableCell>
+                <TableCell align="right">Cost / share</TableCell>
+                <TableCell align="right">Cost basis</TableCell>
+                <TableCell align="right">Current</TableCell>
+                <TableCell>Term</TableCell>
+                <TableCell align="right">Wash-sale adj.</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {lots.map((lot, index) => {
+                const lotCurrent =
+                  lot.current_price == null
+                    ? null
+                    : lot.current_price * lot.quantity;
+                const wash = getLotWashDetails(lot, washSaleFlags);
+                return (
+                  <Fragment
+                    key={`${lot.symbol}-${lot.purchase_date}-${index}`}
                   >
-                    <TableCell>{formatAcquiredDate(lot.purchase_date)}</TableCell>
-                    <TableCell align="right">{lot.quantity}</TableCell>
-                    <TableCell align="right">
-                      {formatCurrency(lot.cost_basis_per_share)}
-                    </TableCell>
-                    <TableCell align="right">
-                      {formatCurrency(lot.total_cost_basis)}
-                    </TableCell>
-                    <TableCell align="right">
-                      <Box>
-                        <Typography variant="body2">
-                          {formatCurrency(lotCurrent)}
-                        </Typography>
-                        {lot.current_price != null && (
-                          <Typography variant="caption" color="text.secondary">
-                            {formatCurrency(lot.current_price)}/sh
-                          </Typography>
-                        )}
-                      </Box>
-                    </TableCell>
-                    <TableCell>
-                      <TermChip isLong={lot.is_long_term} />
-                    </TableCell>
-                    <TableCell align="right">
-                      {hasWashAdj ? (
-                        <Tooltip title="Wash-sale disallowed loss added to this lot's cost basis">
-                          <Typography
-                            variant="body2"
-                            sx={{ color: "warning.dark", fontWeight: 600 }}
-                          >
-                            +{formatCurrency(wash.basisBump)}
-                          </Typography>
-                        </Tooltip>
-                      ) : (
-                        <Typography variant="body2" color="text.secondary">
-                          —
-                        </Typography>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                  {wash && (
                     <TableRow
-                      data-testid={`tax-lot-wash-${position.symbol}-${index}`}
+                      data-testid={`tax-lot-${position.symbol}-${index}`}
                     >
-                      <TableCell
-                        colSpan={7}
-                        sx={{ pt: 0, pb: 1.25, borderBottomColor: "divider" }}
-                      >
-                        <Box
-                          sx={{
-                            display: "flex",
-                            flexWrap: "wrap",
-                            alignItems: "center",
-                            gap: 1,
-                            px: 0.5,
-                            py: 0.75,
-                            borderRadius: 1,
-                            bgcolor: "warning.light",
-                          }}
-                        >
-                          <Chip
-                            icon={<WarnIcon sx={{ fontSize: 14 }} />}
-                            label="Wash sale"
-                            size="small"
-                            color="warning"
-                            sx={{ height: 22 }}
-                          />
-                          <Typography variant="caption" sx={{ fontWeight: 600 }}>
-                            Disallowed loss {formatCurrency(wash.disallowedLoss)}
+                      <TableCell sx={{ whiteSpace: "normal" }}>
+                        {formatAcquiredDate(lot.purchase_date)}
+                      </TableCell>
+                      <TableCell align="right">{lot.quantity}</TableCell>
+                      <TableCell align="right">
+                        {formatCurrency(lot.cost_basis_per_share)}
+                      </TableCell>
+                      <TableCell align="right">
+                        {formatCurrency(lot.total_cost_basis)}
+                      </TableCell>
+                      <TableCell align="right">
+                        <Box>
+                          <Typography variant="body2">
+                            {formatCurrency(lotCurrent)}
                           </Typography>
-                          <Typography variant="caption" sx={{ fontWeight: 600 }}>
-                            Replacement-lot basis bump +{formatCurrency(wash.basisBump)}
-                          </Typography>
-                          {wash.windowStart && wash.windowEnd && (
-                            <Typography variant="caption">
-                              30-day window{" "}
-                              {formatAcquiredDate(wash.windowStart)} –{" "}
-                              {formatAcquiredDate(wash.windowEnd)}
-                            </Typography>
-                          )}
-                          {wash.saleDate && (
+                          {lot.current_price != null && (
                             <Typography
                               variant="caption"
                               color="text.secondary"
                             >
-                              Sold {formatAcquiredDate(wash.saleDate)}
-                              {wash.repurchaseDate
-                                ? ` · replaced ${formatAcquiredDate(wash.repurchaseDate)}`
-                                : ""}
+                              {formatCurrency(lot.current_price)}/sh
                             </Typography>
                           )}
                         </Box>
                       </TableCell>
+                      <TableCell>
+                        <TermChip isLong={lot.is_long_term} />
+                      </TableCell>
+                      <TableCell align="right">
+                        <WashAdjValue wash={wash} />
+                      </TableCell>
                     </TableRow>
-                  )}
-                </Fragment>
-              );
-            })}
-          </TableBody>
-        </Table>
+                    {wash && (
+                      <TableRow
+                        data-testid={`tax-lot-wash-${position.symbol}-${index}`}
+                      >
+                        <TableCell
+                          colSpan={7}
+                          sx={{
+                            pt: 0,
+                            pb: 1.25,
+                            borderBottomColor: "divider",
+                            whiteSpace: "normal",
+                            overflow: "visible",
+                            maxWidth: 0,
+                          }}
+                        >
+                          <LotWashBanner wash={wash} />
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </Fragment>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </Box>
       )}
     </Box>
   );
@@ -402,19 +640,7 @@ function buildColumns(
               gap: 0.75,
             }}
           >
-            {lotCount > 0 ? (
-              isExpanded ? (
-                <CollapseIcon
-                  sx={{ fontSize: 18, color: "text.secondary", flexShrink: 0 }}
-                />
-              ) : (
-                <ExpandIcon
-                  sx={{ fontSize: 18, color: "text.secondary", flexShrink: 0 }}
-                />
-              )
-            ) : (
-              <Box sx={{ width: 18, flexShrink: 0 }} aria-hidden />
-            )}
+            <LotExpandIcon lotCount={lotCount} expanded={isExpanded} />
             <Typography
               variant="body2"
               sx={{ fontWeight: 700, minWidth: 0 }}
@@ -520,25 +746,7 @@ function buildColumns(
       headerName: "Harvest",
       width: 120,
       sortable: false,
-      renderCell: (params) => {
-        const label = getPositionHarvestLabel(params.row);
-        if (!label) {
-          return (
-            <Typography variant="body2" color="text.secondary">
-              —
-            </Typography>
-          );
-        }
-        return (
-          <Chip
-            label={label}
-            size="small"
-            color={label === "Wait" ? "warning" : "error"}
-            variant={label === "Wait" ? "outlined" : "filled"}
-            sx={{ height: 22, fontSize: "0.7rem", fontWeight: 700 }}
-          />
-        );
-      },
+      renderCell: (params) => <HarvestChip position={params.row} />,
     },
     {
       field: "wash_sale_risk",
@@ -581,6 +789,123 @@ function buildColumns(
   ];
 }
 
+function PositionCard({
+  position,
+  expanded,
+  lotDetailsUnlocked,
+  onToggle,
+}: Readonly<{
+  position: Position;
+  expanded: boolean;
+  lotDetailsUnlocked: boolean;
+  onToggle: (position: Position) => void;
+}>) {
+  const lotCount = position.tax_lots?.length ?? 0;
+  const label = position.display_label ?? position.symbol;
+  const rowClass = gainLossClassName(position.unrealized_pnl);
+
+  return (
+    <Box
+      data-testid={`position-row-${position.symbol}`}
+      className={rowClass}
+      data-pnl={position.unrealized_pnl}
+      onClick={() => {
+        if (lotDetailsUnlocked) onToggle(position);
+      }}
+      sx={{
+        minWidth: 0,
+        maxWidth: "100%",
+        p: 1.5,
+        border: 1,
+        borderColor: "divider",
+        borderRadius: 2,
+        cursor: lotDetailsUnlocked ? "pointer" : "default",
+        bgcolor: positionCardBg(rowClass),
+      }}
+    >
+      <Stack
+        direction="row"
+        alignItems="center"
+        spacing={0.75}
+        sx={{ minWidth: 0 }}
+      >
+        <LotExpandIcon lotCount={lotCount} expanded={expanded} />
+        <Typography
+          variant="body2"
+          sx={{ fontWeight: 700, minWidth: 0, flex: 1 }}
+          noWrap
+        >
+          {label}
+        </Typography>
+        {lotCount > 0 && (
+          <Chip
+            label={`${lotCount} lot${lotCount === 1 ? "" : "s"}`}
+            size="small"
+            variant="outlined"
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggle(position);
+            }}
+            sx={{ height: 20, fontSize: "0.65rem", flexShrink: 0 }}
+          />
+        )}
+        {position.manual_review_required && position.manual_review_reason && (
+          <Tooltip title={position.manual_review_reason}>
+            <WarnIcon
+              aria-label={`Manual review: ${position.manual_review_reason}`}
+              sx={{ color: "warning.main", fontSize: 16, flexShrink: 0 }}
+            />
+          </Tooltip>
+        )}
+        {position.wash_sale_risk && (
+          <Chip
+            icon={<WarnIcon sx={{ fontSize: 14 }} />}
+            label="Risk"
+            size="small"
+            color="warning"
+            sx={{ height: 22, flexShrink: 0 }}
+          />
+        )}
+      </Stack>
+      <Box
+        sx={{
+          mt: 1.25,
+          display: "grid",
+          gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+          gap: 1,
+          minWidth: 0,
+        }}
+      >
+        <Box sx={{ minWidth: 0 }}>
+          <Typography variant="caption" color="text.secondary">
+            Qty
+          </Typography>
+          <Typography variant="body2" sx={{ fontWeight: 600 }}>
+            {position.quantity}
+          </Typography>
+        </Box>
+        <Box sx={{ minWidth: 0 }}>
+          <Typography variant="caption" color="text.secondary">
+            P&L
+          </Typography>
+          <PnlCell
+            value={position.unrealized_pnl}
+            pct={position.unrealized_pnl_pct}
+          />
+        </Box>
+        <Box sx={{ minWidth: 0 }}>
+          <Typography variant="caption" color="text.secondary">
+            Harvest
+          </Typography>
+          <Box sx={{ mt: 0.25 }}>
+            <HarvestChip position={position} />
+          </Box>
+        </Box>
+      </Box>
+    </Box>
+  );
+}
+
 /**
  * Positions table — MUI DataGrid showing all portfolio positions.
  *
@@ -588,12 +913,15 @@ function buildColumns(
  * short/long-term badge, wash-sale risk, and asset type.
  * Click a row (or its lot chip) to inspect individual tax lots.
  * Rows with losses/gains use dark ink fills so cream type stays readable.
+ * At phone width (~390px) a card stack shows symbol, qty, P&L, and harvest
+ * so headers are not clipped behind a horizontal-only scroll.
  */
 export default function PositionsTable({
   positions,
   washSaleFlags = [],
   lotDetailsUnlocked = true,
 }: Readonly<PositionsTableProps>) {
+  const compact = useCompactLayout();
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const togglePosition = useCallback((position: Position) => {
@@ -609,6 +937,11 @@ export default function PositionsTable({
     [expandedId, togglePosition],
   );
 
+  const sortedPositions = useMemo(
+    () => [...positions].sort(compareUnrealizedPnlAsc),
+    [positions],
+  );
+
   const expandedPosition = positions.find(
     (position) => getPositionRowId(position) === expandedId,
   );
@@ -618,59 +951,92 @@ export default function PositionsTable({
   };
 
   return (
-    <Box sx={{ width: "100%" }} data-testid="positions-table-wrap">
-      <DataGrid
-        rows={positions}
-        columns={columns}
-        getRowId={(row) => getPositionRowId(row)}
-        onRowClick={lotDetailsUnlocked ? handleRowClick : undefined}
-        initialState={{
-          sorting: {
-            sortModel: [{ field: "unrealized_pnl", sort: "asc" }],
-          },
-        }}
-        rowHeight={52}
-        columnHeaderHeight={40}
-        pageSizeOptions={[10, 25, 50]}
-        disableRowSelectionOnClick
-        autoHeight
-        sx={{
-          fontSize: "0.8rem",
-          "& .MuiDataGrid-cell": {
-            display: "flex",
-            alignItems: "center",
-            py: 0,
-            overflow: "hidden",
-          },
-          "& .MuiDataGrid-row": {
-            cursor: lotDetailsUnlocked ? "pointer" : "default",
-            "&:hover": { backgroundColor: "action.hover" },
-          },
-          "& .loss-row": {
-            backgroundColor: "error.dark",
-          },
-          "& .gain-row": {
-            backgroundColor: "success.dark",
-          },
-          border: 1,
-          borderColor: "divider",
-          borderRadius: 2,
-        }}
-        getRowClassName={(params) => {
-          const pnl = params.row.unrealized_pnl;
-          if (pnl != null && pnl < 0) return "loss-row";
-          if (pnl != null && pnl > 0) return "gain-row";
-          return "";
-        }}
-      />
-      <Collapse in={Boolean(expandedPosition)} unmountOnExit>
-        {expandedPosition && (
-          <TaxLotsPanel
-            position={expandedPosition}
-            washSaleFlags={washSaleFlags}
-          />
-        )}
-      </Collapse>
+    <Box
+      sx={{ width: "100%", maxWidth: "100%", minWidth: 0, overflow: "hidden" }}
+      data-testid="positions-table-wrap"
+    >
+      {compact ? (
+        <Stack
+          spacing={1.25}
+          data-testid="positions-cards"
+          sx={{ minWidth: 0, maxWidth: "100%" }}
+        >
+          {sortedPositions.map((position) => {
+            const rowId = getPositionRowId(position);
+            const isExpanded = expandedId === rowId;
+            return (
+              <Box key={rowId} sx={{ minWidth: 0, maxWidth: "100%" }}>
+                <PositionCard
+                  position={position}
+                  expanded={isExpanded}
+                  lotDetailsUnlocked={lotDetailsUnlocked}
+                  onToggle={togglePosition}
+                />
+                <Collapse in={isExpanded} unmountOnExit>
+                  <TaxLotsPanel
+                    position={position}
+                    washSaleFlags={washSaleFlags}
+                  />
+                </Collapse>
+              </Box>
+            );
+          })}
+        </Stack>
+      ) : (
+        <DataGrid
+          rows={positions}
+          columns={columns}
+          getRowId={(row) => getPositionRowId(row)}
+          onRowClick={lotDetailsUnlocked ? handleRowClick : undefined}
+          initialState={{
+            sorting: {
+              sortModel: [{ field: "unrealized_pnl", sort: "asc" }],
+            },
+          }}
+          rowHeight={52}
+          columnHeaderHeight={40}
+          pageSizeOptions={[10, 25, 50]}
+          disableRowSelectionOnClick
+          autoHeight
+          sx={{
+            fontSize: "0.8rem",
+            width: "100%",
+            maxWidth: "100%",
+            "& .MuiDataGrid-cell": {
+              display: "flex",
+              alignItems: "center",
+              py: 0,
+              overflow: "hidden",
+            },
+            "& .MuiDataGrid-row": {
+              cursor: lotDetailsUnlocked ? "pointer" : "default",
+              "&:hover": { backgroundColor: "action.hover" },
+            },
+            "& .loss-row": {
+              backgroundColor: "error.dark",
+            },
+            "& .gain-row": {
+              backgroundColor: "success.dark",
+            },
+            border: 1,
+            borderColor: "divider",
+            borderRadius: 2,
+          }}
+          getRowClassName={(params) =>
+            gainLossClassName(params.row.unrealized_pnl)
+          }
+        />
+      )}
+      {!compact && (
+        <Collapse in={Boolean(expandedPosition)} unmountOnExit>
+          {expandedPosition && (
+            <TaxLotsPanel
+              position={expandedPosition}
+              washSaleFlags={washSaleFlags}
+            />
+          )}
+        </Collapse>
+      )}
     </Box>
   );
 }

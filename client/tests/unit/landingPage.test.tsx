@@ -33,15 +33,20 @@ describe("LandingPage", () => {
     sessionStorage.clear();
   });
 
-  it("renders nothing while auth is loading", () => {
+  it("still shows the product page while auth is loading", () => {
     mockUseAuth.mockReturnValue({ user: null, loading: true });
 
-    const { container } = renderWithClient(<LandingPage />);
+    renderWithClient(<LandingPage />);
 
-    expect(container.firstChild).toBeNull();
+    expect(
+      screen.getByRole("heading", {
+        name: /Your 1099 and your export will disagree/,
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open the 2026 sample" })).toBeInTheDocument();
   });
 
-  it("redirects authenticated users to dashboard", () => {
+  it("does not bounce signed-in users off the product page", () => {
     mockUseAuth.mockReturnValue({
       user: { email: "test@example.com" },
       loading: false,
@@ -49,7 +54,26 @@ describe("LandingPage", () => {
 
     renderWithClient(<LandingPage />);
 
-    expect(mockPush).toHaveBeenCalledWith("/dashboard");
+    expect(mockPush).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("heading", {
+        name: /Your 1099 and your export will disagree/,
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open desk" })).toHaveAttribute(
+      "href",
+      "/dashboard",
+    );
+    expect(screen.getByRole("link", { name: "Desk" })).toHaveAttribute(
+      "href",
+      "/dashboard",
+    );
+    expect(
+      screen.getByRole("link", { name: "See what's kept" }),
+    ).toHaveAttribute("href", "/dashboard");
+    expect(
+      screen.queryByRole("link", { name: /Sign In/i }),
+    ).not.toBeInTheDocument();
   });
 
   it("renders hero section for unauthenticated users", () => {
@@ -113,16 +137,39 @@ describe("LandingPage", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("Saved runs")).toBeInTheDocument();
     expect(screen.getByText("Update the book")).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "See what's kept" }),
+    ).toHaveAttribute("href", "/auth/signin");
   });
 
-  it("renders footer with disclaimer", () => {
+  it("sends signed-in See what's kept to the desk, not sign-in", () => {
+    mockUseAuth.mockReturnValue({
+      user: { email: "test@example.com" },
+      loading: false,
+    });
+
+    renderWithClient(<LandingPage />);
+
+    expect(
+      screen.getByRole("link", { name: "See what's kept" }),
+    ).toHaveAttribute("href", "/dashboard");
+    expect(
+      screen.getByRole("link", { name: "See what's kept" }),
+    ).not.toHaveAttribute("href", "/auth/signin");
+  });
+
+  it("renders one disclaimer only — TaxDisclaimer, not a second footer legal", () => {
     mockUseAuth.mockReturnValue({ user: null, loading: false });
 
     renderWithClient(<LandingPage />);
 
     expect(
-      screen.getByText(/educational and informational purposes only/),
-    ).toBeInTheDocument();
+      screen.getAllByText(/For educational and simulation purposes only/),
+    ).toHaveLength(1);
+    expect(
+      screen.queryByText(/educational and informational purposes only/),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toBeInTheDocument();
   });
 
   it("preview shows the 2026 sample 1099 vs export totals", () => {
@@ -167,6 +214,9 @@ describe("LandingPage", () => {
       "href",
       "/dashboard",
     );
+    const wordmarks = screen.getAllByRole("link", { name: /OptionsTaxHub/i });
+    expect(wordmarks.length).toBeGreaterThan(0);
+    expect(wordmarks[0]).toHaveAttribute("href", "/");
   });
 
   it("does not claim in-memory-only storage or state tax savings", () => {

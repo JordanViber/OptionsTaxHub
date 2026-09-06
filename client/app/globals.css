@@ -80,6 +80,15 @@ textarea,
   box-shadow: 0 0 0 1px rgb(236 234 228 / 0.08);
 }
 
+/* Wash-sale gold chip on lot detail: wrap at phone width, never clip. */
+.lot-wash-banner {
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 @layer utilities {
   @keyframes slide-up {
     from {

@@ -260,6 +260,10 @@ describe("DashboardPage", () => {
     await waitFor(() => {
       expect(screen.getByText(/OptionsTaxHub/i)).toBeInTheDocument();
     });
+    expect(screen.getByRole("link", { name: /OptionsTaxHub/i })).toHaveAttribute(
+      "href",
+      "/",
+    );
   });
 
   it("renders portfolio upload section", async () => {

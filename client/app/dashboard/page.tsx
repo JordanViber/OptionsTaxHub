@@ -882,7 +882,7 @@ function ResultsSection({
         />
       )}
 
-      <Card>
+      <Card sx={{ overflow: "hidden", maxWidth: "100%" }}>
         <Tabs
           value={activeTab}
           onChange={(_, v) => setActiveTab(v)}
@@ -1687,7 +1687,7 @@ export default function DashboardPage() {
       {/* Header AppBar */}
       <AppBar position="static" sx={{ zIndex: 40 }}>
         <Toolbar sx={{ px: { xs: 1, sm: 2 }, gap: { xs: 0.25, sm: 0.5 } }}>
-          <Wordmark href="/dashboard" />
+          <Wordmark href="/" />
           <Box sx={{ flexGrow: 1 }} />
 
           {/* Tip — icon-only on mobile */}
