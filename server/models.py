@@ -414,6 +414,9 @@ class PortfolioAnalysis(BaseModel):
     activity_book: Optional[ActivityBookSummary] = None
     packet_unlocked: bool = False
     packet_session_id: Optional[str] = None
+    # In-app 2026 sample: lot rows stay on the public payload for desk preview.
+    # Download still requires packet_unlocked / $49.
+    sample_run: bool = False
     disclaimer: str = (
         "This analysis is for educational and simulation purposes only. "
         "It does not constitute financial, tax, or investment advice. "

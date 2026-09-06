@@ -15,11 +15,19 @@ from typing import Any, Optional
 from models import Transaction
 
 SAMPLE_CSV_FILENAMES = frozenset({"sample-robinhood-transactions.csv"})
+SAMPLE_1099_FILENAMES = frozenset({"sample-robinhood-1099-2026.pdf"})
+
+
+def _upload_basename(filename: str | None) -> str:
+    return (filename or "").strip().split("/")[-1].split("\\")[-1]
 
 
 def is_sample_csv_filename(filename: str | None) -> bool:
-    name = (filename or "").strip().split("/")[-1].split("\\")[-1]
-    return name.lower() in SAMPLE_CSV_FILENAMES
+    return _upload_basename(filename).lower() in SAMPLE_CSV_FILENAMES
+
+
+def is_sample_1099_filename(filename: str | None) -> bool:
+    return _upload_basename(filename).lower() in SAMPLE_1099_FILENAMES
 
 
 def transaction_fingerprint(txn: Transaction) -> tuple:

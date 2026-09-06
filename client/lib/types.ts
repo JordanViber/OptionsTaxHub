@@ -247,6 +247,7 @@ export interface PortfolioAnalysis {
   activity_book?: ActivityBookSummary | null;
   packet_unlocked?: boolean;
   packet_session_id?: string | null;
+  sample_run?: boolean;
   disclaimer: string;
   errors: string[];
   warnings: string[];

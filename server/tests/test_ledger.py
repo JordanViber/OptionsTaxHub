@@ -116,6 +116,13 @@ class TestHelpers:
         assert is_sample_csv_filename("path/Sample-Robinhood-Transactions.csv")
         assert not is_sample_csv_filename("robinhood-2026.csv")
 
+    def test_sample_1099_filename(self):
+        from ledger import is_sample_1099_filename
+
+        assert is_sample_1099_filename("sample-robinhood-1099-2026.pdf")
+        assert is_sample_1099_filename("path/Sample-Robinhood-1099-2026.pdf")
+        assert not is_sample_1099_filename("2024-robinhood-1099.pdf")
+
     def test_touching_dates_are_not_a_gap(self):
         prior = [_txn("2026-01-01")]
         incoming = [_txn("2026-01-02")]

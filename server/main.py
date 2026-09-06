@@ -63,6 +63,7 @@ from csv_parser import parse_csv, RealizedEvent, transactions_to_tax_lots
 from lot_matcher import match_1099b_lots
 from ledger import (
     is_sample_csv_filename,
+    is_sample_1099_filename,
     merge_transaction_books,
     merge_warning,
     strip_book_transactions_dict,
@@ -894,17 +895,23 @@ def _counts_only_lot_match_report(report: LotMatchReport) -> LotMatchReport:
     )
 
 
-def _public_analysis(result: PortfolioAnalysis) -> PortfolioAnalysis:
+def _public_analysis(
+    result: PortfolioAnalysis,
+    *,
+    keep_lot_rows: bool = False,
+) -> PortfolioAnalysis:
     """Hide raw trades and unpaid lot-level 1099-B rows from the browser payload.
 
     Unpaid/guest analyze JSON (and anything persisted from it) must not include
     lot dates, amounts, or statuses. Counts stay so the $49 teaser still works.
+    The in-app 2026 sample keeps lot rows so the desk can show the table;
+    packet_unlocked stays false so download remains $49 gated.
     """
     updates: dict = {}
     book = result.activity_book
     if book and book.transactions:
         updates["activity_book"] = book.model_copy(update={"transactions": []})
-    if not result.packet_unlocked:
+    if not result.packet_unlocked and not keep_lot_rows:
         if result.lot_match_report is not None:
             updates["lot_match_report"] = _counts_only_lot_match_report(
                 result.lot_match_report
@@ -1214,13 +1221,23 @@ async def _run_portfolio_analysis(
         warnings=_summarize_warnings(all_warnings),
     )
     result = _apply_packet_year_grant(result, user_id)
+    form_1099_name = ""
+    if supplemental_1099_summary is not None:
+        form_1099_name = supplemental_1099_summary.source_filename or ""
+    if not form_1099_name and supplemental_1099 is not None:
+        form_1099_name = supplemental_1099.filename or ""
+    keep_lot_rows = is_sample_csv_filename(filename) and is_sample_1099_filename(
+        form_1099_name
+    )
+    if keep_lot_rows:
+        result = result.model_copy(update={"sample_run": True})
     full_dump = (
         result.model_dump(mode="json")
         if hasattr(result, "model_dump")
         else dict(result)
     )
     remember_analysis(analysis_id, user_id, full_dump)
-    public_result = _public_analysis(result)
+    public_result = _public_analysis(result, keep_lot_rows=keep_lot_rows)
 
     # History follows the public payload so unpaid restore cannot leak lot rows.
     # Full rows remain in PACKET_STORE for the paid PDF.

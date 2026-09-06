@@ -2020,12 +2020,16 @@ def test_analyze_2026_sample_csv_and_1099_is_same_year_compare(monkeypatch):
     assert "SPX" in summary["referenced_symbols"]
     public_report = same_body["lot_match_report"]
     assert public_report is not None
-    assert public_report["matched"] == []
-    assert public_report["gap"] == []
-    assert public_report["unmatched"] == []
+    assert {row["symbol"] for row in public_report["gap"]} >= {"NVDA", "TSLA", "AMD"}
+    assert all(row["status"] == "matched_settlement_gap" for row in public_report["gap"])
+    assert any(
+        row["symbol"] == "SPX" and row["status"] == "1099_only"
+        for row in public_report["unmatched"]
+    )
     assert public_report["gap_count"] >= 3
     assert public_report["unmatched_count"] >= 1
     assert same_body["packet_unlocked"] is False
+    assert same_body["sample_run"] is True
 
     from year_close_packet import get_payload
 
@@ -2082,32 +2086,32 @@ def test_analyze_2026_sample_csv_and_1099_is_same_year_compare(monkeypatch):
 
 
 def test_unpaid_analyze_lot_match_report_is_counts_only(monkeypatch):
-    """Unpaid/guest analyze keeps teaser counts and redacts lot rows."""
+    """Unpaid non-sample analyze keeps teaser counts and redacts lot rows."""
     from year_close_packet import get_payload
 
     _stub_analyze_network(monkeypatch)
-    repo = Path(__file__).resolve().parents[2]
-    sample_csv = (repo / "client" / "public" / "sample-robinhood-transactions.csv").read_bytes()
-    sample_1099 = (repo / "client" / "public" / "sample-robinhood-1099-2026.pdf").read_bytes()
+    csv_2024 = (
+        Path(__file__).resolve().parent / "fixtures" / "year_close_2024.csv"
+    ).read_bytes()
     response = client.post(
-        "/api/portfolio/analyze?tax_year=2026",
+        "/api/portfolio/analyze?tax_year=2024",
         files={
-            "file": ("sample-robinhood-transactions.csv", sample_csv, "text/csv"),
-            "supplemental_1099": (
-                "sample-robinhood-1099-2026.pdf",
-                sample_1099,
-                "application/pdf",
-            ),
+            "file": ("year_close_2024.csv", csv_2024, "text/csv"),
+            "supplemental_1099": _make_supplemental_1099_upload(),
         },
     )
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["packet_unlocked"] is False
+    assert body.get("sample_run") is False
     report = body["lot_match_report"]
     assert report["matched"] == []
     assert report["gap"] == []
     assert report["unmatched"] == []
-    assert report["gap_count"] >= 3
+    assert (
+        report["matched_count"] + report["gap_count"] + report["unmatched_count"]
+        >= 1
+    )
     public_json = response.text
     assert "matched_settlement_gap" not in public_json
     assert "1099_only" not in public_json
@@ -2117,8 +2121,44 @@ def test_unpaid_analyze_lot_match_report_is_counts_only(monkeypatch):
     stored = get_payload(body["analysis_id"])
     assert stored is not None
     stored_report = stored["lot_match_report"]
-    assert stored_report["gap"]
-    assert any(row["symbol"] == "NVDA" for row in stored_report["gap"])
+    assert any(
+        stored_report.get(section)
+        for section in ("matched", "gap", "unmatched")
+    )
+
+
+def test_guest_non_sample_analyze_lot_match_report_is_counts_only(monkeypatch):
+    """Unauthenticated non-sample analyze must not leak lot rows."""
+    _stub_analyze_network(monkeypatch)
+    csv_2024 = (
+        Path(__file__).resolve().parent / "fixtures" / "year_close_2024.csv"
+    ).read_bytes()
+    main.app.dependency_overrides.pop(get_optional_user, None)
+    try:
+        response = client.post(
+            "/api/portfolio/analyze?tax_year=2024",
+            files={
+                "file": ("year_close_2024.csv", csv_2024, "text/csv"),
+                "supplemental_1099": _make_supplemental_1099_upload(),
+            },
+        )
+    finally:
+        main.app.dependency_overrides[get_optional_user] = mock_get_current_user
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["packet_unlocked"] is False
+    assert body.get("sample_run") is False
+    report = body["lot_match_report"]
+    assert report["matched"] == []
+    assert report["gap"] == []
+    assert report["unmatched"] == []
+    assert (
+        report["matched_count"] + report["gap_count"] + report["unmatched_count"]
+        >= 1
+    )
+    assert "matched_settlement_gap" not in response.text
+    assert "date_sold_1099" not in response.text
+    assert (body.get("supplemental_1099") or {}).get("lots") == []
 
 
 def test_paid_year_analyze_includes_lot_match_rows(monkeypatch):
@@ -2153,8 +2193,8 @@ def test_paid_year_analyze_includes_lot_match_rows(monkeypatch):
     assert body["supplemental_1099"]["lots"]
 
 
-def test_guest_analyze_lot_match_report_is_counts_only(monkeypatch):
-    """Unauthenticated analyze must not leak lot rows in the HTTP payload."""
+def test_guest_sample_analyze_includes_lot_match_rows_without_unlocking(monkeypatch):
+    """In-app sample keeps lot rows so the desk table can render; download stays locked."""
     _stub_analyze_network(monkeypatch)
     repo = Path(__file__).resolve().parents[2]
     sample_csv = (repo / "client" / "public" / "sample-robinhood-transactions.csv").read_bytes()
@@ -2177,14 +2217,11 @@ def test_guest_analyze_lot_match_report_is_counts_only(monkeypatch):
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["packet_unlocked"] is False
+    assert body["sample_run"] is True
     report = body["lot_match_report"]
-    assert report["matched"] == []
-    assert report["gap"] == []
-    assert report["unmatched"] == []
+    assert {row["symbol"] for row in report["gap"]} >= {"NVDA", "TSLA", "AMD"}
+    assert any(row["symbol"] == "SPX" for row in report["unmatched"])
     assert report["gap_count"] >= 3
-    assert "matched_settlement_gap" not in response.text
-    assert "date_sold_1099" not in response.text
-    assert (body.get("supplemental_1099") or {}).get("lots") == []
 
 
 def test_unpaid_analyze_history_save_redacts_lot_rows(monkeypatch):
@@ -2196,18 +2233,14 @@ def test_unpaid_analyze_history_save_redacts_lot_rows(monkeypatch):
 
     _stub_analyze_network(monkeypatch)
     monkeypatch.setattr("main._save_history_best_effort", capture_save)
-    repo = Path(__file__).resolve().parents[2]
-    sample_csv = (repo / "client" / "public" / "sample-robinhood-transactions.csv").read_bytes()
-    sample_1099 = (repo / "client" / "public" / "sample-robinhood-1099-2026.pdf").read_bytes()
+    csv_2024 = (
+        Path(__file__).resolve().parent / "fixtures" / "year_close_2024.csv"
+    ).read_bytes()
     response = client.post(
-        "/api/portfolio/analyze?tax_year=2026",
+        "/api/portfolio/analyze?tax_year=2024",
         files={
-            "file": ("sample-robinhood-transactions.csv", sample_csv, "text/csv"),
-            "supplemental_1099": (
-                "sample-robinhood-1099-2026.pdf",
-                sample_1099,
-                "application/pdf",
-            ),
+            "file": ("year_close_2024.csv", csv_2024, "text/csv"),
+            "supplemental_1099": _make_supplemental_1099_upload(),
         },
     )
     assert response.status_code == 200, response.text

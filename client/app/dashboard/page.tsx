@@ -1221,16 +1221,23 @@ export default function DashboardPage() {
   // --- State persistence: restore analysis from sessionStorage on mount ---
   useEffect(() => {
     let wantsUpload = false;
+    let wantsSample = false;
     try {
       wantsUpload = sessionStorage.getItem(UPLOAD_INTENT_KEY) === "1";
+      wantsSample = sessionStorage.getItem(LOAD_SAMPLE_KEY) === "1";
       if (wantsUpload) {
         sessionStorage.removeItem(UPLOAD_INTENT_KEY);
       }
     } catch {
       wantsUpload = false;
+      wantsSample = false;
     }
 
     const saved = restoreAnalysisFromStorage();
+    if (wantsSample) {
+      // Open the 2026 sample must not keep a prior restore that lacks lot counts.
+      return;
+    }
     if (wantsUpload) {
       setForceEmpty(true);
       if (saved) {
@@ -1340,6 +1347,7 @@ export default function DashboardPage() {
       },
       {
         onSuccess: (data) => {
+          setLoadedAnalysis(null);
           setForceEmpty(false);
           if (data.packet_unlocked && data.packet_session_id) {
             rememberYearClosePacketPaid(
@@ -1667,7 +1675,8 @@ export default function DashboardPage() {
   const confidenceSummary = displayedAnalysis
     ? getConfidenceSummary(displayedAnalysis)
     : null;
-  const packetUnlocked = isSampleRun || packetPaid;
+  const packetUnlocked =
+    isSampleRun || packetPaid || Boolean(displayedAnalysis?.sample_run);
   const tradeBook = savedTradeBook(history);
   const recommendedNextSteps = displayedAnalysis
     ? getRecommendedNextSteps(displayedAnalysis, packetUnlocked)

@@ -46,6 +46,7 @@ function LotRowCard({ row }: Readonly<{ row: LotMatchRow }>) {
   return (
     <Box
       className="hairline"
+      data-testid={`lot-match-row-${row.symbol || "unknown"}`}
       sx={{ borderRadius: 1.5, px: 1.25, py: 1, bgcolor: "background.paper" }}
     >
       <Stack
@@ -263,13 +264,13 @@ export default function Supplemental1099InsightsPanel({
               washSale={exportWashTotal}
             />
           </Stack>
+          {lotMatchReport && (
+            <LotMatchSection report={lotMatchReport} locked={locked} />
+          )}
           {showWashFaq && (
             <Typography variant="body2" color="text.secondary">
               {SUPPLEMENTAL_1099_WASH_SALE_FAQ}
             </Typography>
-          )}
-          {lotMatchReport && (
-            <LotMatchSection report={lotMatchReport} locked={locked} />
           )}
         </Stack>
       </Box>
