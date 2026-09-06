@@ -117,8 +117,11 @@ def _candidate_score(lot: Form1099BLot, event: RealizedEvent) -> Optional[tuple[
         return None
     if not _symbol_compatible(lot, event):
         return None
+    date_score = _date_score(lot, event)
+    if date_score == 0:
+        return None
     basis_bonus = 1 if _cents_close(lot.cost_basis, export_basis) else 0
-    return (_date_score(lot, event), basis_bonus, 0)
+    return (date_score, basis_bonus, 0)
 
 
 def _paired_status(lot: Form1099BLot, event: RealizedEvent) -> str:

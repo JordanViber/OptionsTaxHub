@@ -121,6 +121,46 @@ def test_two_1099_lots_cannot_reuse_one_csv_close():
     assert report.unmatched[0].status == "1099_only"
 
 
+def test_dates_outside_settle_window_are_not_candidates():
+    """Same qty/proceeds/symbol is not a pair when sold date is >2 days
+    from both export trade and settle dates.
+    """
+    report = match_1099b_lots(
+        [_lot(date_sold=date(2024, 7, 17))],
+        [
+            _event(
+                sale_date=date(2024, 12, 15),
+                settle_date=date(2024, 12, 17),
+            )
+        ],
+        form_1099_tax_year=2024,
+        analysis_tax_year=2024,
+        short_term_proceeds=1200.0,
+        short_term_cost_basis=1500.0,
+        short_term_wash=300.0,
+    )
+    assert report is not None
+    assert report.matched_count == 0
+    assert report.gap_count == 0
+    statuses = {row.status for row in report.unmatched}
+    assert statuses == {"1099_only", "csv_only"}
+
+
+def test_dates_within_settle_window_still_pair():
+    report = match_1099b_lots(
+        [_lot(date_sold=date(2024, 7, 17))],
+        [_event(sale_date=date(2024, 7, 16), settle_date=date(2024, 7, 19))],
+        form_1099_tax_year=2024,
+        analysis_tax_year=2024,
+        short_term_proceeds=1200.0,
+        short_term_cost_basis=1500.0,
+        short_term_wash=300.0,
+    )
+    assert report is not None
+    assert report.matched_count + report.gap_count == 1
+    assert report.unmatched_count == 0
+
+
 def test_trade_date_alignment_is_matched():
     report = match_1099b_lots(
         [_lot(date_sold=date(2024, 7, 15))],
