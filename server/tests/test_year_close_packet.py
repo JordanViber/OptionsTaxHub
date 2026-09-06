@@ -862,18 +862,34 @@ def test_missing_realized_summary_does_not_synthesize_short_term_net():
 
 
 def test_mismatch_2026_sample_plus_2024_fixture_is_previous_year_supplement():
-    payload = build_packet_payload(MISMATCH_2026_ANALYSIS, analysis_id="analysis-2026-sample")
+    analysis = {
+        **MISMATCH_2026_ANALYSIS,
+        "suggestions": [
+            {
+                "symbol": "AMD",
+                "display_label": "AMD",
+                "quantity": 10,
+                "estimated_loss": 250.0,
+                "tax_savings_estimate": 37.5,
+                "is_long_term": True,
+            }
+        ],
+    }
+    payload = build_packet_payload(analysis, analysis_id="analysis-2026-sample")
     assert payload["same_year_compare"] is False
     assert payload["form_1099_tax_year"] == 2024
     assert payload["analysis_tax_year"] == 2026
+    assert payload.get("harvest_opportunities")
     text = packet_plain_text(payload)
     assert "previous-year supplement" in text
     assert "included as a dedicated page" not in text
-    pdf_text = _pdf_text(render_packet_pdf(payload))
+    pdf_bytes = render_packet_pdf(payload)
+    pdf_text = _pdf_text(pdf_bytes)
+    assert HARVEST_TITLE in pdf_text
     assert COMPARE_TITLE not in pdf_text
     assert "settlement date" in pdf_text.lower()
-    reader = PdfReader(BytesIO(render_packet_pdf(payload)))
-    assert len(reader.pages) == 1
+    reader = PdfReader(BytesIO(pdf_bytes))
+    assert len(reader.pages) >= 2
 
 
 def test_same_year_packet_pdf_has_two_column_compare_page():
@@ -972,25 +988,39 @@ def test_three_hundred_loss_plus_wash_does_not_look_like_settlement_gap():
 
 
 def test_unknown_1099_year_is_not_previous_year_mismatch_or_same_year_compare():
-    payload = build_packet_payload(
-        UNKNOWN_YEAR_ANALYSIS, analysis_id="analysis-unknown-year"
-    )
+    analysis = {
+        **UNKNOWN_YEAR_ANALYSIS,
+        "suggestions": [
+            {
+                "symbol": "AMD",
+                "display_label": "AMD",
+                "quantity": 10,
+                "estimated_loss": 250.0,
+                "tax_savings_estimate": 37.5,
+                "is_long_term": True,
+            }
+        ],
+    }
+    payload = build_packet_payload(analysis, analysis_id="analysis-unknown-year")
     assert payload["same_year_compare"] is False
     assert payload["unknown_1099_year"] is True
     assert payload["form_1099_tax_year"] is None
     assert payload["form_1099_applied"] is True
+    assert payload.get("harvest_opportunities")
     text = packet_plain_text(payload)
     assert UNKNOWN_1099_YEAR_COPY in text
     assert "1099 tax year: unknown" in text
     assert "previous-year supplement" not in text
     assert "does not match this export" not in text
     assert "included as a dedicated page" not in text
-    pdf_text = _pdf_text(render_packet_pdf(payload))
+    pdf_bytes = render_packet_pdf(payload)
+    pdf_text = _pdf_text(pdf_bytes)
+    assert HARVEST_TITLE in pdf_text
     assert COMPARE_TITLE not in pdf_text
     assert "could not be determined" in pdf_text
     assert "not a previous-year mismatch" in pdf_text
-    reader = PdfReader(BytesIO(render_packet_pdf(payload)))
-    assert len(reader.pages) == 1
+    reader = PdfReader(BytesIO(pdf_bytes))
+    assert len(reader.pages) >= 2
 
 
 def test_same_year_compare_is_visible_without_payment_but_download_stays_gated(monkeypatch):
