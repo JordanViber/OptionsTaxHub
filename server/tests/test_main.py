@@ -2108,6 +2108,12 @@ def test_unpaid_analyze_lot_match_report_is_counts_only(monkeypatch):
     assert report["gap"] == []
     assert report["unmatched"] == []
     assert report["gap_count"] >= 3
+    public_json = response.text
+    assert "matched_settlement_gap" not in public_json
+    assert "1099_only" not in public_json
+    assert "date_sold_1099" not in public_json
+    lots = (body.get("supplemental_1099") or {}).get("lots") or []
+    assert lots == []
     stored = get_payload(body["analysis_id"])
     assert stored is not None
     stored_report = stored["lot_match_report"]
@@ -2144,6 +2150,7 @@ def test_paid_year_analyze_includes_lot_match_rows(monkeypatch):
     assert report["gap"]
     assert {row["symbol"] for row in report["gap"]} >= {"NVDA", "TSLA", "AMD"}
     assert any(row["symbol"] == "SPX" for row in report["unmatched"])
+    assert body["supplemental_1099"]["lots"]
 
 
 def test_analyze_unknown_1099_year_is_not_mismatch_or_same_year_compare(monkeypatch):

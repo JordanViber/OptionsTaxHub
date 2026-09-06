@@ -85,6 +85,7 @@ import {
   csvWashSaleDisallowedTotal,
   isSameYear1099Compare,
   isUnknown1099Year,
+  redactUnpaidLotMatch,
 } from "@/lib/supplemental1099";
 import YearClosePacketPanel, {
   isYearClosePacketPaid,
@@ -259,7 +260,10 @@ function restoreAnalysisFromStorage(): PortfolioAnalysis | null {
 // Helper function: save analysis to session storage
 function saveAnalysisToStorage(analysis: PortfolioAnalysis): void {
   try {
-    sessionStorage.setItem("optionstaxhub-analysis", JSON.stringify(analysis));
+    sessionStorage.setItem(
+      "optionstaxhub-analysis",
+      JSON.stringify(redactUnpaidLotMatch(analysis)),
+    );
   } catch {
     // Storage full — ignore
   }

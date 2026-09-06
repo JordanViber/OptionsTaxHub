@@ -1,4 +1,8 @@
-import type { RealizedSummary, Supplemental1099Summary } from "@/lib/types";
+import type {
+  PortfolioAnalysis,
+  RealizedSummary,
+  Supplemental1099Summary,
+} from "@/lib/types";
 
 export const SUPPLEMENTAL_1099_UPLOAD_TITLE =
   "Robinhood 1099 for the tax year you are closing";
@@ -57,6 +61,23 @@ export const SUPPLEMENTAL_1099_AFTER_FIRST_RUN_COPY =
 
 export const SUPPLEMENTAL_1099_FIRST_RUN_HINT =
   "You can also attach the Robinhood 1099 PDF for the tax year you are closing next to the CSV. Totals compare stays free; lot-matched 1099-B is in the $49 packet.";
+
+export function redactUnpaidLotMatch(analysis: PortfolioAnalysis): PortfolioAnalysis {
+  if (analysis.packet_unlocked) {
+    return analysis;
+  }
+  const report = analysis.lot_match_report;
+  const supplemental = analysis.supplemental_1099;
+  return {
+    ...analysis,
+    lot_match_report: report
+      ? { ...report, matched: [], gap: [], unmatched: [] }
+      : report,
+    supplemental_1099: supplemental
+      ? { ...supplemental, lots: [] }
+      : supplemental,
+  };
+}
 
 export function formatUsd(value: number): string {
   return new Intl.NumberFormat("en-US", {

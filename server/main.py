@@ -895,15 +895,25 @@ def _counts_only_lot_match_report(report: LotMatchReport) -> LotMatchReport:
 
 
 def _public_analysis(result: PortfolioAnalysis) -> PortfolioAnalysis:
-    """Hide raw trades and unpaid lot rows from the browser payload."""
+    """Hide raw trades and unpaid lot-level 1099-B rows from the browser payload.
+
+    Unpaid/guest analyze JSON (and anything persisted from it) must not include
+    lot dates, amounts, or statuses. Counts stay so the $49 teaser still works.
+    """
     updates: dict = {}
     book = result.activity_book
     if book and book.transactions:
         updates["activity_book"] = book.model_copy(update={"transactions": []})
-    if not result.packet_unlocked and result.lot_match_report is not None:
-        updates["lot_match_report"] = _counts_only_lot_match_report(
-            result.lot_match_report
-        )
+    if not result.packet_unlocked:
+        if result.lot_match_report is not None:
+            updates["lot_match_report"] = _counts_only_lot_match_report(
+                result.lot_match_report
+            )
+        supplemental = result.supplemental_1099
+        if supplemental is not None and supplemental.lots:
+            updates["supplemental_1099"] = supplemental.model_copy(
+                update={"lots": []}
+            )
     if not updates:
         return result
     return result.model_copy(update=updates)
@@ -1212,8 +1222,9 @@ async def _run_portfolio_analysis(
     remember_analysis(analysis_id, user_id, full_dump)
     public_result = _public_analysis(result)
 
-    # Save analysis to history for authenticated user (includes the trade book).
-    _save_history_best_effort(user_id, filename, summary, result)
+    # History follows the public payload so unpaid restore cannot leak lot rows.
+    # Full rows remain in PACKET_STORE for the paid PDF.
+    _save_history_best_effort(user_id, filename, summary, public_result)
 
     return public_result
 
