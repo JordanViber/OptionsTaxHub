@@ -1679,7 +1679,7 @@ def test_maybe_parse_supplemental_1099_returns_warning_for_year_mismatch(monkeyp
         ),
     )
 
-    summary, warnings = asyncio.run(
+    summary, warnings, _pdf = asyncio.run(
         _maybe_parse_supplemental_1099(DummyUpload(), {"CLSK"}, 2024)
     )
 
@@ -1708,7 +1708,7 @@ def test_maybe_parse_supplemental_1099_ignores_unparseable_pdf(monkeypatch):
 
     monkeypatch.setattr("main._parse_supplemental_1099_summary", fail_parse)
 
-    summary, warnings = asyncio.run(
+    summary, warnings, _pdf = asyncio.run(
         _maybe_parse_supplemental_1099(DummyUpload(), {"CLSK"}, 2024)
     )
 
@@ -1731,7 +1731,7 @@ def test_maybe_parse_supplemental_1099_rejects_non_pdf_content_type():
             await asyncio.sleep(0)
             return b"not-a-pdf"
 
-    summary, warnings = asyncio.run(
+    summary, warnings, _pdf = asyncio.run(
         _maybe_parse_supplemental_1099(DummyUpload(), {"CLSK"}, 2024)
     )
 
@@ -1754,7 +1754,7 @@ def test_maybe_parse_supplemental_1099_rejects_oversized_pdf(monkeypatch):
             # Return more than the allowed maximum to trigger the size guard
             return b"x" * (_MAX_SUPPLEMENTAL_PDF_BYTES + 1)
 
-    summary, warnings = asyncio.run(
+    summary, warnings, _pdf = asyncio.run(
         _maybe_parse_supplemental_1099(DummyUpload(), {"CLSK"}, 2024)
     )
 
@@ -1782,7 +1782,7 @@ def test_maybe_parse_supplemental_1099_ignores_empty_pdf(monkeypatch):
         lambda *_args, **_kwargs: Supplemental1099Summary(source_filename="empty.pdf"),
     )
 
-    summary, warnings = asyncio.run(
+    summary, warnings, _pdf = asyncio.run(
         _maybe_parse_supplemental_1099(DummyUpload(), {"CLSK"}, 2024)
     )
 
@@ -1816,7 +1816,7 @@ def test_maybe_parse_supplemental_1099_accepts_pdf_filename_without_content_type
         ),
     )
 
-    summary, warnings = asyncio.run(
+    summary, warnings, _pdf = asyncio.run(
         _maybe_parse_supplemental_1099(DummyUpload(), {"CLSK"}, 2024)
     )
 
@@ -1849,7 +1849,7 @@ def test_maybe_parse_same_year_1099_does_not_warn(monkeypatch):
         ),
     )
 
-    summary, warnings = asyncio.run(
+    summary, warnings, _pdf = asyncio.run(
         _maybe_parse_supplemental_1099(DummyUpload(), {"AMD"}, 2024)
     )
 
@@ -1885,7 +1885,7 @@ def test_maybe_parse_unknown_1099_year_is_not_mismatch(monkeypatch):
         ),
     )
 
-    summary, warnings = asyncio.run(
+    summary, warnings, _pdf = asyncio.run(
         _maybe_parse_supplemental_1099(DummyUpload(), {"AMD"}, 2024)
     )
 
@@ -2222,6 +2222,91 @@ def test_guest_sample_analyze_includes_lot_match_rows_without_unlocking(monkeypa
     assert {row["symbol"] for row in report["gap"]} >= {"NVDA", "TSLA", "AMD"}
     assert any(row["symbol"] == "SPX" for row in report["unmatched"])
     assert report["gap_count"] >= 3
+
+
+def test_trusted_sample_bytes_unlock_even_with_attacker_filenames(monkeypatch):
+    """Real in-app fixture bytes unlock lot rows; client filenames are ignored."""
+    _stub_analyze_network(monkeypatch)
+    repo = Path(__file__).resolve().parents[2]
+    sample_csv = (repo / "client" / "public" / "sample-robinhood-transactions.csv").read_bytes()
+    sample_1099 = (repo / "client" / "public" / "sample-robinhood-1099-2026.pdf").read_bytes()
+    response = client.post(
+        "/api/portfolio/analyze?tax_year=2026",
+        files={
+            "file": ("stolen.csv", sample_csv, "text/csv"),
+            "supplemental_1099": ("stolen.pdf", sample_1099, "application/pdf"),
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["packet_unlocked"] is False
+    assert body["sample_run"] is True
+    report = body["lot_match_report"]
+    assert {row["symbol"] for row in report["gap"]} >= {"NVDA", "TSLA", "AMD"}
+    assert any(
+        row["symbol"] == "SPX" and row["status"] == "1099_only"
+        for row in report["unmatched"]
+    )
+
+
+def test_sample_filenames_with_non_fixture_bytes_stay_counts_only(monkeypatch):
+    """Sample filenames with different bytes must not leak lot rows."""
+    _stub_analyze_network(monkeypatch)
+    csv_2024 = (
+        Path(__file__).resolve().parent / "fixtures" / "year_close_2024.csv"
+    ).read_bytes()
+    response = client.post(
+        "/api/portfolio/analyze?tax_year=2024",
+        files={
+            "file": ("sample-robinhood-transactions.csv", csv_2024, "text/csv"),
+            "supplemental_1099": (
+                "sample-robinhood-1099-2026.pdf",
+                _make_supplemental_1099_upload()[1],
+                "application/pdf",
+            ),
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["packet_unlocked"] is False
+    assert body.get("sample_run") is False
+    report = body["lot_match_report"]
+    assert report["matched"] == []
+    assert report["gap"] == []
+    assert report["unmatched"] == []
+    assert "date_sold_1099" not in response.text
+    assert "matched_settlement_gap" not in response.text
+
+
+def test_renamed_real_csv_does_not_unlock_lot_rows(monkeypatch):
+    """A real user CSV renamed as the sample file cannot unlock unless hashes match."""
+    _stub_analyze_network(monkeypatch)
+    csv_2024 = (
+        Path(__file__).resolve().parent / "fixtures" / "year_close_2024.csv"
+    ).read_bytes()
+    repo = Path(__file__).resolve().parents[2]
+    sample_1099 = (repo / "client" / "public" / "sample-robinhood-1099-2026.pdf").read_bytes()
+    response = client.post(
+        "/api/portfolio/analyze?tax_year=2026",
+        files={
+            "file": ("sample-robinhood-transactions.csv", csv_2024, "text/csv"),
+            "supplemental_1099": (
+                "sample-robinhood-1099-2026.pdf",
+                sample_1099,
+                "application/pdf",
+            ),
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["packet_unlocked"] is False
+    assert body.get("sample_run") is False
+    report = body.get("lot_match_report")
+    if report is not None:
+        assert report["matched"] == []
+        assert report["gap"] == []
+        assert report["unmatched"] == []
+    assert "date_sold_1099" not in response.text
 
 
 def test_unpaid_analyze_history_save_redacts_lot_rows(monkeypatch):

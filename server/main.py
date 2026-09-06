@@ -63,7 +63,7 @@ from csv_parser import parse_csv, RealizedEvent, transactions_to_tax_lots
 from lot_matcher import match_1099b_lots
 from ledger import (
     is_sample_csv_filename,
-    is_sample_1099_filename,
+    is_trusted_in_app_sample,
     merge_transaction_books,
     merge_warning,
     strip_book_transactions_dict,
@@ -763,7 +763,7 @@ async def _maybe_parse_supplemental_1099(
     supplemental_1099: UploadFile | None,
     current_symbols: set[str],
     dashboard_tax_year: int,
-) -> tuple[Supplemental1099Summary | None, list[str]]:
+) -> tuple[Supplemental1099Summary | None, list[str], bytes]:
     """Parse the optional 1099 PDF and return any user-facing warnings.
 
     Same-year (1099 tax year == dashboard tax year) is a first-class compare.
@@ -771,16 +771,17 @@ async def _maybe_parse_supplemental_1099(
     still shown as a previous-year supplement, with an honest mismatch warning.
     """
     if supplemental_1099 is None:
-        return None, []
+        return None, [], b""
 
     if not _is_pdf_upload(supplemental_1099):
-        return None, ["Supplemental 1099 must be a PDF file (received unsupported content type)."]
+        return None, ["Supplemental 1099 must be a PDF file (received unsupported content type)."], b""
 
     expected_previous_year = dashboard_tax_year - 1
+    supplemental_bytes = b""
     try:
         supplemental_bytes = await supplemental_1099.read(_MAX_SUPPLEMENTAL_PDF_BYTES + 1)
         if len(supplemental_bytes) > _MAX_SUPPLEMENTAL_PDF_BYTES:
-            return None, ["Supplemental 1099 PDF exceeds the 20 MB size limit and was ignored."]
+            return None, ["Supplemental 1099 PDF exceeds the 20 MB size limit and was ignored."], b""
         summary = _parse_supplemental_1099_summary(
             supplemental_bytes,
             supplemental_1099.filename or "1099.pdf",
@@ -789,10 +790,10 @@ async def _maybe_parse_supplemental_1099(
         )
     except Exception as exc:
         logger.warning("Failed to parse supplemental 1099 PDF: %s", exc, exc_info=True)
-        return None, ["Supplemental 1099 PDF could not be parsed and was ignored for this analysis."]
+        return None, ["Supplemental 1099 PDF could not be parsed and was ignored for this analysis."], supplemental_bytes
 
     if _is_empty_supplemental_summary(summary):
-        return None, ["Supplemental 1099 PDF could not be parsed and was ignored for this analysis."]
+        return None, ["Supplemental 1099 PDF could not be parsed and was ignored for this analysis."], supplemental_bytes
 
     warnings: list[str] = []
     if summary.tax_year is not None and summary.tax_year not in (
@@ -803,7 +804,7 @@ async def _maybe_parse_supplemental_1099(
             "The supplemental 1099 PDF was parsed successfully, but its tax year does not match the expected prior year for this analysis."
         )
 
-    return summary, warnings
+    return summary, warnings, supplemental_bytes
 
 
 def _apply_live_prices_to_tax_lots(tax_lots: list, all_warnings: list[str]) -> list:
@@ -1127,7 +1128,11 @@ async def _run_portfolio_analysis(
     tax_profile = _tax_profile_from_query(filing_status, estimated_income, tax_year)
 
     all_warnings = list(parse_errors)
-    supplemental_1099_summary, supplemental_1099_warnings = await _maybe_parse_supplemental_1099(
+    (
+        supplemental_1099_summary,
+        supplemental_1099_warnings,
+        supplemental_bytes,
+    ) = await _maybe_parse_supplemental_1099(
         supplemental_1099,
         {lot.symbol for lot in tax_lots},
         tax_profile.tax_year or 2026,
@@ -1221,14 +1226,7 @@ async def _run_portfolio_analysis(
         warnings=_summarize_warnings(all_warnings),
     )
     result = _apply_packet_year_grant(result, user_id)
-    form_1099_name = ""
-    if supplemental_1099_summary is not None:
-        form_1099_name = supplemental_1099_summary.source_filename or ""
-    if not form_1099_name and supplemental_1099 is not None:
-        form_1099_name = supplemental_1099.filename or ""
-    keep_lot_rows = is_sample_csv_filename(filename) and is_sample_1099_filename(
-        form_1099_name
-    )
+    keep_lot_rows = is_trusted_in_app_sample(contents, supplemental_bytes)
     if keep_lot_rows:
         result = result.model_copy(update={"sample_run": True})
     full_dump = (

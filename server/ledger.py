@@ -7,6 +7,7 @@ FIFO is replayed on the combined book.
 
 from __future__ import annotations
 
+import hashlib
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date
@@ -16,6 +17,13 @@ from models import Transaction
 
 SAMPLE_CSV_FILENAMES = frozenset({"sample-robinhood-transactions.csv"})
 SAMPLE_1099_FILENAMES = frozenset({"sample-robinhood-1099-2026.pdf"})
+# SHA-256 of client/public sample fixtures. Filenames are not trusted.
+SAMPLE_CSV_SHA256 = (
+    "b7928619296c9f38d26f770f6a08a473dea4ae6c045d0dd05aff7c79aaace146"
+)
+SAMPLE_1099_SHA256 = (
+    "16a2d2af4b80c4fed6febf6e798489911f27a0acbb17d0733a77f0baf0096ba8"
+)
 
 
 def _upload_basename(filename: str | None) -> str:
@@ -28,6 +36,30 @@ def is_sample_csv_filename(filename: str | None) -> bool:
 
 def is_sample_1099_filename(filename: str | None) -> bool:
     return _upload_basename(filename).lower() in SAMPLE_1099_FILENAMES
+
+
+def sha256_hex(data: bytes | None) -> str:
+    if not data:
+        return ""
+    return hashlib.sha256(data).hexdigest()
+
+
+def is_trusted_sample_csv_bytes(contents: bytes | None) -> bool:
+    return sha256_hex(contents) == SAMPLE_CSV_SHA256
+
+
+def is_trusted_sample_1099_bytes(contents: bytes | None) -> bool:
+    return sha256_hex(contents) == SAMPLE_1099_SHA256
+
+
+def is_trusted_in_app_sample(
+    csv_bytes: bytes | None,
+    pdf_bytes: bytes | None,
+) -> bool:
+    """True only when both uploads are the checked-in public sample fixtures."""
+    return is_trusted_sample_csv_bytes(csv_bytes) and is_trusted_sample_1099_bytes(
+        pdf_bytes
+    )
 
 
 def transaction_fingerprint(txn: Transaction) -> tuple:
