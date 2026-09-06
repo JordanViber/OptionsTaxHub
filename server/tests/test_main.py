@@ -2153,6 +2153,75 @@ def test_paid_year_analyze_includes_lot_match_rows(monkeypatch):
     assert body["supplemental_1099"]["lots"]
 
 
+def test_guest_analyze_lot_match_report_is_counts_only(monkeypatch):
+    """Unauthenticated analyze must not leak lot rows in the HTTP payload."""
+    _stub_analyze_network(monkeypatch)
+    repo = Path(__file__).resolve().parents[2]
+    sample_csv = (repo / "client" / "public" / "sample-robinhood-transactions.csv").read_bytes()
+    sample_1099 = (repo / "client" / "public" / "sample-robinhood-1099-2026.pdf").read_bytes()
+    main.app.dependency_overrides.pop(get_optional_user, None)
+    try:
+        response = client.post(
+            "/api/portfolio/analyze?tax_year=2026",
+            files={
+                "file": ("sample-robinhood-transactions.csv", sample_csv, "text/csv"),
+                "supplemental_1099": (
+                    "sample-robinhood-1099-2026.pdf",
+                    sample_1099,
+                    "application/pdf",
+                ),
+            },
+        )
+    finally:
+        main.app.dependency_overrides[get_optional_user] = mock_get_current_user
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["packet_unlocked"] is False
+    report = body["lot_match_report"]
+    assert report["matched"] == []
+    assert report["gap"] == []
+    assert report["unmatched"] == []
+    assert report["gap_count"] >= 3
+    assert "matched_settlement_gap" not in response.text
+    assert "date_sold_1099" not in response.text
+    assert (body.get("supplemental_1099") or {}).get("lots") == []
+
+
+def test_unpaid_analyze_history_save_redacts_lot_rows(monkeypatch):
+    """History persist uses the public payload so restore cannot leak lot rows."""
+    saved = {}
+
+    def capture_save(_user_id, _filename, _summary, result):
+        saved["result"] = result
+
+    _stub_analyze_network(monkeypatch)
+    monkeypatch.setattr("main._save_history_best_effort", capture_save)
+    repo = Path(__file__).resolve().parents[2]
+    sample_csv = (repo / "client" / "public" / "sample-robinhood-transactions.csv").read_bytes()
+    sample_1099 = (repo / "client" / "public" / "sample-robinhood-1099-2026.pdf").read_bytes()
+    response = client.post(
+        "/api/portfolio/analyze?tax_year=2026",
+        files={
+            "file": ("sample-robinhood-transactions.csv", sample_csv, "text/csv"),
+            "supplemental_1099": (
+                "sample-robinhood-1099-2026.pdf",
+                sample_1099,
+                "application/pdf",
+            ),
+        },
+    )
+    assert response.status_code == 200, response.text
+    public = saved["result"]
+    report = public.lot_match_report
+    assert report is not None
+    assert report.matched == []
+    assert report.gap == []
+    assert report.unmatched == []
+    dump = public.model_dump(mode="json")
+    assert "date_sold_1099" not in str(dump.get("lot_match_report"))
+    assert dump.get("supplemental_1099", {}).get("lots") == []
+
+
 def test_analyze_unknown_1099_year_is_not_mismatch_or_same_year_compare(monkeypatch):
     from io import BytesIO
 
