@@ -30,7 +30,7 @@ const API_URL = !_RAW_API_URL || _isLocalhost ? "" : _RAW_API_URL;
 
 export const YEAR_CLOSE_PACKET_TITLE = "Year-close packet — $49";
 export const YEAR_CLOSE_PACKET_COPY =
-  "This is a reconciliation packet, not a filed Form 8949 and not a rebuild of lots.";
+  "This is a reconciliation packet, not a filed Form 8949. Lot-matched 1099-B is a worksheet for this run.";
 export const PACKET_CHECKOUT_INFLIGHT_KEY =
   "optionstaxhub-packet-checkout-inflight";
 export const PACKET_CHECKOUT_CANCELED_COPY =
@@ -125,6 +125,7 @@ function compactAnalysis(analysis: PortfolioAnalysis) {
       purchase_date: lot.purchase_date,
       wash_sale_disallowed: lot.wash_sale_disallowed,
     })),
+    lot_match_report: analysis.lot_match_report ?? null,
   };
 }
 
@@ -322,7 +323,7 @@ export default function YearClosePacketPanel({
             {YEAR_CLOSE_PACKET_COPY}{" "}
             {paid
               ? "Unlocked for this tax year — later CSV updates stay included, no second $49."
-              : "One-time payment — not a subscription and not a tip. Unlocks lot-level harvest instructions, wash-sale events, tax-lot detail, and the downloadable PDF."}
+              : "One-time payment — not a subscription and not a tip. Unlocks lot-matched 1099-B, lot-level harvest instructions, wash-sale events, and the downloadable PDF."}
           </Typography>
         </Box>
         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>

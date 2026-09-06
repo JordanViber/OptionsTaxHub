@@ -2,7 +2,13 @@ from pathlib import Path
 
 import pytest
 
-from pdf_1099_parser import extract_text_from_pdf, parse_robinhood_1099_pdf
+from datetime import date
+
+from pdf_1099_parser import (
+    extract_1099b_lots,
+    extract_text_from_pdf,
+    parse_robinhood_1099_pdf,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -43,6 +49,84 @@ def test_parse_robinhood_1099_pdf_extracts_summary_and_symbols(
     assert any("expected prior tax year (2024)" in insight for insight in summary.insights)
     assert any("$17,442.80" in insight for insight in summary.insights)
 
+    matchable = [lot for lot in summary.lots if not lot.is_aggregate]
+    assert matchable, "expected 1099-B lots from the 2024 fixture"
+    first = matchable[0]
+    assert "BITFARMS" in (first.description or "").upper()
+    assert first.cusip == "09173B107"
+    assert first.date_sold == date(2024, 1, 2)
+    assert first.quantity == pytest.approx(88.757)
+    assert first.proceeds == pytest.approx(294.66)
+    assert first.wash_sale_disallowed == pytest.approx(1.30)
+    assert all(lot.proceeds != pytest.approx(8903.04) for lot in matchable)
+
+    option_lots = [
+        lot
+        for lot in matchable
+        if not lot.cusip and ("CALL" in (lot.description or "").upper() or "PUT" in (lot.description or "").upper())
+    ]
+    assert option_lots, "option 1099-B headers with blank CUSIP should still parse"
+    assert any(lot.symbol == "BTDR" for lot in option_lots)
+    assert any(lot.symbol == "CLSK" for lot in option_lots)
+
+
+def test_option_security_header_with_blank_cusip_parses_option_sale():
+    text = (
+        "Proceeds from Broker and Barter Exchange Transactions\n"
+        "SHORT TERM TRANSACTIONS FOR COVERED TAX LOTS\n"
+        "Report on Form 8949, Part I with Box A checked.\n"
+        "BTDR 12/20/2024 CALL $10.00 / CUSIP:   / Symbol: BTDR 12/20/24 C 10.000\n"
+        "07/15/24 1.000 399.94 06/24/24 300.03 ... 99.91 Option sale\n"
+        "Security total: 399.94 300.03 0.00 99.91\n"
+    )
+    lots = extract_1099b_lots(text)
+    assert len(lots) == 1
+    lot = lots[0]
+    assert lot.symbol == "BTDR"
+    assert lot.cusip == ""
+    assert "CALL" in lot.description.upper()
+    assert lot.quantity == pytest.approx(1.0)
+    assert lot.proceeds == pytest.approx(399.94)
+    assert lot.cost_basis == pytest.approx(300.03)
+    assert lot.additional_info.lower() == "option sale"
+    assert lot.is_aggregate is False
+
+
+def test_live_2024_blank_cusip_option_lots_reach_the_worksheet(
+    robinhood_1099_bytes: bytes,
+):
+    from lot_matcher import match_1099b_lots
+    from year_close_packet import lot_match_plain_text
+
+    summary = parse_robinhood_1099_pdf(
+        robinhood_1099_bytes,
+        current_symbols={"CLSK", "BTDR"},
+        filename="2024-robinhood-1099.pdf",
+    )
+    report = match_1099b_lots(
+        summary.lots,
+        [],
+        form_1099_tax_year=2024,
+        analysis_tax_year=2024,
+        short_term_proceeds=summary.short_term_proceeds,
+        long_term_proceeds=summary.long_term_proceeds,
+        short_term_cost_basis=summary.short_term_cost_basis,
+        long_term_cost_basis=summary.long_term_cost_basis,
+        short_term_wash=summary.short_term_wash_sale_disallowed,
+        long_term_wash=summary.long_term_wash_sale_disallowed,
+    )
+    assert report is not None
+    option_rows = [
+        row
+        for row in report.unmatched
+        if row.status == "1099_only" and row.symbol in {"CLSK", "BTDR"}
+    ]
+    assert option_rows, "blank-CUSIP option lots should appear on the worksheet"
+    text = lot_match_plain_text(
+        {"lot_match_report": report.model_dump(mode="json")}
+    )
+    assert "1099_only CLSK" in text or "1099_only BTDR" in text
+
 
 def test_parse_robinhood_1099_pdf_handles_missing_totals_and_unknown_year(monkeypatch):
     monkeypatch.setattr(
@@ -65,6 +149,7 @@ def test_parse_robinhood_1099_pdf_handles_missing_totals_and_unknown_year(monkey
     assert summary.referenced_symbols == []
     assert summary.matched_symbols == []
     assert summary.insights == []
+    assert summary.lots == []
 
 
 def test_parse_robinhood_1099_pdf_reports_year_mismatch_and_unmatched_symbols(monkeypatch):
@@ -155,3 +240,17 @@ def test_parse_2026_sample_robinhood_1099_pdf_extracts_locked_short_term_totals(
     assert summary.long_term_net_gain == pytest.approx(0.00)
     assert summary.referenced_symbols == ["AMD", "NVDA", "SPX", "TSLA"]
     assert summary.matched_symbols == ["AMD", "NVDA", "TSLA"]
+
+    by_symbol = {lot.symbol: lot for lot in summary.lots if not lot.is_aggregate}
+    assert set(by_symbol) == {"AMD", "NVDA", "SPX", "TSLA"}
+    assert by_symbol["NVDA"].quantity == pytest.approx(12)
+    assert by_symbol["NVDA"].date_sold == date(2026, 2, 20)
+    assert by_symbol["NVDA"].proceeds == pytest.approx(2976.00)
+    assert by_symbol["NVDA"].cost_basis == pytest.approx(3360.00)
+    assert by_symbol["NVDA"].wash_sale_disallowed == pytest.approx(384.00)
+    assert by_symbol["TSLA"].quantity == pytest.approx(4)
+    assert by_symbol["AMD"].quantity == pytest.approx(10)
+    assert by_symbol["AMD"].wash_sale_disallowed == pytest.approx(300.00)
+    assert by_symbol["SPX"].proceeds == pytest.approx(2699.00)
+    assert by_symbol["SPX"].cost_basis == pytest.approx(0.00)
+    assert by_symbol["SPX"].date_sold == date(2027, 1, 2)

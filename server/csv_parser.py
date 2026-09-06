@@ -35,6 +35,9 @@ class RealizedEvent:
     sale_proceeds: float
     pnl: float
     is_long_term: bool
+    purchase_date: Optional[date] = None
+    settle_date: Optional[date] = None
+    asset_type: AssetType = AssetType.STOCK
 
 
 # Column name constants (avoid duplication)
@@ -501,6 +504,9 @@ def _close_lots_fifo(
             sale_proceeds=proceeds_closed,
             pnl=pnl,
             is_long_term=is_long_term,
+            purchase_date=oldest_lot.purchase_date,
+            settle_date=txn.settle_date,
+            asset_type=oldest_lot.asset_type,
         ))
 
         if oldest_lot.quantity <= remaining_to_sell:
