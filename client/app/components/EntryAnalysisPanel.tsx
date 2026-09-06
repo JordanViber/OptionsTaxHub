@@ -14,6 +14,7 @@ import {
   analyzeEntry,
   buildEntryContextLine,
   formatUsdCents,
+  type EntryAnalysisResult,
   type EntryProposal,
   type OptionRight,
   type OptionSide,
@@ -52,6 +53,12 @@ function formatPayoffMoney(value: number | null): string {
   return formatUsdCents(value);
 }
 
+function isEntryFail(
+  result: EntryAnalysisResult,
+): result is Extract<EntryAnalysisResult, { ok: false }> {
+  return result.ok === false;
+}
+
 export default function EntryAnalysisPanel({
   positions = [],
 }: Readonly<{
@@ -80,6 +87,10 @@ export default function EntryAnalysisPanel({
 
   const analysis = analyzeEntry(proposal);
   const contextLine = buildEntryContextLine(proposal, positions);
+  const fail = isEntryFail(analysis) ? analysis : null;
+  const failTestId =
+    fail?.reason === "incomplete" ? "entry-empty" : "entry-error";
+  const failMessage = fail?.message ?? null;
 
   return (
     <Box
@@ -250,11 +261,9 @@ export default function EntryAnalysisPanel({
           <Typography
             variant="body2"
             color="text.secondary"
-            data-testid={
-              analysis.reason === "incomplete" ? "entry-empty" : "entry-error"
-            }
+            data-testid={failTestId}
           >
-            {analysis.message}
+            {failMessage}
           </Typography>
         )}
 
