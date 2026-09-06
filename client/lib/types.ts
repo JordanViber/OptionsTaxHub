@@ -56,7 +56,6 @@ export interface Position {
   asset_type: AssetType;
   tax_lots: TaxLot[];
   wash_sale_risk: boolean;
-  contract_label?: string | null;
 }
 
 // --- Wash-Sale ---

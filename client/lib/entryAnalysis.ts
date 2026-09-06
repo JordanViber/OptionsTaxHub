@@ -207,7 +207,7 @@ function optionLabel(position: Position): string {
 
 function holdsSameContract(
   position: Position,
-  proposal: Pick<EntryProposal, "symbol" | "right" | "strike" | "expiration">,
+  proposal: EntryProposal,
 ): boolean {
   const parsed = parseContractLabel(optionLabel(position));
   if (!parsed) return false;
