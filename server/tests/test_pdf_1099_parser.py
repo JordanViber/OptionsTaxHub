@@ -4,7 +4,11 @@ import pytest
 
 from datetime import date
 
-from pdf_1099_parser import extract_text_from_pdf, parse_robinhood_1099_pdf
+from pdf_1099_parser import (
+    extract_1099b_lots,
+    extract_text_from_pdf,
+    parse_robinhood_1099_pdf,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -55,6 +59,37 @@ def test_parse_robinhood_1099_pdf_extracts_summary_and_symbols(
     assert first.proceeds == pytest.approx(294.66)
     assert first.wash_sale_disallowed == pytest.approx(1.30)
     assert all(lot.proceeds != pytest.approx(8903.04) for lot in matchable)
+
+    option_lots = [
+        lot
+        for lot in matchable
+        if not lot.cusip and ("CALL" in (lot.description or "").upper() or "PUT" in (lot.description or "").upper())
+    ]
+    assert option_lots, "option 1099-B headers with blank CUSIP should still parse"
+    assert any(lot.symbol == "BTDR" for lot in option_lots)
+    assert any(lot.symbol == "CLSK" for lot in option_lots)
+
+
+def test_option_security_header_with_blank_cusip_parses_option_sale():
+    text = (
+        "Proceeds from Broker and Barter Exchange Transactions\n"
+        "SHORT TERM TRANSACTIONS FOR COVERED TAX LOTS\n"
+        "Report on Form 8949, Part I with Box A checked.\n"
+        "BTDR 12/20/2024 CALL $10.00 / CUSIP:   / Symbol: BTDR 12/20/24 C 10.000\n"
+        "07/15/24 1.000 399.94 06/24/24 300.03 ... 99.91 Option sale\n"
+        "Security total: 399.94 300.03 0.00 99.91\n"
+    )
+    lots = extract_1099b_lots(text)
+    assert len(lots) == 1
+    lot = lots[0]
+    assert lot.symbol == "BTDR"
+    assert lot.cusip == ""
+    assert "CALL" in lot.description.upper()
+    assert lot.quantity == pytest.approx(1.0)
+    assert lot.proceeds == pytest.approx(399.94)
+    assert lot.cost_basis == pytest.approx(300.03)
+    assert lot.additional_info.lower() == "option sale"
+    assert lot.is_aggregate is False
 
 
 def test_parse_robinhood_1099_pdf_handles_missing_totals_and_unknown_year(monkeypatch):

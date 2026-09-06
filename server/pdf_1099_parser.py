@@ -59,7 +59,7 @@ _SAMPLE_SPX_AMOUNTS = re.compile(
     re.IGNORECASE,
 )
 _SECURITY_HEADER = re.compile(
-    r"(?P<description>[A-Z0-9][^/]{1,90}?)\s*/\s*CUSIP:\s*(?P<cusip>[A-Z0-9]+)"
+    r"(?P<description>[A-Z0-9][^/]{1,90}?)\s*/\s*CUSIP:\s*(?P<cusip>[A-Z0-9]*)"
     r"\s*/\s*Symbol:\s*(?P<symbol>[A-Z][A-Z0-9.\-]{0,9})?",
     re.IGNORECASE,
 )
@@ -71,7 +71,7 @@ _BROKER_LOT_ROW = re.compile(
     rf"(?P<cost>{_NUMBER})\s+"
     rf"(?:(?:(?P<wash>{_NUMBER})\s+W\s+)|\.\.\.\s+)?"
     rf"(?P<gain>{_NUMBER})\s+"
-    rf"(?P<info>Sale|Total of \d+ transactions)",
+    rf"(?P<info>Option sale|Sale|Total of \d+ transactions)",
     re.IGNORECASE,
 )
 _SECURITY_TOTAL = re.compile(r"Security\s*total\s*:", re.IGNORECASE)
@@ -260,7 +260,7 @@ def _extract_broker_1099b_lots(text: str) -> list[Form1099BLot]:
         if total_at:
             chunk = chunk[: total_at.start()]
         description = " ".join(header.group("description").split())
-        cusip = header.group("cusip")
+        cusip = header.group("cusip") or ""
         symbol = (header.group("symbol") or "").upper()
         for row in _BROKER_LOT_ROW.finditer(chunk):
             info = row.group("info")
