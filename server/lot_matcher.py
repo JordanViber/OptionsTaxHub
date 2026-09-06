@@ -119,6 +119,7 @@ def _candidate_score(lot: Form1099BLot, event: RealizedEvent) -> Optional[tuple[
         return None
     date_score = _date_score(lot, event)
     if date_score == 0:
+        # Empty 1099 tickers wildcard symbol; date is the remaining guard.
         return None
     basis_bonus = 1 if _cents_close(lot.cost_basis, export_basis) else 0
     return (date_score, basis_bonus, 0)

@@ -146,6 +146,47 @@ def test_dates_outside_settle_window_are_not_candidates():
     assert statuses == {"1099_only", "csv_only"}
 
 
+def test_blank_1099_symbol_does_not_wildcard_unrelated_dates():
+    """Empty broker ticker matches any export symbol. Unrelated dates must
+    still not pair on qty/proceeds alone.
+    """
+    report = match_1099b_lots(
+        [_lot(symbol="", date_sold=date(2024, 7, 17))],
+        [
+            _event(
+                symbol="NVDA",
+                sale_date=date(2024, 12, 15),
+                settle_date=date(2024, 12, 17),
+            )
+        ],
+        form_1099_tax_year=2024,
+        analysis_tax_year=2024,
+        short_term_proceeds=1200.0,
+        short_term_cost_basis=1500.0,
+        short_term_wash=300.0,
+    )
+    assert report is not None
+    assert report.matched_count == 0
+    assert report.gap_count == 0
+    statuses = {row.status for row in report.unmatched}
+    assert statuses == {"1099_only", "csv_only"}
+
+
+def test_blank_1099_symbol_still_pairs_inside_settle_window():
+    report = match_1099b_lots(
+        [_lot(symbol="", date_sold=date(2024, 7, 17))],
+        [_event(symbol="NVDA")],
+        form_1099_tax_year=2024,
+        analysis_tax_year=2024,
+        short_term_proceeds=1200.0,
+        short_term_cost_basis=1500.0,
+        short_term_wash=300.0,
+    )
+    assert report is not None
+    assert report.matched_count + report.gap_count == 1
+    assert report.unmatched_count == 0
+
+
 def test_dates_within_settle_window_still_pair():
     report = match_1099b_lots(
         [_lot(date_sold=date(2024, 7, 17))],
