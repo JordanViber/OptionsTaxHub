@@ -1897,7 +1897,12 @@ def test_maybe_parse_unknown_1099_year_is_not_mismatch(monkeypatch):
 
 def test_analyze_same_year_1099_compare_vs_2026_sample_mismatch(monkeypatch):
     """2024 CSV + 2024 fixture is a same-year compare; 2026 sample is not."""
-    from year_close_packet import COMPARE_TITLE, build_packet_payload, render_packet_pdf
+    from year_close_packet import (
+        COMPARE_TITLE,
+        HARVEST_TITLE,
+        build_packet_payload,
+        render_packet_pdf,
+    )
     from pypdf import PdfReader
     from io import BytesIO
 
@@ -1952,6 +1957,8 @@ def test_analyze_same_year_1099_compare_vs_2026_sample_mismatch(monkeypatch):
     assert len(same_reader.pages) >= 2
     same_text = "\n".join((page.extract_text() or "") for page in same_reader.pages)
     assert COMPARE_TITLE in same_text
+    assert HARVEST_TITLE in same_text
+    assert same_payload.get("harvest_opportunities")
     assert "Broker 1099 (settlement date)" in same_text
     assert "This export (trade date)" in same_text
     assert "$-300.00" not in same_text
@@ -1970,12 +1977,14 @@ def test_analyze_same_year_1099_compare_vs_2026_sample_mismatch(monkeypatch):
     assert mismatch_body["supplemental_1099"]["tax_year"] == 2024
     mismatch_payload = build_packet_payload(mismatch_body)
     assert mismatch_payload["same_year_compare"] is False
+    assert mismatch_payload.get("harvest_opportunities")
     mismatch_pdf = render_packet_pdf(mismatch_payload)
     mismatch_reader = PdfReader(BytesIO(mismatch_pdf))
-    assert len(mismatch_reader.pages) == 1
+    assert len(mismatch_reader.pages) >= 2
     mismatch_text = "\n".join(
         (page.extract_text() or "") for page in mismatch_reader.pages
     )
+    assert HARVEST_TITLE in mismatch_text
     assert COMPARE_TITLE not in mismatch_text
     assert "previous-year supplement" in mismatch_text
 
@@ -1983,7 +1992,12 @@ def test_analyze_same_year_1099_compare_vs_2026_sample_mismatch(monkeypatch):
 def test_analyze_2026_sample_csv_and_1099_is_same_year_compare(monkeypatch):
     """Open-the-sample pair: 2026 CSV + 2026 1099 is a same-year compare."""
     import pytest
-    from year_close_packet import COMPARE_TITLE, build_packet_payload, render_packet_pdf
+    from year_close_packet import (
+        COMPARE_TITLE,
+        HARVEST_TITLE,
+        build_packet_payload,
+        render_packet_pdf,
+    )
     from pypdf import PdfReader
     from io import BytesIO
 
@@ -2055,6 +2069,8 @@ def test_analyze_2026_sample_csv_and_1099_is_same_year_compare(monkeypatch):
         for page in PdfReader(BytesIO(same_pdf)).pages
     )
     assert COMPARE_TITLE in same_text
+    assert HARVEST_TITLE in same_text
+    assert same_payload.get("harvest_opportunities")
     assert "Broker 1099 (settlement date)" in same_text
     assert "$2,699.00" in same_text
     assert "Lot-matched 1099-B" in same_text
@@ -2077,10 +2093,14 @@ def test_analyze_2026_sample_csv_and_1099_is_same_year_compare(monkeypatch):
     assert mismatch_body["supplemental_1099"]["tax_year"] == 2024
     mismatch_payload = build_packet_payload(mismatch_body)
     assert mismatch_payload["same_year_compare"] is False
+    assert mismatch_payload.get("harvest_opportunities")
+    mismatch_pdf = render_packet_pdf(mismatch_payload)
+    mismatch_reader = PdfReader(BytesIO(mismatch_pdf))
+    assert len(mismatch_reader.pages) >= 2
     mismatch_text = "\n".join(
-        (page.extract_text() or "")
-        for page in PdfReader(BytesIO(render_packet_pdf(mismatch_payload))).pages
+        (page.extract_text() or "") for page in mismatch_reader.pages
     )
+    assert HARVEST_TITLE in mismatch_text
     assert COMPARE_TITLE not in mismatch_text
     assert "previous-year supplement" in mismatch_text
 
@@ -2348,6 +2368,7 @@ def test_analyze_unknown_1099_year_is_not_mismatch_or_same_year_compare(monkeypa
     from models import Supplemental1099Summary
     from year_close_packet import (
         COMPARE_TITLE,
+        HARVEST_TITLE,
         UNKNOWN_1099_YEAR_COPY,
         build_packet_payload,
         packet_plain_text,
@@ -2385,14 +2406,16 @@ def test_analyze_unknown_1099_year_is_not_mismatch_or_same_year_compare(monkeypa
     text = packet_plain_text(payload)
     assert UNKNOWN_1099_YEAR_COPY in text
     assert "previous-year supplement" not in text
+    assert payload.get("harvest_opportunities")
     pdf_text = "\n".join(
         (page.extract_text() or "")
         for page in PdfReader(BytesIO(render_packet_pdf(payload))).pages
     )
+    assert HARVEST_TITLE in pdf_text
     assert COMPARE_TITLE not in pdf_text
     assert "could not be determined" in pdf_text
     reader = PdfReader(BytesIO(render_packet_pdf(payload)))
-    assert len(reader.pages) == 1
+    assert len(reader.pages) >= 2
 
 
 def test_get_prices_empty_symbols():
