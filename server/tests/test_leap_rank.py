@@ -147,11 +147,38 @@ def test_put_score_and_copy():
     )
     assert row is not None
     assert row.breakeven == pytest.approx(98)
-    assert row.implied_cagr == pytest.approx(1 - 98 / 100)
+    decline = 1 - 98 / 100
+    reciprocal = 100 / 98 - 1
+    assert row.implied_cagr == pytest.approx(decline)
+    assert row.implied_cagr != pytest.approx(reciprocal)
     why = why_vs_stock(row, 100)
     assert "annualized decline" in why
-    assert "break even" in why
+    assert "break even vs spot" in why
     assert "higher CAGR" not in why
+    assert "2.0%" in why
+
+
+def test_put_rank_order_is_less_annualized_decline_first():
+    ranked = rank_contracts(
+        symbol="SPY",
+        right="put",
+        spot=100,
+        as_of=AS_OF,
+        rows=[
+            _row(strike=100, bid=5.9, ask=6.1, last=6.0),
+            _row(strike=110, bid=11.9, ask=12.1, last=12.0),
+            _row(strike=105, bid=7.9, ask=8.1, last=8.0),
+        ],
+    )
+    assert [row.strike for row in ranked] == [110.0, 105.0, 100.0]
+    assert ranked[0].implied_cagr < ranked[1].implied_cagr < ranked[2].implied_cagr
+    why = why_vs_stock(ranked[0], 100)
+    assert "annualized decline" in why
+    assert "higher CAGR" not in why
+    vs_richer = why_vs_richer(ranked[0], ranked[1])
+    assert vs_richer is not None
+    assert vs_richer.startswith("Less annualized move to break even")
+    assert "higher CAGR" not in vs_richer
 
 
 def test_tie_break_lower_extrinsic_yield_wins():

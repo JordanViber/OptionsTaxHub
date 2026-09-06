@@ -338,6 +338,76 @@ describe("EntryAnalysisPanel", () => {
     ).toBeNull();
   });
 
+  it("ranks long puts with annualized decline copy, not call-style return", async () => {
+    mockLeapRankMutateAsync.mockResolvedValue({
+      ok: true,
+      symbol: "SPY",
+      right: "put",
+      spot: 100,
+      as_of: "2026-09-06",
+      expiry_from: "2027-09-06",
+      expiry_to: "2028-09-06",
+      expirations_used: ["2027-09-17"],
+      candidates_considered: 1,
+      warnings: [],
+      ranks: [
+        {
+          rank: 1,
+          contract_label: "SPY 9/17/2027 Put $110.00",
+          symbol: "SPY",
+          right: "put",
+          strike: 110,
+          expiration: "2027-09-17",
+          premium: 3,
+          premium_source: "mid",
+          bid: 2.9,
+          ask: 3.1,
+          last: 3,
+          dte: 376,
+          implied_cagr: 0.02,
+          leverage: 33.33,
+          intrinsic: 10,
+          extrinsic: 0,
+          extrinsic_yield: 0,
+          breakeven: 107,
+          why_vs_stock:
+            "Needs a 2.0% annualized decline in SPY to break even vs spot $100.00. This put costs $300.00 vs $10,000.00 for 100 shares (33.3× less capital). Time value is $0.00 (0.0% per year).",
+          why_vs_richer:
+            "Less annualized move to break even than the SPY 9/17/2027 Put $105.00 (2.0% vs 3.0%) because a higher strike.",
+        },
+      ],
+    });
+    render(<EntryAnalysisPanel />);
+    fireEvent.click(screen.getByTestId("entry-right-put"));
+    fireEvent.change(screen.getByTestId("entry-symbol"), {
+      target: { value: "SPY" },
+    });
+    fireEvent.click(screen.getByTestId("entry-rank-find"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("entry-rank-1")).toBeInTheDocument();
+    });
+    expect(mockLeapRankMutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ symbol: "SPY", right: "put" }),
+    );
+    expect(screen.getByTestId("entry-rank-1")).toHaveTextContent(
+      /2\.0% annualized decline to break even/,
+    );
+    expect(screen.getByTestId("entry-rank-1")).toHaveTextContent(
+      /annualized decline in SPY to break even vs spot/,
+    );
+    expect(screen.getByTestId("entry-rank-1")).toHaveTextContent(
+      /Less annualized move to break even/,
+    );
+    expect(screen.getByTestId("entry-rank-1")).not.toHaveTextContent(
+      /higher CAGR/i,
+    );
+
+    fireEvent.click(screen.getByTestId("entry-rank-1"));
+    expect(screen.getByTestId("entry-max-loss")).toHaveTextContent("$300.00");
+    expect(screen.getByTestId("entry-breakeven")).toHaveTextContent("$107.00");
+  });
+
   it("shows an honest empty rank list when quotes fail", async () => {
     mockLeapRankMutateAsync.mockResolvedValue({
       ok: false,

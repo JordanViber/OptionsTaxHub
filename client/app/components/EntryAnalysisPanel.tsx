@@ -91,8 +91,11 @@ function isEntryFail(
   return result.ok === false;
 }
 
-function formatImpliedMove(rate: number): string {
+function formatImpliedMove(rate: number, right: "call" | "put"): string {
   const pct = `${(Math.abs(rate) * 100).toFixed(1)}%`;
+  if (right === "put") {
+    return `${pct} annualized decline to break even`;
+  }
   return `${pct} annualized to break even`;
 }
 
@@ -416,7 +419,7 @@ export default function EntryAnalysisPanel({
                       #{candidate.rank} {candidate.contract_label}
                     </Typography>
                     <Typography variant="body2">
-                      {formatImpliedMove(candidate.implied_cagr)}
+                      {formatImpliedMove(candidate.implied_cagr, candidate.right)}
                     </Typography>
                     <Typography variant="caption" color="text.secondary">
                       {candidate.leverage.toFixed(1)}× vs 100 shares
