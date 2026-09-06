@@ -1,7 +1,12 @@
 """Helpers for extracting reconciliation context from Robinhood 1099 PDFs.
 
-Extracts broker-reported ST/LT totals and 1099-B lot rows. Matching those
-lots to CSV FIFO closes happens in lot_matcher — this module only parses.
+The goal of this module is not to fully rebuild lot-level history from the PDF.
+Instead, it extracts the high-signal broker-reported metadata that can improve
+portfolio analysis for edge cases such as wash-sale carryovers, assignments,
+splits, and renamed tickers.
+
+1099-B lot rows are parsed as additive context (totals extraction is unchanged).
+Matching those lots to CSV FIFO closes happens in lot_matcher.
 """
 
 from __future__ import annotations
