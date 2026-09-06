@@ -298,7 +298,23 @@ describe("buildEntryContextLine", () => {
       [tsla, option],
     );
     expect(line).toBe("Open TSLA: 100 sh and 1 option position");
-    expect(line).not.toMatch(/may be covered/i);
+    expect(line).not.toMatch(/covered|keep the shares/i);
+  });
+
+  it("does not claim covered when 100 sh plus an existing same-symbol call", () => {
+    const tsla = stockPosition("TSLA", 100);
+    const existingCall = optionPosition("TSLA", "TSLA 1/16/2027 Call $300.00");
+    const line = buildEntryContextLine(
+      proposal({
+        symbol: "TSLA",
+        right: "call",
+        side: "sell",
+        quantity: 1,
+      }),
+      [tsla, existingCall],
+    );
+    expect(line).toBe("Open TSLA: 100 sh and 1 option position");
+    expect(line).not.toMatch(/covered|may be covered|keep the shares/i);
   });
 
   it("does not claim covered when share count is short of 100 per contract", () => {
