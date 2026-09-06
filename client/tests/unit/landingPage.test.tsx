@@ -114,6 +114,9 @@ describe("LandingPage", () => {
     expect(screen.getByText("Harvest queue")).toBeInTheDocument();
     expect(screen.getByText("Wash-sale radar")).toBeInTheDocument();
     expect(screen.getByText("Lot ledger")).toBeInTheDocument();
+    expect(screen.getByText(/Robinhood whole-portfolio tax desk/i)).toBeInTheDocument();
+    expect(screen.getByText(/stocks and options — ranked by federal savings/i)).toBeInTheDocument();
+    expect(screen.getByText(/Whole book, not options-only/i)).toBeInTheDocument();
   });
 
   it("renders How the desk works with 3 steps", () => {
@@ -122,6 +125,11 @@ describe("LandingPage", () => {
     renderWithClient(<LandingPage />);
 
     expect(screen.getByText("How the desk works")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", {
+        name: /Robinhood whole-portfolio tax desk/,
+      }),
+    ).toBeInTheDocument();
     expect(screen.getByText("Drop a CSV")).toBeInTheDocument();
     expect(screen.getByText("Read the desk")).toBeInTheDocument();
     expect(screen.getByText("Take the packet")).toBeInTheDocument();

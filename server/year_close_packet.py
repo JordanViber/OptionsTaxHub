@@ -47,6 +47,13 @@ SETTLEMENT_DATE_FAQ = (
     "the split is visible."
 )
 
+HARVEST_TITLE = "Harvest opportunities"
+HARVEST_INTRO = (
+    "Open lots with unrealized losses and estimated federal tax savings "
+    "for this run. Not a filed Form 8949."
+)
+WASH_EVENTS_TITLE = "Wash-sale events"
+
 LOT_MATCH_TITLE = "Lot-matched 1099-B"
 LOT_MATCH_INTRO = (
     "Reconciliation worksheet, not a filed Form 8949. "
@@ -326,16 +333,19 @@ def export_realized_totals(analysis: dict[str, Any]) -> dict[str, float]:
 
 
 def csv_wash_sale_lots(analysis: dict[str, Any]) -> list[dict[str, Any]]:
-    """Wash-sale lots already computed on the analysis (CSV engine), not 1099 lots."""
+    """One wash-sale event per CSV flag. Do not also dump replacement tax lots."""
     lots: list[dict[str, Any]] = []
     seen: set[tuple[Any, ...]] = set()
 
     for flag in analysis.get("wash_sale_flags") or []:
+        amount = round(_as_float(flag.get("disallowed_loss")), 2)
+        if amount <= 0:
+            continue
         row = {
             "symbol": flag.get("symbol") or "",
             "sale_date": str(flag.get("sale_date") or ""),
             "repurchase_date": str(flag.get("repurchase_date") or ""),
-            "disallowed_loss": round(_as_float(flag.get("disallowed_loss")), 2),
+            "disallowed_loss": amount,
             "sale_quantity": _as_float(flag.get("sale_quantity")),
             "explanation": flag.get("explanation") or "",
             "source": "csv_wash_sale_flag",
@@ -351,31 +361,36 @@ def csv_wash_sale_lots(analysis: dict[str, Any]) -> list[dict[str, Any]]:
         seen.add(key)
         lots.append(row)
 
-    for lot in analysis.get("tax_lots") or []:
-        disallowed = round(_as_float(lot.get("wash_sale_disallowed")), 2)
-        if disallowed <= 0:
-            continue
-        row = {
-            "symbol": lot.get("symbol") or "",
-            "sale_date": "",
-            "repurchase_date": str(lot.get("purchase_date") or ""),
-            "disallowed_loss": disallowed,
-            "sale_quantity": _as_float(lot.get("quantity")),
-            "explanation": "Replacement lot with wash-sale disallowed loss from CSV analysis.",
-            "source": "csv_tax_lot",
-        }
-        key = (
-            row["symbol"],
-            row["sale_date"],
-            row["repurchase_date"],
-            row["disallowed_loss"],
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        lots.append(row)
-
     return lots
+
+
+def harvest_opportunities(analysis: dict[str, Any]) -> list[dict[str, Any]]:
+    """CPA-scannable harvest rows from existing suggestions. No engine rewrite."""
+    rows: list[dict[str, Any]] = []
+    for suggestion in analysis.get("suggestions") or []:
+        if not isinstance(suggestion, dict):
+            if hasattr(suggestion, "model_dump"):
+                suggestion = suggestion.model_dump(mode="json")
+            else:
+                continue
+        savings = round(_as_float(suggestion.get("tax_savings_estimate")), 2)
+        loss = round(_as_float(suggestion.get("estimated_loss")), 2)
+        if savings <= 0 and loss <= 0:
+            continue
+        symbol = (
+            suggestion.get("display_label")
+            or suggestion.get("symbol")
+            or "UNKNOWN"
+        )
+        rows.append(
+            {
+                "symbol": symbol,
+                "term": "LT" if suggestion.get("is_long_term") else "ST",
+                "estimated_federal_savings": savings,
+                "estimated_loss": loss,
+            }
+        )
+    return rows
 
 
 def build_packet_payload(
@@ -398,6 +413,7 @@ def build_packet_payload(
     unknown_year = bool(supplemental) and form_1099_tax_year is None
     export_totals = export_realized_totals(analysis)
     lot_report = _lot_match_payload(analysis.get("lot_match_report"))
+    harvest = harvest_opportunities(analysis)
     return {
         "analysis_id": analysis_id or analysis.get("analysis_id") or "",
         "product_name": PACKET_PRODUCT_NAME,
@@ -428,6 +444,7 @@ def build_packet_payload(
         "export_long_term_net": export_totals["long_term_net"],
         "export_wash_sale_disallowed": export_totals["wash_sale_disallowed"],
         "csv_wash_sale_lots": wash_lots,
+        "harvest_opportunities": harvest,
         "lot_match_report": lot_report,
         "settlement_date_faq": SETTLEMENT_DATE_FAQ,
         "options_wash_sale_faq": OPTIONS_WASH_SALE_FAQ,
@@ -462,6 +479,34 @@ def _fmt_date(value: Any) -> str:
         return value.isoformat()
     text = str(value).strip()
     return text[:10] if text else "—"
+
+
+def _wash_event_line(lot: dict[str, Any]) -> str:
+    symbol = lot.get("symbol") or "UNKNOWN"
+    return (
+        f"{symbol} {_money(lot.get('disallowed_loss') or 0)} disallowed  "
+        f"sale {_fmt_date(lot.get('sale_date'))}  "
+        f"repurchase {_fmt_date(lot.get('repurchase_date'))}"
+    )
+
+
+def _harvest_line(row: dict[str, Any]) -> str:
+    symbol = row.get("symbol") or "UNKNOWN"
+    term = row.get("term") or "ST"
+    return (
+        f"{symbol}  {term}  estimated federal savings "
+        f"{_money(row.get('estimated_federal_savings') or 0)}"
+    )
+
+
+def harvest_plain_text(payload: dict[str, Any]) -> str:
+    rows = payload.get("harvest_opportunities") or []
+    lines = [HARVEST_TITLE, HARVEST_INTRO, ""]
+    if rows:
+        lines.extend(_harvest_line(row) for row in rows)
+    else:
+        lines.append("None this run.")
+    return "\n".join(lines)
 
 
 def _lot_line(row: dict[str, Any]) -> str:
@@ -538,22 +583,13 @@ def packet_plain_text(payload: dict[str, Any]) -> str:
             "1099 tax year does not match this export; shown as a previous-year supplement."
         )
 
-    lines.append("Wash-sale lots from the CSV:")
+    lines.append(WASH_EVENTS_TITLE + ":")
     lots = payload.get("csv_wash_sale_lots") or []
     if not lots:
         lines.append("None flagged.")
     else:
         for lot in lots:
-            symbol = lot.get("symbol") or "UNKNOWN"
-            disallowed = _as_float(lot.get("disallowed_loss"))
-            lines.append(f"{symbol} {_money(disallowed)} disallowed")
-            extra = []
-            if lot.get("sale_date"):
-                extra.append(f"sale {lot['sale_date']}")
-            if lot.get("repurchase_date"):
-                extra.append(f"repurchase {lot['repurchase_date']}")
-            if extra:
-                lines.append("  " + ", ".join(extra))
+            lines.append(_wash_event_line(lot))
 
     report = payload.get("lot_match_report")
     if report:
@@ -721,6 +757,8 @@ def _assemble_pdf(page_streams: list[bytes]) -> bytes:
 def render_packet_pdf(payload: dict[str, Any]) -> bytes:
     """Server-side PDF from the structured payload (no extra PDF library)."""
     pages = [packet_plain_text(payload)]
+    if payload.get("harvest_opportunities"):
+        pages.append(harvest_plain_text(payload))
     if payload.get("same_year_compare"):
         pages.append(same_year_compare_plain_text(payload))
     if payload.get("lot_match_report"):

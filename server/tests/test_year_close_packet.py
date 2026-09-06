@@ -16,6 +16,7 @@ from stripe import StripeObject
 from year_close_packet import (
     COMPARE_GAP_COPY,
     COMPARE_TITLE,
+    HARVEST_TITLE,
     LOT_MATCH_TITLE,
     OPTIONS_WASH_SALE_FAQ,
     PACKET_AMOUNT_CENTS,
@@ -151,6 +152,10 @@ def test_payload_and_pdf_contain_1099_totals_amd_and_faqs():
     assert "$281,823.83" in text
     assert "$17,442.80" in text
     assert "AMD $300.00 disallowed" in text
+    assert text.count("AMD $300.00 disallowed") == 1
+    assert "sale 2025-07-15" in text
+    assert "repurchase 2025-07-25" in text
+    assert "Replacement lot with wash-sale disallowed" not in text
     assert SETTLEMENT_DATE_FAQ in text
     assert OPTIONS_WASH_SALE_FAQ in text
     assert PACKET_DISCLAIMER in text
@@ -1075,6 +1080,53 @@ def test_paid_pdf_has_matched_gap_unmatched_lot_sections():
     assert "csv_only META" in pdf_text
     assert "not a filed Form 8949" in pdf_text
     assert "we do not parse settlement" not in pdf_text.lower()
+
+
+def test_paid_pdf_has_harvest_rows_and_single_wash_event():
+    analysis = {
+        **LOT_MATCH_ANALYSIS,
+        "suggestions": [
+            {
+                "symbol": "TSLA",
+                "display_label": "TSLA",
+                "action": "SELL",
+                "quantity": 1,
+                "cost_basis_per_share": 250,
+                "estimated_loss": 50,
+                "tax_savings_estimate": 12.0,
+                "holding_period_days": 120,
+                "is_long_term": False,
+            },
+            {
+                "symbol": "AMD",
+                "display_label": "AMD",
+                "action": "SELL",
+                "quantity": 10,
+                "cost_basis_per_share": 125,
+                "estimated_loss": 300,
+                "tax_savings_estimate": 74.0,
+                "holding_period_days": 400,
+                "is_long_term": True,
+            },
+        ],
+    }
+    payload = build_packet_payload(analysis, analysis_id="analysis-harvest")
+    harvest = payload["harvest_opportunities"]
+    assert len(harvest) == 2
+    assert harvest[0]["symbol"] == "TSLA"
+    assert harvest[0]["term"] == "ST"
+    assert harvest[0]["estimated_federal_savings"] == 12.0
+    assert harvest[1]["term"] == "LT"
+    pdf_text = _pdf_text(render_packet_pdf(payload))
+    assert HARVEST_TITLE in pdf_text
+    assert "TSLA  ST  estimated federal savings $12.00" in pdf_text
+    assert "AMD  LT  estimated federal savings $74.00" in pdf_text
+    assert pdf_text.count("AMD $300.00 disallowed") == 1
+    assert "sale 2024-07-15" in pdf_text
+    assert "repurchase 2024-07-24" in pdf_text
+    assert LOT_MATCH_TITLE in pdf_text
+    assert COMPARE_TITLE in pdf_text
+    assert "not a filed Form 8949" in pdf_text
 
 
 def test_lot_match_pdf_paginates_instead_of_dropping_rows():

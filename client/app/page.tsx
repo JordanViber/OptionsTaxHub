@@ -211,15 +211,15 @@ export default function LandingPage() {
           >
             <Feature
               title="Harvest queue"
-              body="Losing lots ranked by federal savings. Short-term first. Wash-sale risk before you click."
+              body="Losing lots across your Robinhood book — stocks and options — ranked by federal savings. Short-term first. Wash-sale risk before you click."
             />
             <Feature
               title="Wash-sale radar"
-              body="Same-symbol buys inside 30 days, with disallowed loss and the replacement-lot basis bump."
+              body="Same-symbol buys inside 30 days, with disallowed loss and the replacement-lot basis bump. Whole book, not options-only."
             />
             <Feature
               title="Lot ledger"
-              body="FIFO lots under every position. Expand a row for ST / LT, holding period, and wash detail."
+              body="FIFO lots under every position, stock and option. Expand a row for ST / LT, holding period, and wash detail."
             />
           </Box>
         </Container>
@@ -244,7 +244,7 @@ export default function LandingPage() {
           variant="h2"
           sx={{ mt: 1.5, maxWidth: 560, fontSize: { xs: "1.6rem", md: "2rem" } }}
         >
-          Three moves. Then you see why they split.
+          Robinhood whole-portfolio tax desk. Three moves.
         </Typography>
         <Box
           component="ol"
@@ -262,7 +262,7 @@ export default function LandingPage() {
             {
               n: "01",
               t: "Drop a CSV",
-              d: "Robinhood export or the 2026 sample. FIFO lots in seconds.",
+              d: "Robinhood stocks and options in one export, or the 2026 sample. FIFO lots in seconds.",
             },
             {
               n: "02",
