@@ -14,6 +14,7 @@ import {
   analyzeEntry,
   buildEntryContextLine,
   formatUsdCents,
+  type EntryAnalysisResult,
   type EntryProposal,
   type OptionRight,
   type OptionSide,
@@ -52,6 +53,12 @@ function formatPayoffMoney(value: number | null): string {
   return formatUsdCents(value);
 }
 
+function isEntryFail(
+  result: EntryAnalysisResult,
+): result is Extract<EntryAnalysisResult, { ok: false }> {
+  return result.ok === false;
+}
+
 export default function EntryAnalysisPanel({
   positions = [],
 }: Readonly<{
@@ -80,6 +87,56 @@ export default function EntryAnalysisPanel({
 
   const analysis = analyzeEntry(proposal);
   const contextLine = buildEntryContextLine(proposal, positions);
+
+  let resultsNode;
+  if (isEntryFail(analysis)) {
+    const fail = analysis;
+    resultsNode = (
+      <Typography
+        variant="body2"
+        color="text.secondary"
+        data-testid={
+          fail.reason === "incomplete" ? "entry-empty" : "entry-error"
+        }
+      >
+        {fail.message}
+      </Typography>
+    );
+  } else {
+    const ok = analysis;
+    resultsNode = (
+      <Stack spacing={0.75} data-testid="entry-results">
+        <ResultRow
+          label="Max loss"
+          value={formatPayoffMoney(ok.payoff.maxLoss)}
+          testId="entry-max-loss"
+        />
+        <ResultRow
+          label="Max gain"
+          value={formatPayoffMoney(ok.payoff.maxGain)}
+          testId="entry-max-gain"
+        />
+        <ResultRow
+          label="Breakeven"
+          value={formatUsdCents(ok.payoff.breakeven)}
+          testId="entry-breakeven"
+        />
+        {ok.payoff.collateralNote ? (
+          <Typography
+            variant="body2"
+            color="text.secondary"
+            data-testid="entry-collateral"
+            sx={{ pt: 0.5 }}
+          >
+            {ok.payoff.collateralNote}
+          </Typography>
+        ) : null}
+        <Typography variant="caption" color="text.secondary" sx={{ pt: 0.25 }}>
+          Standard 100-share multiplier. Index specs are not modeled.
+        </Typography>
+      </Stack>
+    );
+  }
 
   return (
     <Box
@@ -215,48 +272,7 @@ export default function EntryAnalysisPanel({
           </Stack>
         </Stack>
 
-        {analysis.ok ? (
-          <Stack spacing={0.75} data-testid="entry-results">
-            <ResultRow
-              label="Max loss"
-              value={formatPayoffMoney(analysis.payoff.maxLoss)}
-              testId="entry-max-loss"
-            />
-            <ResultRow
-              label="Max gain"
-              value={formatPayoffMoney(analysis.payoff.maxGain)}
-              testId="entry-max-gain"
-            />
-            <ResultRow
-              label="Breakeven"
-              value={formatUsdCents(analysis.payoff.breakeven)}
-              testId="entry-breakeven"
-            />
-            {analysis.payoff.collateralNote ? (
-              <Typography
-                variant="body2"
-                color="text.secondary"
-                data-testid="entry-collateral"
-                sx={{ pt: 0.5 }}
-              >
-                {analysis.payoff.collateralNote}
-              </Typography>
-            ) : null}
-            <Typography variant="caption" color="text.secondary" sx={{ pt: 0.25 }}>
-              Standard 100-share multiplier. Index specs are not modeled.
-            </Typography>
-          </Stack>
-        ) : (
-          <Typography
-            variant="body2"
-            color="text.secondary"
-            data-testid={
-              analysis.reason === "incomplete" ? "entry-empty" : "entry-error"
-            }
-          >
-            {analysis.message}
-          </Typography>
-        )}
+        {resultsNode}
 
         {contextLine ? (
           <Typography variant="body2" data-testid="entry-context">
