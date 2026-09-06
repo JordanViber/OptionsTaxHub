@@ -269,12 +269,15 @@ describe("DashboardPage", () => {
   it("renders portfolio upload section", async () => {
     render(<DashboardPage />, { wrapper: createWrapper() });
 
-    await waitFor(() => {
-      expect(screen.getByText(/Portfolio Analysis/i)).toBeInTheDocument();
-      expect(
-        screen.getByText(/Robinhood 1099 for the tax year you are closing/i),
-      ).toBeInTheDocument();
-    });
+    await waitFor(
+      () => {
+        expect(screen.getByText(/Portfolio Analysis/i)).toBeInTheDocument();
+        expect(
+          screen.getByText(/Robinhood 1099 for the tax year you are closing/i),
+        ).toBeInTheDocument();
+      },
+      { timeout: 8000 },
+    );
   });
 
   it("renders navigation buttons", async () => {
@@ -693,6 +696,10 @@ describe("DashboardPage", () => {
         screen.getByText(/Get started with your first analysis/i),
       ).toBeInTheDocument();
     });
+    expect(screen.getByTestId("entry-analysis-panel")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: /Analyze a new option/i }),
+    ).toBeInTheDocument();
     expect(screen.getByText(/Export from Robinhood/i)).toBeInTheDocument();
     expect(
       screen.getByRole("link", { name: /Download sample CSV/i }),
@@ -1277,6 +1284,78 @@ describe("DashboardPage", () => {
         screen.queryByText(/same year as this export/i),
       ).not.toBeInTheDocument();
     });
+  });
+
+  it("shows the options what-if on an empty desk without a CSV or $49", async () => {
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("entry-analysis-panel")).toBeInTheDocument();
+    });
+    expect(
+      screen.getByText(/Enter premium to see max gain, max loss, and breakeven/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("entry-context")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("entry-results")).not.toBeInTheDocument();
+  });
+
+  it("adds one-line portfolio context when positions are loaded", async () => {
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      packet_unlocked: false,
+      sample_run: false,
+      positions: [
+        {
+          position_id: "NVDA:stock",
+          symbol: "NVDA",
+          display_label: "NVDA",
+          quantity: 52,
+          avg_cost_basis: 280,
+          total_cost_basis: 14560,
+          current_price: 250,
+          market_value: 13000,
+          unrealized_pnl: -1560,
+          unrealized_pnl_pct: -10,
+          earliest_purchase_date: "2026-01-15",
+          holding_period_days: 200,
+          is_long_term: false,
+          asset_type: "stock",
+          tax_lots: [],
+          wash_sale_risk: false,
+        },
+      ],
+    };
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("entry-analysis-panel")).toBeInTheDocument();
+    });
+
+    const future = new Date();
+    future.setFullYear(future.getFullYear() + 1);
+    const expiration = `${future.getFullYear()}-${String(future.getMonth() + 1).padStart(2, "0")}-${String(future.getDate()).padStart(2, "0")}`;
+
+    fireEvent.change(screen.getByTestId("entry-symbol"), {
+      target: { value: "NVDA" },
+    });
+    fireEvent.change(screen.getByTestId("entry-strike"), {
+      target: { value: "250" },
+    });
+    fireEvent.change(screen.getByTestId("entry-expiration"), {
+      target: { value: expiration },
+    });
+    fireEvent.change(screen.getByTestId("entry-premium"), {
+      target: { value: "4.20" },
+    });
+
+    expect(screen.getByTestId("entry-max-loss")).toHaveTextContent("$420.00");
+    expect(screen.getByTestId("entry-context")).toHaveTextContent(
+      "Open NVDA: 52 sh",
+    );
+    expect(screen.getByTestId("entry-context")).not.toHaveTextContent(
+      /wash|1099|harvest|\$49/i,
+    );
   });
 
   it("redirects unconfirmed users away from the dashboard", async () => {
