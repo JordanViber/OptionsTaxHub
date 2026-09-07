@@ -91,9 +91,17 @@ jest.mock("../../lib/api", () => ({
   persistGuestAnalysis: jest.fn(() => Promise.resolve(true)),
   useLeapRankMutation: () => ({
     mutateAsync: jest.fn(),
+    mutate: jest.fn(),
     isPending: false,
     reset: jest.fn(),
   }),
+  useRhChainMutation: () => ({
+    mutateAsync: jest.fn(),
+    mutate: jest.fn(),
+    isPending: false,
+    reset: jest.fn(),
+  }),
+  fetchRhStatus: jest.fn().mockResolvedValue({ connected: false }),
   getAnalysisErrorMessage: (error: unknown) =>
     error instanceof Error ? error.message : "An error occurred",
   getBackendUnreachableMessage: () =>
