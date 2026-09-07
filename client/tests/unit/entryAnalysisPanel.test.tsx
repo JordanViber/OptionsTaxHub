@@ -180,10 +180,17 @@ describe("EntryAnalysisPanel", () => {
     ).toBeInTheDocument();
     expect(screen.getByText(/What-if · single-leg/i)).toBeInTheDocument();
     expect(screen.getByTestId("entry-rank-find")).toBeInTheDocument();
-    expect(screen.getByTestId("entry-rank-leaps")).toBeInTheDocument();
+    expect(screen.getByTestId("entry-rank-leaps")).toHaveTextContent(/Rank LEAPs/i);
     expect(screen.getByTestId("entry-rh-status")).toHaveTextContent(
       /Sign in to connect Robinhood/i,
     );
+    expect(
+      screen.queryByRole("button", { name: /connect robinhood/i }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /reconnect/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /disconnect/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/oauth/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/manage account/i)).not.toBeInTheDocument();
     expect(screen.getByTestId("entry-rank-empty")).toHaveTextContent(
       /smallest annualized move to break even vs owning the stock/i,
     );
@@ -531,6 +538,24 @@ describe("EntryAnalysisPanel", () => {
     });
     expect(mockLeapRankMutateAsync).not.toHaveBeenCalled();
     expect(screen.queryByTestId("entry-rank-1")).not.toBeInTheDocument();
+  });
+
+  it("signed-in harness is status plus Rank LEAPs, not Connect UI", async () => {
+    mockUser.value = { id: "oth-user-a" };
+    mockRhConnected.value = true;
+    render(<EntryAnalysisPanel />);
+    await waitFor(() => {
+      expect(screen.getByTestId("entry-rh-status")).toHaveTextContent(
+        /Robinhood connected/i,
+      );
+    });
+    expect(screen.getByTestId("entry-rank-leaps")).toBeInTheDocument();
+    expect(screen.getByTestId("entry-symbol")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /connect robinhood/i }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /reconnect/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/oauth/i)).not.toBeInTheDocument();
   });
 
   it("maps a selected RH top result into v1 payoff", async () => {
