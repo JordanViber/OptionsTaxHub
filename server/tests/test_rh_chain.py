@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
-from leap_rank import rank_contracts
+from leap_rank import rank_contracts, rank_from_chain
 from rh_chain import (
     RH_CONNECTION_REQUIRED,
     RH_CONNECTION_REQUIRED_COPY,
@@ -155,6 +155,52 @@ def test_fetch_and_rank_uses_only_that_users_credential():
     assert payload["provider"] == "robinhood"
     assert 1 <= len(payload["ranks"]) <= 3
     assert payload["expirations_used"]
+
+
+def test_auth_pipeline_is_client_then_normalize_then_leap_rank(monkeypatch):
+    """Auth store → RhChainClient.fetch_chain → normalize → leap_rank.rank_from_chain."""
+    store = InMemoryOthRhCredentialStore()
+    store.put(RhCredential(user_id="oth-user-a", token="secret-a"))
+    client = StubRhChainClient(
+        options=[
+            _raw_option(strike=90.0),
+            _raw_option(strike=95.0, bid=12.0, ask=11.0),
+            _raw_option(strike=100.0),
+        ]
+    )
+    seen: dict = {}
+    real = rank_from_chain
+
+    def spy_rank_from_chain(**kwargs):
+        seen["rows"] = list(kwargs["rows"])
+        seen["right"] = kwargs["right"]
+        seen["symbol"] = kwargs["symbol"]
+        return real(**kwargs)
+
+    monkeypatch.setattr("rh_chain.rank_from_chain", spy_rank_from_chain)
+    payload = fetch_and_rank_chain(
+        user_id="oth-user-a",
+        symbol="NVDA",
+        side="call",
+        min_expiry=IN_WINDOW,
+        max_expiry=IN_WINDOW,
+        store=store,
+        client=client,
+        cache=ChainCache(),
+        as_of=AS_OF,
+    )
+    assert client.calls == [
+        ("oth-user-a", "NVDA", "call", IN_WINDOW, IN_WINDOW)
+    ]
+    assert seen["symbol"] == "NVDA"
+    assert seen["right"] == "call"
+    strikes = [row["strike"] for row in seen["rows"]]
+    assert 90.0 in strikes
+    assert 100.0 in strikes
+    assert 95.0 not in strikes
+    assert payload["ok"] is True
+    assert 1 <= len(payload["ranks"]) <= 3
+    assert payload["ranks"][0]["rank"] == 1
 
 
 def test_guest_and_unknown_user_are_honest_empty():
