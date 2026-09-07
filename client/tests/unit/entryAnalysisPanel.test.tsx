@@ -517,6 +517,32 @@ describe("EntryAnalysisPanel", () => {
     expect(mockRhChainMutateAsync).toHaveBeenCalled();
   });
 
+  it("empty-desk what-if and manual premium stay after guest Rank LEAPs", async () => {
+    mockRhChainMutateAsync.mockResolvedValue({
+      ok: false,
+      code: "RH_CONNECTION_REQUIRED",
+      message: RH_CONNECTION_REQUIRED_COPY,
+      ranks: [],
+    });
+    render(<EntryAnalysisPanel />);
+    fillLongCall();
+    expect(screen.getByTestId("entry-results")).toBeInTheDocument();
+    expect(screen.getByTestId("entry-max-loss")).toHaveTextContent("$420.00");
+    expect(screen.getByTestId("entry-breakeven")).toHaveTextContent("$254.20");
+    fireEvent.click(screen.getByTestId("entry-rank-leaps"));
+    await waitFor(() => {
+      expect(screen.getByTestId("entry-rank-error")).toHaveTextContent(
+        RH_CONNECTION_REQUIRED_COPY,
+      );
+    });
+    expect(screen.getByTestId("entry-results")).toBeInTheDocument();
+    expect(screen.getByTestId("entry-max-loss")).toHaveTextContent("$420.00");
+    expect(screen.getByTestId("entry-max-gain")).toHaveTextContent("Unlimited");
+    expect(screen.getByTestId("entry-breakeven")).toHaveTextContent("$254.20");
+    expect(screen.getByTestId("entry-premium")).toHaveValue("4.20");
+    expect(mockLeapRankMutateAsync).not.toHaveBeenCalled();
+  });
+
   it("signed-in without RH does not fall back to Yahoo ranking", async () => {
     mockUser.value = { id: "oth-user-b" };
     mockRhConnected.value = false;
