@@ -68,6 +68,27 @@ def test_authenticated_without_rh_is_honest_empty():
     assert data["ranks"] == []
 
 
+def test_other_oth_user_cannot_use_this_users_credential(monkeypatch):
+    store = InMemoryOthRhCredentialStore()
+    store.put(RhCredential(user_id="oth-user-a", token="secret-a"))
+    chain = StubRhChainClient()
+    monkeypatch.setattr(main, "rh_credential_store", store)
+    monkeypatch.setattr(main, "rh_chain_client", chain)
+    main.app.dependency_overrides[get_optional_user] = lambda: "oth-user-b"
+    start, end = _window()
+    response = client.get(
+        f"/api/oth/options/chain?symbol=NVDA&side=call&min_expiry={start}&max_expiry={end}"
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["ok"] is False
+    assert data["code"] == RH_CONNECTION_REQUIRED
+    assert data["ranks"] == []
+    assert chain.calls == []
+    assert store.lookups == ["oth-user-b"]
+    assert "secret-a" not in response.text
+
+
 def test_authenticated_connected_user_ranks(monkeypatch):
     store = InMemoryOthRhCredentialStore()
     store.put(RhCredential(user_id="test-user-123", token="secret-a"))

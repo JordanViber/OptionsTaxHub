@@ -12,6 +12,7 @@ from rh_chain import (
     RH_NO_EXPIRY_IN_WINDOW,
     RH_SAAS_WALL,
     ChainCache,
+    EnvOthRhCredentialStore,
     InMemoryOthRhCredentialStore,
     RhChainError,
     RhCredential,
@@ -89,6 +90,31 @@ def test_normalize_rejects_crossed_and_invalid():
     assert normalize_rh_option(_raw_option(expiry="not-a-date"), **kwargs) is None
     assert normalize_rh_option(_raw_option(bid=None, ask=None, last=None), **kwargs) is None
     assert normalize_rh_option(_raw_option(bid=-1, ask=-2, last=-3), **kwargs) is None
+
+
+def test_env_store_is_per_user_never_a_shared_fallback(monkeypatch):
+    monkeypatch.setenv("OTH_RH_TEST_USER_ID", "oth-test-user")
+    monkeypatch.setenv("OTH_RH_TEST_TOKEN", "secret-env-token")
+    store = EnvOthRhCredentialStore()
+    mine = store.get_for_user("oth-test-user")
+    assert mine is not None
+    assert mine.user_id == "oth-test-user"
+    assert store.get_for_user("jordan-or-trader") is None
+    assert store.get_for_user("oth-user-b") is None
+    assert store.get_for_user("") is None
+    other_rank = fetch_and_rank_chain(
+        user_id="jordan-or-trader",
+        symbol="NVDA",
+        side="call",
+        min_expiry=IN_WINDOW,
+        max_expiry=IN_WINDOW,
+        store=store,
+        client=StubRhChainClient(),
+        cache=ChainCache(),
+        as_of=AS_OF,
+    )
+    assert other_rank["ok"] is False
+    assert other_rank["code"] == RH_CONNECTION_REQUIRED
 
 
 def test_store_looks_up_only_selected_oth_user():
