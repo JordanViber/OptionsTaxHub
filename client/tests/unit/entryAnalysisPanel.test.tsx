@@ -4,6 +4,10 @@ import type { Position } from "../../lib/types";
 
 const mockLeapRankMutateAsync = jest.fn();
 const mockLeapRankPending = { value: false };
+const mockRhChainMutateAsync = jest.fn();
+const mockRhChainPending = { value: false };
+const mockUser: { value: { id: string } | null } = { value: null };
+const mockRhConnected = { value: false };
 
 jest.mock("../../lib/api", () => ({
   useLeapRankMutation: () => ({
@@ -11,9 +15,21 @@ jest.mock("../../lib/api", () => ({
     isPending: mockLeapRankPending.value,
     reset: jest.fn(),
   }),
+  useRhChainMutation: () => ({
+    mutateAsync: mockRhChainMutateAsync,
+    isPending: mockRhChainPending.value,
+    reset: jest.fn(),
+  }),
+  fetchRhStatus: () =>
+    Promise.resolve({ connected: mockRhConnected.value }),
+}));
+
+jest.mock("../../app/context/auth", () => ({
+  useAuth: () => ({ user: mockUser.value, loading: false }),
 }));
 
 import EntryAnalysisPanel from "../../app/components/EntryAnalysisPanel";
+import { RH_CONNECTION_REQUIRED_COPY } from "../../lib/types";
 
 function futureIso(): string {
   const date = new Date();
@@ -149,6 +165,10 @@ describe("EntryAnalysisPanel", () => {
   beforeEach(() => {
     mockLeapRankMutateAsync.mockReset();
     mockLeapRankPending.value = false;
+    mockRhChainMutateAsync.mockReset();
+    mockRhChainPending.value = false;
+    mockUser.value = null;
+    mockRhConnected.value = false;
   });
 
   it("renders Analyze a new option with no analysis and no packet unlock", () => {
@@ -160,6 +180,10 @@ describe("EntryAnalysisPanel", () => {
     ).toBeInTheDocument();
     expect(screen.getByText(/What-if · single-leg/i)).toBeInTheDocument();
     expect(screen.getByTestId("entry-rank-find")).toBeInTheDocument();
+    expect(screen.getByTestId("entry-rank-leaps")).toBeInTheDocument();
+    expect(screen.getByTestId("entry-rh-status")).toHaveTextContent(
+      /Sign in to connect Robinhood/i,
+    );
     expect(screen.getByTestId("entry-rank-empty")).toHaveTextContent(
       /smallest annualized move to break even vs owning the stock/i,
     );
@@ -461,5 +485,48 @@ describe("EntryAnalysisPanel", () => {
       expect(screen.getByTestId("entry-rank-1")).toBeInTheDocument();
     });
     expect(screen.queryByTestId("entry-context")).not.toBeInTheDocument();
+  });
+
+  it("shows honest empty RH ranking for guests", async () => {
+    mockRhChainMutateAsync.mockResolvedValue({
+      ok: false,
+      code: "RH_CONNECTION_REQUIRED",
+      message: RH_CONNECTION_REQUIRED_COPY,
+      ranks: [],
+    });
+    render(<EntryAnalysisPanel />);
+    fireEvent.change(screen.getByTestId("entry-symbol"), {
+      target: { value: "NVDA" },
+    });
+    fireEvent.click(screen.getByTestId("entry-rank-leaps"));
+    await waitFor(() => {
+      expect(screen.getByTestId("entry-rank-error")).toHaveTextContent(
+        RH_CONNECTION_REQUIRED_COPY,
+      );
+    });
+    expect(screen.queryByTestId("entry-rank-1")).not.toBeInTheDocument();
+    expect(screen.getByTestId("entry-empty")).toBeInTheDocument();
+  });
+
+  it("maps a selected RH top result into v1 payoff", async () => {
+    mockUser.value = { id: "oth-user-a" };
+    mockRhConnected.value = true;
+    mockRhChainMutateAsync.mockResolvedValue({
+      ...mockRankSuccess(),
+      provider: "robinhood",
+      code: "ok",
+    });
+    render(<EntryAnalysisPanel />);
+    fireEvent.change(screen.getByTestId("entry-symbol"), {
+      target: { value: "NVDA" },
+    });
+    fireEvent.click(screen.getByTestId("entry-rank-leaps"));
+    await waitFor(() => {
+      expect(screen.getByTestId("entry-rank-1")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTestId("entry-rank-1"));
+    expect(screen.getByTestId("entry-results")).toBeInTheDocument();
+    expect(screen.getByTestId("entry-max-loss")).toHaveTextContent("$420.00");
+    expect(screen.getByTestId("entry-breakeven")).toHaveTextContent("$94.20");
   });
 });

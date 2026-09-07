@@ -85,6 +85,15 @@ from price_service import (
     fetch_option_prices,
 )
 from leap_rank import rank_from_chain
+from rh_chain import (
+    RH_CONNECTION_REQUIRED_COPY,
+    ChainCache,
+    EnvOthRhCredentialStore,
+    RhChainError,
+    build_rh_chain_client,
+    connection_required_payload,
+    fetch_and_rank_chain,
+)
 from ai_advisor import get_ai_suggestions, prepare_positions_for_ai
 from pdf_1099_parser import parse_robinhood_1099_pdf
 from db import (
@@ -130,6 +139,10 @@ _guest_leap_rank_hits: dict[str, list[float]] = defaultdict(list)
 _auth_leap_rank_hits: dict[str, list[float]] = defaultdict(list)
 _LEAP_RANK_SYMBOL_RE = re.compile(r"^[A-Z]{1,10}$")
 _LEAP_RANK_MAX_WINDOW_DAYS = 800
+rh_credential_store = EnvOthRhCredentialStore()
+rh_chain_client = build_rh_chain_client()
+rh_chain_cache = ChainCache()
+_rh_chain_hits: dict[str, list[float]] = defaultdict(list)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -214,6 +227,8 @@ def reset_guest_leap_rank_quota() -> None:
     """Clear LEAP-rank rate-limit buckets (tests only)."""
     _guest_leap_rank_hits.clear()
     _auth_leap_rank_hits.clear()
+    _rh_chain_hits.clear()
+    rh_chain_cache.clear()
 
 
 def _is_trusted_proxy_peer(host: str) -> bool:
@@ -1570,6 +1585,109 @@ async def get_leap_rank(
         rows=rows,
         expirations_used=expirations_used,
         warnings=chain_warnings,
+    )
+
+
+def _enforce_rh_chain_quota(request: Request, user_id: str) -> None:
+    _enforce_ip_quota(
+        request,
+        _rh_chain_hits,
+        max_per_window=_AUTH_LEAP_RANK_MAX_PER_WINDOW if user_id else 20,
+        window_seconds=_GUEST_LEAP_RANK_WINDOW_SECONDS,
+        max_buckets=_LEAP_RANK_MAX_BUCKETS,
+        detail="Too many Robinhood chain lookups. Try again later.",
+    )
+
+
+@app.get("/api/oth/options/rh-status")
+async def get_oth_rh_status(
+    user_id: Annotated[str, Depends(get_optional_user)] = "",
+):
+    """Whether this OTH user has a per-user RH credential. Never returns tokens."""
+    if not user_id:
+        return {
+            "connected": False,
+            "code": "RH_CONNECTION_REQUIRED",
+            "message": RH_CONNECTION_REQUIRED_COPY,
+        }
+    try:
+        cred = rh_credential_store.get_for_user(user_id)
+    except RhChainError:
+        return {"connected": False, "code": "RH_REVOKED"}
+    return {"connected": cred is not None}
+
+
+@app.get(
+    "/api/oth/options/chain",
+    responses={
+        400: {"description": "Invalid query"},
+        429: {"description": "Too many RH chain lookups"},
+    },
+)
+async def get_oth_options_chain(
+    request: Request,
+    symbol: Annotated[str, Query(description="Underlying ticker")],
+    min_expiry: Annotated[str, Query(description="Window start YYYY-MM-DD")],
+    max_expiry: Annotated[str, Query(description="Window end YYYY-MM-DD")],
+    side: Annotated[str, Query(description="call or put")] = "call",
+    user_id: Annotated[str, Depends(get_optional_user)] = "",
+):
+    """RH-backed LEAP rank for the authenticated OTH user only.
+
+    Guests and users without a per-user RH credential get an honest empty
+    ranking. Never accepts a browser RH token. Never uses MCP or a shared
+    trader session.
+    """
+    if request.query_params.get("token") or request.query_params.get("rh_token"):
+        raise HTTPException(
+            status_code=400,
+            detail="Robinhood tokens are not accepted as query parameters.",
+        )
+    symbol_clean = symbol.strip().upper()
+    side_clean = side.strip().lower()
+    if not _LEAP_RANK_SYMBOL_RE.fullmatch(symbol_clean):
+        raise HTTPException(
+            status_code=400,
+            detail="Underlying ticker must be 1–10 letters.",
+        )
+    if side_clean not in ("call", "put"):
+        raise HTTPException(
+            status_code=400,
+            detail="side must be call or put.",
+        )
+    start = _parse_iso_date_query(min_expiry, "min_expiry")
+    end = _parse_iso_date_query(max_expiry, "max_expiry")
+    if start > end:
+        raise HTTPException(
+            status_code=400,
+            detail="min_expiry must be on or before max_expiry.",
+        )
+    if (end - start).days > _LEAP_RANK_MAX_WINDOW_DAYS:
+        raise HTTPException(
+            status_code=400,
+            detail="Expiry window is too long.",
+        )
+    as_of = datetime.now(timezone.utc).date()
+    if end < as_of:
+        raise HTTPException(
+            status_code=400,
+            detail="Expiry window is in the past.",
+        )
+
+    _enforce_rh_chain_quota(request, user_id)
+    if not user_id:
+        return connection_required_payload()
+
+    return fetch_and_rank_chain(
+        user_id=user_id,
+        symbol=symbol_clean,
+        side=side_clean,
+        min_expiry=start,
+        max_expiry=end,
+        store=rh_credential_store,
+        client=rh_chain_client,
+        cache=rh_chain_cache,
+        as_of=as_of,
     )
 
 

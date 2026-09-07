@@ -8,6 +8,8 @@ import type {
   AnalysisHistoryItem,
   LeapRankParams,
   LeapRankResponse,
+  RhChainResponse,
+  RhStatusResponse,
 } from "@/lib/types";
 import { getSession } from "./supabase";
 
@@ -346,6 +348,42 @@ export async function fetchLeapRank(
 export function useLeapRankMutation() {
   return useMutation({
     mutationFn: fetchLeapRank,
+  });
+}
+
+export async function fetchRhStatus(): Promise<RhStatusResponse> {
+  const headers = await getOptionalAuthHeaders();
+  const response = await fetch(apiPath("/api/oth/options/rh-status"), {
+    headers,
+  });
+  if (!response.ok) {
+    return { connected: false };
+  }
+  return response.json() as Promise<RhStatusResponse>;
+}
+
+export async function fetchRhChain(
+  params: LeapRankParams,
+): Promise<RhChainResponse> {
+  const headers = await getOptionalAuthHeaders();
+  const query = new URLSearchParams({
+    symbol: params.symbol.trim().toUpperCase(),
+    side: params.right,
+    min_expiry: params.expiry_from,
+    max_expiry: params.expiry_to,
+  });
+  const response = await fetch(apiPath(`/api/oth/options/chain?${query}`), {
+    headers,
+  });
+  if (!response.ok) {
+    throw new Error(await readLeapRankError(response));
+  }
+  return response.json() as Promise<RhChainResponse>;
+}
+
+export function useRhChainMutation() {
+  return useMutation({
+    mutationFn: fetchRhChain,
   });
 }
 
