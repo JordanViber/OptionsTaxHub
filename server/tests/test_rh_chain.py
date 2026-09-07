@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
-from leap_rank import rank_contracts, rank_from_chain
+from leap_rank import MIN_DTE, rank_contracts, rank_from_chain
 from rh_chain import (
     MAX_NORMALIZED_ROWS,
     RH_CONNECTION_REQUIRED,
@@ -19,10 +19,12 @@ from rh_chain import (
     RhCredential,
     StubRhChainClient,
     WallRhChainClient,
+    default_stub_options,
     fetch_and_rank_chain,
     normalize_rh_option,
     rank_normalized_chain,
     RawRhChain,
+    stub_expiry_in_window,
 )
 
 AS_OF = date(2026, 9, 7)
@@ -469,6 +471,76 @@ def test_ineligible_prefix_cannot_hide_later_eligible_contract(monkeypatch):
     assert payload["ranks"][0]["strike"] == pytest.approx(100.0)
     assert payload["warnings"]
     assert "best-scoring" in payload["warnings"][0]
+
+
+def test_stub_expiry_mid_window_not_min_when_ct_window_is_one_day_short():
+    """Chicago 12–24m vs UTC as_of: min_expiry DTE is 364, below MIN_DTE."""
+    utc_as_of = date(2026, 9, 7)
+    # Browser still on 2026-09-06 CT: 12–24m window 2027-09-06..2028-09-05.
+    min_expiry = date(2027, 9, 6)
+    max_expiry = date(2028, 9, 5)
+    assert (min_expiry - utc_as_of).days == MIN_DTE - 1
+
+    pinned = stub_expiry_in_window(min_expiry, max_expiry, as_of=utc_as_of)
+    assert min_expiry <= pinned <= max_expiry
+    assert (pinned - utc_as_of).days >= MIN_DTE
+
+    midpoint = stub_expiry_in_window(min_expiry, max_expiry)
+    assert min_expiry <= midpoint <= max_expiry
+    assert (midpoint - utc_as_of).days >= MIN_DTE
+    assert midpoint != min_expiry
+
+    rows = default_stub_options(
+        side="call", min_expiry=min_expiry, max_expiry=max_expiry
+    )
+    in_window = [row for row in rows if min_expiry <= date.fromisoformat(row["expiry"]) <= max_expiry]
+    assert in_window
+    assert all(date.fromisoformat(row["expiry"]) != min_expiry for row in in_window)
+    assert all((date.fromisoformat(row["expiry"]) - utc_as_of).days >= MIN_DTE for row in in_window)
+
+
+def test_stub_path_ranks_when_ct_window_min_expiry_dte_is_364():
+    """Default stub chain must still produce a non-empty top-3 for a CT window."""
+    utc_as_of = date(2026, 9, 7)
+    min_expiry = date(2027, 9, 6)
+    max_expiry = date(2028, 9, 5)
+    assert (min_expiry - utc_as_of).days == 364
+
+    store = InMemoryOthRhCredentialStore()
+    store.put(RhCredential(user_id="oth-user-a", token="secret-a"))
+    payload = fetch_and_rank_chain(
+        user_id="oth-user-a",
+        symbol="NVDA",
+        side="call",
+        min_expiry=min_expiry,
+        max_expiry=max_expiry,
+        store=store,
+        client=StubRhChainClient(),
+        cache=ChainCache(),
+        as_of=utc_as_of,
+    )
+    assert payload["ok"] is True
+    assert 1 <= len(payload["ranks"]) <= 3
+    for row in payload["ranks"]:
+        expiry = date.fromisoformat(row["expiration"])
+        assert min_expiry <= expiry <= max_expiry
+        assert (expiry - utc_as_of).days >= MIN_DTE
+
+    utc_min = date(2027, 9, 7)
+    utc_max = date(2028, 9, 6)
+    utc_payload = fetch_and_rank_chain(
+        user_id="oth-user-a",
+        symbol="NVDA",
+        side="call",
+        min_expiry=utc_min,
+        max_expiry=utc_max,
+        store=store,
+        client=StubRhChainClient(),
+        cache=ChainCache(),
+        as_of=utc_as_of,
+    )
+    assert utc_payload["ok"] is True
+    assert 1 <= len(utc_payload["ranks"]) <= 3
 
 
 def test_default_max_normalized_rows_does_not_drop_better_after_cap():

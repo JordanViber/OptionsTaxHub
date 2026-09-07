@@ -12,10 +12,10 @@ import os
 import threading
 import time
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional, Protocol
 
-from leap_rank import rank_contracts, rank_from_chain, round_cents
+from leap_rank import MIN_DTE, rank_contracts, rank_from_chain, round_cents
 
 logger = logging.getLogger(__name__)
 
@@ -261,16 +261,42 @@ def normalize_rh_chain(
     return rows, sorted(expiries)
 
 
+def stub_expiry_in_window(
+    min_expiry: date,
+    max_expiry: date,
+    *,
+    as_of: Optional[date] = None,
+) -> date:
+    """Pick a stub expiry inside [min_expiry, max_expiry].
+
+    min_expiry alone can yield DTE=364 when a Chicago 12–24m window is scored
+    against a UTC as_of one calendar day later (MIN_DTE is 365). Prefer
+    as_of+MIN_DTE when known, otherwise the window midpoint.
+    """
+    lo, hi = (min_expiry, max_expiry) if min_expiry <= max_expiry else (
+        max_expiry,
+        min_expiry,
+    )
+    if as_of is not None:
+        target = as_of + timedelta(days=MIN_DTE)
+    else:
+        target = lo + timedelta(days=(hi - lo).days // 2)
+    if target < lo:
+        return lo
+    if target > hi:
+        return hi
+    return target
+
+
 def default_stub_options(
     *,
     side: str,
     min_expiry: date,
     max_expiry: date,
+    as_of: Optional[date] = None,
 ) -> list[dict[str, Any]]:
     """Deterministic in-window chain for the spike stub (not live RH)."""
-    in_window = min_expiry
-    if in_window > max_expiry:
-        in_window = max_expiry
+    in_window = stub_expiry_in_window(min_expiry, max_expiry, as_of=as_of)
     outside = date(in_window.year - 1, in_window.month, min(in_window.day, 28))
     ts = datetime(2026, 9, 7, 14, 30, tzinfo=timezone.utc).isoformat()
     rows = [
