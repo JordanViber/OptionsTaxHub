@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Any, Optional, Protocol
 
-from leap_rank import rank_from_chain, round_cents
+from leap_rank import rank_contracts, rank_from_chain, round_cents
 
 logger = logging.getLogger(__name__)
 
@@ -243,8 +243,6 @@ def normalize_rh_chain(
     rows: list[dict[str, Any]] = []
     expiries: set[str] = set()
     for item in raw.options or []:
-        if len(rows) >= MAX_NORMALIZED_ROWS:
-            break
         normalized = normalize_rh_option(
             item,
             symbol=raw.symbol,
@@ -497,6 +495,48 @@ def _rank_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return ranked
 
 
+def _prefer_best_rows_before_cap(
+    rows: list[dict[str, Any]],
+    *,
+    symbol: str,
+    side: str,
+    spot: float,
+    as_of: date,
+    min_expiry: date,
+    max_expiry: date,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Bound memory after scoring so provider order cannot drop a better top-3."""
+    if len(rows) <= MAX_NORMALIZED_ROWS:
+        return rows, []
+    top = rank_contracts(
+        symbol=symbol,
+        right=side,
+        spot=spot,
+        as_of=as_of,
+        rows=_rank_rows(rows),
+        expiry_from=min_expiry,
+        expiry_to=max_expiry,
+        top_n=MAX_NORMALIZED_ROWS,
+    )
+    kept = [
+        {
+            "expiration": row.expiration,
+            "strike": row.strike,
+            "bid": row.bid,
+            "ask": row.ask,
+            "last": row.last,
+            "open_interest": row.open_interest,
+            "volume": row.volume,
+        }
+        for row in top
+    ]
+    warning = (
+        f"Ranked the best-scoring {len(kept)} of {len(rows)} quotes in this window "
+        "so top-3 is not cut by provider order."
+    )
+    return kept, [warning]
+
+
 def rank_normalized_chain(
     *,
     symbol: str,
@@ -523,6 +563,15 @@ def rank_normalized_chain(
             RH_EMPTY_CHAIN,
             f"No usable {symbol} {side} quotes in this window.",
         )
+    rows, cap_warnings = _prefer_best_rows_before_cap(
+        rows,
+        symbol=symbol,
+        side=side,
+        spot=raw.underlying_price,
+        as_of=as_of,
+        min_expiry=min_expiry,
+        max_expiry=max_expiry,
+    )
     payload = rank_from_chain(
         symbol=symbol,
         right=side,
@@ -532,7 +581,7 @@ def rank_normalized_chain(
         expiry_to=max_expiry,
         rows=_rank_rows(rows),
         expirations_used=expirations,
-        warnings=[],
+        warnings=cap_warnings,
     )
     payload["provider"] = PROVIDER
     payload["quote_timestamp"] = _iso_ts(raw.quote_timestamp)

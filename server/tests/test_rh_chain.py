@@ -6,6 +6,7 @@ import pytest
 
 from leap_rank import rank_contracts, rank_from_chain
 from rh_chain import (
+    MAX_NORMALIZED_ROWS,
     RH_CONNECTION_REQUIRED,
     RH_CONNECTION_REQUIRED_COPY,
     RH_EMPTY_CHAIN,
@@ -416,3 +417,79 @@ def test_saas_wall_and_timeout_are_typed():
         as_of=AS_OF,
     )
     assert empty["code"] == RH_EMPTY_CHAIN
+
+
+def test_better_contract_after_row_cap_still_ranks_first(monkeypatch):
+    """Provider-order truncate before rank would keep only the 105s and drop $90."""
+    monkeypatch.setattr("rh_chain.MAX_NORMALIZED_ROWS", 3)
+    weaker = [
+        _raw_option(strike=105.0, bid=5.9, ask=6.1, last=6.0) for _ in range(5)
+    ]
+    better = _raw_option(strike=90.0, bid=11.9, ask=12.1, last=12.0)
+    payload = rank_normalized_chain(
+        symbol="NVDA",
+        side="call",
+        min_expiry=IN_WINDOW,
+        max_expiry=IN_WINDOW,
+        as_of=AS_OF,
+        raw=RawRhChain(
+            symbol="NVDA",
+            underlying_price=100.0,
+            quote_timestamp=TS,
+            options=weaker + [better],
+        ),
+    )
+    assert payload["ok"] is True
+    assert payload["ranks"][0]["strike"] == pytest.approx(90.0)
+    assert payload["warnings"]
+    assert "provider order" in payload["warnings"][0]
+
+
+def test_ineligible_prefix_cannot_hide_later_eligible_contract(monkeypatch):
+    """500-row style cap by provider order would score only OTM junk and miss ATM."""
+    monkeypatch.setattr("rh_chain.MAX_NORMALIZED_ROWS", 5)
+    junk = [
+        _raw_option(strike=200.0, bid=0.4, ask=0.6, last=0.5) for _ in range(8)
+    ]
+    good = _raw_option(strike=100.0, bid=7.9, ask=8.1, last=8.0)
+    payload = rank_normalized_chain(
+        symbol="NVDA",
+        side="call",
+        min_expiry=IN_WINDOW,
+        max_expiry=IN_WINDOW,
+        as_of=AS_OF,
+        raw=RawRhChain(
+            symbol="NVDA",
+            underlying_price=100.0,
+            quote_timestamp=TS,
+            options=junk + [good],
+        ),
+    )
+    assert payload["ok"] is True
+    assert payload["ranks"][0]["strike"] == pytest.approx(100.0)
+    assert payload["warnings"]
+    assert "best-scoring" in payload["warnings"][0]
+
+
+def test_default_max_normalized_rows_does_not_drop_better_after_cap():
+    junk = [
+        _raw_option(strike=200.0, bid=0.4, ask=0.6, last=0.5)
+        for _ in range(MAX_NORMALIZED_ROWS)
+    ]
+    good = _raw_option(strike=100.0, bid=7.9, ask=8.1, last=8.0)
+    payload = rank_normalized_chain(
+        symbol="NVDA",
+        side="call",
+        min_expiry=IN_WINDOW,
+        max_expiry=IN_WINDOW,
+        as_of=AS_OF,
+        raw=RawRhChain(
+            symbol="NVDA",
+            underlying_price=100.0,
+            quote_timestamp=TS,
+            options=junk + [good],
+        ),
+    )
+    assert payload["ok"] is True
+    assert payload["ranks"][0]["strike"] == pytest.approx(100.0)
+    assert any("provider order" in warning for warning in payload["warnings"])
