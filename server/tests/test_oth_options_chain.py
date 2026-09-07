@@ -42,7 +42,19 @@ def _reset_rh(monkeypatch):
     main.app.dependency_overrides[get_optional_user] = lambda: "test-user-123"
 
 
-def test_guest_honest_empty():
+def test_guest_honest_empty(monkeypatch):
+    yahoo = {"prices": 0, "chain": 0}
+
+    def _no_yahoo_prices(*_args, **_kwargs):
+        yahoo["prices"] += 1
+        raise AssertionError("RH chain must not fall back to Yahoo prices")
+
+    def _no_yahoo_chain(*_args, **_kwargs):
+        yahoo["chain"] += 1
+        raise AssertionError("RH chain must not fall back to Yahoo option chains")
+
+    monkeypatch.setattr(main, "fetch_current_prices", _no_yahoo_prices)
+    monkeypatch.setattr(main, "fetch_option_chain_window", _no_yahoo_chain)
     main.app.dependency_overrides[get_optional_user] = lambda: ""
     start, end = _window()
     response = client.get(
@@ -54,17 +66,25 @@ def test_guest_honest_empty():
     assert data["code"] == RH_CONNECTION_REQUIRED
     assert data["message"] == RH_CONNECTION_REQUIRED_COPY
     assert data["ranks"] == []
+    assert yahoo == {"prices": 0, "chain": 0}
     assert "token" not in response.text.lower() or "secret" not in response.text.lower()
 
 
-def test_authenticated_without_rh_is_honest_empty():
+def test_authenticated_without_rh_is_honest_empty(monkeypatch):
+    def _no_yahoo(*_args, **_kwargs):
+        raise AssertionError("RH chain must not fall back to Yahoo")
+
+    monkeypatch.setattr(main, "fetch_current_prices", _no_yahoo)
+    monkeypatch.setattr(main, "fetch_option_chain_window", _no_yahoo)
     start, end = _window()
     response = client.get(
         f"/api/oth/options/chain?symbol=NVDA&side=call&min_expiry={start}&max_expiry={end}"
     )
     assert response.status_code == 200
     data = response.json()
+    assert data["ok"] is False
     assert data["code"] == RH_CONNECTION_REQUIRED
+    assert data["message"] == RH_CONNECTION_REQUIRED_COPY
     assert data["ranks"] == []
 
 

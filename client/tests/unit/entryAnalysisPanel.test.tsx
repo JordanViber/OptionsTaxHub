@@ -506,6 +506,31 @@ describe("EntryAnalysisPanel", () => {
     });
     expect(screen.queryByTestId("entry-rank-1")).not.toBeInTheDocument();
     expect(screen.getByTestId("entry-empty")).toBeInTheDocument();
+    expect(mockLeapRankMutateAsync).not.toHaveBeenCalled();
+    expect(mockRhChainMutateAsync).toHaveBeenCalled();
+  });
+
+  it("signed-in without RH does not fall back to Yahoo ranking", async () => {
+    mockUser.value = { id: "oth-user-b" };
+    mockRhConnected.value = false;
+    mockRhChainMutateAsync.mockResolvedValue({
+      ok: false,
+      code: "RH_CONNECTION_REQUIRED",
+      message: RH_CONNECTION_REQUIRED_COPY,
+      ranks: [],
+    });
+    render(<EntryAnalysisPanel />);
+    fireEvent.change(screen.getByTestId("entry-symbol"), {
+      target: { value: "NVDA" },
+    });
+    fireEvent.click(screen.getByTestId("entry-rank-leaps"));
+    await waitFor(() => {
+      expect(screen.getByTestId("entry-rank-error")).toHaveTextContent(
+        RH_CONNECTION_REQUIRED_COPY,
+      );
+    });
+    expect(mockLeapRankMutateAsync).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("entry-rank-1")).not.toBeInTheDocument();
   });
 
   it("maps a selected RH top result into v1 payoff", async () => {
