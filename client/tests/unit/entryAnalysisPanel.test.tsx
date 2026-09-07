@@ -566,6 +566,32 @@ describe("EntryAnalysisPanel", () => {
     expect(screen.queryByTestId("entry-rank-1")).not.toBeInTheDocument();
   });
 
+  it("RH SaaS wall is an honest empty, not a Connect UI", async () => {
+    mockUser.value = { id: "oth-user-a" };
+    mockRhConnected.value = true;
+    mockRhChainMutateAsync.mockResolvedValue({
+      ok: false,
+      code: "RH_SAAS_WALL",
+      message: "Robinhood market-data SaaS is not available for this spike.",
+      ranks: [],
+    });
+    render(<EntryAnalysisPanel />);
+    fireEvent.change(screen.getByTestId("entry-symbol"), {
+      target: { value: "NVDA" },
+    });
+    fireEvent.click(screen.getByTestId("entry-rank-leaps"));
+    await waitFor(() => {
+      expect(screen.getByTestId("entry-rank-error")).toHaveTextContent(
+        /not available for this spike/i,
+      );
+    });
+    expect(screen.queryByTestId("entry-rank-1")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /connect robinhood/i }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /reconnect/i })).not.toBeInTheDocument();
+  });
+
   it("signed-in harness is status plus Rank LEAPs, not Connect UI", async () => {
     mockUser.value = { id: "oth-user-a" };
     mockRhConnected.value = true;
