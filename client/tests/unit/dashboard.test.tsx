@@ -1308,7 +1308,8 @@ describe("DashboardPage", () => {
     expect(
       screen.getByText(/Enter premium to see max gain, max loss, and breakeven/i),
     ).toBeInTheDocument();
-    expect(screen.getByTestId("entry-rank-find")).toBeInTheDocument();
+    expect(screen.getByTestId("entry-rank-leaps")).toBeInTheDocument();
+    expect(screen.queryByTestId("entry-rank-find")).not.toBeInTheDocument();
     expect(screen.getByTestId("entry-rank-empty")).toBeInTheDocument();
     expect(screen.queryByTestId("entry-context")).not.toBeInTheDocument();
     expect(screen.queryByTestId("entry-results")).not.toBeInTheDocument();

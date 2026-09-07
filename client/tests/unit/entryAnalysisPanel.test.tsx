@@ -179,7 +179,10 @@ describe("EntryAnalysisPanel", () => {
       screen.getByRole("heading", { name: /Analyze a new option/i }),
     ).toBeInTheDocument();
     expect(screen.getByText(/What-if · single-leg/i)).toBeInTheDocument();
-    expect(screen.getByTestId("entry-rank-find")).toBeInTheDocument();
+    expect(screen.queryByTestId("entry-rank-find")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Find top 3/i }),
+    ).not.toBeInTheDocument();
     expect(screen.getByTestId("entry-rank-leaps")).toHaveTextContent(/Rank LEAPs/i);
     expect(screen.getByTestId("entry-rh-status")).toHaveTextContent(
       /Sign in to connect Robinhood/i,
@@ -331,12 +334,16 @@ describe("EntryAnalysisPanel", () => {
   });
 
   it("ranks three long calls and fills v1 payoff when #1 is selected", async () => {
-    mockLeapRankMutateAsync.mockResolvedValue(mockRankSuccess());
+    mockRhChainMutateAsync.mockResolvedValue({
+      ...mockRankSuccess(),
+      provider: "robinhood",
+      code: "ok",
+    });
     render(<EntryAnalysisPanel />);
     fireEvent.change(screen.getByTestId("entry-symbol"), {
       target: { value: "NVDA" },
     });
-    fireEvent.click(screen.getByTestId("entry-rank-find"));
+    fireEvent.click(screen.getByTestId("entry-rank-leaps"));
 
     await waitFor(() => {
       expect(screen.getByTestId("entry-rank-list")).toBeInTheDocument();
@@ -352,7 +359,8 @@ describe("EntryAnalysisPanel", () => {
     );
     expect(screen.getByTestId("entry-rank-2")).toBeInTheDocument();
     expect(screen.getByTestId("entry-rank-3")).toBeInTheDocument();
-    expect(mockLeapRankMutateAsync).toHaveBeenCalledWith(
+    expect(mockLeapRankMutateAsync).not.toHaveBeenCalled();
+    expect(mockRhChainMutateAsync).toHaveBeenCalledWith(
       expect.objectContaining({
         symbol: "NVDA",
         right: "call",
@@ -370,7 +378,7 @@ describe("EntryAnalysisPanel", () => {
   });
 
   it("ranks long puts with annualized decline copy, not call-style return", async () => {
-    mockLeapRankMutateAsync.mockResolvedValue({
+    mockRhChainMutateAsync.mockResolvedValue({
       ok: true,
       symbol: "SPY",
       right: "put",
@@ -381,6 +389,8 @@ describe("EntryAnalysisPanel", () => {
       expirations_used: ["2027-09-17"],
       candidates_considered: 1,
       warnings: [],
+      provider: "robinhood",
+      code: "ok",
       ranks: [
         {
           rank: 1,
@@ -413,12 +423,13 @@ describe("EntryAnalysisPanel", () => {
     fireEvent.change(screen.getByTestId("entry-symbol"), {
       target: { value: "SPY" },
     });
-    fireEvent.click(screen.getByTestId("entry-rank-find"));
+    fireEvent.click(screen.getByTestId("entry-rank-leaps"));
 
     await waitFor(() => {
       expect(screen.getByTestId("entry-rank-1")).toBeInTheDocument();
     });
-    expect(mockLeapRankMutateAsync).toHaveBeenCalledWith(
+    expect(mockLeapRankMutateAsync).not.toHaveBeenCalled();
+    expect(mockRhChainMutateAsync).toHaveBeenCalledWith(
       expect.objectContaining({ symbol: "SPY", right: "put" }),
     );
     expect(screen.getByTestId("entry-rank-1")).toHaveTextContent(
@@ -440,8 +451,9 @@ describe("EntryAnalysisPanel", () => {
   });
 
   it("shows an honest empty rank list when quotes fail", async () => {
-    mockLeapRankMutateAsync.mockResolvedValue({
+    mockRhChainMutateAsync.mockResolvedValue({
       ok: false,
+      code: "RH_MALFORMED",
       reason: "no_quote",
       message:
         "Could not fetch a live NVDA quote. Rankings are hidden so we do not invent prices.",
@@ -451,7 +463,7 @@ describe("EntryAnalysisPanel", () => {
     fireEvent.change(screen.getByTestId("entry-symbol"), {
       target: { value: "NVDA" },
     });
-    fireEvent.click(screen.getByTestId("entry-rank-find"));
+    fireEvent.click(screen.getByTestId("entry-rank-leaps"));
 
     await waitFor(() => {
       expect(screen.getByTestId("entry-rank-error")).toHaveTextContent(
@@ -462,32 +474,34 @@ describe("EntryAnalysisPanel", () => {
   });
 
   it("shows the 429 lookup message without fake ranks", async () => {
-    mockLeapRankMutateAsync.mockRejectedValue(
-      new Error(
-        "Too many LEAP lookups from this network. Sign in or try again later.",
-      ),
+    mockRhChainMutateAsync.mockRejectedValue(
+      new Error("Too many Robinhood chain lookups. Try again later."),
     );
     render(<EntryAnalysisPanel />);
     fireEvent.change(screen.getByTestId("entry-symbol"), {
       target: { value: "SPY" },
     });
-    fireEvent.click(screen.getByTestId("entry-rank-find"));
+    fireEvent.click(screen.getByTestId("entry-rank-leaps"));
 
     await waitFor(() => {
       expect(screen.getByTestId("entry-rank-error")).toHaveTextContent(
-        /too many leap lookups/i,
+        /too many robinhood chain lookups/i,
       );
     });
     expect(screen.queryByTestId("entry-rank-1")).not.toBeInTheDocument();
   });
 
   it("does not require a loaded book to rank", async () => {
-    mockLeapRankMutateAsync.mockResolvedValue(mockRankSuccess());
+    mockRhChainMutateAsync.mockResolvedValue({
+      ...mockRankSuccess(),
+      provider: "robinhood",
+      code: "ok",
+    });
     render(<EntryAnalysisPanel positions={[]} />);
     fireEvent.change(screen.getByTestId("entry-symbol"), {
       target: { value: "NVDA" },
     });
-    fireEvent.click(screen.getByTestId("entry-rank-find"));
+    fireEvent.click(screen.getByTestId("entry-rank-leaps"));
     await waitFor(() => {
       expect(screen.getByTestId("entry-rank-1")).toBeInTheDocument();
     });
@@ -630,5 +644,50 @@ describe("EntryAnalysisPanel", () => {
     expect(screen.getByTestId("entry-results")).toBeInTheDocument();
     expect(screen.getByTestId("entry-max-loss")).toHaveTextContent("$420.00");
     expect(screen.getByTestId("entry-breakeven")).toHaveTextContent("$94.20");
+  });
+
+  it("ranking UI never calls Yahoo leap-rank", async () => {
+    mockRhChainMutateAsync.mockResolvedValue({
+      ...mockRankSuccess(),
+      provider: "robinhood",
+      code: "ok",
+    });
+    render(<EntryAnalysisPanel />);
+    expect(screen.queryByTestId("entry-rank-find")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Find top 3/i }),
+    ).not.toBeInTheDocument();
+    fireEvent.change(screen.getByTestId("entry-symbol"), {
+      target: { value: "NVDA" },
+    });
+    fireEvent.click(screen.getByTestId("entry-rank-leaps"));
+    await waitFor(() => {
+      expect(screen.getByTestId("entry-rank-1")).toBeInTheDocument();
+    });
+    expect(mockLeapRankMutateAsync).not.toHaveBeenCalled();
+    expect(mockRhChainMutateAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows an honest truncation warning with RH ranks", async () => {
+    mockRhChainMutateAsync.mockResolvedValue({
+      ...mockRankSuccess(),
+      provider: "robinhood",
+      code: "ok",
+      warnings: [
+        "Ranked the best-scoring 3 of 8 quotes in this window so top-3 is not cut by provider order.",
+      ],
+    });
+    render(<EntryAnalysisPanel />);
+    fireEvent.change(screen.getByTestId("entry-symbol"), {
+      target: { value: "NVDA" },
+    });
+    fireEvent.click(screen.getByTestId("entry-rank-leaps"));
+    await waitFor(() => {
+      expect(screen.getByTestId("entry-rank-warning")).toHaveTextContent(
+        /not cut by provider order/i,
+      );
+    });
+    expect(screen.getByTestId("entry-rank-1")).toBeInTheDocument();
+    expect(mockLeapRankMutateAsync).not.toHaveBeenCalled();
   });
 });

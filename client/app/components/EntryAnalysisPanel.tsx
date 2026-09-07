@@ -11,15 +11,13 @@ import {
   ToggleButtonGroup,
   Typography,
 } from "@mui/material";
-import { fetchRhStatus, useLeapRankMutation, useRhChainMutation } from "@/lib/api";
+import { fetchRhStatus, useRhChainMutation } from "@/lib/api";
 import { useAuth } from "@/app/context/auth";
 import type {
   LeapRankCandidate,
-  LeapRankResponse,
   Position,
   RhChainResponse,
 } from "@/lib/types";
-import { RH_CONNECTION_REQUIRED_COPY } from "@/lib/types";
 import {
   analyzeEntry,
   buildEntryContextLine,
@@ -95,8 +93,8 @@ function isEntryFail(
 }
 
 function isLeapRankFail(
-  result: LeapRankResponse | RhChainResponse,
-): result is Extract<LeapRankResponse | RhChainResponse, { ok: false }> {
+  result: RhChainResponse,
+): result is Extract<RhChainResponse, { ok: false }> {
   return result.ok === false;
 }
 
@@ -118,7 +116,6 @@ export default function EntryAnalysisPanel({
 }: Readonly<{
   positions?: Position[];
 }>) {
-  const leapRank = useLeapRankMutation();
   const rhChain = useRhChainMutation();
   const { user } = useAuth();
   const [rhConnected, setRhConnected] = useState(false);
@@ -134,9 +131,7 @@ export default function EntryAnalysisPanel({
     () => datesForPreset("12-24").from,
   );
   const [expiryTo, setExpiryTo] = useState(() => datesForPreset("12-24").to);
-  const [rankResult, setRankResult] = useState<
-    LeapRankResponse | RhChainResponse | null
-  >(null);
+  const [rankResult, setRankResult] = useState<RhChainResponse | null>(null);
   const [rankError, setRankError] = useState<string | null>(null);
   const [selectedRank, setSelectedRank] = useState<number | null>(null);
 
@@ -189,40 +184,6 @@ export default function EntryAnalysisPanel({
     setPremium(String(candidate.premium));
   };
 
-  const handleFind = async () => {
-    const ticker = symbol.trim().toUpperCase();
-    if (!ticker) {
-      setRankResult(null);
-      setSelectedRank(null);
-      setRankError("Enter an underlying ticker.");
-      return;
-    }
-    if (!expiryFrom || !expiryTo || expiryFrom > expiryTo) {
-      setRankResult(null);
-      setSelectedRank(null);
-      setRankError("Choose a valid LEAP expiry window.");
-      return;
-    }
-    setRankError(null);
-    setSelectedRank(null);
-    try {
-      const result = await leapRank.mutateAsync({
-        symbol: ticker,
-        right,
-        expiry_from: expiryFrom,
-        expiry_to: expiryTo,
-      });
-      setRankResult(result);
-      if (isLeapRankFail(result)) {
-        const fail = result;
-        setRankError(fail.message);
-      }
-    } catch (error) {
-      setRankResult(null);
-      setRankError(rankErrorMessage(error));
-    }
-  };
-
   const handleRankLeaps = async () => {
     const ticker = symbol.trim().toUpperCase();
     if (!ticker) {
@@ -240,15 +201,16 @@ export default function EntryAnalysisPanel({
     setRankError(null);
     setSelectedRank(null);
     try {
-      const result: RhChainResponse = await rhChain.mutateAsync({
+      const result = await rhChain.mutateAsync({
         symbol: ticker,
         right,
         expiry_from: expiryFrom,
         expiry_to: expiryTo,
       });
       setRankResult(result);
-      if (!result.ok) {
-        setRankError(result.message);
+      if (isLeapRankFail(result)) {
+        const fail = result;
+        setRankError(fail.message);
       }
     } catch (error) {
       setRankResult(null);
@@ -308,6 +270,8 @@ export default function EntryAnalysisPanel({
 
   const successfulRanks =
     rankResult && !isLeapRankFail(rankResult) ? rankResult.ranks : [];
+  const rankWarnings =
+    rankResult && !isLeapRankFail(rankResult) ? rankResult.warnings : [];
   const showRankList = successfulRanks.length > 0;
   const showRankError = Boolean(rankError);
   const showRankIdle = !showRankList && !showRankError;
@@ -437,35 +401,17 @@ export default function EntryAnalysisPanel({
             </Stack>
           ) : null}
 
-          <Stack
-            direction={{ xs: "column", sm: "row" }}
-            spacing={1}
-            useFlexGap
-            sx={{ alignItems: { sm: "center" } }}
+          <Button
+            variant="contained"
+            onClick={() => {
+              void handleRankLeaps();
+            }}
+            disabled={rhChain.isPending}
+            data-testid="entry-rank-leaps"
+            sx={{ alignSelf: { xs: "stretch", sm: "flex-start" } }}
           >
-            <Button
-              variant="contained"
-              onClick={() => {
-                void handleFind();
-              }}
-              disabled={leapRank.isPending}
-              data-testid="entry-rank-find"
-              sx={{ alignSelf: { xs: "stretch", sm: "flex-start" } }}
-            >
-              {leapRank.isPending ? "Finding…" : "Find top 3"}
-            </Button>
-            <Button
-              variant="outlined"
-              onClick={() => {
-                void handleRankLeaps();
-              }}
-              disabled={rhChain.isPending}
-              data-testid="entry-rank-leaps"
-              sx={{ alignSelf: { xs: "stretch", sm: "flex-start" } }}
-            >
-              {rhChain.isPending ? "Ranking…" : "Rank LEAPs"}
-            </Button>
-          </Stack>
+            {rhChain.isPending ? "Ranking…" : "Rank LEAPs"}
+          </Button>
 
           {showRankIdle ? (
             <Typography
@@ -487,6 +433,17 @@ export default function EntryAnalysisPanel({
               {rankError}
             </Typography>
           ) : null}
+
+          {rankWarnings.map((warning) => (
+            <Typography
+              key={warning}
+              variant="body2"
+              color="text.secondary"
+              data-testid="entry-rank-warning"
+            >
+              {warning}
+            </Typography>
+          ))}
 
           {showRankList ? (
             <Stack spacing={1} data-testid="entry-rank-list">
