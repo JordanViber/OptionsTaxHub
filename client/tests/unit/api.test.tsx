@@ -41,6 +41,8 @@ import {
   getBackendUnreachableMessage,
   fetchLeapRank,
   useLeapRankMutation,
+  fetchRhChain,
+  fetchRhStatus,
 } from "../../lib/api";
 
 type WrapperProps = { children: React.ReactNode };
@@ -610,6 +612,36 @@ describe("api hooks", () => {
       } as Response);
 
       await expect(fetchLeapRank(params)).rejects.toThrow(/too many leap lookups/i);
+    });
+
+    it("fetchRhChain hits the per-user RH route and omits query tokens", async () => {
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          ok: false,
+          code: "RH_CONNECTION_REQUIRED",
+          message: "Connect Robinhood after sign-in for live top-3",
+          ranks: [],
+        }),
+      } as Response);
+      const body = await fetchRhChain(params);
+      expect(body.ok).toBe(false);
+      const call = (globalThis.fetch as jest.Mock).mock.calls[0];
+      expect(call[0]).toContain("/api/oth/options/chain?");
+      expect(call[0]).toContain("side=call");
+      expect(call[0]).not.toContain("token=");
+    });
+
+    it("fetchRhStatus never exposes a token", async () => {
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ connected: true }),
+      } as Response);
+      const status = await fetchRhStatus();
+      expect(status).toEqual({ connected: true });
+      expect((globalThis.fetch as jest.Mock).mock.calls[0][0]).toContain(
+        "/api/oth/options/rh-status",
+      );
     });
 
     it("useLeapRankMutation posts through fetchLeapRank", async () => {

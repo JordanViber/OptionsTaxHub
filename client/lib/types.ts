@@ -343,6 +343,42 @@ export interface LeapRankFailure {
 
 export type LeapRankResponse = LeapRankSuccess | LeapRankFailure;
 
+export const RH_CONNECTION_REQUIRED_COPY =
+  "Connect Robinhood after sign-in for live top-3";
+
+export type RhChainFailCode =
+  | "RH_CONNECTION_REQUIRED"
+  | "RH_TIMEOUT"
+  | "RH_RATE_LIMITED"
+  | "RH_EMPTY_CHAIN"
+  | "RH_NO_EXPIRY_IN_WINDOW"
+  | "RH_SAAS_WALL"
+  | "RH_MALFORMED"
+  | "RH_REVOKED";
+
+export interface RhChainSuccess extends LeapRankSuccess {
+  provider: "robinhood";
+  quote_timestamp?: string | null;
+  code?: "ok";
+}
+
+export interface RhChainFailure {
+  ok: false;
+  code: RhChainFailCode;
+  reason?: string;
+  message: string;
+  ranks: [];
+  provider?: "robinhood";
+}
+
+export type RhChainResponse = RhChainSuccess | RhChainFailure;
+
+export interface RhStatusResponse {
+  connected: boolean;
+  code?: string;
+  message?: string;
+}
+
 // --- Analysis History ---
 
 export interface AnalysisHistoryItem {

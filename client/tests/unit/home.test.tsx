@@ -85,9 +85,17 @@ jest.mock("../../lib/api", () => ({
   persistGuestAnalysis: jest.fn(() => Promise.resolve(true)),
   useLeapRankMutation: () => ({
     mutateAsync: jest.fn(),
+    mutate: jest.fn(),
     isPending: false,
     reset: jest.fn(),
   }),
+  useRhChainMutation: () => ({
+    mutateAsync: jest.fn(),
+    mutate: jest.fn(),
+    isPending: false,
+    reset: jest.fn(),
+  }),
+  fetchRhStatus: jest.fn().mockResolvedValue({ connected: false }),
   getAnalysisErrorMessage: (error: unknown) =>
     error instanceof Error ? error.message : "An error occurred",
   getBackendUnreachableMessage: () =>
@@ -207,7 +215,8 @@ describe("Home page", () => {
     expect(mockPush).not.toHaveBeenCalledWith("/auth/signin");
     expect(screen.getByText("Portfolio Analysis")).toBeInTheDocument();
     expect(screen.getByTestId("entry-analysis-panel")).toBeInTheDocument();
-    expect(screen.getByTestId("entry-rank-find")).toBeInTheDocument();
+    expect(screen.getByTestId("entry-rank-leaps")).toBeInTheDocument();
+    expect(screen.queryByTestId("entry-rank-find")).not.toBeInTheDocument();
     expect(
       screen.getByRole("heading", { name: /Analyze a new option/i }),
     ).toBeInTheDocument();

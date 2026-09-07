@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Box,
   Button,
@@ -11,11 +11,12 @@ import {
   ToggleButtonGroup,
   Typography,
 } from "@mui/material";
-import { useLeapRankMutation } from "@/lib/api";
+import { fetchRhStatus, useRhChainMutation } from "@/lib/api";
+import { useAuth } from "@/app/context/auth";
 import type {
   LeapRankCandidate,
-  LeapRankResponse,
   Position,
+  RhChainResponse,
 } from "@/lib/types";
 import {
   analyzeEntry,
@@ -92,8 +93,8 @@ function isEntryFail(
 }
 
 function isLeapRankFail(
-  result: LeapRankResponse,
-): result is Extract<LeapRankResponse, { ok: false }> {
+  result: RhChainResponse,
+): result is Extract<RhChainResponse, { ok: false }> {
   return result.ok === false;
 }
 
@@ -115,7 +116,9 @@ export default function EntryAnalysisPanel({
 }: Readonly<{
   positions?: Position[];
 }>) {
-  const leapRank = useLeapRankMutation();
+  const rhChain = useRhChainMutation();
+  const { user } = useAuth();
+  const [rhConnected, setRhConnected] = useState(false);
   const [symbol, setSymbol] = useState("");
   const [right, setRight] = useState<OptionRight>("call");
   const [side, setSide] = useState<OptionSide>("buy");
@@ -128,7 +131,7 @@ export default function EntryAnalysisPanel({
     () => datesForPreset("12-24").from,
   );
   const [expiryTo, setExpiryTo] = useState(() => datesForPreset("12-24").to);
-  const [rankResult, setRankResult] = useState<LeapRankResponse | null>(null);
+  const [rankResult, setRankResult] = useState<RhChainResponse | null>(null);
   const [rankError, setRankError] = useState<string | null>(null);
   const [selectedRank, setSelectedRank] = useState<number | null>(null);
 
@@ -156,6 +159,20 @@ export default function EntryAnalysisPanel({
     setExpiryTo(next.to);
   };
 
+  useEffect(() => {
+    let cancelled = false;
+    if (!user) {
+      setRhConnected(false);
+      return;
+    }
+    void fetchRhStatus().then((status) => {
+      if (!cancelled) setRhConnected(Boolean(status.connected));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
+
   const selectCandidate = (candidate: LeapRankCandidate) => {
     setSelectedRank(candidate.rank);
     setSymbol(candidate.symbol);
@@ -167,7 +184,7 @@ export default function EntryAnalysisPanel({
     setPremium(String(candidate.premium));
   };
 
-  const handleFind = async () => {
+  const handleRankLeaps = async () => {
     const ticker = symbol.trim().toUpperCase();
     if (!ticker) {
       setRankResult(null);
@@ -184,7 +201,7 @@ export default function EntryAnalysisPanel({
     setRankError(null);
     setSelectedRank(null);
     try {
-      const result = await leapRank.mutateAsync({
+      const result = await rhChain.mutateAsync({
         symbol: ticker,
         right,
         expiry_from: expiryFrom,
@@ -253,6 +270,8 @@ export default function EntryAnalysisPanel({
 
   const successfulRanks =
     rankResult && !isLeapRankFail(rankResult) ? rankResult.ranks : [];
+  const rankWarnings =
+    rankResult && !isLeapRankFail(rankResult) ? rankResult.warnings : [];
   const showRankList = successfulRanks.length > 0;
   const showRankError = Boolean(rankError);
   const showRankIdle = !showRankList && !showRankError;
@@ -278,6 +297,25 @@ export default function EntryAnalysisPanel({
 
         <Stack spacing={1.5}>
           <Typography sx={monoSx}>Rank vs owning the stock</Typography>
+          {user ? (
+            <Typography
+              variant="caption"
+              color={rhConnected ? "success.main" : "text.secondary"}
+              data-testid="entry-rh-status"
+            >
+              {rhConnected
+                ? "Robinhood connected"
+                : "Robinhood not connected for this account"}
+            </Typography>
+          ) : (
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              data-testid="entry-rh-status"
+            >
+              Sign in to connect Robinhood for live top-3
+            </Typography>
+          )}
           <TextField
             label="Underlying"
             value={symbol}
@@ -366,13 +404,13 @@ export default function EntryAnalysisPanel({
           <Button
             variant="contained"
             onClick={() => {
-              void handleFind();
+              void handleRankLeaps();
             }}
-            disabled={leapRank.isPending}
-            data-testid="entry-rank-find"
+            disabled={rhChain.isPending}
+            data-testid="entry-rank-leaps"
             sx={{ alignSelf: { xs: "stretch", sm: "flex-start" } }}
           >
-            {leapRank.isPending ? "Finding…" : "Find top 3"}
+            {rhChain.isPending ? "Ranking…" : "Rank LEAPs"}
           </Button>
 
           {showRankIdle ? (
@@ -395,6 +433,17 @@ export default function EntryAnalysisPanel({
               {rankError}
             </Typography>
           ) : null}
+
+          {rankWarnings.map((warning) => (
+            <Typography
+              key={warning}
+              variant="body2"
+              color="text.secondary"
+              data-testid="entry-rank-warning"
+            >
+              {warning}
+            </Typography>
+          ))}
 
           {showRankList ? (
             <Stack spacing={1} data-testid="entry-rank-list">
