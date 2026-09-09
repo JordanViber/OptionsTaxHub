@@ -8,9 +8,11 @@ import {
   Button,
   CircularProgress,
   Container,
+  IconButton,
   Toolbar,
   Typography,
 } from "@mui/material";
+import { Settings as SettingsIcon } from "@mui/icons-material";
 import NextLink from "next/link";
 import Wordmark from "../components/Wordmark";
 import DeskSwitcher, { rememberDesk } from "../components/DeskSwitcher";
@@ -43,14 +45,18 @@ export default function OptionsDeskPage() {
 
   useEffect(() => {
     setMounted(true);
-    rememberDesk("options");
     setPositions(positionsFromStorage());
   }, []);
 
   useEffect(() => {
-    if (!authLoading && user && !isEmailConfirmed(user)) {
-      router.push("/auth/confirm-email");
+    if (authLoading) {
+      return;
     }
+    if (user && !isEmailConfirmed(user)) {
+      router.push("/auth/confirm-email");
+      return;
+    }
+    rememberDesk("options");
   }, [authLoading, user, router]);
 
   if (authLoading || !mounted) {
@@ -81,6 +87,15 @@ export default function OptionsDeskPage() {
           <Wordmark href="/" />
           <DeskSwitcher />
           <Box sx={{ flexGrow: 1 }} />
+          <IconButton
+            color="inherit"
+            component={NextLink}
+            href="/settings"
+            aria-label="Settings"
+            sx={{ display: { xs: "inline-flex", sm: "none" } }}
+          >
+            <SettingsIcon />
+          </IconButton>
           <Button
             color="inherit"
             component={NextLink}
@@ -107,18 +122,7 @@ export default function OptionsDeskPage() {
       </AppBar>
 
       <Container maxWidth="md" sx={{ py: { xs: 3, sm: 5 } }}>
-        <Typography
-          sx={{
-            fontFamily: "var(--font-mono), 'IBM Plex Mono', monospace",
-            fontSize: 10,
-            letterSpacing: "0.18em",
-            textTransform: "uppercase",
-            color: "text.secondary",
-          }}
-        >
-          What-if · single-leg
-        </Typography>
-        <Typography variant="h4" sx={{ mt: 0.75, fontWeight: 650 }}>
+        <Typography variant="h4" sx={{ fontWeight: 650 }}>
           Options desk
         </Typography>
         <Typography

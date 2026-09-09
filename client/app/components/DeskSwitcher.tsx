@@ -24,6 +24,10 @@ export function readLastDesk(): "tax" | "options" {
   }
 }
 
+export function lastDeskHref(): "/dashboard" | "/options" {
+  return readLastDesk() === "options" ? "/options" : "/dashboard";
+}
+
 export default function DeskSwitcher() {
   const pathname = usePathname() ?? "";
   const active: "tax" | "options" = pathname.startsWith("/options")
@@ -72,38 +76,34 @@ function DeskLink({
   const short = desk === "tax" ? "Tax" : "Options";
 
   return (
-    <Box
+    <ButtonBase
+      component={NextLink}
+      href={href}
       data-testid={`desk-switch-${desk}`}
       aria-current={selected ? "page" : undefined}
+      aria-label={label}
       onClick={() => rememberDesk(desk)}
-      sx={{ display: "inline-flex" }}
+      sx={{
+        px: { xs: 1, sm: 1.35 },
+        py: 0.45,
+        borderRadius: 999,
+        fontSize: 13,
+        fontWeight: 650,
+        letterSpacing: "-0.01em",
+        textDecoration: "none",
+        color: selected ? "primary.contrastText" : "text.secondary",
+        bgcolor: selected ? "primary.main" : "transparent",
+        "&:hover": {
+          bgcolor: selected ? "primary.light" : "action.hover",
+        },
+      }}
     >
-      <ButtonBase
-        component={NextLink}
-        href={href}
-        aria-label={label}
-        sx={{
-          px: { xs: 1, sm: 1.35 },
-          py: 0.45,
-          borderRadius: 999,
-          fontSize: 13,
-          fontWeight: 650,
-          letterSpacing: "-0.01em",
-          textDecoration: "none",
-          color: selected ? "primary.contrastText" : "text.secondary",
-          bgcolor: selected ? "primary.main" : "transparent",
-          "&:hover": {
-            bgcolor: selected ? "primary.light" : "action.hover",
-          },
-        }}
-      >
-        <Box component="span" sx={{ display: { xs: "inline", sm: "none" } }}>
-          {short}
-        </Box>
-        <Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>
-          {label}
-        </Box>
-      </ButtonBase>
-    </Box>
+      <Box component="span" sx={{ display: { xs: "inline", sm: "none" } }}>
+        {short}
+      </Box>
+      <Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>
+        {label}
+      </Box>
+    </ButtonBase>
   );
 }
