@@ -1,5 +1,7 @@
 import {
   getDeskFiles,
+  getDeskCsv,
+  getDeskForm1099,
   setDeskCsv,
   setDeskForm1099,
   resetDeskFiles,
@@ -32,5 +34,15 @@ describe("desk-files", () => {
     unsub();
     setDeskForm1099(null);
     expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns a stable snapshot object until a write", () => {
+    const first = getDeskFiles();
+    const second = getDeskFiles();
+    expect(first).toBe(second);
+    setDeskCsv(new File(["a"], "book.csv", { type: "text/csv" }));
+    expect(getDeskFiles()).not.toBe(first);
+    expect(getDeskCsv()?.name).toBe("book.csv");
+    expect(getDeskForm1099()).toBeNull();
   });
 });

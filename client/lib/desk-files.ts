@@ -13,22 +13,38 @@ export type DeskFiles = {
 
 let csvFile: File | null = null;
 let form1099File: File | null = null;
+let snapshot: DeskFiles = { csv: null, form1099: null };
 const listeners = new Set<() => void>();
 
 function notify(): void {
+  snapshot = { csv: csvFile, form1099: form1099File };
   listeners.forEach((listener) => listener());
 }
 
 export function getDeskFiles(): DeskFiles {
-  return { csv: csvFile, form1099: form1099File };
+  return snapshot;
+}
+
+export function getDeskCsv(): File | null {
+  return csvFile;
+}
+
+export function getDeskForm1099(): File | null {
+  return form1099File;
 }
 
 export function setDeskCsv(file: File | null): void {
+  if (csvFile === file) {
+    return;
+  }
   csvFile = file;
   notify();
 }
 
 export function setDeskForm1099(file: File | null): void {
+  if (form1099File === file) {
+    return;
+  }
   form1099File = file;
   notify();
 }
