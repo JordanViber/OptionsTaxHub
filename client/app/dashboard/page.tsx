@@ -75,6 +75,7 @@ import {
 } from "@/lib/api";
 import FirstRunEmptyState from "../components/FirstRunEmptyState";
 import DeskSwitcher, { rememberDesk } from "../components/DeskSwitcher";
+import { useDeskUploadFiles } from "./useDeskUploadFiles";
 import Supplemental1099InsightsPanel from "../components/Supplemental1099InsightsPanel";
 import {
   SUPPLEMENTAL_1099_AFTER_FIRST_RUN_COPY,
@@ -1173,10 +1174,13 @@ export default function DashboardPage() {
   const [activeTab, setActiveTab] = useState(0);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [tipJarOpen, setTipJarOpen] = useState(false);
-  const [lastUploadedCsv, setLastUploadedCsv] = useState<File | null>(null);
-  const [supplemental1099File, setSupplemental1099File] = useState<File | null>(
-    null,
-  );
+  const {
+    lastUploadedCsv,
+    setLastUploadedCsv,
+    supplemental1099File,
+    setSupplemental1099File,
+    resetDeskFiles,
+  } = useDeskUploadFiles();
   const [loadedAnalysis, setLoadedAnalysis] =
     useState<PortfolioAnalysis | null>(null);
   const [analysisSource, setAnalysisSource] = useState<AnalysisSource | null>(
@@ -1571,6 +1575,7 @@ export default function DashboardPage() {
   };
 
   const handleSignOut = async () => {
+    resetDeskFiles();
     sessionStorage.removeItem("optionstaxhub-analysis");
     // Remove cached portfolio history when the user signs out to avoid
     // briefly showing a previous user's history while refetching.
@@ -1623,16 +1628,14 @@ export default function DashboardPage() {
   };
 
   useEffect(() => {
-    rememberDesk("tax");
-  }, []);
-
-  useEffect(() => {
     if (authLoading) {
       return;
     }
     if (user && !emailConfirmed) {
       router.push("/auth/confirm-email");
+      return;
     }
+    rememberDesk("tax");
   }, [authLoading, user, emailConfirmed, router]);
 
   if (authLoading) {
@@ -1706,9 +1709,22 @@ export default function DashboardPage() {
 
       {/* Header AppBar */}
       <AppBar position="static" sx={{ zIndex: 40 }}>
-        <Toolbar sx={{ px: { xs: 1, sm: 2 }, gap: { xs: 0.25, sm: 0.5 } }}>
+        <Toolbar
+          sx={{
+            px: { xs: 1, sm: 2 },
+            gap: { xs: 0.25, sm: 0.5 },
+            flexWrap: { xs: "wrap", sm: "nowrap" },
+          }}
+        >
           <Wordmark href="/" />
-          <DeskSwitcher />
+          <Box
+            sx={{
+              order: { xs: 2, sm: 0 },
+              flexBasis: { xs: "100%", sm: "auto" },
+            }}
+          >
+            <DeskSwitcher />
+          </Box>
           <Box sx={{ flexGrow: 1 }} />
 
           {/* Tip — icon-only on mobile */}

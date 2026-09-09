@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { PortfolioAnalysis, Supplemental1099Summary } from "../../lib/types";
+import { resetDeskFiles } from "../../lib/desk-files";
 
 // Mock next/navigation
 jest.mock("next/link", () => {
@@ -145,6 +146,19 @@ jest.mock("../../app/components/TipJar", () => ({
   default: () => <div data-testid="tip-jar-dialog" />,
 }));
 
+const mockRememberDesk = jest.fn();
+jest.mock("../../app/components/DeskSwitcher", () => {
+  const actual = jest.requireActual("../../app/components/DeskSwitcher");
+  return {
+    __esModule: true,
+    ...actual,
+    rememberDesk: (desk: string) => {
+      mockRememberDesk(desk);
+      actual.rememberDesk(desk);
+    },
+  };
+});
+
 import DashboardPage from "../../app/dashboard/page";
 
 const baseAnalysis: PortfolioAnalysis = {
@@ -239,6 +253,8 @@ describe("DashboardPage", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockRememberDesk.mockClear();
+    resetDeskFiles();
     mockAuthState.user.email_confirmed_at = "2025-01-01T00:00:00Z";
     mockAuthState.loading = false;
     mockAnalyzeData = null;
@@ -1318,6 +1334,22 @@ describe("DashboardPage", () => {
       expect(mockPush).toHaveBeenCalledWith("/auth/confirm-email");
     });
     expect(screen.queryByText(/Portfolio Analysis/i)).not.toBeInTheDocument();
+    expect(mockRememberDesk).not.toHaveBeenCalled();
+  });
+
+  it("auth loading does not call rememberDesk", () => {
+    mockAuthState.loading = true;
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    expect(mockRememberDesk).not.toHaveBeenCalled();
+  });
+
+  it("confirmed user calls rememberDesk(\"tax\")", async () => {
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(mockRememberDesk).toHaveBeenCalledWith("tax");
+    });
   });
 
 });

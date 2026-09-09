@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import Home from "../../app/dashboard/page";
 import { persistGuestAnalysis } from "../../lib/api";
 import { resetGuestPersistInFlight } from "../../lib/guest-persist-lock";
+import { getDeskCsv, resetDeskFiles } from "../../lib/desk-files";
 
 const mockPush = jest.fn();
 const mockUseAuth = jest.fn();
@@ -69,6 +70,19 @@ jest.mock("../../app/components/YearClosePacketPanel", () => {
     default: Mock,
     isYearClosePacketPaid: jest.fn(() => false),
     rememberYearClosePacketPaid: jest.fn(),
+  };
+});
+
+const mockRememberDesk = jest.fn();
+jest.mock("../../app/components/DeskSwitcher", () => {
+  const actual = jest.requireActual("../../app/components/DeskSwitcher");
+  return {
+    __esModule: true,
+    ...actual,
+    rememberDesk: (desk: string) => {
+      mockRememberDesk(desk);
+      actual.rememberDesk(desk);
+    },
   };
 });
 
@@ -192,6 +206,8 @@ describe("Home page", () => {
     (persistGuestAnalysis as jest.Mock).mockClear();
     (persistGuestAnalysis as jest.Mock).mockResolvedValue(true);
     resetGuestPersistInFlight();
+    resetDeskFiles();
+    mockRememberDesk.mockClear();
     sessionStorage.clear();
     originalFetch = globalThis.fetch;
   });
@@ -206,9 +222,10 @@ describe("Home page", () => {
     renderWithClient(<Home />);
 
     expect(screen.getByRole("progressbar")).toBeInTheDocument();
+    expect(mockRememberDesk).not.toHaveBeenCalled();
   });
 
-  it("renders the desk for guests instead of bouncing to sign-in", () => {
+  it("renders the desk for guests instead of bouncing to sign-in", async () => {
     setupMocks(createAuthMock(null, false));
 
     renderWithClient(<Home />);
@@ -221,6 +238,9 @@ describe("Home page", () => {
       "href",
       "/auth/signin",
     );
+    await waitFor(() => {
+      expect(mockRememberDesk).toHaveBeenCalledWith("tax");
+    });
   });
 
   it("uses display_name when available", () => {
@@ -722,6 +742,54 @@ describe("Home page", () => {
         expect.objectContaining({ analysis_id: "guest-sample-1" }),
         "sample-robinhood-transactions.csv",
       );
+    });
+  });
+
+  it("remount preserves CSV so a new 1099 re-runs with the original file", async () => {
+    const mutate = jest.fn();
+    setupMocks(createAuthMock(null, false), createAnalyzeMock({ mutate }));
+    sessionStorage.setItem("oth-load-sample", "1");
+    mockSampleCsvFetch();
+
+    const { container, unmount } = renderWithClient(<Home />);
+
+    await waitFor(() => {
+      expect(mutate).toHaveBeenCalledTimes(1);
+    });
+    expect(mutate.mock.calls[0][0]).toMatchObject({
+      file: expect.objectContaining({ name: "sample-robinhood-transactions.csv" }),
+    });
+
+    // Verify CSV was stored in module-level store
+    expect(getDeskCsv()?.name).toBe("sample-robinhood-transactions.csv");
+
+    unmount();
+
+    // Remount — CSV should be restored from module-level store
+    const wrapper = createWrapper();
+    const { container: container2 } = render(<Home />, { wrapper });
+
+    const pdfInput2 = container2.querySelector(
+      'input[type="file"][accept=".pdf,application/pdf"]',
+    );
+    if (!(pdfInput2 instanceof HTMLInputElement)) {
+      throw new TypeError("PDF input not found after remount");
+    }
+
+    fireEvent.change(pdfInput2, {
+      target: {
+        files: [
+          new File(["pdf"], "after-remount.pdf", { type: "application/pdf" }),
+        ],
+      },
+    });
+
+    await waitFor(() => {
+      expect(mutate).toHaveBeenCalledTimes(2);
+    });
+    expect(mutate.mock.calls[1][0]).toMatchObject({
+      file: expect.objectContaining({ name: "sample-robinhood-transactions.csv" }),
+      supplemental1099File: expect.objectContaining({ name: "after-remount.pdf" }),
     });
   });
 });
