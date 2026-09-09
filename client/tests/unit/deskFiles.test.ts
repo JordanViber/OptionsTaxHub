@@ -26,6 +26,12 @@ describe("desk-files", () => {
     expect(getDeskFiles().form1099).toBe(pdf);
   });
 
+  it("restores Files after a simulated tax-desk remount", () => {
+    const csv = new File(["a"], "book.csv", { type: "text/csv" });
+    setDeskCsv(csv);
+    expect(getDeskFiles().csv).toBe(csv);
+  });
+
   it("notifies subscribers", () => {
     const listener = jest.fn();
     const unsub = subscribeDeskFiles(listener);

@@ -4,6 +4,9 @@
  * In-memory Files for the current desk session.
  * File cannot live in sessionStorage; a module holder survives
  * /dashboard ↔ /options remounts in the same tab.
+ *
+ * Not durable: a full reload clears it. Fast Refresh can also
+ * reset the module in local dev — treat as session RAM only.
  */
 
 export type DeskFiles = {

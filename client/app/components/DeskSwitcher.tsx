@@ -30,9 +30,11 @@ export function lastDeskHref(): "/dashboard" | "/options" {
 
 export default function DeskSwitcher() {
   const pathname = usePathname() ?? "";
-  const active: "tax" | "options" = pathname.startsWith("/options")
+  const active: "tax" | "options" | null = pathname.startsWith("/options")
     ? "options"
-    : "tax";
+    : pathname.startsWith("/dashboard")
+      ? "tax"
+      : null;
 
   return (
     <Box
@@ -70,7 +72,7 @@ function DeskLink({
   desk: "tax" | "options";
   href: string;
   label: string;
-  active: "tax" | "options";
+  active: "tax" | "options" | null;
 }>) {
   const selected = active === desk;
   const short = desk === "tax" ? "Tax" : "Options";
