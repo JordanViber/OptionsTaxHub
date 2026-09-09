@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { PortfolioAnalysis, Supplemental1099Summary } from "../../lib/types";
+import { resetDeskFiles } from "../../lib/desk-files";
 
 // Mock next/navigation
 jest.mock("next/link", () => {
@@ -18,6 +19,7 @@ jest.mock("next/navigation", () => ({
   useRouter: () => ({
     push: mockPush,
   }),
+  usePathname: () => "/dashboard",
 }));
 
 // Mock auth context
@@ -144,6 +146,19 @@ jest.mock("../../app/components/TipJar", () => ({
   default: () => <div data-testid="tip-jar-dialog" />,
 }));
 
+const mockRememberDesk = jest.fn();
+jest.mock("../../app/components/DeskSwitcher", () => {
+  const actual = jest.requireActual("../../app/components/DeskSwitcher");
+  return {
+    __esModule: true,
+    ...actual,
+    rememberDesk: (desk: string) => {
+      mockRememberDesk(desk);
+      actual.rememberDesk(desk);
+    },
+  };
+});
+
 import DashboardPage from "../../app/dashboard/page";
 
 const baseAnalysis: PortfolioAnalysis = {
@@ -238,6 +253,8 @@ describe("DashboardPage", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockRememberDesk.mockClear();
+    resetDeskFiles();
     mockAuthState.user.email_confirmed_at = "2025-01-01T00:00:00Z";
     mockAuthState.loading = false;
     mockAnalyzeData = null;
@@ -709,10 +726,8 @@ describe("DashboardPage", () => {
         screen.getByText(/Get started with your first analysis/i),
       ).toBeInTheDocument();
     });
-    expect(screen.getByTestId("entry-analysis-panel")).toBeInTheDocument();
-    expect(
-      screen.getByRole("heading", { name: /Analyze a new option/i }),
-    ).toBeInTheDocument();
+    expect(screen.getByTestId("desk-switcher")).toBeInTheDocument();
+    expect(screen.queryByTestId("entry-analysis-panel")).not.toBeInTheDocument();
     expect(screen.getByText(/Export from Robinhood/i)).toBeInTheDocument();
     expect(
       screen.getByRole("link", { name: /Download sample CSV/i }),
@@ -1299,79 +1314,16 @@ describe("DashboardPage", () => {
     });
   });
 
-  it("shows the options what-if on an empty desk without a CSV or $49", async () => {
+  it("tax desk links to /options and does not render entry-analysis-panel", async () => {
     render(<DashboardPage />, { wrapper: createWrapper() });
 
     await waitFor(() => {
-      expect(screen.getByTestId("entry-analysis-panel")).toBeInTheDocument();
+      expect(screen.getByTestId("desk-switcher")).toBeInTheDocument();
     });
     expect(
-      screen.getByText(/Enter premium to see max gain, max loss, and breakeven/i),
-    ).toBeInTheDocument();
-    expect(screen.getByTestId("entry-rank-leaps")).toBeInTheDocument();
-    expect(screen.queryByTestId("entry-rank-find")).not.toBeInTheDocument();
-    expect(screen.getByTestId("entry-rank-empty")).toBeInTheDocument();
-    expect(screen.queryByTestId("entry-context")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("entry-results")).not.toBeInTheDocument();
-  });
-
-  it("adds one-line portfolio context when positions are loaded", async () => {
-    mockAnalyzeData = {
-      ...baseAnalysis,
-      packet_unlocked: false,
-      sample_run: false,
-      positions: [
-        {
-          position_id: "NVDA:stock",
-          symbol: "NVDA",
-          display_label: "NVDA",
-          quantity: 52,
-          avg_cost_basis: 280,
-          total_cost_basis: 14560,
-          current_price: 250,
-          market_value: 13000,
-          unrealized_pnl: -1560,
-          unrealized_pnl_pct: -10,
-          earliest_purchase_date: "2026-01-15",
-          holding_period_days: 200,
-          is_long_term: false,
-          asset_type: "stock",
-          tax_lots: [],
-          wash_sale_risk: false,
-        },
-      ],
-    };
-
-    render(<DashboardPage />, { wrapper: createWrapper() });
-
-    await waitFor(() => {
-      expect(screen.getByTestId("entry-analysis-panel")).toBeInTheDocument();
-    });
-
-    const future = new Date();
-    future.setFullYear(future.getFullYear() + 1);
-    const expiration = `${future.getFullYear()}-${String(future.getMonth() + 1).padStart(2, "0")}-${String(future.getDate()).padStart(2, "0")}`;
-
-    fireEvent.change(screen.getByTestId("entry-symbol"), {
-      target: { value: "NVDA" },
-    });
-    fireEvent.change(screen.getByTestId("entry-strike"), {
-      target: { value: "250" },
-    });
-    fireEvent.change(screen.getByTestId("entry-expiration"), {
-      target: { value: expiration },
-    });
-    fireEvent.change(screen.getByTestId("entry-premium"), {
-      target: { value: "4.20" },
-    });
-
-    expect(screen.getByTestId("entry-max-loss")).toHaveTextContent("$420.00");
-    expect(screen.getByTestId("entry-context")).toHaveTextContent(
-      "Open NVDA: 52 sh",
-    );
-    expect(screen.getByTestId("entry-context")).not.toHaveTextContent(
-      /wash|1099|harvest|\$49/i,
-    );
+      screen.getByRole("link", { name: /Options desk/i }),
+    ).toHaveAttribute("href", "/options");
+    expect(screen.queryByTestId("entry-analysis-panel")).not.toBeInTheDocument();
   });
 
   it("redirects unconfirmed users away from the dashboard", async () => {
@@ -1382,6 +1334,22 @@ describe("DashboardPage", () => {
       expect(mockPush).toHaveBeenCalledWith("/auth/confirm-email");
     });
     expect(screen.queryByText(/Portfolio Analysis/i)).not.toBeInTheDocument();
+    expect(mockRememberDesk).not.toHaveBeenCalled();
+  });
+
+  it("auth loading does not call rememberDesk", () => {
+    mockAuthState.loading = true;
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    expect(mockRememberDesk).not.toHaveBeenCalled();
+  });
+
+  it("confirmed user calls rememberDesk(\"tax\")", async () => {
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(mockRememberDesk).toHaveBeenCalledWith("tax");
+    });
   });
 
 });

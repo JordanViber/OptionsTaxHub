@@ -31,6 +31,7 @@ describe("LandingPage", () => {
     mockPush.mockClear();
     mockUseAuth.mockReset();
     sessionStorage.clear();
+    localStorage.clear();
   });
 
   it("still shows the product page while auth is loading", () => {
@@ -222,9 +223,23 @@ describe("LandingPage", () => {
       "href",
       "/dashboard",
     );
+    expect(screen.getByRole("link", { name: "Options desk" })).toHaveAttribute(
+      "href",
+      "/options",
+    );
     const wordmarks = screen.getAllByRole("link", { name: /OptionsTaxHub/i });
     expect(wordmarks.length).toBeGreaterThan(0);
     expect(wordmarks[0]).toHaveAttribute("href", "/");
+  });
+
+  it("sends Open desk to the last used desk", () => {
+    localStorage.setItem("oth-last-desk", "options");
+    mockUseAuth.mockReturnValue({ user: null, loading: false });
+    renderWithClient(<LandingPage />);
+    expect(screen.getByRole("link", { name: "Open desk" })).toHaveAttribute(
+      "href",
+      "/options",
+    );
   });
 
   it("does not claim in-memory-only storage or state tax savings", () => {

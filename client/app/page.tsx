@@ -14,6 +14,7 @@ import { useAuth } from "@/app/context/auth";
 import TaxDisclaimer from "./components/TaxDisclaimer";
 import Wordmark from "./components/Wordmark";
 import DeskPreview from "./components/DeskPreview";
+import { lastDeskHref } from "./components/DeskSwitcher";
 
 const UPLOAD_INTENT_KEY = "oth-upload-intent";
 
@@ -21,9 +22,13 @@ export default function LandingPage() {
   const router = useRouter();
   const { user } = useAuth();
   const [mounted, setMounted] = useState(false);
+  const [openDeskHref, setOpenDeskHref] = useState<"/dashboard" | "/options">(
+    "/dashboard",
+  );
 
   useEffect(() => {
     setMounted(true);
+    setOpenDeskHref(lastDeskHref());
   }, []);
 
   if (!mounted) return null;
@@ -85,21 +90,37 @@ export default function LandingPage() {
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
+          flexWrap: "wrap",
           gap: 2,
           px: 2.5,
           py: 2.5,
         }}
       >
         <Wordmark />
-        <Stack direction="row" spacing={1} alignItems="center">
+        <Stack
+          direction="row"
+          spacing={1}
+          alignItems="center"
+          useFlexGap
+          flexWrap="wrap"
+        >
           <Button
             component={Link}
-            href="/dashboard"
+            href={openDeskHref}
             variant="outlined"
             size="small"
           >
             Open desk
           </Button>
+          {openDeskHref === "/options" ? (
+            <Button component={Link} href="/dashboard" size="small">
+              Tax desk
+            </Button>
+          ) : (
+            <Button component={Link} href="/options" size="small">
+              Options desk
+            </Button>
+          )}
           {!user && (
             <Button component={Link} href="/auth/signin" size="small">
               Sign In
@@ -402,7 +423,7 @@ export default function LandingPage() {
                 Sign in
               </Link>
             )}
-            <Link href="/dashboard" style={{ color: "inherit" }}>
+            <Link href={openDeskHref} style={{ color: "inherit" }}>
               Desk
             </Link>
           </Stack>
