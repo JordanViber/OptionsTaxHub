@@ -59,7 +59,7 @@ export default function OptionsDeskPage() {
         sx={{
           display: "flex",
           justifyContent: "center",
-          alignItems: "alignItems",
+          alignItems: "center",
           height: "100vh",
         }}
       >
