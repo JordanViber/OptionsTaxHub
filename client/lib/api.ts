@@ -6,6 +6,10 @@ import type {
   PricesResponse,
   FilingStatus,
   AnalysisHistoryItem,
+  LeapRankParams,
+  LeapRankResponse,
+  RhChainResponse,
+  RhStatusResponse,
 } from "@/lib/types";
 import { getSession } from "./supabase";
 
@@ -300,6 +304,86 @@ export function useFetchPrices(symbols: string[], enabled = false) {
     queryFn: () => fetchPrices(symbols),
     enabled: enabled && symbols.length > 0,
     staleTime: 5 * 60 * 1000, // 5 minutes — matches backend cache TTL
+  });
+}
+
+const LEAP_RANK_429 =
+  "Too many LEAP lookups from this network. Sign in or try again later.";
+
+async function readLeapRankError(response: Response): Promise<string> {
+  try {
+    const body: unknown = await response.json();
+    const fromBody = messageFromApiErrorBody(body);
+    if (fromBody) return fromBody;
+  } catch {
+    // Non-JSON error body; fall through to status text.
+  }
+  if (response.status === 429) return LEAP_RANK_429;
+  return `LEAP rank failed: ${response.statusText}`;
+}
+
+/**
+ * Rank long LEAPs vs owning the stock. Guests allowed (optional auth).
+ * 200 + ok:false is a successful HTTP response with an honest empty list.
+ */
+export async function fetchLeapRank(
+  params: LeapRankParams,
+): Promise<LeapRankResponse> {
+  const headers = await getOptionalAuthHeaders();
+  const query = new URLSearchParams({
+    symbol: params.symbol.trim().toUpperCase(),
+    right: params.right,
+    expiry_from: params.expiry_from,
+    expiry_to: params.expiry_to,
+  });
+  const response = await fetch(apiPath(`/api/options/leap-rank?${query}`), {
+    headers,
+  });
+  if (!response.ok) {
+    throw new Error(await readLeapRankError(response));
+  }
+  return response.json() as Promise<LeapRankResponse>;
+}
+
+export function useLeapRankMutation() {
+  return useMutation({
+    mutationFn: fetchLeapRank,
+  });
+}
+
+export async function fetchRhStatus(): Promise<RhStatusResponse> {
+  const headers = await getOptionalAuthHeaders();
+  const response = await fetch(apiPath("/api/oth/options/rh-status"), {
+    headers,
+  });
+  if (!response.ok) {
+    return { connected: false };
+  }
+  return response.json() as Promise<RhStatusResponse>;
+}
+
+export async function fetchRhChain(
+  params: LeapRankParams,
+): Promise<RhChainResponse> {
+  const headers = await getOptionalAuthHeaders();
+  const query = new URLSearchParams({
+    symbol: params.symbol.trim().toUpperCase(),
+    side: params.right,
+    min_expiry: params.expiry_from,
+    max_expiry: params.expiry_to,
+  });
+  const response = await fetch(apiPath(`/api/oth/options/chain?${query}`), {
+    headers,
+  });
+  if (!response.ok) {
+    throw new Error(await readLeapRankError(response));
+  }
+  return response.json() as Promise<RhChainResponse>;
+}
+
+export function useRhChainMutation() {
+  return useMutation({
+    mutationFn: fetchRhChain,
   });
 }
 

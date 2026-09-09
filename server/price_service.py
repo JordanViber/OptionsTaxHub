@@ -11,10 +11,11 @@ DISCLAIMER: Price data is for educational/simulation purposes only.
 from __future__ import annotations
 
 import logging
+import math
 import re
 import time
-from datetime import date, datetime
-from typing import Optional
+from datetime import date, datetime, timezone
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,8 @@ CACHE_TTL_SECONDS = 300  # 5-minute cache TTL
 # In-memory price cache: {symbol: (price, timestamp)}
 _price_cache: dict[str, tuple[float, float]] = {}
 _option_price_cache: dict[str, tuple[float, float]] = {}
+# Chain snapshots: {(symbol, expiration, right): (rows, timestamp)}
+_chain_cache: dict[tuple[str, str, str], tuple[list[dict[str, Any]], float]] = {}
 
 OPTION_LABEL_PATTERN = re.compile(
     r"^(?P<symbol>[A-Z]+)\s+(?P<expiry>\d{1,2}/\d{1,2}/\d{4})\s+"
@@ -64,6 +67,7 @@ def clear_cache() -> None:
     """Clear the entire price cache."""
     _price_cache.clear()
     _option_price_cache.clear()
+    _chain_cache.clear()
 
 
 def _coerce_price(value) -> Optional[float]:
@@ -463,3 +467,190 @@ def fetch_single_price(symbol: str) -> Optional[float]:
     """
     prices, _ = fetch_current_prices([symbol])
     return prices.get(symbol.upper())
+
+
+def _utc_today() -> date:
+    return datetime.now(timezone.utc).date()
+
+
+def _coerce_open_interest(value) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        if value != value:  # NaN
+            return None
+    except (TypeError, ValueError):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return int(number)
+
+
+def listed_expirations_in_window(
+    available: list[str],
+    expiry_from: str,
+    expiry_to: str,
+    as_of: str,
+) -> list[str]:
+    """Filter ISO listed expirations to [from, to] and not before as_of.
+
+    Every listed date in the window is kept so ranking is the true top 3,
+    not a sampled subset. No harvest 7-day snap.
+    """
+    as_of_date = _parse_iso_expiration(as_of)
+    start = _parse_iso_expiration(expiry_from)
+    end = _parse_iso_expiration(expiry_to)
+    if as_of_date is None or start is None or end is None:
+        return []
+
+    in_window: list[str] = []
+    for expiration in available:
+        expiration_date = _parse_iso_expiration(expiration)
+        if expiration_date is None:
+            continue
+        if expiration_date < as_of_date:
+            continue
+        if expiration_date < start or expiration_date > end:
+            continue
+        in_window.append(expiration)
+    in_window.sort()
+    return in_window
+
+
+def _get_cached_chain(
+    symbol: str,
+    expiration: str,
+    right: str,
+) -> Optional[list[dict[str, Any]]]:
+    key = (symbol.upper(), expiration, right)
+    if key not in _chain_cache:
+        return None
+    rows, cached_at = _chain_cache[key]
+    if time.time() - cached_at >= CACHE_TTL_SECONDS:
+        return None
+    return [dict(row) for row in rows]
+
+
+def _set_cached_chain(
+    symbol: str,
+    expiration: str,
+    right: str,
+    rows: list[dict[str, Any]],
+) -> None:
+    _chain_cache[(symbol.upper(), expiration, right)] = (
+        [dict(row) for row in rows],
+        time.time(),
+    )
+
+
+def _rows_from_option_table(table, expiration: str) -> list[dict[str, Any]]:
+    if table is None or getattr(table, "empty", True):
+        return []
+    if "strike" not in table.columns:
+        return []
+
+    has_oi = "openInterest" in table.columns
+    has_volume = "volume" in table.columns
+    rows: list[dict[str, Any]] = []
+    for _, row in table.iterrows():
+        strike = _coerce_price(row.get("strike"))
+        if strike is None:
+            continue
+        item: dict[str, Any] = {
+            "strike": strike,
+            "expiration": expiration,
+            "bid": _coerce_price(row.get("bid")) if "bid" in table.columns else None,
+            "ask": _coerce_price(row.get("ask")) if "ask" in table.columns else None,
+            "last": (
+                _coerce_price(row.get("lastPrice"))
+                if "lastPrice" in table.columns
+                else None
+            ),
+            "open_interest": (
+                _coerce_open_interest(row.get("openInterest")) if has_oi else None
+            ),
+            "volume": (
+                _coerce_open_interest(row.get("volume")) if has_volume else None
+            ),
+        }
+        rows.append(item)
+    return rows
+
+
+def fetch_option_chain_window(
+    symbol: str,
+    right: str,
+    expiry_from: str,
+    expiry_to: str,
+    as_of: Optional[str] = None,
+) -> tuple[list[dict[str, Any]], list[str], list[str]]:
+    """
+    Fetch listed option contracts in an expiry window.
+
+    Scores every listed expiration in the window (no silent sample/cap).
+    Does not snap to a nearest expiration (harvest-only behavior).
+    Failed expirations are skipped; the rest are still ranked.
+    """
+    symbol = symbol.upper().strip()
+    right = right.lower().strip()
+    if right not in ("call", "put"):
+        return [], [], [f"Invalid option right: {right}"]
+
+    as_of_iso = as_of or _utc_today().isoformat()
+    warnings: list[str] = []
+
+    try:
+        import yfinance as yf
+    except ImportError:
+        return [], [], [
+            "yfinance is not installed. Run: pip install yfinance."
+        ]
+
+    try:
+        ticker = yf.Ticker(symbol)
+        available = list(getattr(ticker, "options", ()) or [])
+    except Exception as exc:
+        return [], [], [f"Could not load a live {symbol} option chain: {str(exc)}"]
+
+    selected = listed_expirations_in_window(
+        available, expiry_from, expiry_to, as_of_iso,
+    )
+    if not selected:
+        return [], [], [f"No listed expirations in this window for {symbol}."]
+
+    rows: list[dict[str, Any]] = []
+    expirations_used: list[str] = []
+
+    for expiration in selected:
+        cached = _get_cached_chain(symbol, expiration, right)
+        if cached is not None:
+            rows.extend(cached)
+            expirations_used.append(expiration)
+            continue
+        try:
+            chain = ticker.option_chain(expiration)
+        except Exception as exc:
+            warnings.append(
+                f"Could not fetch live option chain for {symbol} {expiration}: {str(exc)}"
+            )
+            continue
+
+        table = chain.calls if right == "call" else chain.puts
+        fetched = _rows_from_option_table(table, expiration)
+        _set_cached_chain(symbol, expiration, right, fetched)
+        rows.extend(fetched)
+        expirations_used.append(expiration)
+
+    if not expirations_used:
+        if not warnings:
+            warnings.append(
+                f"Could not load a live {symbol} option chain for this window."
+            )
+        return [], [], warnings
+
+    return rows, expirations_used, warnings
+

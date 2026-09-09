@@ -1,21 +1,31 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Box,
+  Button,
+  ButtonBase,
   Stack,
   TextField,
   ToggleButton,
   ToggleButtonGroup,
   Typography,
 } from "@mui/material";
-import type { Position } from "@/lib/types";
+import { fetchRhStatus, useRhChainMutation } from "@/lib/api";
+import { useAuth } from "@/app/context/auth";
+import type {
+  LeapRankCandidate,
+  Position,
+  RhChainResponse,
+} from "@/lib/types";
 import {
   analyzeEntry,
   buildEntryContextLine,
   formatUsdCents,
+  leapWindowForPreset,
   type EntryAnalysisResult,
   type EntryProposal,
+  type LeapWindowPreset,
   type OptionRight,
   type OptionSide,
 } from "@/lib/entryAnalysis";
@@ -36,6 +46,8 @@ const toggleGroupSx = {
     "&:hover": { bgcolor: "primary.light" },
   },
 };
+
+type WindowPreset = LeapWindowPreset | "custom";
 
 function parsePositiveNumber(raw: string): number | null {
   const trimmed = raw.trim();
@@ -59,11 +71,33 @@ function isEntryFail(
   return result.ok === false;
 }
 
+function isLeapRankFail(
+  result: RhChainResponse,
+): result is Extract<RhChainResponse, { ok: false }> {
+  return result.ok === false;
+}
+
+function formatImpliedMove(rate: number, right: "call" | "put"): string {
+  const pct = `${(Math.abs(rate) * 100).toFixed(1)}%`;
+  if (right === "put") {
+    return `${pct} annualized decline to break even`;
+  }
+  return `${pct} annualized to break even`;
+}
+
+function rankErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) return error.message;
+  return "Could not rank LEAPs. Rankings are hidden so we do not invent prices.";
+}
+
 export default function EntryAnalysisPanel({
   positions = [],
 }: Readonly<{
   positions?: Position[];
 }>) {
+  const rhChain = useRhChainMutation();
+  const { user } = useAuth();
+  const [rhConnected, setRhConnected] = useState(false);
   const [symbol, setSymbol] = useState("");
   const [right, setRight] = useState<OptionRight>("call");
   const [side, setSide] = useState<OptionSide>("buy");
@@ -71,6 +105,14 @@ export default function EntryAnalysisPanel({
   const [expiration, setExpiration] = useState("");
   const [quantity, setQuantity] = useState("1");
   const [premium, setPremium] = useState("");
+  const [windowPreset, setWindowPreset] = useState<WindowPreset>("12-24");
+  const [expiryFrom, setExpiryFrom] = useState(
+    () => leapWindowForPreset("12-24").from,
+  );
+  const [expiryTo, setExpiryTo] = useState(() => leapWindowForPreset("12-24").to);
+  const [rankResult, setRankResult] = useState<RhChainResponse | null>(null);
+  const [rankError, setRankError] = useState<string | null>(null);
+  const [selectedRank, setSelectedRank] = useState<number | null>(null);
 
   const proposal: EntryProposal = useMemo(
     () => ({
@@ -87,6 +129,73 @@ export default function EntryAnalysisPanel({
 
   const analysis = analyzeEntry(proposal);
   const contextLine = buildEntryContextLine(proposal, positions);
+
+  const applyPreset = (preset: WindowPreset) => {
+    setWindowPreset(preset);
+    if (preset === "custom") return;
+    const next = leapWindowForPreset(preset);
+    setExpiryFrom(next.from);
+    setExpiryTo(next.to);
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!user) {
+      setRhConnected(false);
+      return;
+    }
+    void fetchRhStatus().then((status) => {
+      if (!cancelled) setRhConnected(Boolean(status.connected));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
+
+  const selectCandidate = (candidate: LeapRankCandidate) => {
+    setSelectedRank(candidate.rank);
+    setSymbol(candidate.symbol);
+    setRight(candidate.right);
+    setSide("buy");
+    setStrike(String(candidate.strike));
+    setExpiration(candidate.expiration);
+    setQuantity("1");
+    setPremium(String(candidate.premium));
+  };
+
+  const handleRankLeaps = async () => {
+    const ticker = symbol.trim().toUpperCase();
+    if (!ticker) {
+      setRankResult(null);
+      setSelectedRank(null);
+      setRankError("Enter an underlying ticker.");
+      return;
+    }
+    if (!expiryFrom || !expiryTo || expiryFrom > expiryTo) {
+      setRankResult(null);
+      setSelectedRank(null);
+      setRankError("Choose a valid LEAP expiry window.");
+      return;
+    }
+    setRankError(null);
+    setSelectedRank(null);
+    try {
+      const result = await rhChain.mutateAsync({
+        symbol: ticker,
+        right,
+        expiry_from: expiryFrom,
+        expiry_to: expiryTo,
+      });
+      setRankResult(result);
+      if (isLeapRankFail(result)) {
+        const fail = result;
+        setRankError(fail.message);
+      }
+    } catch (error) {
+      setRankResult(null);
+      setRankError(rankErrorMessage(error));
+    }
+  };
 
   let resultsNode;
   if (isEntryFail(analysis)) {
@@ -138,6 +247,14 @@ export default function EntryAnalysisPanel({
     );
   }
 
+  const successfulRanks =
+    rankResult && !isLeapRankFail(rankResult) ? rankResult.ranks : [];
+  const rankWarnings =
+    rankResult && !isLeapRankFail(rankResult) ? rankResult.warnings : [];
+  const showRankList = successfulRanks.length > 0;
+  const showRankError = Boolean(rankError);
+  const showRankIdle = !showRankList && !showRankError;
+
   return (
     <Box
       data-testid="entry-analysis-panel"
@@ -158,6 +275,26 @@ export default function EntryAnalysisPanel({
         </Box>
 
         <Stack spacing={1.5}>
+          <Typography sx={monoSx}>Rank vs owning the stock</Typography>
+          {user ? (
+            <Typography
+              variant="caption"
+              color={rhConnected ? "success.main" : "text.secondary"}
+              data-testid="entry-rh-status"
+            >
+              {rhConnected
+                ? "Robinhood connected"
+                : "Robinhood not connected for this account"}
+            </Typography>
+          ) : (
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              data-testid="entry-rh-status"
+            >
+              Sign in to connect Robinhood for live top-3
+            </Typography>
+          )}
           <TextField
             label="Underlying"
             value={symbol}
@@ -172,47 +309,188 @@ export default function EntryAnalysisPanel({
             placeholder="NVDA"
           />
 
-          <Stack
-            direction={{ xs: "column", sm: "row" }}
-            spacing={1.5}
-            useFlexGap
-            flexWrap="wrap"
+          <ToggleButtonGroup
+            exclusive
+            size="small"
+            value={right}
+            onChange={(_, value: OptionRight | null) => {
+              if (value) setRight(value);
+            }}
+            aria-label="Call or put"
+            sx={toggleGroupSx}
           >
-            <ToggleButtonGroup
-              exclusive
-              size="small"
-              value={right}
-              onChange={(_, value: OptionRight | null) => {
-                if (value) setRight(value);
-              }}
-              aria-label="Call or put"
-              sx={toggleGroupSx}
+            <ToggleButton value="call" data-testid="entry-right-call">
+              Call
+            </ToggleButton>
+            <ToggleButton value="put" data-testid="entry-right-put">
+              Put
+            </ToggleButton>
+          </ToggleButtonGroup>
+
+          <ToggleButtonGroup
+            exclusive
+            size="small"
+            value={windowPreset}
+            onChange={(_, value: WindowPreset | null) => {
+              if (value) applyPreset(value);
+            }}
+            aria-label="LEAP expiry window"
+            sx={toggleGroupSx}
+          >
+            <ToggleButton value="12-24" data-testid="entry-rank-window-12-24">
+              12–24 months
+            </ToggleButton>
+            <ToggleButton value="12-18" data-testid="entry-rank-window-12-18">
+              12–18
+            </ToggleButton>
+            <ToggleButton value="18-24" data-testid="entry-rank-window-18-24">
+              18–24
+            </ToggleButton>
+            <ToggleButton value="custom" data-testid="entry-rank-window-custom">
+              Custom
+            </ToggleButton>
+          </ToggleButtonGroup>
+
+          {windowPreset === "custom" ? (
+            <Stack
+              direction={{ xs: "column", sm: "row" }}
+              spacing={1.5}
+              useFlexGap
             >
-              <ToggleButton value="call" data-testid="entry-right-call">
-                Call
-              </ToggleButton>
-              <ToggleButton value="put" data-testid="entry-right-put">
-                Put
-              </ToggleButton>
-            </ToggleButtonGroup>
-            <ToggleButtonGroup
-              exclusive
-              size="small"
-              value={side}
-              onChange={(_, value: OptionSide | null) => {
-                if (value) setSide(value);
-              }}
-              aria-label="Buy or sell"
-              sx={toggleGroupSx}
+              <TextField
+                label="Window from"
+                type="date"
+                value={expiryFrom}
+                onChange={(event) => setExpiryFrom(event.target.value)}
+                inputProps={{ "data-testid": "entry-rank-from" }}
+                InputLabelProps={{ shrink: true }}
+                size="small"
+                fullWidth
+              />
+              <TextField
+                label="Window to"
+                type="date"
+                value={expiryTo}
+                onChange={(event) => setExpiryTo(event.target.value)}
+                inputProps={{ "data-testid": "entry-rank-to" }}
+                InputLabelProps={{ shrink: true }}
+                size="small"
+                fullWidth
+              />
+            </Stack>
+          ) : null}
+
+          <Button
+            variant="contained"
+            onClick={() => {
+              void handleRankLeaps();
+            }}
+            disabled={rhChain.isPending}
+            data-testid="entry-rank-leaps"
+            sx={{ alignSelf: { xs: "stretch", sm: "flex-start" } }}
+          >
+            {rhChain.isPending ? "Ranking…" : "Rank LEAPs"}
+          </Button>
+
+          {showRankIdle ? (
+            <Typography
+              variant="body2"
+              color="text.secondary"
+              data-testid="entry-rank-empty"
             >
-              <ToggleButton value="buy" data-testid="entry-side-buy">
-                Buy
-              </ToggleButton>
-              <ToggleButton value="sell" data-testid="entry-side-sell">
-                Sell
-              </ToggleButton>
-            </ToggleButtonGroup>
-          </Stack>
+              Find the three long LEAPs that need the smallest annualized move
+              to break even vs owning the stock.
+            </Typography>
+          ) : null}
+
+          {showRankError ? (
+            <Typography
+              variant="body2"
+              color="text.secondary"
+              data-testid="entry-rank-error"
+            >
+              {rankError}
+            </Typography>
+          ) : null}
+
+          {rankWarnings.map((warning) => (
+            <Typography
+              key={warning}
+              variant="body2"
+              color="text.secondary"
+              data-testid="entry-rank-warning"
+            >
+              {warning}
+            </Typography>
+          ))}
+
+          {showRankList ? (
+            <Stack spacing={1} data-testid="entry-rank-list">
+              {successfulRanks.map((candidate) => (
+                <ButtonBase
+                  key={`${candidate.rank}-${candidate.contract_label}`}
+                  onClick={() => selectCandidate(candidate)}
+                  data-testid={`entry-rank-${candidate.rank}`}
+                  sx={{
+                    display: "block",
+                    width: "100%",
+                    textAlign: "left",
+                    borderRadius: 2,
+                    px: 1.5,
+                    py: 1.25,
+                    border: "1px solid",
+                    borderColor:
+                      selectedRank === candidate.rank
+                        ? "primary.main"
+                        : "divider",
+                    bgcolor:
+                      selectedRank === candidate.rank
+                        ? "action.selected"
+                        : "background.paper",
+                  }}
+                >
+                  <Stack spacing={0.5}>
+                    <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                      #{candidate.rank} {candidate.contract_label}
+                    </Typography>
+                    <Typography variant="body2">
+                      {formatImpliedMove(candidate.implied_cagr, candidate.right)}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {candidate.leverage.toFixed(1)}× vs 100 shares
+                    </Typography>
+                    <Typography variant="body2">{candidate.why_vs_stock}</Typography>
+                    {candidate.why_vs_richer ? (
+                      <Typography variant="body2" color="text.secondary">
+                        {candidate.why_vs_richer}
+                      </Typography>
+                    ) : null}
+                  </Stack>
+                </ButtonBase>
+              ))}
+            </Stack>
+          ) : null}
+        </Stack>
+
+        <Stack spacing={1.5}>
+          <Typography sx={monoSx}>Custom / selected contract</Typography>
+          <ToggleButtonGroup
+            exclusive
+            size="small"
+            value={side}
+            onChange={(_, value: OptionSide | null) => {
+              if (value) setSide(value);
+            }}
+            aria-label="Buy or sell"
+            sx={toggleGroupSx}
+          >
+            <ToggleButton value="buy" data-testid="entry-side-buy">
+              Buy
+            </ToggleButton>
+            <ToggleButton value="sell" data-testid="entry-side-sell">
+              Sell
+            </ToggleButton>
+          </ToggleButtonGroup>
 
           <Stack
             direction={{ xs: "column", sm: "row" }}
@@ -281,8 +559,9 @@ export default function EntryAnalysisPanel({
         ) : null}
 
         <Typography variant="caption" color="text.secondary">
-          Simulation only. Not advice, not a filed Form 8949, and not the
-          year-close packet.
+          Ranking is a live quote snapshot, not advice. Implied move to break
+          even is not a forecast. Simulation only. Not a filed Form 8949, and
+          not the year-close packet.
         </Typography>
       </Stack>
     </Box>

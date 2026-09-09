@@ -48,6 +48,40 @@ export function todayIso(now: Date = new Date()): string {
   return `${year}-${month}-${day}`;
 }
 
+/** UTC calendar date. Rank windows must match server as_of, not local CT. */
+export function utcTodayIso(now: Date = new Date()): string {
+  return now.toISOString().slice(0, 10);
+}
+
+export function addCalendarDaysIso(base: string, days: number): string {
+  const [year, month, day] = base.split("-").map(Number);
+  const utc = new Date(Date.UTC(year, month - 1, day));
+  utc.setUTCDate(utc.getUTCDate() + days);
+  return utc.toISOString().slice(0, 10);
+}
+
+export type LeapWindowPreset = "12-24" | "12-18" | "18-24";
+
+export const LEAP_WINDOW_PRESET_DAYS: Record<
+  LeapWindowPreset,
+  { from: number; to: number }
+> = {
+  "12-24": { from: 365, to: 730 },
+  "12-18": { from: 365, to: 547 },
+  "18-24": { from: 547, to: 730 },
+};
+
+export function leapWindowForPreset(
+  preset: LeapWindowPreset,
+  asOf: string = utcTodayIso(),
+): { from: string; to: string } {
+  const span = LEAP_WINDOW_PRESET_DAYS[preset];
+  return {
+    from: addCalendarDaysIso(asOf, span.from),
+    to: addCalendarDaysIso(asOf, span.to),
+  };
+}
+
 export function formatUsdCents(value: number): string {
   return new Intl.NumberFormat("en-US", {
     style: "currency",

@@ -39,6 +39,10 @@ import {
   persistGuestAnalysis,
   getAnalysisErrorMessage,
   getBackendUnreachableMessage,
+  fetchLeapRank,
+  useLeapRankMutation,
+  fetchRhChain,
+  fetchRhStatus,
 } from "../../lib/api";
 
 type WrapperProps = { children: React.ReactNode };
@@ -549,6 +553,110 @@ describe("api hooks", () => {
       await waitFor(() => {
         expect(screen.getByText("error")).toBeInTheDocument();
       });
+    });
+  });
+
+  describe("leap rank", () => {
+    const params = {
+      symbol: "NVDA",
+      right: "call" as const,
+      expiry_from: "2027-09-06",
+      expiry_to: "2028-09-06",
+    };
+
+    it("sends Bearer when signed in", async () => {
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          ok: true,
+          symbol: "NVDA",
+          ranks: [],
+        }),
+      } as Response);
+
+      await fetchLeapRank(params);
+      const call = (globalThis.fetch as jest.Mock).mock.calls[0];
+      expect(call[0]).toContain("/api/options/leap-rank?");
+      expect(call[0]).toContain("symbol=NVDA");
+      expect(call[0]).toContain("right=call");
+      expect(call[1].headers.Authorization).toBe("Bearer mock-jwt-token");
+    });
+
+    it("omits Authorization for guests", async () => {
+      mockGetSession.mockResolvedValueOnce(null);
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          ok: false,
+          reason: "no_quote",
+          message: "Could not fetch a live NVDA quote.",
+          ranks: [],
+        }),
+      } as Response);
+
+      const body = await fetchLeapRank(params);
+      expect(body.ok).toBe(false);
+      const guestCall = (globalThis.fetch as jest.Mock).mock.calls[0];
+      expect(guestCall[1].headers.Authorization).toBeUndefined();
+    });
+
+    it("throws the 429 detail so the panel can show an honest empty", async () => {
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: false,
+        status: 429,
+        statusText: "Too Many Requests",
+        json: async () => ({
+          detail:
+            "Too many LEAP lookups from this network. Sign in or try again later.",
+        }),
+      } as Response);
+
+      await expect(fetchLeapRank(params)).rejects.toThrow(/too many leap lookups/i);
+    });
+
+    it("fetchRhChain hits the per-user RH route and omits query tokens", async () => {
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          ok: false,
+          code: "RH_CONNECTION_REQUIRED",
+          message: "Connect Robinhood after sign-in for live top-3",
+          ranks: [],
+        }),
+      } as Response);
+      const body = await fetchRhChain(params);
+      expect(body.ok).toBe(false);
+      const call = (globalThis.fetch as jest.Mock).mock.calls[0];
+      expect(call[0]).toContain("/api/oth/options/chain?");
+      expect(call[0]).toContain("side=call");
+      expect(call[0]).not.toContain("token=");
+    });
+
+    it("fetchRhStatus never exposes a token", async () => {
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ connected: true }),
+      } as Response);
+      const status = await fetchRhStatus();
+      expect(status).toEqual({ connected: true });
+      expect((globalThis.fetch as jest.Mock).mock.calls[0][0]).toContain(
+        "/api/oth/options/rh-status",
+      );
+    });
+
+    it("useLeapRankMutation posts through fetchLeapRank", async () => {
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ ok: true, ranks: [{ rank: 1 }] }),
+      } as Response);
+
+      const { result } = renderHook(() => useLeapRankMutation(), {
+        wrapper: createWrapper(),
+      });
+      await act(async () => {
+        await result.current.mutateAsync(params);
+      });
+      expect(globalThis.fetch).toHaveBeenCalled();
     });
   });
 

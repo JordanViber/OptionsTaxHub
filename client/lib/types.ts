@@ -280,6 +280,105 @@ export interface PricesResponse {
   warnings: string[];
 }
 
+// --- LEAP rank vs owning the stock ---
+
+export type LeapRankFailReason =
+  | "no_quote"
+  | "no_chain"
+  | "no_candidates"
+  | "invalid";
+
+export type LeapRankPremiumSource = "mid" | "last" | "ask" | "bid";
+
+export interface LeapRankParams {
+  symbol: string;
+  right: "call" | "put";
+  expiry_from: string;
+  expiry_to: string;
+}
+
+export interface LeapRankCandidate {
+  rank: number;
+  contract_label: string;
+  symbol: string;
+  right: "call" | "put";
+  strike: number;
+  expiration: string;
+  premium: number;
+  premium_source: LeapRankPremiumSource;
+  bid: number | null;
+  ask: number | null;
+  last: number | null;
+  dte: number;
+  implied_cagr: number;
+  leverage: number;
+  intrinsic: number;
+  extrinsic: number;
+  extrinsic_yield: number;
+  breakeven: number;
+  why_vs_stock: string;
+  why_vs_richer: string | null;
+}
+
+export interface LeapRankSuccess {
+  ok: true;
+  symbol: string;
+  right: "call" | "put";
+  spot: number;
+  as_of: string;
+  expiry_from: string;
+  expiry_to: string;
+  expirations_used: string[];
+  candidates_considered: number;
+  ranks: LeapRankCandidate[];
+  warnings: string[];
+}
+
+export interface LeapRankFailure {
+  ok: false;
+  reason: LeapRankFailReason;
+  message: string;
+  ranks: [];
+}
+
+export type LeapRankResponse = LeapRankSuccess | LeapRankFailure;
+
+export const RH_CONNECTION_REQUIRED_COPY =
+  "Connect Robinhood after sign-in for live top-3";
+
+export type RhChainFailCode =
+  | "RH_CONNECTION_REQUIRED"
+  | "RH_TIMEOUT"
+  | "RH_RATE_LIMITED"
+  | "RH_EMPTY_CHAIN"
+  | "RH_NO_EXPIRY_IN_WINDOW"
+  | "RH_SAAS_WALL"
+  | "RH_MALFORMED"
+  | "RH_REVOKED";
+
+export interface RhChainSuccess extends LeapRankSuccess {
+  provider: "robinhood";
+  quote_timestamp?: string | null;
+  code?: "ok";
+}
+
+export interface RhChainFailure {
+  ok: false;
+  code: RhChainFailCode;
+  reason?: string;
+  message: string;
+  ranks: [];
+  provider?: "robinhood";
+}
+
+export type RhChainResponse = RhChainSuccess | RhChainFailure;
+
+export interface RhStatusResponse {
+  connected: boolean;
+  code?: string;
+  message?: string;
+}
+
 // --- Analysis History ---
 
 export interface AnalysisHistoryItem {

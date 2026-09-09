@@ -1,9 +1,12 @@
 import {
+  addCalendarDaysIso,
   analyzeEntry,
   buildEntryContextLine,
   formatUsdCents,
+  leapWindowForPreset,
   parseContractLabel,
   todayIso,
+  utcTodayIso,
   type EntryProposal,
 } from "../../lib/entryAnalysis";
 import type { Position } from "../../lib/types";
@@ -405,6 +408,23 @@ describe("parseContractLabel and todayIso", () => {
   it("returns an ISO calendar date for todayIso", () => {
     expect(todayIso(new Date(2026, 8, 6, 15))).toBe("2026-09-06");
     expect(todayIso()).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  it("utcTodayIso is the UTC calendar date, not local", () => {
+    // 23:00 CDT on 2026-09-06 is 04:00 UTC on 2026-09-07.
+    expect(utcTodayIso(new Date("2026-09-07T04:00:00.000Z"))).toBe("2026-09-07");
+  });
+
+  it("12-24m LEAP window is UTC as_of+365 so CT local dates cannot yield DTE=364", () => {
+    const utcAsOf = utcTodayIso(new Date("2026-09-07T04:00:00.000Z"));
+    expect(utcAsOf).toBe("2026-09-07");
+    expect(leapWindowForPreset("12-24", utcAsOf)).toEqual({
+      from: "2027-09-07",
+      to: "2028-09-06",
+    });
+    expect(addCalendarDaysIso("2026-09-07", 365)).toBe("2027-09-07");
+    // Local CT that night would have sent 2027-09-06 (DTE=364 vs UTC as_of).
+    expect(leapWindowForPreset("12-24", "2026-09-06").from).toBe("2027-09-06");
   });
 
   it("uses today as the default as-of date", () => {

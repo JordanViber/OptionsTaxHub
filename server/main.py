@@ -3,6 +3,7 @@ import logging
 import re
 import time
 import ipaddress
+from datetime import date, datetime, timezone
 from collections import defaultdict
 from pathlib import Path
 import uuid
@@ -78,7 +79,21 @@ from harvesting import (
     suppress_fractional_residual_positions,
 )
 from wash_sale import detect_wash_sales, adjust_lots_for_wash_sales
-from price_service import fetch_current_prices, fetch_option_prices
+from price_service import (
+    fetch_current_prices,
+    fetch_option_chain_window,
+    fetch_option_prices,
+)
+from leap_rank import rank_from_chain
+from rh_chain import (
+    RH_CONNECTION_REQUIRED_COPY,
+    ChainCache,
+    EnvOthRhCredentialStore,
+    RhChainError,
+    build_rh_chain_client,
+    connection_required_payload,
+    fetch_and_rank_chain,
+)
 from ai_advisor import get_ai_suggestions, prepare_positions_for_ai
 from pdf_1099_parser import parse_robinhood_1099_pdf
 from db import (
@@ -116,6 +131,18 @@ _GUEST_ANALYZE_WINDOW_SECONDS = 60 * 60
 _GUEST_ANALYZE_MAX_PER_WINDOW = 10
 _GUEST_ANALYZE_MAX_BUCKETS = 4096
 _guest_analyze_hits: dict[str, list[float]] = defaultdict(list)
+_GUEST_LEAP_RANK_WINDOW_SECONDS = 60 * 60
+_GUEST_LEAP_RANK_MAX_PER_WINDOW = 20
+_AUTH_LEAP_RANK_MAX_PER_WINDOW = 60
+_LEAP_RANK_MAX_BUCKETS = 4096
+_guest_leap_rank_hits: dict[str, list[float]] = defaultdict(list)
+_auth_leap_rank_hits: dict[str, list[float]] = defaultdict(list)
+_LEAP_RANK_SYMBOL_RE = re.compile(r"^[A-Z]{1,10}$")
+_LEAP_RANK_MAX_WINDOW_DAYS = 800
+rh_credential_store = EnvOthRhCredentialStore()
+rh_chain_client = build_rh_chain_client()
+rh_chain_cache = ChainCache()
+_rh_chain_hits: dict[str, list[float]] = defaultdict(list)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -196,6 +223,14 @@ def reset_guest_analyze_quota() -> None:
     _guest_analyze_hits.clear()
 
 
+def reset_guest_leap_rank_quota() -> None:
+    """Clear LEAP-rank rate-limit buckets (tests only)."""
+    _guest_leap_rank_hits.clear()
+    _auth_leap_rank_hits.clear()
+    _rh_chain_hits.clear()
+    rh_chain_cache.clear()
+
+
 def _is_trusted_proxy_peer(host: str) -> bool:
     """True when the TCP peer is a local/private hop that may set forwarding headers."""
     if not host:
@@ -226,40 +261,92 @@ def _client_ip(request: Request) -> str:
     return socket_ip or "unknown"
 
 
-def _prune_guest_analyze_hits(now: float) -> None:
+def _prune_ip_hits(
+    store: dict[str, list[float]],
+    now: float,
+    window_seconds: float,
+    max_buckets: int,
+) -> None:
     """Drop stale quota buckets and cap the map so unique IPs cannot grow memory unbounded."""
     stale_keys = [
         key
-        for key, stamps in list(_guest_analyze_hits.items())
-        if not stamps or now - max(stamps) >= _GUEST_ANALYZE_WINDOW_SECONDS
+        for key, stamps in list(store.items())
+        if not stamps or now - max(stamps) >= window_seconds
     ]
     for key in stale_keys:
-        _guest_analyze_hits.pop(key, None)
+        store.pop(key, None)
 
-    overflow = len(_guest_analyze_hits) - _GUEST_ANALYZE_MAX_BUCKETS
+    overflow = len(store) - max_buckets
     if overflow <= 0:
         return
     oldest = sorted(
-        _guest_analyze_hits.items(),
+        store.items(),
         key=lambda item: max(item[1]) if item[1] else 0.0,
     )[:overflow]
     for key, _stamps in oldest:
-        _guest_analyze_hits.pop(key, None)
+        store.pop(key, None)
+
+
+def _prune_guest_analyze_hits(now: float) -> None:
+    _prune_ip_hits(
+        _guest_analyze_hits,
+        now,
+        _GUEST_ANALYZE_WINDOW_SECONDS,
+        _GUEST_ANALYZE_MAX_BUCKETS,
+    )
+
+
+def _enforce_ip_quota(
+    request: Request,
+    store: dict[str, list[float]],
+    *,
+    max_per_window: int,
+    window_seconds: float,
+    max_buckets: int,
+    detail: str,
+) -> None:
+    now = time.time()
+    _prune_ip_hits(store, now, window_seconds, max_buckets)
+    key = _client_ip(request)
+    hits = store[key]
+    hits[:] = [stamp for stamp in hits if now - stamp < window_seconds]
+    if len(hits) >= max_per_window:
+        raise HTTPException(status_code=429, detail=detail)
+    hits.append(now)
 
 
 def _enforce_guest_analyze_quota(request: Request) -> None:
     """Simple per-IP quota so anonymous analyze cannot be used as a free compute pump."""
-    now = time.time()
-    _prune_guest_analyze_hits(now)
-    key = _client_ip(request)
-    hits = _guest_analyze_hits[key]
-    hits[:] = [stamp for stamp in hits if now - stamp < _GUEST_ANALYZE_WINDOW_SECONDS]
-    if len(hits) >= _GUEST_ANALYZE_MAX_PER_WINDOW:
-        raise HTTPException(
-            status_code=429,
-            detail="Too many guest analyses from this network. Sign in or try again later.",
+    _enforce_ip_quota(
+        request,
+        _guest_analyze_hits,
+        max_per_window=_GUEST_ANALYZE_MAX_PER_WINDOW,
+        window_seconds=_GUEST_ANALYZE_WINDOW_SECONDS,
+        max_buckets=_GUEST_ANALYZE_MAX_BUCKETS,
+        detail="Too many guest analyses from this network. Sign in or try again later.",
+    )
+
+
+def _enforce_leap_rank_quota(request: Request, user_id: str) -> None:
+    """Per-IP quota so anonymous LEAP chain lookups cannot pump yfinance."""
+    if user_id:
+        _enforce_ip_quota(
+            request,
+            _auth_leap_rank_hits,
+            max_per_window=_AUTH_LEAP_RANK_MAX_PER_WINDOW,
+            window_seconds=_GUEST_LEAP_RANK_WINDOW_SECONDS,
+            max_buckets=_LEAP_RANK_MAX_BUCKETS,
+            detail="Too many LEAP lookups from this network. Sign in or try again later.",
         )
-    hits.append(now)
+        return
+    _enforce_ip_quota(
+        request,
+        _guest_leap_rank_hits,
+        max_per_window=_GUEST_LEAP_RANK_MAX_PER_WINDOW,
+        window_seconds=_GUEST_LEAP_RANK_WINDOW_SECONDS,
+        max_buckets=_LEAP_RANK_MAX_BUCKETS,
+        detail="Too many LEAP lookups from this network. Sign in or try again later.",
+    )
 
 
 async def _read_csv_upload(file: UploadFile, *, guest: bool) -> bytes:
@@ -1398,6 +1485,210 @@ async def get_prices(
 
     prices, warnings = fetch_current_prices(symbol_list)
     return {"prices": prices, "warnings": warnings}
+
+
+def _parse_iso_date_query(value: str, field: str) -> date:
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field} must be an ISO date (YYYY-MM-DD).",
+        ) from exc
+
+
+@app.get(
+    "/api/options/leap-rank",
+    responses={
+        400: {"description": "Invalid query"},
+        429: {"description": "Too many LEAP lookups"},
+    },
+)
+async def get_leap_rank(
+    request: Request,
+    symbol: Annotated[str, Query(description="Underlying ticker")],
+    right: Annotated[str, Query(description="call or put")],
+    expiry_from: Annotated[str, Query(description="Window start YYYY-MM-DD")],
+    expiry_to: Annotated[str, Query(description="Window end YYYY-MM-DD")],
+    user_id: Annotated[str, Depends(get_optional_user)] = "",
+):
+    """
+    Rank long LEAPs vs owning the stock. Free. Guests allowed.
+
+    Lower implied CAGR (less annualized move to break even) ranks first.
+    Missing quotes or chains return 200 with ok=false and no ranks.
+    """
+    symbol_clean = symbol.strip().upper()
+    right_clean = right.strip().lower()
+    if not _LEAP_RANK_SYMBOL_RE.fullmatch(symbol_clean):
+        raise HTTPException(
+            status_code=400,
+            detail="Underlying ticker must be 1–10 letters.",
+        )
+    if right_clean not in ("call", "put"):
+        raise HTTPException(
+            status_code=400,
+            detail="right must be call or put.",
+        )
+
+    start = _parse_iso_date_query(expiry_from, "expiry_from")
+    end = _parse_iso_date_query(expiry_to, "expiry_to")
+    if start > end:
+        raise HTTPException(
+            status_code=400,
+            detail="expiry_from must be on or before expiry_to.",
+        )
+    if (end - start).days > _LEAP_RANK_MAX_WINDOW_DAYS:
+        raise HTTPException(
+            status_code=400,
+            detail="Expiry window is too long.",
+        )
+
+    as_of = datetime.now(timezone.utc).date()
+    if end < as_of:
+        raise HTTPException(
+            status_code=400,
+            detail="Expiry window is in the past.",
+        )
+
+    _enforce_leap_rank_quota(request, user_id)
+
+    prices, _price_warnings = fetch_current_prices([symbol_clean])
+    spot = prices.get(symbol_clean)
+    if not spot:
+        return rank_from_chain(
+            symbol=symbol_clean,
+            right=right_clean,
+            spot=None,
+            as_of=as_of,
+            expiry_from=start,
+            expiry_to=end,
+            rows=[],
+            expirations_used=[],
+            warnings=[],
+        )
+
+    rows, expirations_used, chain_warnings = fetch_option_chain_window(
+        symbol_clean,
+        right_clean,
+        start.isoformat(),
+        end.isoformat(),
+        as_of=as_of.isoformat(),
+    )
+    return rank_from_chain(
+        symbol=symbol_clean,
+        right=right_clean,
+        spot=spot,
+        as_of=as_of,
+        expiry_from=start,
+        expiry_to=end,
+        rows=rows,
+        expirations_used=expirations_used,
+        warnings=chain_warnings,
+    )
+
+
+def _enforce_rh_chain_quota(request: Request, user_id: str) -> None:
+    _enforce_ip_quota(
+        request,
+        _rh_chain_hits,
+        max_per_window=_AUTH_LEAP_RANK_MAX_PER_WINDOW if user_id else 20,
+        window_seconds=_GUEST_LEAP_RANK_WINDOW_SECONDS,
+        max_buckets=_LEAP_RANK_MAX_BUCKETS,
+        detail="Too many Robinhood chain lookups. Try again later.",
+    )
+
+
+@app.get("/api/oth/options/rh-status")
+async def get_oth_rh_status(
+    user_id: Annotated[str, Depends(get_optional_user)] = "",
+):
+    """Whether this OTH user has a per-user RH credential. Never returns tokens."""
+    if not user_id:
+        return {
+            "connected": False,
+            "code": "RH_CONNECTION_REQUIRED",
+            "message": RH_CONNECTION_REQUIRED_COPY,
+        }
+    try:
+        cred = rh_credential_store.get_for_user(user_id)
+    except RhChainError:
+        return {"connected": False, "code": "RH_REVOKED"}
+    return {"connected": cred is not None}
+
+
+@app.get(
+    "/api/oth/options/chain",
+    responses={
+        400: {"description": "Invalid query"},
+        429: {"description": "Too many RH chain lookups"},
+    },
+)
+async def get_oth_options_chain(
+    request: Request,
+    symbol: Annotated[str, Query(description="Underlying ticker")],
+    min_expiry: Annotated[str, Query(description="Window start YYYY-MM-DD")],
+    max_expiry: Annotated[str, Query(description="Window end YYYY-MM-DD")],
+    side: Annotated[str, Query(description="call or put")] = "call",
+    user_id: Annotated[str, Depends(get_optional_user)] = "",
+):
+    """RH-backed LEAP rank for the authenticated OTH user only.
+
+    Guests and users without a per-user RH credential get an honest empty
+    ranking. Never accepts a browser RH token. Never uses MCP or a shared
+    trader session.
+    """
+    if request.query_params.get("token") or request.query_params.get("rh_token"):
+        raise HTTPException(
+            status_code=400,
+            detail="Robinhood tokens are not accepted as query parameters.",
+        )
+    symbol_clean = symbol.strip().upper()
+    side_clean = side.strip().lower()
+    if not _LEAP_RANK_SYMBOL_RE.fullmatch(symbol_clean):
+        raise HTTPException(
+            status_code=400,
+            detail="Underlying ticker must be 1–10 letters.",
+        )
+    if side_clean not in ("call", "put"):
+        raise HTTPException(
+            status_code=400,
+            detail="side must be call or put.",
+        )
+    start = _parse_iso_date_query(min_expiry, "min_expiry")
+    end = _parse_iso_date_query(max_expiry, "max_expiry")
+    if start > end:
+        raise HTTPException(
+            status_code=400,
+            detail="min_expiry must be on or before max_expiry.",
+        )
+    if (end - start).days > _LEAP_RANK_MAX_WINDOW_DAYS:
+        raise HTTPException(
+            status_code=400,
+            detail="Expiry window is too long.",
+        )
+    as_of = datetime.now(timezone.utc).date()
+    if end < as_of:
+        raise HTTPException(
+            status_code=400,
+            detail="Expiry window is in the past.",
+        )
+
+    _enforce_rh_chain_quota(request, user_id)
+    if not user_id:
+        return connection_required_payload()
+
+    return fetch_and_rank_chain(
+        user_id=user_id,
+        symbol=symbol_clean,
+        side=side_clean,
+        min_expiry=start,
+        max_expiry=end,
+        store=rh_credential_store,
+        client=rh_chain_client,
+        cache=rh_chain_cache,
+        as_of=as_of,
+    )
 
 
 @app.get("/api/tax-brackets")

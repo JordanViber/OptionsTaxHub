@@ -1,0 +1,655 @@
+"""RH chain normalizer, credential isolation, and leap-rank adapter."""
+
+from datetime import date, datetime, timedelta, timezone
+
+import pytest
+
+from leap_rank import MIN_DTE, rank_contracts, rank_from_chain
+from rh_chain import (
+    MAX_NORMALIZED_ROWS,
+    RH_CONNECTION_REQUIRED,
+    RH_CONNECTION_REQUIRED_COPY,
+    RH_EMPTY_CHAIN,
+    RH_NO_EXPIRY_IN_WINDOW,
+    RH_SAAS_WALL,
+    ChainCache,
+    EnvOthRhCredentialStore,
+    InMemoryOthRhCredentialStore,
+    RhChainError,
+    RhCredential,
+    StubRhChainClient,
+    WallRhChainClient,
+    default_stub_options,
+    fetch_and_rank_chain,
+    normalize_rh_option,
+    rank_normalized_chain,
+    RawRhChain,
+    stub_expiry_in_window,
+)
+
+AS_OF = date(2026, 9, 7)
+IN_WINDOW = date(2027, 9, 7)
+TS = datetime(2026, 9, 7, 14, 30, tzinfo=timezone.utc)
+
+
+def _raw_option(**overrides):
+    base = {
+        "strike": 90.0,
+        "expiry": IN_WINDOW.isoformat(),
+        "bid": 11.9,
+        "ask": 12.1,
+        "last": 12.0,
+        "volume": 40,
+        "open_interest": 500,
+        "quote_timestamp": TS.isoformat(),
+    }
+    base.update(overrides)
+    return base
+
+
+def test_normalize_prefers_bid_ask_mid():
+    row = normalize_rh_option(
+        _raw_option(),
+        symbol="nvda",
+        side="call",
+        underlying_price=100.0,
+        as_of=AS_OF,
+        quote_timestamp=TS,
+    )
+    assert row is not None
+    assert row["price_source"] == "mid"
+    assert row["bid"] == pytest.approx(11.9)
+    assert row["ask"] == pytest.approx(12.1)
+    assert row["dte"] == (IN_WINDOW - AS_OF).days
+    assert row["expiration"] == IN_WINDOW.isoformat()
+    assert row["quote_timestamp"].startswith("2026-09-07")
+    assert row["provider"] == "robinhood"
+
+
+def test_normalize_falls_back_to_last():
+    row = normalize_rh_option(
+        _raw_option(bid=None, ask=None, last=4.2),
+        symbol="NVDA",
+        side="call",
+        underlying_price=100.0,
+        as_of=AS_OF,
+        quote_timestamp=TS,
+    )
+    assert row is not None
+    assert row["price_source"] == "last"
+    assert row["last"] == pytest.approx(4.2)
+
+
+def test_normalize_rejects_crossed_and_invalid():
+    kwargs = dict(
+        symbol="NVDA",
+        side="call",
+        underlying_price=100.0,
+        as_of=AS_OF,
+        quote_timestamp=TS,
+    )
+    assert normalize_rh_option(_raw_option(bid=12.0, ask=11.0), **kwargs) is None
+    assert normalize_rh_option(_raw_option(strike=0), **kwargs) is None
+    assert normalize_rh_option(_raw_option(expiry="not-a-date"), **kwargs) is None
+    assert normalize_rh_option(_raw_option(bid=None, ask=None, last=None), **kwargs) is None
+    assert normalize_rh_option(_raw_option(bid=-1, ask=-2, last=-3), **kwargs) is None
+
+
+def test_env_store_is_per_user_never_a_shared_fallback(monkeypatch):
+    monkeypatch.setenv("OTH_RH_TEST_USER_ID", "oth-test-user")
+    monkeypatch.setenv("OTH_RH_TEST_TOKEN", "secret-env-token")
+    store = EnvOthRhCredentialStore()
+    mine = store.get_for_user("oth-test-user")
+    assert mine is not None
+    assert mine.user_id == "oth-test-user"
+    assert store.get_for_user("jordan-or-trader") is None
+    assert store.get_for_user("oth-user-b") is None
+    assert store.get_for_user("") is None
+    other_rank = fetch_and_rank_chain(
+        user_id="jordan-or-trader",
+        symbol="NVDA",
+        side="call",
+        min_expiry=IN_WINDOW,
+        max_expiry=IN_WINDOW,
+        store=store,
+        client=StubRhChainClient(),
+        cache=ChainCache(),
+        as_of=AS_OF,
+    )
+    assert other_rank["ok"] is False
+    assert other_rank["code"] == RH_CONNECTION_REQUIRED
+
+
+def test_store_looks_up_only_selected_oth_user():
+    store = InMemoryOthRhCredentialStore()
+    mine = RhCredential(user_id="oth-user-a", token="secret-a")
+    other = RhCredential(user_id="oth-user-b", token="secret-b")
+    store.put(mine)
+    store.put(other)
+    found = store.get_for_user("oth-user-a")
+    assert found is not None
+    assert found.user_id == "oth-user-a"
+    assert store.lookups == ["oth-user-a"]
+    assert store.get_for_user("oth-user-z") is None
+    assert "secret-a" not in str(store.lookups)
+
+
+def test_fetch_and_rank_uses_only_that_users_credential():
+    store = InMemoryOthRhCredentialStore()
+    store.put(RhCredential(user_id="oth-user-a", token="secret-a"))
+    client = StubRhChainClient()
+    cache = ChainCache()
+    payload = fetch_and_rank_chain(
+        user_id="oth-user-a",
+        symbol="NVDA",
+        side="call",
+        min_expiry=IN_WINDOW,
+        max_expiry=IN_WINDOW + timedelta(days=30),
+        store=store,
+        client=client,
+        cache=cache,
+        as_of=AS_OF,
+    )
+    assert payload["ok"] is True
+    assert client.calls == [
+        ("oth-user-a", "NVDA", "call", IN_WINDOW, IN_WINDOW + timedelta(days=30))
+    ]
+    assert store.lookups == ["oth-user-a"]
+    assert payload["provider"] == "robinhood"
+    assert 1 <= len(payload["ranks"]) <= 3
+    assert payload["expirations_used"]
+
+
+def test_auth_pipeline_is_client_then_normalize_then_leap_rank(monkeypatch):
+    """Auth store → RhChainClient.fetch_chain → normalize → leap_rank.rank_from_chain."""
+    store = InMemoryOthRhCredentialStore()
+    store.put(RhCredential(user_id="oth-user-a", token="secret-a"))
+    client = StubRhChainClient(
+        options=[
+            _raw_option(strike=90.0),
+            _raw_option(strike=95.0, bid=12.0, ask=11.0),
+            _raw_option(strike=100.0),
+        ]
+    )
+    seen: dict = {}
+    real = rank_from_chain
+
+    def spy_rank_from_chain(**kwargs):
+        seen["rows"] = list(kwargs["rows"])
+        seen["right"] = kwargs["right"]
+        seen["symbol"] = kwargs["symbol"]
+        return real(**kwargs)
+
+    monkeypatch.setattr("rh_chain.rank_from_chain", spy_rank_from_chain)
+    payload = fetch_and_rank_chain(
+        user_id="oth-user-a",
+        symbol="NVDA",
+        side="call",
+        min_expiry=IN_WINDOW,
+        max_expiry=IN_WINDOW,
+        store=store,
+        client=client,
+        cache=ChainCache(),
+        as_of=AS_OF,
+    )
+    assert client.calls == [
+        ("oth-user-a", "NVDA", "call", IN_WINDOW, IN_WINDOW)
+    ]
+    assert seen["symbol"] == "NVDA"
+    assert seen["right"] == "call"
+    strikes = [row["strike"] for row in seen["rows"]]
+    assert 90.0 in strikes
+    assert 100.0 in strikes
+    assert 95.0 not in strikes
+    assert payload["ok"] is True
+    assert 1 <= len(payload["ranks"]) <= 3
+    assert payload["ranks"][0]["rank"] == 1
+
+
+def test_guest_and_unknown_user_are_honest_empty():
+    store = InMemoryOthRhCredentialStore()
+    client = StubRhChainClient()
+    cache = ChainCache()
+    guest = fetch_and_rank_chain(
+        user_id="",
+        symbol="NVDA",
+        side="call",
+        min_expiry=IN_WINDOW,
+        max_expiry=IN_WINDOW,
+        store=store,
+        client=client,
+        cache=cache,
+        as_of=AS_OF,
+    )
+    assert guest["ok"] is False
+    assert guest["code"] == RH_CONNECTION_REQUIRED
+    assert guest["message"] == RH_CONNECTION_REQUIRED_COPY
+    assert guest["ranks"] == []
+    assert client.calls == []
+
+    missing = fetch_and_rank_chain(
+        user_id="nobody",
+        symbol="NVDA",
+        side="call",
+        min_expiry=IN_WINDOW,
+        max_expiry=IN_WINDOW,
+        store=store,
+        client=client,
+        cache=cache,
+        as_of=AS_OF,
+    )
+    assert missing["code"] == RH_CONNECTION_REQUIRED
+    assert client.calls == []
+
+
+def test_ranking_reuses_leap_rank_order_and_caps_at_three():
+    raw = RawRhChain(
+        symbol="NVDA",
+        underlying_price=100.0,
+        quote_timestamp=TS,
+        options=[
+            _raw_option(strike=90.0, bid=11.9, ask=12.1, last=12.0),
+            _raw_option(strike=95.0, bid=9.9, ask=10.1, last=10.0),
+            _raw_option(strike=100.0, bid=7.9, ask=8.1, last=8.0),
+            _raw_option(strike=85.0, bid=15.9, ask=16.1, last=16.0),
+        ],
+    )
+    payload = rank_normalized_chain(
+        symbol="NVDA",
+        side="call",
+        min_expiry=IN_WINDOW,
+        max_expiry=IN_WINDOW,
+        as_of=AS_OF,
+        raw=raw,
+    )
+    assert payload["ok"] is True
+    assert len(payload["ranks"]) == 3
+    cagrs = [row["implied_cagr"] for row in payload["ranks"]]
+    assert cagrs == sorted(cagrs)
+    direct = rank_contracts(
+        symbol="NVDA",
+        right="call",
+        spot=100.0,
+        as_of=AS_OF,
+        rows=[
+            {
+                "expiration": IN_WINDOW.isoformat(),
+                "strike": 90.0,
+                "bid": 11.9,
+                "ask": 12.1,
+                "last": 12.0,
+                "open_interest": 500,
+                "volume": 40,
+            },
+            {
+                "expiration": IN_WINDOW.isoformat(),
+                "strike": 95.0,
+                "bid": 9.9,
+                "ask": 10.1,
+                "last": 10.0,
+                "open_interest": 500,
+                "volume": 40,
+            },
+            {
+                "expiration": IN_WINDOW.isoformat(),
+                "strike": 100.0,
+                "bid": 7.9,
+                "ask": 8.1,
+                "last": 8.0,
+                "open_interest": 500,
+                "volume": 40,
+            },
+            {
+                "expiration": IN_WINDOW.isoformat(),
+                "strike": 85.0,
+                "bid": 15.9,
+                "ask": 16.1,
+                "last": 16.0,
+                "open_interest": 500,
+                "volume": 40,
+            },
+        ],
+        expiry_from=IN_WINDOW,
+        expiry_to=IN_WINDOW,
+    )
+    assert [row.strike for row in direct] == [
+        payload["ranks"][0]["strike"],
+        payload["ranks"][1]["strike"],
+        payload["ranks"][2]["strike"],
+    ]
+
+
+def test_fewer_than_three_and_no_expiry_in_window():
+    raw = RawRhChain(
+        symbol="NVDA",
+        underlying_price=100.0,
+        quote_timestamp=TS,
+        options=[_raw_option(strike=90.0)],
+    )
+    payload = rank_normalized_chain(
+        symbol="NVDA",
+        side="call",
+        min_expiry=IN_WINDOW,
+        max_expiry=IN_WINDOW,
+        as_of=AS_OF,
+        raw=raw,
+    )
+    assert payload["ok"] is True
+    assert len(payload["ranks"]) == 1
+
+    empty_window = rank_normalized_chain(
+        symbol="NVDA",
+        side="call",
+        min_expiry=date(2028, 1, 1),
+        max_expiry=date(2028, 6, 1),
+        as_of=AS_OF,
+        raw=raw,
+    )
+    assert empty_window["ok"] is False
+    assert empty_window["code"] == RH_NO_EXPIRY_IN_WINDOW
+
+
+def test_cache_dedupes_and_does_not_store_token():
+    store = InMemoryOthRhCredentialStore()
+    store.put(RhCredential(user_id="oth-user-a", token="secret-a"))
+    client = StubRhChainClient()
+    cache = ChainCache(ttl_seconds=60)
+    kwargs = dict(
+        user_id="oth-user-a",
+        symbol="NVDA",
+        side="call",
+        min_expiry=IN_WINDOW,
+        max_expiry=IN_WINDOW,
+        store=store,
+        client=client,
+        cache=cache,
+        as_of=AS_OF,
+    )
+    first = fetch_and_rank_chain(**kwargs)
+    second = fetch_and_rank_chain(**kwargs)
+    assert first["ok"] is True
+    assert second["ok"] is True
+    assert len(client.calls) == 1
+    cached = cache.get(cache.make_key("oth-user-a", "NVDA", "call", IN_WINDOW, IN_WINDOW))
+    assert cached is not None
+    assert "secret-a" not in str(cached)
+    assert "token" not in str(cached)
+
+
+def test_saas_wall_and_timeout_are_typed():
+    store = InMemoryOthRhCredentialStore()
+    store.put(RhCredential(user_id="oth-user-a", token="secret-a"))
+    wall = fetch_and_rank_chain(
+        user_id="oth-user-a",
+        symbol="NVDA",
+        side="call",
+        min_expiry=IN_WINDOW,
+        max_expiry=IN_WINDOW,
+        store=store,
+        client=WallRhChainClient(),
+        cache=ChainCache(),
+        as_of=AS_OF,
+    )
+    assert wall["ok"] is False
+    assert wall["code"] == RH_SAAS_WALL
+    assert wall["ranks"] == []
+
+    timed = fetch_and_rank_chain(
+        user_id="oth-user-a",
+        symbol="NVDA",
+        side="call",
+        min_expiry=IN_WINDOW,
+        max_expiry=IN_WINDOW,
+        store=store,
+        client=StubRhChainClient(error=RhChainError("RH_TIMEOUT", "Robinhood timed out.")),
+        cache=ChainCache(),
+        as_of=AS_OF,
+    )
+    assert timed["code"] == "RH_TIMEOUT"
+
+    empty = fetch_and_rank_chain(
+        user_id="oth-user-a",
+        symbol="NVDA",
+        side="call",
+        min_expiry=IN_WINDOW,
+        max_expiry=IN_WINDOW,
+        store=store,
+        client=StubRhChainClient(options=[]),
+        cache=ChainCache(),
+        as_of=AS_OF,
+    )
+    assert empty["code"] == RH_EMPTY_CHAIN
+
+
+def test_better_contract_after_row_cap_still_ranks_first(monkeypatch):
+    """Provider-order truncate before rank would keep only the 105s and drop $90."""
+    monkeypatch.setattr("rh_chain.MAX_NORMALIZED_ROWS", 3)
+    weaker = [
+        _raw_option(strike=105.0, bid=5.9, ask=6.1, last=6.0) for _ in range(5)
+    ]
+    better = _raw_option(strike=90.0, bid=11.9, ask=12.1, last=12.0)
+    payload = rank_normalized_chain(
+        symbol="NVDA",
+        side="call",
+        min_expiry=IN_WINDOW,
+        max_expiry=IN_WINDOW,
+        as_of=AS_OF,
+        raw=RawRhChain(
+            symbol="NVDA",
+            underlying_price=100.0,
+            quote_timestamp=TS,
+            options=weaker + [better],
+        ),
+    )
+    assert payload["ok"] is True
+    assert payload["ranks"][0]["strike"] == pytest.approx(90.0)
+    assert payload["warnings"]
+    assert "provider order" in payload["warnings"][0]
+
+
+def test_ineligible_prefix_cannot_hide_later_eligible_contract(monkeypatch):
+    """500-row style cap by provider order would score only OTM junk and miss ATM."""
+    monkeypatch.setattr("rh_chain.MAX_NORMALIZED_ROWS", 5)
+    junk = [
+        _raw_option(strike=200.0, bid=0.4, ask=0.6, last=0.5) for _ in range(8)
+    ]
+    good = _raw_option(strike=100.0, bid=7.9, ask=8.1, last=8.0)
+    payload = rank_normalized_chain(
+        symbol="NVDA",
+        side="call",
+        min_expiry=IN_WINDOW,
+        max_expiry=IN_WINDOW,
+        as_of=AS_OF,
+        raw=RawRhChain(
+            symbol="NVDA",
+            underlying_price=100.0,
+            quote_timestamp=TS,
+            options=junk + [good],
+        ),
+    )
+    assert payload["ok"] is True
+    assert payload["ranks"][0]["strike"] == pytest.approx(100.0)
+    assert payload["warnings"]
+    assert "best-scoring" in payload["warnings"][0]
+
+
+def test_stub_expiry_clamps_as_of_plus_min_dte_into_window():
+    """Chicago 12–24m vs UTC as_of: min_expiry DTE is 364, below MIN_DTE."""
+    utc_as_of = date(2026, 9, 7)
+    # Browser still on 2026-09-06 CT: 12–24m window 2027-09-06..2028-09-05.
+    min_expiry = date(2027, 9, 6)
+    max_expiry = date(2028, 9, 5)
+    assert (min_expiry - utc_as_of).days == MIN_DTE - 1
+
+    pinned = stub_expiry_in_window(min_expiry, max_expiry, as_of=utc_as_of)
+    assert pinned == utc_as_of + timedelta(days=MIN_DTE)
+    assert min_expiry < pinned <= max_expiry
+    assert (pinned - utc_as_of).days == MIN_DTE
+
+    midpoint = stub_expiry_in_window(min_expiry, max_expiry)
+    assert min_expiry < midpoint <= max_expiry
+    assert midpoint == min_expiry + timedelta(
+        days=(max_expiry - min_expiry).days // 2
+    )
+    assert (midpoint - utc_as_of).days >= MIN_DTE
+    assert midpoint != pinned
+
+    late_min = utc_as_of + timedelta(days=547)
+    late_max = utc_as_of + timedelta(days=730)
+    late = stub_expiry_in_window(late_min, late_max, as_of=utc_as_of)
+    assert late == late_min
+    assert (late - utc_as_of).days >= MIN_DTE
+
+    # Two-day CT skew: window midpoint stays on DTE=364; as_of+365 does not.
+    short_hi = min_expiry + timedelta(days=1)
+    short = stub_expiry_in_window(min_expiry, short_hi, as_of=utc_as_of)
+    assert short == short_hi
+    assert (short - utc_as_of).days == MIN_DTE
+
+    only = stub_expiry_in_window(min_expiry, min_expiry, as_of=utc_as_of)
+    assert only == min_expiry
+    assert (only - utc_as_of).days == MIN_DTE - 1
+
+    swapped = stub_expiry_in_window(max_expiry, min_expiry, as_of=utc_as_of)
+    assert swapped == pinned
+
+    rows = default_stub_options(
+        side="call",
+        min_expiry=min_expiry,
+        max_expiry=max_expiry,
+        as_of=utc_as_of,
+    )
+    in_window = [
+        row
+        for row in rows
+        if min_expiry <= date.fromisoformat(row["expiry"]) <= max_expiry
+    ]
+    assert in_window
+    assert all(date.fromisoformat(row["expiry"]) == pinned for row in in_window)
+
+    rows_mid = default_stub_options(
+        side="call", min_expiry=min_expiry, max_expiry=max_expiry
+    )
+    in_window_mid = [
+        row
+        for row in rows_mid
+        if min_expiry <= date.fromisoformat(row["expiry"]) <= max_expiry
+    ]
+    assert in_window_mid
+    assert all(
+        date.fromisoformat(row["expiry"]) == midpoint for row in in_window_mid
+    )
+
+
+def test_stub_path_ranks_when_ct_window_min_expiry_dte_is_364():
+    """CT-style window vs UTC as_of would be DTE=364 if expiry==min_expiry.
+
+    Stub path must still return a non-empty top-3 (≥1 ranked).
+    """
+    utc_as_of = date(2026, 9, 7)
+    min_expiry = date(2027, 9, 6)
+    max_expiry = date(2028, 9, 5)
+    assert (min_expiry - utc_as_of).days == 364
+    assert (min_expiry - utc_as_of).days < MIN_DTE
+
+    store = InMemoryOthRhCredentialStore()
+    store.put(RhCredential(user_id="oth-user-a", token="secret-a"))
+
+    def _rank(lo: date, hi: date) -> dict:
+        return fetch_and_rank_chain(
+            user_id="oth-user-a",
+            symbol="NVDA",
+            side="call",
+            min_expiry=lo,
+            max_expiry=hi,
+            store=store,
+            client=StubRhChainClient(),
+            cache=ChainCache(),
+            as_of=utc_as_of,
+        )
+
+    payload = _rank(min_expiry, max_expiry)
+    assert payload["ok"] is True
+    assert payload["provider"] == "robinhood"
+    assert payload["ranks"]
+    assert 1 <= len(payload["ranks"]) <= 3
+    for row in payload["ranks"]:
+        expiry = date.fromisoformat(row["expiration"])
+        assert min_expiry <= expiry <= max_expiry
+        assert expiry != min_expiry
+        assert (expiry - utc_as_of).days >= MIN_DTE
+        assert row["dte"] >= MIN_DTE
+
+    short = _rank(min_expiry, min_expiry + timedelta(days=1))
+    assert short["ok"] is True
+    assert 1 <= len(short["ranks"]) <= 3
+    assert all(
+        (date.fromisoformat(row["expiration"]) - utc_as_of).days >= MIN_DTE
+        for row in short["ranks"]
+    )
+
+    utc_min = date(2027, 9, 7)
+    utc_max = date(2028, 9, 6)
+    utc_payload = _rank(utc_min, utc_max)
+    assert utc_payload["ok"] is True
+    assert 1 <= len(utc_payload["ranks"]) <= 3
+    for row in utc_payload["ranks"]:
+        expiry = date.fromisoformat(row["expiration"])
+        assert utc_min <= expiry <= utc_max
+        assert (expiry - utc_as_of).days >= MIN_DTE
+        assert row["dte"] >= MIN_DTE
+
+    empty = _rank(min_expiry, min_expiry)
+    assert empty["ok"] is False
+    assert empty["code"] == RH_EMPTY_CHAIN
+    assert empty["ranks"] == []
+
+
+def test_stub_path_ranks_ct_skewed_window_against_utc_now():
+    """Production stub (no injected as_of) still ranks a 1-day-early 12–24m window."""
+    utc_as_of = datetime.now(timezone.utc).date()
+    min_expiry = utc_as_of + timedelta(days=MIN_DTE - 1)
+    max_expiry = utc_as_of + timedelta(days=730 - 1)
+    store = InMemoryOthRhCredentialStore()
+    store.put(RhCredential(user_id="oth-user-a", token="secret-a"))
+    payload = fetch_and_rank_chain(
+        user_id="oth-user-a",
+        symbol="NVDA",
+        side="call",
+        min_expiry=min_expiry,
+        max_expiry=max_expiry,
+        store=store,
+        client=StubRhChainClient(),
+        cache=ChainCache(),
+        as_of=utc_as_of,
+    )
+    assert payload["ok"] is True
+    assert 1 <= len(payload["ranks"]) <= 3
+    for row in payload["ranks"]:
+        expiry = date.fromisoformat(row["expiration"])
+        assert min_expiry <= expiry <= max_expiry
+        assert (expiry - utc_as_of).days >= MIN_DTE
+
+
+def test_default_max_normalized_rows_does_not_drop_better_after_cap():
+    junk = [
+        _raw_option(strike=200.0, bid=0.4, ask=0.6, last=0.5)
+        for _ in range(MAX_NORMALIZED_ROWS)
+    ]
+    good = _raw_option(strike=100.0, bid=7.9, ask=8.1, last=8.0)
+    payload = rank_normalized_chain(
+        symbol="NVDA",
+        side="call",
+        min_expiry=IN_WINDOW,
+        max_expiry=IN_WINDOW,
+        as_of=AS_OF,
+        raw=RawRhChain(
+            symbol="NVDA",
+            underlying_price=100.0,
+            quote_timestamp=TS,
+            options=junk + [good],
+        ),
+    )
+    assert payload["ok"] is True
+    assert payload["ranks"][0]["strike"] == pytest.approx(100.0)
+    assert any("provider order" in warning for warning in payload["warnings"])
