@@ -8,4 +8,4 @@ test("options desk is reachable and shows the switcher", async ({ page }) => {
     "href",
     "/dashboard",
   );
-};
+});

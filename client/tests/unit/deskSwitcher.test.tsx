@@ -1,7 +1,8 @@
-import { render, screen, act } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import DeskSwitcher, {
   rememberDesk,
   readLastDesk,
+  lastDeskHref,
   LAST_DESK_KEY,
 } from "../../app/components/DeskSwitcher";
 
@@ -9,10 +10,16 @@ jest.mock("next/link", () => {
   return ({
     children,
     href,
+    ...rest
   }: {
     children: React.ReactNode;
     href: string;
-  }) => <a href={href}>{children}</a>;
+    [key: string]: unknown;
+  }) => (
+    <a href={href} {...rest}>
+      {children}
+    </a>
+  );
 });
 
 let mockPathname = "/dashboard";
@@ -31,28 +38,28 @@ describe("DeskSwitcher", () => {
     expect(screen.getByTestId("desk-switcher")).toBeInTheDocument();
   });
 
-  it("marks tax desk active when on /dashboard", () => {
+  it("marks the tax desk link current on /dashboard", () => {
     mockPathname = "/dashboard";
     render(<DeskSwitcher />);
-    expect(screen.getByTestId("desk-switch-tax")).toHaveAttribute(
+    expect(screen.getByRole("link", { name: /Tax desk/i })).toHaveAttribute(
       "aria-current",
       "page",
     );
     expect(
-      screen.getByTestId("desk-switch-options"),
+      screen.getByRole("link", { name: /Options desk/i }),
     ).not.toHaveAttribute("aria-current");
   });
 
-  it("marks options desk active when on /options", () => {
+  it("marks the options desk link current on /options", () => {
     mockPathname = "/options";
     render(<DeskSwitcher />);
-    expect(screen.getByTestId("desk-switch-options")).toHaveAttribute(
+    expect(screen.getByRole("link", { name: /Options desk/i })).toHaveAttribute(
       "aria-current",
       "page",
     );
-    expect(
-      screen.getByTestId("desk-switch-tax"),
-    ).not.toHaveAttribute("aria-current");
+    expect(screen.getByRole("link", { name: /Tax desk/i })).not.toHaveAttribute(
+      "aria-current",
+    );
   });
 
   it("tax desk link points to /dashboard", () => {
@@ -70,6 +77,15 @@ describe("DeskSwitcher", () => {
       "/options",
     );
   });
+
+  it("clicking a pill remembers that desk", () => {
+    render(<DeskSwitcher />);
+    fireEvent.click(screen.getByRole("link", { name: /Options desk/i }));
+    expect(localStorage.getItem(LAST_DESK_KEY)).toBe("options");
+    expect(readLastDesk()).toBe("options");
+    fireEvent.click(screen.getByRole("link", { name: /Tax desk/i }));
+    expect(readLastDesk()).toBe("tax");
+  });
 });
 
 describe("rememberDesk / readLastDesk", () => {
@@ -79,34 +95,43 @@ describe("rememberDesk / readLastDesk", () => {
 
   it("defaults to tax when nothing stored", () => {
     expect(readLastDesk()).toBe("tax");
+    expect(lastDeskHref()).toBe("/dashboard");
   });
 
   it("stores and reads back 'options'", () => {
     rememberDesk("options");
     expect(localStorage.getItem(LAST_DESK_KEY)).toBe("options");
     expect(readLastDesk()).toBe("options");
+    expect(lastDeskHref()).toBe("/options");
   });
 
   it("stores and reads back 'tax'", () => {
     rememberDesk("tax");
     expect(readLastDesk()).toBe("tax");
+    expect(lastDeskHref()).toBe("/dashboard");
   });
 
   it("returns 'tax' on localStorage read failure", () => {
     const original = Storage.prototype.getItem;
-    Storage.prototype.getItem = () => {
-      throw new Error("quota exceeded");
-    };
-    expect(readLastDesk()).toBe("tax");
-    Storage.prototype.getItem = original;
+    try {
+      Storage.prototype.getItem = () => {
+        throw new Error("quota exceeded");
+      };
+      expect(readLastDesk()).toBe("tax");
+    } finally {
+      Storage.prototype.getItem = original;
+    }
   });
 
   it("silently ignores localStorage write failure", () => {
     const original = Storage.prototype.setItem;
-    Storage.prototype.setItem = () => {
-      throw new Error("quota exceeded");
-    };
-    expect(() => rememberDesk("options")).not.toThrow();
-    Storage.prototype.setItem = original;
+    try {
+      Storage.prototype.setItem = () => {
+        throw new Error("quota exceeded");
+      };
+      expect(() => rememberDesk("options")).not.toThrow();
+    } finally {
+      Storage.prototype.setItem = original;
+    }
   });
 });
