@@ -112,9 +112,15 @@ export default function LandingPage() {
           >
             Open desk
           </Button>
-          <Button component={Link} href="/options" size="small">
-            Options desk
-          </Button>
+          {openDeskHref === "/options" ? (
+            <Button component={Link} href="/dashboard" size="small">
+              Tax desk
+            </Button>
+          ) : (
+            <Button component={Link} href="/options" size="small">
+              Options desk
+            </Button>
+          )}
           {!user && (
             <Button component={Link} href="/auth/signin" size="small">
               Sign In
