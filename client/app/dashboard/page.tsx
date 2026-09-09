@@ -74,7 +74,7 @@ import {
   getBackendUnreachableMessage,
 } from "@/lib/api";
 import FirstRunEmptyState from "../components/FirstRunEmptyState";
-import EntryAnalysisPanel from "../components/EntryAnalysisPanel";
+import DeskSwitcher, { rememberDesk } from "../components/DeskSwitcher";
 import Supplemental1099InsightsPanel from "../components/Supplemental1099InsightsPanel";
 import {
   SUPPLEMENTAL_1099_AFTER_FIRST_RUN_COPY,
@@ -1623,6 +1623,10 @@ export default function DashboardPage() {
   };
 
   useEffect(() => {
+    rememberDesk("tax");
+  }, []);
+
+  useEffect(() => {
     if (authLoading) {
       return;
     }
@@ -1704,6 +1708,7 @@ export default function DashboardPage() {
       <AppBar position="static" sx={{ zIndex: 40 }}>
         <Toolbar sx={{ px: { xs: 1, sm: 2 }, gap: { xs: 0.25, sm: 0.5 } }}>
           <Wordmark href="/" />
+          <DeskSwitcher />
           <Box sx={{ flexGrow: 1 }} />
 
           {/* Tip — icon-only on mobile */}
@@ -2073,10 +2078,6 @@ export default function DashboardPage() {
               </Stack>
             </CardContent>
           </Card>
-
-          <EntryAnalysisPanel
-            positions={hasResults ? displayedAnalysis?.positions ?? [] : []}
-          />
 
           {/* Backend health banner — shown when the API server is unreachable */}
           {backendChecked && backendDown && (

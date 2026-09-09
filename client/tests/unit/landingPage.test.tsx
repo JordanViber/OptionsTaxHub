@@ -222,6 +222,10 @@ describe("LandingPage", () => {
       "href",
       "/dashboard",
     );
+    expect(screen.getByRole("link", { name: "Options desk" })).toHaveAttribute(
+      "href",
+      "/options",
+    );
     const wordmarks = screen.getAllByRole("link", { name: /OptionsTaxHub/i });
     expect(wordmarks.length).toBeGreaterThan(0);
     expect(wordmarks[0]).toHaveAttribute("href", "/");

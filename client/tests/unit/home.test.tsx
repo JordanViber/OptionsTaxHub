@@ -33,6 +33,7 @@ jest.mock("next/navigation", () => ({
   useRouter: () => ({
     push: mockPush,
   }),
+  usePathname: () => "/dashboard",
 }));
 
 jest.mock("../../app/components/ServiceWorkerRegistration", () => () => null);
@@ -214,12 +215,8 @@ describe("Home page", () => {
 
     expect(mockPush).not.toHaveBeenCalledWith("/auth/signin");
     expect(screen.getByText("Portfolio Analysis")).toBeInTheDocument();
-    expect(screen.getByTestId("entry-analysis-panel")).toBeInTheDocument();
-    expect(screen.getByTestId("entry-rank-leaps")).toBeInTheDocument();
-    expect(screen.queryByTestId("entry-rank-find")).not.toBeInTheDocument();
-    expect(
-      screen.getByRole("heading", { name: /Analyze a new option/i }),
-    ).toBeInTheDocument();
+    expect(screen.getByTestId("desk-switcher")).toBeInTheDocument();
+    expect(screen.queryByTestId("entry-analysis-panel")).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Sign In" })).toHaveAttribute(
       "href",
       "/auth/signin",
