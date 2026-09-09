@@ -417,7 +417,7 @@ export default function LandingPage() {
                 Sign in
               </Link>
             )}
-            <Link href="/dashboard" style={{ color: "inherit" }}>
+            <Link href={openDeskHref} style={{ color: "inherit" }}>
               Desk
             </Link>
           </Stack>
