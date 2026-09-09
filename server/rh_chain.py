@@ -12,10 +12,10 @@ import os
 import threading
 import time
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional, Protocol
 
-from leap_rank import rank_contracts, rank_from_chain, round_cents
+from leap_rank import MIN_DTE, rank_contracts, rank_from_chain, round_cents
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +119,7 @@ class RhChainClient(Protocol):
         side: str,
         min_expiry: date,
         max_expiry: date,
+        as_of: Optional[date] = None,
     ) -> RawRhChain:
         """Return raw chain data. Must not expose provider SDK objects."""
 
@@ -261,16 +262,43 @@ def normalize_rh_chain(
     return rows, sorted(expiries)
 
 
+def stub_expiry_in_window(
+    min_expiry: date,
+    max_expiry: date,
+    *,
+    as_of: Optional[date] = None,
+) -> date:
+    """Pick a stub expiry inside [min_expiry, max_expiry].
+
+    min_expiry alone can yield DTE=364 when a Chicago 12–24m window is scored
+    against a UTC as_of one calendar day later (MIN_DTE is 365). Use
+    as_of+MIN_DTE when as_of is known, else the window midpoint, then clamp.
+    Never invent a date outside the window.
+    """
+    lo, hi = (min_expiry, max_expiry) if min_expiry <= max_expiry else (
+        max_expiry,
+        min_expiry,
+    )
+    if as_of is not None:
+        target = as_of + timedelta(days=MIN_DTE)
+    else:
+        target = lo + timedelta(days=(hi - lo).days // 2)
+    if target < lo:
+        return lo
+    if target > hi:
+        return hi
+    return target
+
+
 def default_stub_options(
     *,
     side: str,
     min_expiry: date,
     max_expiry: date,
+    as_of: Optional[date] = None,
 ) -> list[dict[str, Any]]:
     """Deterministic in-window chain for the spike stub (not live RH)."""
-    in_window = min_expiry
-    if in_window > max_expiry:
-        in_window = max_expiry
+    in_window = stub_expiry_in_window(min_expiry, max_expiry, as_of=as_of)
     outside = date(in_window.year - 1, in_window.month, min(in_window.day, 28))
     ts = datetime(2026, 9, 7, 14, 30, tzinfo=timezone.utc).isoformat()
     rows = [
@@ -340,6 +368,7 @@ class StubRhChainClient:
         underlying_price: float = 100.0,
         quote_timestamp: Optional[datetime] = None,
         error: Optional[RhChainError] = None,
+        as_of: Optional[date] = None,
     ):
         self.options = options
         self.underlying_price = underlying_price
@@ -347,6 +376,7 @@ class StubRhChainClient:
             2026, 9, 7, 14, 30, tzinfo=timezone.utc
         )
         self.error = error
+        self.as_of = as_of
         self.calls: list[tuple[str, str, str, date, date]] = []
 
     def fetch_chain(
@@ -356,6 +386,7 @@ class StubRhChainClient:
         side: str,
         min_expiry: date,
         max_expiry: date,
+        as_of: Optional[date] = None,
     ) -> RawRhChain:
         # Credential token is intentionally unused beyond identity.
         self.calls.append(
@@ -366,7 +397,10 @@ class StubRhChainClient:
         options = self.options
         if options is None:
             options = default_stub_options(
-                side=side, min_expiry=min_expiry, max_expiry=max_expiry
+                side=side,
+                min_expiry=min_expiry,
+                max_expiry=max_expiry,
+                as_of=as_of if as_of is not None else self.as_of,
             )
         return RawRhChain(
             symbol=symbol.upper(),
@@ -386,8 +420,9 @@ class WallRhChainClient:
         side: str,
         min_expiry: date,
         max_expiry: date,
+        as_of: Optional[date] = None,
     ) -> RawRhChain:
-        del credential, symbol, side, min_expiry, max_expiry
+        del credential, symbol, side, min_expiry, max_expiry, as_of
         raise RhChainError(
             RH_SAAS_WALL,
             "Robinhood market-data SaaS is not available for this spike.",
@@ -644,7 +679,9 @@ def fetch_and_rank_chain(
 
     try:
         logger.info("rh chain fetch symbol=%s side=%s", symbol, side)
-        raw = client.fetch_chain(credential, symbol, side, min_expiry, max_expiry)
+        raw = client.fetch_chain(
+            credential, symbol, side, min_expiry, max_expiry, as_of
+        )
         if not raw.options:
             payload = fail_rh(
                 RH_EMPTY_CHAIN,

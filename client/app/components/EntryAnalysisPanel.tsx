@@ -22,9 +22,10 @@ import {
   analyzeEntry,
   buildEntryContextLine,
   formatUsdCents,
-  todayIso,
+  leapWindowForPreset,
   type EntryAnalysisResult,
   type EntryProposal,
+  type LeapWindowPreset,
   type OptionRight,
   type OptionSide,
 } from "@/lib/entryAnalysis";
@@ -46,29 +47,7 @@ const toggleGroupSx = {
   },
 };
 
-type WindowPreset = "12-24" | "12-18" | "18-24" | "custom";
-
-const PRESET_DAYS: Record<Exclude<WindowPreset, "custom">, { from: number; to: number }> =
-  {
-    "12-24": { from: 365, to: 730 },
-    "12-18": { from: 365, to: 547 },
-    "18-24": { from: 547, to: 730 },
-  };
-
-function addDaysIso(base: string, days: number): string {
-  const [year, month, day] = base.split("-").map(Number);
-  const date = new Date(year, month - 1, day);
-  date.setDate(date.getDate() + days);
-  return todayIso(date);
-}
-
-function datesForPreset(preset: Exclude<WindowPreset, "custom">, asOf = todayIso()) {
-  const span = PRESET_DAYS[preset];
-  return {
-    from: addDaysIso(asOf, span.from),
-    to: addDaysIso(asOf, span.to),
-  };
-}
+type WindowPreset = LeapWindowPreset | "custom";
 
 function parsePositiveNumber(raw: string): number | null {
   const trimmed = raw.trim();
@@ -128,9 +107,9 @@ export default function EntryAnalysisPanel({
   const [premium, setPremium] = useState("");
   const [windowPreset, setWindowPreset] = useState<WindowPreset>("12-24");
   const [expiryFrom, setExpiryFrom] = useState(
-    () => datesForPreset("12-24").from,
+    () => leapWindowForPreset("12-24").from,
   );
-  const [expiryTo, setExpiryTo] = useState(() => datesForPreset("12-24").to);
+  const [expiryTo, setExpiryTo] = useState(() => leapWindowForPreset("12-24").to);
   const [rankResult, setRankResult] = useState<RhChainResponse | null>(null);
   const [rankError, setRankError] = useState<string | null>(null);
   const [selectedRank, setSelectedRank] = useState<number | null>(null);
@@ -154,7 +133,7 @@ export default function EntryAnalysisPanel({
   const applyPreset = (preset: WindowPreset) => {
     setWindowPreset(preset);
     if (preset === "custom") return;
-    const next = datesForPreset(preset);
+    const next = leapWindowForPreset(preset);
     setExpiryFrom(next.from);
     setExpiryTo(next.to);
   };
