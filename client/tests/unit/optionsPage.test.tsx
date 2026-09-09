@@ -1,5 +1,6 @@
-import { render, screen, act } from "@testing-library/react";
+import { render, screen, act, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { rememberDesk } from "../../app/components/DeskSwitcher";
 
 jest.mock("next/link", () => {
   return ({
@@ -63,13 +64,18 @@ describe("OptionsDeskPage", () => {
   beforeEach(() => {
     mockPush.mockClear();
     mockUseAuth.mockReset();
+    (rememberDesk as jest.Mock).mockClear();
     sessionStorage.clear();
   });
 
-  it("shows a loading spinner while auth is loading", async () => {
+  it("keeps the spinner after mount while auth is loading", async () => {
     mockUseAuth.mockReturnValue({ user: null, loading: true });
     renderWithClient(<OptionsPage />);
-    expect(screen.getByRole("progressbar")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByRole("progressbar")).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId("entry-analysis-panel")).not.toBeInTheDocument();
+    expect(rememberDesk).not.toHaveBeenCalled();
   });
 
   it("confirmed user sees the options desk and hides Sign In button", async () => {
@@ -86,6 +92,7 @@ describe("OptionsDeskPage", () => {
     });
     expect(screen.getByText(/Options desk/i)).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /Sign In/i })).not.toBeInTheDocument();
+    expect(rememberDesk).toHaveBeenCalledWith("options");
   });
 
   it("unconfirmed user is redirected to /auth/confirm-email", async () => {
@@ -97,6 +104,7 @@ describe("OptionsDeskPage", () => {
       renderWithClient(<OptionsPage />);
     });
     expect(mockPush).toHaveBeenCalledWith("/auth/confirm-email");
+    expect(rememberDesk).not.toHaveBeenCalled();
   });
 
   it("shows empty book message when no sessionStorage analysis", async () => {
@@ -107,6 +115,10 @@ describe("OptionsDeskPage", () => {
     expect(screen.getByTestId("options-book-status")).toHaveTextContent(
       /No book loaded/i,
     );
+    expect(screen.getByTestId("entry-analysis-panel")).toHaveTextContent(
+      "0 positions",
+    );
+    expect(rememberDesk).toHaveBeenCalledWith("options");
   });
 
   it("shows restored positions when sessionStorage has an analysis", async () => {
@@ -142,6 +154,9 @@ describe("OptionsDeskPage", () => {
     expect(screen.getByTestId("options-book-status")).toHaveTextContent(
       /Using the book already loaded/i,
     );
+    expect(screen.getByTestId("entry-analysis-panel")).toHaveTextContent(
+      "1 positions",
+    );
   });
 
   it("handles corrupt sessionStorage JSON gracefully", async () => {
@@ -152,6 +167,9 @@ describe("OptionsDeskPage", () => {
     });
     expect(screen.getByTestId("options-book-status")).toHaveTextContent(
       /No book loaded/i,
+    );
+    expect(screen.getByTestId("entry-analysis-panel")).toHaveTextContent(
+      "0 positions",
     );
   });
 });
