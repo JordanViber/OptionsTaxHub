@@ -29,6 +29,7 @@ jest.mock("../../app/context/auth", () => ({
 }));
 
 import EntryAnalysisPanel from "../../app/components/EntryAnalysisPanel";
+import { leapWindowForPreset } from "../../lib/entryAnalysis";
 import { RH_CONNECTION_REQUIRED_COPY } from "../../lib/types";
 
 function futureIso(): string {
@@ -360,10 +361,13 @@ describe("EntryAnalysisPanel", () => {
     expect(screen.getByTestId("entry-rank-2")).toBeInTheDocument();
     expect(screen.getByTestId("entry-rank-3")).toBeInTheDocument();
     expect(mockLeapRankMutateAsync).not.toHaveBeenCalled();
+    const utcWindow = leapWindowForPreset("12-24");
     expect(mockRhChainMutateAsync).toHaveBeenCalledWith(
       expect.objectContaining({
         symbol: "NVDA",
         right: "call",
+        expiry_from: utcWindow.from,
+        expiry_to: utcWindow.to,
       }),
     );
 

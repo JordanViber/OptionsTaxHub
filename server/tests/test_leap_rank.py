@@ -4,6 +4,7 @@ from datetime import date
 import pytest
 
 from leap_rank import (
+    MIN_DTE,
     extract_rank_premium,
     fail_payload,
     format_contract_label,
@@ -206,6 +207,7 @@ def test_tie_break_lower_extrinsic_yield_wins():
 
 
 def test_requires_leap_dte():
+    assert MIN_DTE == 365
     short = score_contract(
         symbol="NVDA",
         right="call",
@@ -219,6 +221,37 @@ def test_requires_leap_dte():
         open_interest=10,
     )
     assert short is None
+
+    # CT min_expiry 2027-09-06 vs UTC as_of 2026-09-07 is DTE=364; still ineligible.
+    utc_as_of = date(2026, 9, 7)
+    ct_min = score_contract(
+        symbol="NVDA",
+        right="call",
+        spot=100,
+        as_of=utc_as_of,
+        expiration="2027-09-06",
+        strike=90,
+        bid=11.9,
+        ask=12.1,
+        last=12.0,
+        open_interest=10,
+    )
+    assert (date(2027, 9, 6) - utc_as_of).days == MIN_DTE - 1
+    assert ct_min is None
+    utc_ok = score_contract(
+        symbol="NVDA",
+        right="call",
+        spot=100,
+        as_of=utc_as_of,
+        expiration="2027-09-07",
+        strike=90,
+        bid=11.9,
+        ask=12.1,
+        last=12.0,
+        open_interest=10,
+    )
+    assert utc_ok is not None
+    assert utc_ok.dte == MIN_DTE
 
 
 def test_filters_wide_spread_cheap_premium_otm_and_leverage():
