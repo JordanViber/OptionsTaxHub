@@ -28,8 +28,14 @@ describe("desk-files", () => {
 
   it("restores Files after a simulated tax-desk remount", () => {
     const csv = new File(["a"], "book.csv", { type: "text/csv" });
+    const pdf = new File(["b"], "1099.pdf", { type: "application/pdf" });
     setDeskCsv(csv);
-    expect(getDeskFiles().csv).toBe(csv);
+    setDeskForm1099(pdf);
+    const afterHop = getDeskFiles();
+    expect(afterHop.csv).toBe(csv);
+    expect(afterHop.form1099).toBe(pdf);
+    expect(getDeskCsv()).toBe(csv);
+    expect(getDeskForm1099()).toBe(pdf);
   });
 
   it("notifies subscribers", () => {
