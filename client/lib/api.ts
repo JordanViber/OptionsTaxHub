@@ -270,7 +270,7 @@ async function analyzePortfolio(
       );
     }
 
-    return response.json();
+    return await response.json();
   } catch (error) {
     if (isAbortError(error)) {
       throw new Error(ANALYZE_TIMEOUT_MESSAGE);
@@ -293,15 +293,7 @@ async function analyzePortfolio(
 export function useAnalyzePortfolio() {
   return useMutation({
     mutationFn: analyzePortfolio,
-    retry: (failureCount, error) => {
-      if (
-        error instanceof Error &&
-        error.message === ANALYZE_TIMEOUT_MESSAGE
-      ) {
-        return false;
-      }
-      return failureCount < 1;
-    },
+    retry: 0,
   });
 }
 

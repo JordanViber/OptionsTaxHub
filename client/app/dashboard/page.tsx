@@ -1454,6 +1454,9 @@ export default function DashboardPage() {
       try {
         const { csvFile, form1099File } = await fetchSampleCsvAnd1099();
         if (cancelled || sampleAnalyzeStartedRef.current) {
+          if (cancelled) {
+            setSampleLoading(false);
+          }
           return;
         }
         sampleAnalyzeStartedRef.current = true;
@@ -1471,8 +1474,8 @@ export default function DashboardPage() {
         runPortfolioAnalysis(csvFile, form1099File);
       } catch (err) {
         sampleAnalyzeStartedRef.current = false;
+        setSampleLoading(false);
         if (!cancelled) {
-          setSampleLoading(false);
           setSampleLoadError(
             err instanceof Error && err.message.trim()
               ? err.message
@@ -1484,6 +1487,7 @@ export default function DashboardPage() {
 
     return () => {
       cancelled = true;
+      setSampleLoading(false);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading, user, emailConfirmed]);

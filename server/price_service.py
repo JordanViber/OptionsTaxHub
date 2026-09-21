@@ -30,15 +30,22 @@ _T = TypeVar("_T")
 
 
 def _call_with_timeout(fn: Callable[[], _T], timeout_seconds: float) -> _T:
-    """Run a blocking provider call with a hard timeout."""
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(fn)
-        try:
-            return future.result(timeout=timeout_seconds)
-        except FuturesTimeoutError as exc:
-            raise TimeoutError(
-                f"Live price fetch timed out after {timeout_seconds:.0f}s"
-            ) from exc
+    """Run a blocking provider call with a hard timeout.
+
+    Do not ``shutdown(wait=True)``: a never-returning Yahoo thread would
+    block the caller until that worker finished. Cancel and return.
+    """
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(fn)
+    try:
+        return future.result(timeout=timeout_seconds)
+    except FuturesTimeoutError as exc:
+        future.cancel()
+        raise TimeoutError(
+            f"Live price fetch timed out after {timeout_seconds:.0f}s"
+        ) from exc
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
 # In-memory price cache: {symbol: (price, timestamp)}
 _price_cache: dict[str, tuple[float, float]] = {}

@@ -491,6 +491,31 @@ describe("api hooks", () => {
       expect(globalThis.fetch).toHaveBeenCalledTimes(1);
     });
 
+    it("does not retry a 400 analyze error", async () => {
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: false,
+        status: 400,
+        statusText: "Bad Request",
+        json: async () => ({
+          detail: "Could not parse any positions from the CSV file.",
+        }),
+      } as Response);
+
+      const file = new File(["content"], "test.csv", { type: "text/csv" });
+      const wrapper = createWrapper();
+      const { result } = renderHook(() => useAnalyzePortfolio(), { wrapper });
+
+      await act(async () => {
+        result.current.mutate({ file });
+      });
+
+      await waitFor(() => {
+        expect(result.current.isError).toBe(true);
+      });
+      expect(result.current.isPending).toBe(false);
+      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    });
+
     it("uses detail.message when the 400 body is a FastAPI object", async () => {
       const file = new File(["content"], "test.csv", { type: "text/csv" });
 

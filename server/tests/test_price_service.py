@@ -11,6 +11,7 @@ All yfinance interactions are mocked. Tests cover:
 
 import sys
 import os
+import threading
 import time
 from unittest.mock import patch, MagicMock
 
@@ -236,6 +237,24 @@ class TestDownloadYfinancePrices:
             prices, warnings = price_service._download_yfinance_prices(["AAPL"])
         assert prices == {}
         assert any("timed out" in warning.lower() for warning in warnings)
+
+    def test_never_returning_yahoo_returns_caller_in_under_one_second(
+        self, monkeypatch
+    ):
+        """shutdown(wait=True) would block forever; wait=False must return now."""
+        hang = threading.Event()
+        monkeypatch.setattr(price_service, "YFINANCE_TIMEOUT_SECONDS", 0.2)
+
+        def never_return(*_args, **_kwargs):
+            hang.wait()
+            return pd.DataFrame({"Close": [1.0]})
+
+        started = time.monotonic()
+        with pytest.raises(TimeoutError, match="timed out"):
+            price_service._call_with_timeout(never_return, 0.2)
+        elapsed = time.monotonic() - started
+        hang.set()
+        assert elapsed < 1.0
 
 
 # --- _apply_fallback_prices ---

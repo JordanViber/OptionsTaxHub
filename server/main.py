@@ -910,7 +910,11 @@ def _apply_live_prices_to_tax_lots(
         if lot.asset_type == AssetType.STOCK and lot.current_price is not None
     }
     if fixture_prices:
-        fallback_prices = {**fixture_prices, **fallback_prices}
+        # Fixtures win over lot fill prices.
+        fallback_prices = {
+            **fallback_prices,
+            **{symbol.upper(): price for symbol, price in fixture_prices.items()},
+        }
     if allow_network:
         live_prices, price_warnings = fetch_current_prices(symbols, fallback_prices)
     else:
@@ -947,6 +951,10 @@ def _apply_live_prices_to_tax_lots(
             allow_network=False,
         )
     all_warnings.extend(option_price_warnings)
+
+    if fixture_prices:
+        for symbol, price in fixture_prices.items():
+            live_prices[symbol.upper()] = price
 
     for lot in tax_lots:
         if lot.asset_type == AssetType.STOCK and lot.symbol in live_prices:
@@ -1280,11 +1288,13 @@ async def _run_portfolio_analysis(
     )
     all_warnings.extend(suggestion_filter_warnings)
 
-    # Get AI-powered suggestions
-    ai_suggestions, all_warnings = _process_ai_suggestions(
-        suggestion_tax_lots,
-        all_warnings,
-    )
+    if trusted_sample:
+        ai_suggestions = None
+    else:
+        ai_suggestions, all_warnings = _process_ai_suggestions(
+            suggestion_tax_lots,
+            all_warnings,
+        )
 
     suggestions = generate_suggestions(
         tax_lots=suggestion_tax_lots,

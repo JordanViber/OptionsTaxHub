@@ -2430,6 +2430,8 @@ def test_trusted_in_app_sample_skips_yahoo_and_still_returns_positions(monkeypat
 
     monkeypatch.setattr("price_service._download_yfinance_prices", boom)
     monkeypatch.setattr("price_service._fetch_grouped_option_prices", boom)
+    monkeypatch.setattr("main._process_ai_suggestions", boom)
+    monkeypatch.setattr("main._try_get_ai_suggestions", boom)
 
     repo = Path(__file__).resolve().parents[2]
     sample_csv = (repo / "client" / "public" / "sample-robinhood-transactions.csv").read_bytes()
@@ -2450,6 +2452,35 @@ def test_trusted_in_app_sample_skips_yahoo_and_still_returns_positions(monkeypat
     assert body["sample_run"] is True
     assert body["positions"]
     assert body["tax_profile"]["tax_year"] == 2026
+
+
+def test_trusted_sample_fixture_prices_win_over_cache_and_lot_fills():
+    from datetime import date
+
+    import pytest
+    from ledger import SAMPLE_FIXTURE_PRICES
+    from models import AssetType, TaxLot
+    from price_service import _set_cached_price, clear_cache
+
+    clear_cache()
+    _set_cached_price("AAPL", 1.0)
+    lot = TaxLot(
+        symbol="AAPL",
+        quantity=10,
+        cost_basis_per_share=100.0,
+        total_cost_basis=1000.0,
+        purchase_date=date(2025, 1, 2),
+        current_price=2.0,
+        asset_type=AssetType.STOCK,
+    )
+    lots = main._apply_live_prices_to_tax_lots(
+        [lot],
+        [],
+        allow_network=False,
+        fixture_prices=SAMPLE_FIXTURE_PRICES,
+    )
+    assert lots[0].current_price == pytest.approx(SAMPLE_FIXTURE_PRICES["AAPL"])
+    clear_cache()
 
 
 def test_guest_sample_analyze_includes_lot_match_rows_without_unlocking(monkeypatch):

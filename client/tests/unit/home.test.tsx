@@ -587,6 +587,7 @@ describe("Home page", () => {
     });
     expect(mutate).not.toHaveBeenCalled();
     expect(sessionStorage.getItem("oth-load-sample")).toBe("1");
+    expect(screen.queryByText("Analyzing portfolio...")).not.toBeInTheDocument();
   });
 
   it("loads the landing sample through analyze under Strict Mode", async () => {
