@@ -117,31 +117,65 @@ const SAMPLE_CSV_URL = "/sample-robinhood-transactions.csv";
 const SAMPLE_CSV_FILENAME = "sample-robinhood-transactions.csv";
 const SAMPLE_1099_URL = "/sample-robinhood-1099-2026.pdf";
 const SAMPLE_1099_FILENAME = "sample-robinhood-1099-2026.pdf";
+export const SAMPLE_FETCH_TIMEOUT_MS = 800;
+const SAMPLE_FETCH_TIMEOUT_MESSAGE = "Could not load the 2026 sample.";
 
-async function fetchSampleCsvAnd1099(): Promise<{
+function isAbortError(error: unknown): boolean {
+  return (
+    (error instanceof DOMException && error.name === "AbortError") ||
+    (error instanceof Error && error.name === "AbortError")
+  );
+}
+
+async function fetchSampleCsvAnd1099(
+  externalSignal?: AbortSignal,
+): Promise<{
   csvFile: File;
   form1099File: File;
 }> {
-  const [csvResponse, pdfResponse] = await Promise.all([
-    fetch(SAMPLE_CSV_URL),
-    fetch(SAMPLE_1099_URL),
-  ]);
-  if (!csvResponse.ok) {
-    throw new Error("Could not load the sample CSV.");
+  const controller = new AbortController();
+  const timeoutId = setTimeout(
+    () => controller.abort(),
+    SAMPLE_FETCH_TIMEOUT_MS,
+  );
+  const onExternalAbort = () => controller.abort();
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      controller.abort();
+    } else {
+      externalSignal.addEventListener("abort", onExternalAbort);
+    }
   }
-  if (!pdfResponse.ok) {
-    throw new Error("Could not load the sample 1099.");
+  try {
+    const [csvResponse, pdfResponse] = await Promise.all([
+      fetch(SAMPLE_CSV_URL, { signal: controller.signal }),
+      fetch(SAMPLE_1099_URL, { signal: controller.signal }),
+    ]);
+    if (!csvResponse.ok) {
+      throw new Error("Could not load the sample CSV.");
+    }
+    if (!pdfResponse.ok) {
+      throw new Error("Could not load the sample 1099.");
+    }
+    const [csvBlob, pdfBlob] = await Promise.all([
+      csvResponse.blob(),
+      pdfResponse.blob(),
+    ]);
+    return {
+      csvFile: new File([csvBlob], SAMPLE_CSV_FILENAME, { type: "text/csv" }),
+      form1099File: new File([pdfBlob], SAMPLE_1099_FILENAME, {
+        type: "application/pdf",
+      }),
+    };
+  } catch (error) {
+    if (isAbortError(error)) {
+      throw new Error(SAMPLE_FETCH_TIMEOUT_MESSAGE);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+    externalSignal?.removeEventListener("abort", onExternalAbort);
   }
-  const [csvBlob, pdfBlob] = await Promise.all([
-    csvResponse.blob(),
-    pdfResponse.blob(),
-  ]);
-  return {
-    csvFile: new File([csvBlob], SAMPLE_CSV_FILENAME, { type: "text/csv" }),
-    form1099File: new File([pdfBlob], SAMPLE_1099_FILENAME, {
-      type: "application/pdf",
-    }),
-  };
 }
 
 type AnalysisSource = "fresh-upload" | "saved-history" | "restored-session";
@@ -1239,7 +1273,15 @@ export default function DashboardPage() {
 
     const saved = restoreAnalysisFromStorage();
     if (wantsSample) {
-      // Open the 2026 sample must not keep a prior restore that lacks lot counts.
+      if (saved?.sample_run) {
+        setLoadedAnalysis(saved);
+        setAnalysisSource("fresh-upload");
+        try {
+          sessionStorage.removeItem(LOAD_SAMPLE_KEY);
+        } catch {
+          // ignore
+        }
+      }
       return;
     }
     if (wantsUpload) {
@@ -1358,6 +1400,13 @@ export default function DashboardPage() {
           setAnalysisSource("fresh-upload");
           setForceEmpty(false);
           setSampleLoading(false);
+          if (sample) {
+            try {
+              sessionStorage.removeItem(LOAD_SAMPLE_KEY);
+            } catch {
+              // ignore
+            }
+          }
           if (data.packet_unlocked && data.packet_session_id) {
             rememberYearClosePacketPaid(
               data.analysis_id || "local-analysis",
@@ -1448,11 +1497,14 @@ export default function DashboardPage() {
     }
 
     let cancelled = false;
+    const abort = new AbortController();
     setSampleLoading(true);
 
     void (async () => {
       try {
-        const { csvFile, form1099File } = await fetchSampleCsvAnd1099();
+        const { csvFile, form1099File } = await fetchSampleCsvAnd1099(
+          abort.signal,
+        );
         if (cancelled || sampleAnalyzeStartedRef.current) {
           if (cancelled) {
             setSampleLoading(false);
@@ -1460,11 +1512,6 @@ export default function DashboardPage() {
           return;
         }
         sampleAnalyzeStartedRef.current = true;
-        try {
-          sessionStorage.removeItem(LOAD_SAMPLE_KEY);
-        } catch {
-          // ignore
-        }
         clearCurrentAnalysisView({
           setLoadedAnalysis,
           setAnalysisSource,
@@ -1487,6 +1534,7 @@ export default function DashboardPage() {
 
     return () => {
       cancelled = true;
+      abort.abort();
       setSampleLoading(false);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

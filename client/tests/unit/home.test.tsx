@@ -1,7 +1,7 @@
 import { StrictMode } from "react";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import Home from "../../app/dashboard/page";
+import Home, { SAMPLE_FETCH_TIMEOUT_MS } from "../../app/dashboard/page";
 import { persistGuestAnalysis } from "../../lib/api";
 import { resetGuestPersistInFlight } from "../../lib/guest-persist-lock";
 
@@ -201,6 +201,7 @@ describe("Home page", () => {
   });
 
   afterEach(() => {
+    jest.useRealTimers();
     globalThis.fetch = originalFetch;
   });
 
@@ -614,6 +615,66 @@ describe("Home page", () => {
         name: "sample-robinhood-1099-2026.pdf",
       }),
     });
+    expect(sessionStorage.getItem("oth-load-sample")).toBe("1");
+  });
+
+  it("clears Analyzing when the sample CSV fetch never returns", async () => {
+    jest.useFakeTimers();
+    const mutate = jest.fn();
+    setupMocks(createAuthMock(null, false), createAnalyzeMock({ mutate }));
+    sessionStorage.setItem("oth-load-sample", "1");
+    globalThis.fetch = jest.fn(
+      (_input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(
+              new DOMException("The operation was aborted.", "AbortError"),
+            );
+          });
+        }),
+    ) as typeof fetch;
+
+    renderWithClient(<Home />);
+
+    expect(screen.getByText("Analyzing portfolio...")).toBeInTheDocument();
+
+    await act(async () => {
+      jest.advanceTimersByTime(SAMPLE_FETCH_TIMEOUT_MS);
+    });
+
+    expect(screen.getByText("Analysis Failed")).toBeInTheDocument();
+    expect(
+      screen.getByText("Could not load the 2026 sample."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Analyzing portfolio...")).not.toBeInTheDocument();
+    expect(mutate).not.toHaveBeenCalled();
+  });
+
+  it("restores the sample under Strict Mode remount without leave/return", async () => {
+    const mutate = jest.fn(
+      (
+        _params: unknown,
+        options?: { onSuccess?: (data: typeof sampleAnalysis) => void },
+      ) => {
+        options?.onSuccess?.(sampleAnalysis);
+      },
+    );
+    setupMocks(createAuthMock(null, false), createAnalyzeMock({ mutate }));
+    sessionStorage.setItem("oth-load-sample", "1");
+    mockSampleCsvFetch();
+
+    render(
+      <StrictMode>
+        <Home />
+      </StrictMode>,
+      { wrapper: createWrapper() },
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Tax Year: 2026")).toBeInTheDocument();
+    });
+    expect(screen.getByText(/Positions \(1\)/)).toBeInTheDocument();
+    expect(screen.queryByText("Analyzing portfolio...")).not.toBeInTheDocument();
     expect(sessionStorage.getItem("oth-load-sample")).toBeNull();
   });
 
@@ -645,6 +706,7 @@ describe("Home page", () => {
     expect(screen.getByText(/Positions \(1\)/)).toBeInTheDocument();
     expect(screen.getByTestId("summary-cards")).toBeInTheDocument();
     expect(screen.queryByText("Analyzing portfolio...")).not.toBeInTheDocument();
+    expect(sessionStorage.getItem("oth-load-sample")).toBeNull();
 
     const taxHeading = screen.getByText("Portfolio Analysis");
     const optionsHeading = screen.getByRole("heading", {
