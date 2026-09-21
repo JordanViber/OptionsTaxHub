@@ -14,6 +14,10 @@ import { useAuth } from "@/app/context/auth";
 import TaxDisclaimer from "./components/TaxDisclaimer";
 import Wordmark from "./components/Wordmark";
 import DeskPreview from "./components/DeskPreview";
+import {
+  SCHEDULE_D_RECONCILE_COPY,
+  WASH_ACCOUNT_SCOPE_COPY,
+} from "@/lib/supplemental1099";
 
 const UPLOAD_INTENT_KEY = "oth-upload-intent";
 
@@ -151,11 +155,11 @@ export default function LandingPage() {
                 lineHeight: 1.55,
               }}
             >
-              Broker 1099 uses settlement date. Your export uses trade date. A
-              year-end short — SPX 12/31 — can print a gain on the 1099 while
-              the export still shows a loss. Not a software bug. Totals stay
-              free. The $49 packet adds lot-matched 1099-B — not a filed Form
-              8949.
+              {SCHEDULE_D_RECONCILE_COPY} Broker 1099 uses settlement date.
+              Your export uses trade date. A year-end short — SPX 12/31 — can
+              print a gain on the 1099 while the export still shows a loss. Not
+              a software bug. Totals stay free. The $49 packet adds lot-matched
+              1099-B — not a filed Form 8949.
             </Typography>
             <Stack
               direction={{ xs: "column", sm: "row" }}
@@ -215,7 +219,7 @@ export default function LandingPage() {
             />
             <Feature
               title="Wash-sale radar"
-              body="Same-symbol buys inside 30 days, with disallowed loss and the replacement-lot basis bump. Whole book, not options-only."
+              body={`Same-symbol buys inside 30 days, with disallowed loss and the replacement-lot basis bump. Whole book, not options-only. ${WASH_ACCOUNT_SCOPE_COPY}`}
             />
             <Feature
               title="Lot ledger"
@@ -267,7 +271,7 @@ export default function LandingPage() {
             {
               n: "02",
               t: "Read the desk",
-              d: "1099 vs export first — settlement date vs trade date. Then harvest, wash sales, and lots.",
+              d: "1099 vs export first — toward Schedule D. Settlement date vs trade date. Then harvest, wash sales, and lots.",
             },
             {
               n: "03",
