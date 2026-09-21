@@ -117,7 +117,7 @@ const SAMPLE_CSV_URL = "/sample-robinhood-transactions.csv";
 const SAMPLE_CSV_FILENAME = "sample-robinhood-transactions.csv";
 const SAMPLE_1099_URL = "/sample-robinhood-1099-2026.pdf";
 const SAMPLE_1099_FILENAME = "sample-robinhood-1099-2026.pdf";
-export const SAMPLE_FETCH_TIMEOUT_MS = 800;
+export const SAMPLE_FETCH_TIMEOUT_MS = 8000;
 const SAMPLE_FETCH_TIMEOUT_MESSAGE = "Could not load the 2026 sample.";
 
 function isAbortError(error: unknown): boolean {
@@ -1453,10 +1453,14 @@ export default function DashboardPage() {
   };
 
   const handleLoadSample = () => {
+    const abort = new AbortController();
     void (async () => {
       try {
+        setSampleLoadError(null);
         setSampleLoading(true);
-        const { csvFile, form1099File } = await fetchSampleCsvAnd1099();
+        const { csvFile, form1099File } = await fetchSampleCsvAnd1099(
+          abort.signal,
+        );
         clearCurrentAnalysisView({
           setLoadedAnalysis,
           setAnalysisSource,
@@ -1498,6 +1502,7 @@ export default function DashboardPage() {
 
     let cancelled = false;
     const abort = new AbortController();
+    setSampleLoadError(null);
     setSampleLoading(true);
 
     void (async () => {
@@ -2200,7 +2205,7 @@ export default function DashboardPage() {
           )}
 
           {/* First-run guidance when the user has not analyzed a CSV yet */}
-          {!hasResults && !analyzing && !error && (
+          {!hasResults && !analyzing && !error && !sampleLoadError && (
             <FirstRunEmptyState
               onLoadSample={handleLoadSample}
               settingsHref={user ? "/settings" : "/auth/signin?reason=profile"}

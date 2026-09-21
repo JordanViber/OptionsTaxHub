@@ -648,6 +648,47 @@ describe("Home page", () => {
     ).toBeInTheDocument();
     expect(screen.queryByText("Analyzing portfolio...")).not.toBeInTheDocument();
     expect(mutate).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole("button", { name: "Open the 2026 sample" }),
+    ).not.toBeInTheDocument();
+    expect(SAMPLE_FETCH_TIMEOUT_MS).toBe(8000);
+  });
+
+  it("empty-desk Open sample aborts a hung fetch and does not stack the empty CTA", async () => {
+    jest.useFakeTimers();
+    const mutate = jest.fn();
+    setupMocks(createAuthMock(null, false), createAnalyzeMock({ mutate }));
+    globalThis.fetch = jest.fn(
+      (_input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(
+              new DOMException("The operation was aborted.", "AbortError"),
+            );
+          });
+        }),
+    ) as typeof fetch;
+
+    renderWithClient(<Home />);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open the 2026 sample" }),
+    );
+    expect(screen.getByText("Analyzing portfolio...")).toBeInTheDocument();
+    expect(screen.queryByText("Analysis Failed")).not.toBeInTheDocument();
+
+    await act(async () => {
+      jest.advanceTimersByTime(SAMPLE_FETCH_TIMEOUT_MS);
+    });
+
+    expect(screen.getByText("Analysis Failed")).toBeInTheDocument();
+    expect(
+      screen.getByText("Could not load the 2026 sample."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Analyzing portfolio...")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Open the 2026 sample" }),
+    ).not.toBeInTheDocument();
+    expect(mutate).not.toHaveBeenCalled();
   });
 
   it("restores the sample under Strict Mode remount without leave/return", async () => {
