@@ -61,10 +61,10 @@ export const VERTICAL_SAME_STRIKES_MESSAGE =
   "Choose two different strikes for the same expiry.";
 export const VERTICAL_STRIKE_ORDER_MESSAGE =
   "Higher strike must be above the lower strike.";
-export const VERTICAL_NET_CREDIT_ON_DEBIT_MESSAGE =
-  "These premiums are a net credit. Switch to Credit, or check both premiums.";
-export const VERTICAL_NET_DEBIT_ON_CREDIT_MESSAGE =
-  "These premiums are a net debit. Switch to Debit, or check both premiums.";
+export const VERTICAL_CALL_PREMIUM_ORDER_MESSAGE =
+  "Lower-strike premium should be at least the higher-strike premium.";
+export const VERTICAL_PUT_PREMIUM_ORDER_MESSAGE =
+  "Higher-strike premium should be at least the lower-strike premium.";
 export const VERTICAL_NET_DEBIT_EXCEEDS_WIDTH_MESSAGE =
   "Net debit cannot exceed the strike width.";
 export const VERTICAL_NET_CREDIT_EXCEEDS_WIDTH_MESSAGE =
@@ -334,18 +334,14 @@ export function analyzeVertical(
   const putNet = roundCents(higherPremium - lowerPremium);
   const net = right === "call" ? callNet : putNet;
 
-  if (structure === "debit" && net < 0) {
+  if (net < 0) {
     return {
       ok: false,
       reason: "invalid",
-      message: VERTICAL_NET_CREDIT_ON_DEBIT_MESSAGE,
-    };
-  }
-  if (structure === "credit" && net < 0) {
-    return {
-      ok: false,
-      reason: "invalid",
-      message: VERTICAL_NET_DEBIT_ON_CREDIT_MESSAGE,
+      message:
+        right === "call"
+          ? VERTICAL_CALL_PREMIUM_ORDER_MESSAGE
+          : VERTICAL_PUT_PREMIUM_ORDER_MESSAGE,
     };
   }
 

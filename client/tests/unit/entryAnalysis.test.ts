@@ -9,12 +9,12 @@ import {
   parseContractLabel,
   todayIso,
   utcTodayIso,
+  VERTICAL_CALL_PREMIUM_ORDER_MESSAGE,
   VERTICAL_INCOMPLETE_MESSAGE,
   VERTICAL_NET_CREDIT_EXCEEDS_WIDTH_MESSAGE,
-  VERTICAL_NET_CREDIT_ON_DEBIT_MESSAGE,
   VERTICAL_NET_DEBIT_EXCEEDS_WIDTH_MESSAGE,
-  VERTICAL_NET_DEBIT_ON_CREDIT_MESSAGE,
   VERTICAL_PUT_BREAKEVEN_MESSAGE,
+  VERTICAL_PUT_PREMIUM_ORDER_MESSAGE,
   VERTICAL_SAME_STRIKES_MESSAGE,
   VERTICAL_STRIKE_ORDER_MESSAGE,
   type EntryProposal,
@@ -613,17 +613,18 @@ describe("analyzeVertical", () => {
     expect(result.message).toBe(VERTICAL_STRIKE_ORDER_MESSAGE);
   });
 
-  it("rejects a debit whose premiums are a net credit", () => {
+  it("rejects inverted call premiums on a debit", () => {
     const result = analyzeVertical(
       verticalProposal({ lowerPremium: 1, higherPremium: 4 }),
       AS_OF,
     );
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.message).toBe(VERTICAL_NET_CREDIT_ON_DEBIT_MESSAGE);
+    expect(result.reason).toBe("invalid");
+    expect(result.message).toBe(VERTICAL_CALL_PREMIUM_ORDER_MESSAGE);
   });
 
-  it("rejects a credit whose premiums are a net debit", () => {
+  it("rejects inverted call premiums on a credit", () => {
     const result = analyzeVertical(
       verticalProposal({
         structure: "credit",
@@ -634,7 +635,44 @@ describe("analyzeVertical", () => {
     );
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.message).toBe(VERTICAL_NET_DEBIT_ON_CREDIT_MESSAGE);
+    expect(result.reason).toBe("invalid");
+    expect(result.message).toBe(VERTICAL_CALL_PREMIUM_ORDER_MESSAGE);
+  });
+
+  it("uses the same call premium-order copy on debit and credit (no structure flip-flop)", () => {
+    const inverted = { lowerPremium: 1, higherPremium: 4 };
+    const debit = analyzeVertical(verticalProposal(inverted), AS_OF);
+    const credit = analyzeVertical(
+      verticalProposal({ ...inverted, structure: "credit" }),
+      AS_OF,
+    );
+    expect(debit.ok).toBe(false);
+    expect(credit.ok).toBe(false);
+    if (debit.ok || credit.ok) return;
+    expect(debit.reason).toBe("invalid");
+    expect(credit.reason).toBe("invalid");
+    expect(debit.message).toBe(VERTICAL_CALL_PREMIUM_ORDER_MESSAGE);
+    expect(credit.message).toBe(debit.message);
+  });
+
+  it("uses the same put premium-order copy on debit and credit (no structure flip-flop)", () => {
+    const inverted = {
+      right: "put" as const,
+      lowerPremium: 4,
+      higherPremium: 1,
+    };
+    const debit = analyzeVertical(verticalProposal(inverted), AS_OF);
+    const credit = analyzeVertical(
+      verticalProposal({ ...inverted, structure: "credit" }),
+      AS_OF,
+    );
+    expect(debit.ok).toBe(false);
+    expect(credit.ok).toBe(false);
+    if (debit.ok || credit.ok) return;
+    expect(debit.reason).toBe("invalid");
+    expect(credit.reason).toBe("invalid");
+    expect(debit.message).toBe(VERTICAL_PUT_PREMIUM_ORDER_MESSAGE);
+    expect(credit.message).toBe(debit.message);
   });
 
   it("rejects a net debit wider than the strikes", () => {
