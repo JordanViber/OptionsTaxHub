@@ -694,4 +694,153 @@ describe("EntryAnalysisPanel", () => {
     expect(screen.getByTestId("entry-rank-1")).toBeInTheDocument();
     expect(mockLeapRankMutateAsync).not.toHaveBeenCalled();
   });
+
+  function fillVerticalCallDebit() {
+    fireEvent.click(screen.getByTestId("entry-structure-vertical"));
+    fireEvent.change(screen.getByTestId("entry-symbol"), {
+      target: { value: "NVDA" },
+    });
+    fireEvent.change(screen.getByTestId("entry-strike-lower"), {
+      target: { value: "250" },
+    });
+    fireEvent.change(screen.getByTestId("entry-strike-higher"), {
+      target: { value: "260" },
+    });
+    fireEvent.change(screen.getByTestId("entry-expiration"), {
+      target: { value: futureIso() },
+    });
+    fireEvent.change(screen.getByTestId("entry-premium-lower"), {
+      target: { value: "6.00" },
+    });
+    fireEvent.change(screen.getByTestId("entry-premium-higher"), {
+      target: { value: "2.00" },
+    });
+  }
+
+  it("defaults to single-leg and reveals vertical fields when selected", () => {
+    render(<EntryAnalysisPanel />);
+    expect(screen.getByTestId("entry-structure-single")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByTestId("entry-side-buy")).toBeInTheDocument();
+    expect(screen.getByTestId("entry-strike")).toBeInTheDocument();
+    expect(screen.getByTestId("entry-premium")).toBeInTheDocument();
+    expect(screen.queryByTestId("entry-debit")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("entry-strike-lower")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("entry-structure-vertical"));
+    expect(screen.getByTestId("entry-debit")).toBeInTheDocument();
+    expect(screen.getByTestId("entry-credit")).toBeInTheDocument();
+    expect(screen.getByTestId("entry-strike-lower")).toBeInTheDocument();
+    expect(screen.getByTestId("entry-strike-higher")).toBeInTheDocument();
+    expect(screen.getByTestId("entry-premium-lower")).toBeInTheDocument();
+    expect(screen.getByTestId("entry-premium-higher")).toBeInTheDocument();
+    expect(screen.queryByTestId("entry-side-buy")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("entry-strike")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("entry-premium")).not.toBeInTheDocument();
+    expect(
+      screen.getByTestId("entry-analysis-panel").querySelector("table"),
+    ).toBeNull();
+  });
+
+  it("shows call debit max loss / max gain / breakeven", () => {
+    render(<EntryAnalysisPanel />);
+    fillVerticalCallDebit();
+    expect(screen.getByTestId("entry-results")).toBeInTheDocument();
+    expect(screen.getByTestId("entry-max-loss")).toHaveTextContent("$400.00");
+    expect(screen.getByTestId("entry-max-gain")).toHaveTextContent("$600.00");
+    expect(screen.getByTestId("entry-breakeven")).toHaveTextContent("$254.00");
+    expect(screen.getByTestId("entry-collateral")).toHaveTextContent(
+      /Defined-risk debit: capital is the \$400\.00 net debit paid/,
+    );
+    expect(screen.queryByTestId("entry-context")).not.toBeInTheDocument();
+    expect(screen.queryByText(/\$49/)).not.toBeInTheDocument();
+  });
+
+  it("blocks the same two strikes with plain copy", () => {
+    render(<EntryAnalysisPanel />);
+    fillVerticalCallDebit();
+    fireEvent.change(screen.getByTestId("entry-strike-higher"), {
+      target: { value: "250" },
+    });
+    expect(screen.getByTestId("entry-error")).toHaveTextContent(
+      /Choose two different strikes for the same expiry/,
+    );
+    expect(screen.queryByTestId("entry-results")).not.toBeInTheDocument();
+  });
+
+  it("empty-desk vertical has no book context", () => {
+    render(<EntryAnalysisPanel positions={[]} />);
+    fillVerticalCallDebit();
+    expect(screen.getByTestId("entry-max-loss")).toHaveTextContent("$400.00");
+    expect(screen.queryByTestId("entry-context")).not.toBeInTheDocument();
+  });
+
+  it("does not claim a call credit is covered against 100 shares", () => {
+    const tslaStock: Position = {
+      ...nvdaStock,
+      position_id: "TSLA:stock",
+      symbol: "TSLA",
+      display_label: "TSLA",
+      quantity: 100,
+    };
+    render(<EntryAnalysisPanel positions={[tslaStock]} />);
+    fireEvent.click(screen.getByTestId("entry-structure-vertical"));
+    fireEvent.click(screen.getByTestId("entry-credit"));
+    fireEvent.change(screen.getByTestId("entry-symbol"), {
+      target: { value: "TSLA" },
+    });
+    fireEvent.change(screen.getByTestId("entry-strike-lower"), {
+      target: { value: "250" },
+    });
+    fireEvent.change(screen.getByTestId("entry-strike-higher"), {
+      target: { value: "260" },
+    });
+    fireEvent.change(screen.getByTestId("entry-expiration"), {
+      target: { value: futureIso() },
+    });
+    fireEvent.change(screen.getByTestId("entry-premium-lower"), {
+      target: { value: "6.00" },
+    });
+    fireEvent.change(screen.getByTestId("entry-premium-higher"), {
+      target: { value: "2.00" },
+    });
+    expect(screen.getByTestId("entry-max-loss")).toHaveTextContent("$600.00");
+    expect(screen.getByTestId("entry-context")).toHaveTextContent(
+      "Open TSLA: 100 sh",
+    );
+    expect(screen.getByTestId("entry-context")).not.toHaveTextContent(
+      /covered|keep the shares/i,
+    );
+  });
+
+  it("Rank LEAPs #1 returns to single-leg v1 payoff from vertical mode", async () => {
+    mockRhChainMutateAsync.mockResolvedValue({
+      ...mockRankSuccess(),
+      provider: "robinhood",
+      code: "ok",
+    });
+    render(<EntryAnalysisPanel />);
+    fireEvent.click(screen.getByTestId("entry-structure-vertical"));
+    fireEvent.change(screen.getByTestId("entry-symbol"), {
+      target: { value: "NVDA" },
+    });
+    fireEvent.click(screen.getByTestId("entry-rank-leaps"));
+    await waitFor(() => {
+      expect(screen.getByTestId("entry-rank-1")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTestId("entry-rank-1"));
+    expect(screen.getByTestId("entry-structure-single")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByTestId("entry-max-loss")).toHaveTextContent("$420.00");
+    expect(screen.getByTestId("entry-max-gain")).toHaveTextContent("Unlimited");
+    expect(screen.getByTestId("entry-breakeven")).toHaveTextContent("$94.20");
+    expect(mockLeapRankMutateAsync).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole("button", { name: /connect robinhood/i }),
+    ).not.toBeInTheDocument();
+  });
 });
