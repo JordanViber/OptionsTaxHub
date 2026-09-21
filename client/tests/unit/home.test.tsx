@@ -644,6 +644,31 @@ describe("Home page", () => {
     expect(screen.getByText(/Positions \(1\)/)).toBeInTheDocument();
     expect(screen.getByTestId("summary-cards")).toBeInTheDocument();
     expect(screen.queryByText("Analyzing portfolio...")).not.toBeInTheDocument();
+
+    const taxHeading = screen.getByText("Portfolio Analysis");
+    const optionsHeading = screen.getByRole("heading", {
+      name: /Analyze a new option/i,
+    });
+    expect(
+      taxHeading.compareDocumentPosition(optionsHeading) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(screen.getByTestId("entry-rank-leaps")).toBeInTheDocument();
+    expect(screen.queryByTestId("entry-rank-find")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByTestId("entry-symbol"), {
+      target: { value: "NVDA" },
+    });
+    fireEvent.change(screen.getByTestId("entry-strike"), {
+      target: { value: "250" },
+    });
+    fireEvent.change(screen.getByTestId("entry-expiration"), {
+      target: { value: "2027-12-17" },
+    });
+    fireEvent.change(screen.getByTestId("entry-premium"), {
+      target: { value: "4.20" },
+    });
+    expect(screen.getByTestId("entry-results")).toBeInTheDocument();
+    expect(screen.getByTestId("entry-max-loss")).toHaveTextContent("$420.00");
   });
 
   it("shows the analyze error string and clears Analyzing after a failed sample", async () => {

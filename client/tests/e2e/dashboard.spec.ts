@@ -10,6 +10,7 @@ import {
   setupMockAnalysis,
   uploadTestCsv,
 } from "./fixtures";
+import { RH_CONNECTION_REQUIRED_COPY } from "../../lib/types";
 
 /**
  * Playwright E2E tests for the OptionsTaxHub dashboard (/).
@@ -785,5 +786,58 @@ test.describe("Open 2026 sample", () => {
     await expect(page.getByText("Analysis Failed")).toBeVisible();
     await expect(page.getByText("Analyzing portfolio...")).toHaveCount(0);
     await expect(page.getByText("[object Object]")).toHaveCount(0);
+  });
+
+  test("tax-first desk keeps guest RH wall and what-if after Open sample", async ({
+    page,
+  }) => {
+    await setupMockAnalysis(page, sampleAnalysis);
+    await mockGuestDesk(page);
+    await page.route("**/api/oth/options/chain*", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: false,
+          code: "RH_CONNECTION_REQUIRED",
+          message: RH_CONNECTION_REQUIRED_COPY,
+          ranks: [],
+        }),
+      }),
+    );
+
+    await page.goto("/");
+    await expect(page.getByTestId("entry-analysis-panel")).toHaveCount(0);
+    await expect(
+      page.getByRole("heading", {
+        name: /Your 1099 and your export will disagree/,
+      }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Open the 2026 sample" }).click();
+    await expect(page).toHaveURL(/\/dashboard/, { timeout: 30000 });
+    await expect(page.getByText("Tax Year: 2026")).toBeVisible({
+      timeout: 20000,
+    });
+    await expect(page.getByText("Portfolio Analysis")).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: /Analyze a new option/i }),
+    ).toBeVisible();
+    await expect(page.getByTestId("entry-rank-leaps")).toBeVisible();
+    await expect(page.getByTestId("entry-rank-find")).toHaveCount(0);
+
+    await page.getByTestId("entry-symbol").fill("NVDA");
+    await page.getByTestId("entry-strike").fill("250");
+    await page.getByTestId("entry-expiration").fill("2027-12-17");
+    await page.getByTestId("entry-premium").fill("4.20");
+    await expect(page.getByTestId("entry-results")).toBeVisible();
+    await expect(page.getByTestId("entry-max-loss")).toHaveText("$420.00");
+
+    await page.getByTestId("entry-rank-leaps").click();
+    await expect(page.getByTestId("entry-rank-error")).toHaveText(
+      RH_CONNECTION_REQUIRED_COPY,
+    );
+    await expect(page.getByTestId("entry-rank-1")).toHaveCount(0);
+    await expect(page.getByTestId("entry-results")).toBeVisible();
+    await expect(page.getByTestId("entry-max-loss")).toHaveText("$420.00");
   });
 });
