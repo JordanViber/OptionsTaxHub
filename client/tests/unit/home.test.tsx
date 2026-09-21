@@ -1,7 +1,7 @@
 import { StrictMode } from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import Home from "../../app/dashboard/page";
+import Home, { SAMPLE_FETCH_TIMEOUT_MS } from "../../app/dashboard/page";
 import { persistGuestAnalysis } from "../../lib/api";
 import { resetGuestPersistInFlight } from "../../lib/guest-persist-lock";
 
@@ -156,10 +156,15 @@ const sampleAnalysis = {
   suggestions: [],
   wash_sale_flags: [],
   summary: { total_market_value: 1000, positions_count: 1 },
-  tax_profile: null,
+  tax_profile: {
+    filing_status: "single",
+    estimated_annual_income: 75000,
+    tax_year: 2026,
+  },
   disclaimer: "",
   warnings: [],
   errors: [],
+  sample_run: true,
 };
 
 function mockSampleCsvFetch() {
@@ -196,6 +201,7 @@ describe("Home page", () => {
   });
 
   afterEach(() => {
+    jest.useRealTimers();
     globalThis.fetch = originalFetch;
   });
 
@@ -566,6 +572,25 @@ describe("Home page", () => {
     });
   });
 
+  it("does not start the landing sample while auth is still loading", async () => {
+    const mutate = jest.fn();
+    setupMocks(createAuthMock(null, true), createAnalyzeMock({ mutate }));
+    sessionStorage.setItem("oth-load-sample", "1");
+    mockSampleCsvFetch();
+
+    renderWithClient(<Home />);
+
+    expect(screen.getByRole("progressbar")).toBeInTheDocument();
+    await act(async () => {
+      await new Promise((resolve) => {
+        setTimeout(resolve, 30);
+      });
+    });
+    expect(mutate).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem("oth-load-sample")).toBe("1");
+    expect(screen.queryByText("Analyzing portfolio...")).not.toBeInTheDocument();
+  });
+
   it("loads the landing sample through analyze under Strict Mode", async () => {
     const mutate = jest.fn();
     setupMocks(createAuthMock(null, false), createAnalyzeMock({ mutate }));
@@ -590,7 +615,263 @@ describe("Home page", () => {
         name: "sample-robinhood-1099-2026.pdf",
       }),
     });
+    expect(sessionStorage.getItem("oth-load-sample")).toBe("1");
+  });
+
+  it("clears Analyzing when the sample CSV fetch never returns", async () => {
+    jest.useFakeTimers();
+    const mutate = jest.fn();
+    setupMocks(createAuthMock(null, false), createAnalyzeMock({ mutate }));
+    sessionStorage.setItem("oth-load-sample", "1");
+    globalThis.fetch = jest.fn(
+      (_input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(
+              new DOMException("The operation was aborted.", "AbortError"),
+            );
+          });
+        }),
+    ) as typeof fetch;
+
+    renderWithClient(<Home />);
+
+    expect(screen.getByText("Analyzing portfolio...")).toBeInTheDocument();
+
+    await act(async () => {
+      jest.advanceTimersByTime(SAMPLE_FETCH_TIMEOUT_MS);
+    });
+
+    expect(screen.getByText("Analysis Failed")).toBeInTheDocument();
+    expect(
+      screen.getByText("Could not load the 2026 sample."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Analyzing portfolio...")).not.toBeInTheDocument();
+    expect(mutate).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole("button", { name: "Open the 2026 sample" }),
+    ).not.toBeInTheDocument();
+    expect(SAMPLE_FETCH_TIMEOUT_MS).toBe(8000);
+  });
+
+  it("empty-desk Open sample aborts a hung fetch and does not stack the empty CTA", async () => {
+    jest.useFakeTimers();
+    const mutate = jest.fn();
+    setupMocks(createAuthMock(null, false), createAnalyzeMock({ mutate }));
+    globalThis.fetch = jest.fn(
+      (_input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(
+              new DOMException("The operation was aborted.", "AbortError"),
+            );
+          });
+        }),
+    ) as typeof fetch;
+
+    renderWithClient(<Home />);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open the 2026 sample" }),
+    );
+    expect(screen.getByText("Analyzing portfolio...")).toBeInTheDocument();
+    expect(screen.queryByText("Analysis Failed")).not.toBeInTheDocument();
+
+    await act(async () => {
+      jest.advanceTimersByTime(SAMPLE_FETCH_TIMEOUT_MS);
+    });
+
+    expect(screen.getByText("Analysis Failed")).toBeInTheDocument();
+    expect(
+      screen.getByText("Could not load the 2026 sample."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Analyzing portfolio...")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Open the 2026 sample" }),
+    ).not.toBeInTheDocument();
+    expect(mutate).not.toHaveBeenCalled();
+  });
+
+  it("restores the sample under Strict Mode remount without leave/return", async () => {
+    const mutate = jest.fn(
+      (
+        _params: unknown,
+        options?: { onSuccess?: (data: typeof sampleAnalysis) => void },
+      ) => {
+        options?.onSuccess?.(sampleAnalysis);
+      },
+    );
+    setupMocks(createAuthMock(null, false), createAnalyzeMock({ mutate }));
+    sessionStorage.setItem("oth-load-sample", "1");
+    mockSampleCsvFetch();
+
+    render(
+      <StrictMode>
+        <Home />
+      </StrictMode>,
+      { wrapper: createWrapper() },
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Tax Year: 2026")).toBeInTheDocument();
+    });
+    expect(screen.getByText(/Positions \(1\)/)).toBeInTheDocument();
+    expect(screen.queryByText("Analyzing portfolio...")).not.toBeInTheDocument();
     expect(sessionStorage.getItem("oth-load-sample")).toBeNull();
+  });
+
+  it("finishes the landing sample on the first visit once auth is ready", async () => {
+    const mutate = jest.fn((_params: unknown, options?: { onSuccess?: (data: typeof sampleAnalysis) => void }) => {
+      options?.onSuccess?.(sampleAnalysis);
+    });
+    let loading = true;
+    mockUseAuth.mockImplementation(() => createAuthMock(null, loading));
+    mockUseAnalyzePortfolio.mockReturnValue(createAnalyzeMock({ mutate }));
+    mockUseTaxProfile.mockReturnValue({ data: null, isLoading: false });
+    mockUsePortfolioHistory.mockReturnValue({ data: [], isLoading: false });
+    sessionStorage.setItem("oth-load-sample", "1");
+    mockSampleCsvFetch();
+
+    const wrapper = createWrapper();
+    const { rerender } = render(<Home />, { wrapper });
+
+    expect(mutate).not.toHaveBeenCalled();
+    expect(screen.getByRole("progressbar")).toBeInTheDocument();
+
+    loading = false;
+    rerender(<Home />);
+
+    await waitFor(() => {
+      expect(mutate).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.getByText("Tax Year: 2026")).toBeInTheDocument();
+    expect(screen.getByText(/Positions \(1\)/)).toBeInTheDocument();
+    expect(screen.getByTestId("summary-cards")).toBeInTheDocument();
+    expect(screen.queryByText("Analyzing portfolio...")).not.toBeInTheDocument();
+    expect(sessionStorage.getItem("oth-load-sample")).toBeNull();
+
+    const taxHeading = screen.getByText("Portfolio Analysis");
+    const optionsHeading = screen.getByRole("heading", {
+      name: /Analyze a new option/i,
+    });
+    expect(
+      taxHeading.compareDocumentPosition(optionsHeading) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(screen.getByTestId("entry-rank-leaps")).toBeInTheDocument();
+    expect(screen.queryByTestId("entry-rank-find")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByTestId("entry-symbol"), {
+      target: { value: "NVDA" },
+    });
+    fireEvent.change(screen.getByTestId("entry-strike"), {
+      target: { value: "250" },
+    });
+    fireEvent.change(screen.getByTestId("entry-expiration"), {
+      target: { value: "2027-12-17" },
+    });
+    fireEvent.change(screen.getByTestId("entry-premium"), {
+      target: { value: "4.20" },
+    });
+    expect(screen.getByTestId("entry-results")).toBeInTheDocument();
+    expect(screen.getByTestId("entry-max-loss")).toHaveTextContent("$420.00");
+    expect(
+      screen.queryByRole("button", { name: /connect robinhood/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /reconnect/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /^tax desk$/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: /options desk/i }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("year-close-packet-panel")).toHaveTextContent(
+      "$49",
+    );
+  });
+
+  it("shows the analyze error string and clears Analyzing after a failed sample", async () => {
+    const mutate = jest.fn(
+      (
+        _params: unknown,
+        options?: { onError?: (error: Error) => void },
+      ) => {
+        options?.onError?.(new Error("Could not parse any positions from the CSV file."));
+      },
+    );
+    setupMocks(
+      createAuthMock(null, false),
+      createAnalyzeMock({
+        mutate,
+        error: new Error(
+          "Could not parse any positions from the CSV file.",
+        ),
+        isPending: false,
+      }),
+    );
+    sessionStorage.setItem("oth-load-sample", "1");
+    mockSampleCsvFetch();
+
+    renderWithClient(<Home />);
+
+    await waitFor(() => {
+      expect(mutate).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.getByText("Analysis Failed")).toBeInTheDocument();
+    expect(
+      screen.getByText("Could not parse any positions from the CSV file."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Analyzing portfolio...")).not.toBeInTheDocument();
+  });
+
+  it("shows a real sample-fetch error and never leaves Analyzing up", async () => {
+    const mutate = jest.fn();
+    setupMocks(createAuthMock(null, false), createAnalyzeMock({ mutate }));
+    sessionStorage.setItem("oth-load-sample", "1");
+    globalThis.fetch = jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("sample-robinhood-transactions.csv")) {
+        return { ok: false, blob: async () => new Blob([]) };
+      }
+      return {
+        ok: true,
+        blob: async () =>
+          new Blob(["%PDF-1.4 sample"], { type: "application/pdf" }),
+      };
+    }) as typeof fetch;
+
+    renderWithClient(<Home />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Analysis Failed")).toBeInTheDocument();
+    });
+    expect(screen.getByText("Could not load the sample CSV.")).toBeInTheDocument();
+    expect(mutate).not.toHaveBeenCalled();
+    expect(screen.queryByText("Analyzing portfolio...")).not.toBeInTheDocument();
+  });
+
+  it("restores a finished sample after remount without a second analyze", async () => {
+    const mutate = jest.fn();
+    setupMocks(createAuthMock(null, false), createAnalyzeMock({ mutate }));
+    sessionStorage.setItem(
+      "optionstaxhub-analysis",
+      JSON.stringify({
+        ...sampleAnalysis,
+        tax_profile: {
+          filing_status: "single",
+          estimated_annual_income: 75000,
+          tax_year: 2026,
+        },
+      }),
+    );
+
+    renderWithClient(<Home />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Tax Year: 2026")).toBeInTheDocument();
+    });
+    expect(screen.getByText(/Positions \(1\)/)).toBeInTheDocument();
+    expect(mutate).not.toHaveBeenCalled();
   });
 
   it("sets lastUploadedCsv after the landing sample so a 1099 rerun is not null", async () => {

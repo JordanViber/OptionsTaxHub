@@ -24,6 +24,16 @@ SAMPLE_CSV_SHA256 = (
 SAMPLE_1099_SHA256 = (
     "16a2d2af4b80c4fed6febf6e798489911f27a0acbb17d0733a77f0baf0096ba8"
 )
+# Snapshot quotes for the in-app 2026 sample so Open sample does not wait on Yahoo.
+SAMPLE_FIXTURE_PRICES = {
+    "AAPL": 315.0,
+    "AMD": 477.0,
+    "META": 571.0,
+    "MSFT": 505.0,
+    "NVDA": 228.0,
+    "SPY": 771.0,
+    "TSLA": 355.0,
+}
 
 
 def _upload_basename(filename: str | None) -> str:

@@ -10,6 +10,7 @@ import {
   setupMockAnalysis,
   uploadTestCsv,
 } from "./fixtures";
+import { RH_CONNECTION_REQUIRED_COPY } from "../../lib/types";
 
 /**
  * Playwright E2E tests for the OptionsTaxHub dashboard (/).
@@ -676,5 +677,180 @@ test.describe("Tip Jar", () => {
     await expect(
       page.getByText("One-time payment"),
     ).toBeVisible();
+  });
+});
+
+test.describe("Open 2026 sample", () => {
+  const sampleAnalysis = {
+    ...MOCK_ANALYSIS,
+    sample_run: true,
+    tax_profile: {
+      ...MOCK_ANALYSIS.tax_profile,
+      tax_year: 2026,
+    },
+  };
+
+  async function mockGuestDesk(page: Parameters<typeof setupMockAnalysis>[0]) {
+    await page.route("**/health", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ status: "ok" }),
+      }),
+    );
+    await page.route("**/auth/v1/**", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({}),
+      }),
+    );
+  }
+
+  async function openSampleFromLanding(
+    page: Parameters<typeof setupMockAnalysis>[0],
+  ) {
+    await page.goto("/");
+    await page.getByRole("button", { name: "Open the 2026 sample" }).click();
+    await expect(page).toHaveURL(/\/dashboard/, { timeout: 30000 });
+  }
+
+  const viewports = [
+    { name: "desktop", width: 1280, height: 800 },
+    { name: "phone-390", width: 390, height: 844 },
+  ] as const;
+
+  for (const viewport of viewports) {
+    test(`clears Analyzing and shows results on ${viewport.name}`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({
+        width: viewport.width,
+        height: viewport.height,
+      });
+      await setupMockAnalysis(page, sampleAnalysis);
+      await mockGuestDesk(page);
+      await openSampleFromLanding(page);
+      await expect(page.getByText("Tax Year: 2026")).toBeVisible({
+        timeout: 20000,
+      });
+      await expect(page.getByText("Fresh upload")).toBeVisible();
+      await expect(page.getByText(/Positions \(2\)/)).toBeVisible();
+      await expect(page.getByText("Net Open Position Value")).toBeVisible();
+      await expect(page.getByText("Analyzing portfolio...")).toHaveCount(0);
+    });
+  }
+
+  test("a hung analyze does not leave Analyzing on a 390px desk", async ({
+    page,
+  }) => {
+    test.setTimeout(60_000);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await mockGuestDesk(page);
+    await page.route("**/api/portfolio/analyze*", async () => {
+      await new Promise(() => {
+        /* never fulfill — client abort must clear Analyzing */
+      });
+    });
+    await openSampleFromLanding(page);
+    await expect(page.getByText("Analyzing portfolio...")).toBeVisible({
+      timeout: 15000,
+    });
+    await expect(
+      page.getByText("Analysis timed out. Please try again in a few minutes."),
+    ).toBeVisible({ timeout: 40000 });
+    await expect(page.getByText("Analyzing portfolio...")).toHaveCount(0);
+    await expect(page.getByText("Analysis Failed")).toBeVisible();
+  });
+
+  test("a real analyze failure shows the server string and clears Analyzing", async ({
+    page,
+  }) => {
+    await mockGuestDesk(page);
+    await page.route("**/api/portfolio/analyze*", (route) =>
+      route.fulfill({
+        status: 400,
+        contentType: "application/json",
+        body: JSON.stringify({
+          detail: {
+            message: "Could not parse any positions from the CSV file.",
+            errors: ["Unrecognized CSV format"],
+          },
+        }),
+      }),
+    );
+    await openSampleFromLanding(page);
+    await expect(
+      page.getByText("Could not parse any positions from the CSV file."),
+    ).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText("Analysis Failed")).toBeVisible();
+    await expect(page.getByText("Analyzing portfolio...")).toHaveCount(0);
+    await expect(page.getByText("[object Object]")).toHaveCount(0);
+  });
+
+  test("tax-first desk keeps guest RH wall and what-if after Open sample", async ({
+    page,
+  }) => {
+    await setupMockAnalysis(page, sampleAnalysis);
+    await mockGuestDesk(page);
+    await page.route("**/api/oth/options/chain*", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: false,
+          code: "RH_CONNECTION_REQUIRED",
+          message: RH_CONNECTION_REQUIRED_COPY,
+          ranks: [],
+        }),
+      }),
+    );
+
+    await page.goto("/");
+    await expect(page.getByTestId("entry-analysis-panel")).toHaveCount(0);
+    await expect(
+      page.getByRole("heading", {
+        name: /Your 1099 and your export will disagree/,
+      }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Open the 2026 sample" }).click();
+    await expect(page).toHaveURL(/\/dashboard/, { timeout: 30000 });
+    await expect(page.getByText("Tax Year: 2026")).toBeVisible({
+      timeout: 20000,
+    });
+    await expect(page.getByText("Portfolio Analysis")).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: /Analyze a new option/i }),
+    ).toBeVisible();
+    await expect(page.getByTestId("entry-rank-leaps")).toBeVisible();
+    await expect(page.getByTestId("entry-rank-find")).toHaveCount(0);
+
+    await page.getByTestId("entry-symbol").fill("NVDA");
+    await page.getByTestId("entry-strike").fill("250");
+    await page.getByTestId("entry-expiration").fill("2027-12-17");
+    await page.getByTestId("entry-premium").fill("4.20");
+    await expect(page.getByTestId("entry-results")).toBeVisible();
+    await expect(page.getByTestId("entry-max-loss")).toHaveText("$420.00");
+
+    await page.getByTestId("entry-rank-leaps").click();
+    await expect(page.getByTestId("entry-rank-error")).toHaveText(
+      RH_CONNECTION_REQUIRED_COPY,
+    );
+    await expect(page.getByTestId("entry-rank-1")).toHaveCount(0);
+    await expect(page.getByTestId("entry-results")).toBeVisible();
+    await expect(page.getByTestId("entry-max-loss")).toHaveText("$420.00");
+    await expect(
+      page.getByRole("button", { name: /connect robinhood/i }),
+    ).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /reconnect/i })).toHaveCount(
+      0,
+    );
+    await expect(page.getByRole("button", { name: /^tax desk$/i })).toHaveCount(
+      0,
+    );
+    await expect(page.getByRole("link", { name: /options desk/i })).toHaveCount(
+      0,
+    );
+    await expect(page.getByRole("button", { name: /Pay \$49/i })).toBeVisible();
   });
 });

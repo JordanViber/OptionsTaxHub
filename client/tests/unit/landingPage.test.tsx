@@ -262,6 +262,15 @@ describe("LandingPage", () => {
         name: /Your 1099 and your export will disagree/,
       }),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /connect robinhood/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: /options desk/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /^tax desk$/i }),
+    ).not.toBeInTheDocument();
   });
 
   it("does not render a card field on the marketing home page", () => {
