@@ -39,6 +39,7 @@ import {
   persistGuestAnalysis,
   getAnalysisErrorMessage,
   getBackendUnreachableMessage,
+  ANALYZE_TIMEOUT_MESSAGE,
   fetchLeapRank,
   useLeapRankMutation,
   fetchRhChain,
@@ -484,10 +485,10 @@ describe("api hooks", () => {
       await waitFor(() => {
         expect(result.current.isError).toBe(true);
       });
+      expect(result.current.isPending).toBe(false);
       expect(result.current.error).toBeInstanceOf(Error);
-      expect(result.current.error?.message).toBe(
-        "Analysis timed out. Please try again in a few minutes.",
-      );
+      expect(result.current.error?.message).toBe(ANALYZE_TIMEOUT_MESSAGE);
+      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
     });
 
     it("uses detail.message when the 400 body is a FastAPI object", async () => {

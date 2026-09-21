@@ -680,18 +680,16 @@ test.describe("Tip Jar", () => {
 });
 
 test.describe("Open 2026 sample", () => {
-  test("finishes analysis on the desk without leave or return", async ({
-    page,
-  }) => {
-    const sampleAnalysis = {
-      ...MOCK_ANALYSIS,
-      sample_run: true,
-      tax_profile: {
-        ...MOCK_ANALYSIS.tax_profile,
-        tax_year: 2026,
-      },
-    };
-    await setupMockAnalysis(page, sampleAnalysis);
+  const sampleAnalysis = {
+    ...MOCK_ANALYSIS,
+    sample_run: true,
+    tax_profile: {
+      ...MOCK_ANALYSIS.tax_profile,
+      tax_year: 2026,
+    },
+  };
+
+  async function mockGuestDesk(page: Parameters<typeof setupMockAnalysis>[0]) {
     await page.route("**/health", (route) =>
       route.fulfill({
         status: 200,
@@ -706,16 +704,61 @@ test.describe("Open 2026 sample", () => {
         body: JSON.stringify({}),
       }),
     );
+  }
 
+  async function openSampleFromLanding(
+    page: Parameters<typeof setupMockAnalysis>[0],
+  ) {
     await page.goto("/");
     await page.getByRole("button", { name: "Open the 2026 sample" }).click();
     await expect(page).toHaveURL(/\/dashboard/, { timeout: 30000 });
-    await expect(page.getByText("Tax Year: 2026")).toBeVisible({
-      timeout: 20000,
+  }
+
+  const viewports = [
+    { name: "desktop", width: 1280, height: 800 },
+    { name: "phone-390", width: 390, height: 844 },
+  ] as const;
+
+  for (const viewport of viewports) {
+    test(`clears Analyzing and shows results on ${viewport.name}`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({
+        width: viewport.width,
+        height: viewport.height,
+      });
+      await setupMockAnalysis(page, sampleAnalysis);
+      await mockGuestDesk(page);
+      await openSampleFromLanding(page);
+      await expect(page.getByText("Tax Year: 2026")).toBeVisible({
+        timeout: 20000,
+      });
+      await expect(page.getByText("Fresh upload")).toBeVisible();
+      await expect(page.getByText(/Positions \(2\)/)).toBeVisible();
+      await expect(page.getByText("Net Open Position Value")).toBeVisible();
+      await expect(page.getByText("Analyzing portfolio...")).toHaveCount(0);
     });
-    await expect(page.getByText("Fresh upload")).toBeVisible();
-    await expect(page.getByText(/Positions \(2\)/)).toBeVisible();
-    await expect(page.getByText("Net Open Position Value")).toBeVisible();
+  }
+
+  test("a hung analyze does not leave Analyzing on a 390px desk", async ({
+    page,
+  }) => {
+    test.setTimeout(60_000);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await mockGuestDesk(page);
+    await page.route("**/api/portfolio/analyze*", async () => {
+      await new Promise(() => {
+        /* never fulfill — client abort must clear Analyzing */
+      });
+    });
+    await openSampleFromLanding(page);
+    await expect(page.getByText("Analyzing portfolio...")).toBeVisible({
+      timeout: 15000,
+    });
+    await expect(
+      page.getByText("Analysis timed out. Please try again in a few minutes."),
+    ).toBeVisible({ timeout: 40000 });
     await expect(page.getByText("Analyzing portfolio...")).toHaveCount(0);
+    await expect(page.getByText("Analysis Failed")).toBeVisible();
   });
 });
