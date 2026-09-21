@@ -1329,6 +1329,44 @@ describe("DashboardPage", () => {
     expect(screen.queryByTestId("entry-results")).not.toBeInTheDocument();
   });
 
+  it("shows a vertical what-if on an empty desk without a CSV", async () => {
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("entry-analysis-panel")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId("entry-structure-vertical"));
+    const future = new Date();
+    future.setFullYear(future.getFullYear() + 1);
+    const expiration = `${future.getFullYear()}-${String(future.getMonth() + 1).padStart(2, "0")}-${String(future.getDate()).padStart(2, "0")}`;
+
+    fireEvent.change(screen.getByTestId("entry-symbol"), {
+      target: { value: "NVDA" },
+    });
+    fireEvent.change(screen.getByTestId("entry-strike-lower"), {
+      target: { value: "250" },
+    });
+    fireEvent.change(screen.getByTestId("entry-strike-higher"), {
+      target: { value: "260" },
+    });
+    fireEvent.change(screen.getByTestId("entry-expiration"), {
+      target: { value: expiration },
+    });
+    fireEvent.change(screen.getByTestId("entry-premium-lower"), {
+      target: { value: "6.00" },
+    });
+    fireEvent.change(screen.getByTestId("entry-premium-higher"), {
+      target: { value: "2.00" },
+    });
+
+    expect(screen.getByTestId("entry-max-loss")).toHaveTextContent("$400.00");
+    expect(screen.getByTestId("entry-max-gain")).toHaveTextContent("$600.00");
+    expect(screen.getByTestId("entry-breakeven")).toHaveTextContent("$254.00");
+    expect(screen.queryByTestId("entry-context")).not.toBeInTheDocument();
+    expect(screen.getByTestId("entry-rank-leaps")).toBeInTheDocument();
+  });
+
   it("adds one-line portfolio context when positions are loaded", async () => {
     mockAnalyzeData = {
       ...baseAnalysis,

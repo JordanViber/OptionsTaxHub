@@ -1,5 +1,6 @@
 /**
- * Single-leg options what-if: max gain / max loss / breakeven / short collateral.
+ * Single-leg and single-vertical options what-if: max gain / max loss /
+ * breakeven / capital or collateral.
  *
  * Premium is per share (Robinhood / OCC). Multiplier is 100.
  * Not tax treatment, not a filed Form 8949, not the year-close packet.
@@ -10,6 +11,7 @@ export const CONTRACT_MULTIPLIER = 100;
 
 export type OptionRight = "call" | "put";
 export type OptionSide = "buy" | "sell";
+export type VerticalStructure = "debit" | "credit";
 
 export interface EntryProposal {
   symbol: string;
@@ -19,6 +21,18 @@ export interface EntryProposal {
   side: OptionSide | "";
   quantity: number | null;
   premium: number | null;
+}
+
+export interface VerticalProposal {
+  symbol: string;
+  right: OptionRight | "";
+  structure: VerticalStructure | "";
+  lowerStrike: number | null;
+  higherStrike: number | null;
+  expiration: string;
+  quantity: number | null;
+  lowerPremium: number | null;
+  higherPremium: number | null;
 }
 
 export interface EntryPayoff {
@@ -40,6 +54,23 @@ const CONTRACT_LABEL_PATTERN =
 
 const INCOMPLETE_MESSAGE =
   "Enter premium to see max gain, max loss, and breakeven.";
+
+export const VERTICAL_INCOMPLETE_MESSAGE =
+  "Enter both strikes and both premiums to see max gain, max loss, and breakeven.";
+export const VERTICAL_SAME_STRIKES_MESSAGE =
+  "Choose two different strikes for the same expiry.";
+export const VERTICAL_STRIKE_ORDER_MESSAGE =
+  "Higher strike must be above the lower strike.";
+export const VERTICAL_NET_CREDIT_ON_DEBIT_MESSAGE =
+  "These premiums are a net credit. Switch to Credit, or check both premiums.";
+export const VERTICAL_NET_DEBIT_ON_CREDIT_MESSAGE =
+  "These premiums are a net debit. Switch to Debit, or check both premiums.";
+export const VERTICAL_NET_DEBIT_EXCEEDS_WIDTH_MESSAGE =
+  "Net debit cannot exceed the strike width.";
+export const VERTICAL_NET_CREDIT_EXCEEDS_WIDTH_MESSAGE =
+  "Net credit cannot exceed the strike width.";
+export const VERTICAL_PUT_BREAKEVEN_MESSAGE =
+  "Breakeven is at or below $0 for this put vertical — check strikes and premiums.";
 
 export function todayIso(now: Date = new Date()): string {
   const year = now.getFullYear();
@@ -230,6 +261,139 @@ export function analyzeEntry(
   };
 }
 
+export function analyzeVertical(
+  proposal: VerticalProposal,
+  asOf: string = todayIso(),
+): EntryAnalysisResult {
+  const symbol = proposal.symbol.trim();
+  const { right, structure, expiration } = proposal;
+  const { lowerStrike, higherStrike, quantity, lowerPremium, higherPremium } =
+    proposal;
+
+  const missingCore =
+    !symbol ||
+    (right !== "call" && right !== "put") ||
+    (structure !== "debit" && structure !== "credit") ||
+    !expiration.trim();
+  const missingNumbers =
+    !isFiniteNumber(lowerStrike) ||
+    !isFiniteNumber(higherStrike) ||
+    !isFiniteNumber(quantity) ||
+    !isFiniteNumber(lowerPremium) ||
+    !isFiniteNumber(higherPremium);
+
+  if (missingCore || missingNumbers) {
+    return {
+      ok: false,
+      reason: "incomplete",
+      message: VERTICAL_INCOMPLETE_MESSAGE,
+    };
+  }
+
+  if (
+    lowerStrike <= 0 ||
+    higherStrike <= 0 ||
+    quantity < 1 ||
+    !Number.isInteger(quantity) ||
+    lowerPremium < 0 ||
+    higherPremium < 0
+  ) {
+    return {
+      ok: false,
+      reason: "invalid",
+      message: "Strike, quantity, and premium must be valid numbers.",
+    };
+  }
+
+  if (expiration < asOf) {
+    return {
+      ok: false,
+      reason: "expired",
+      message: "Expiration is in the past.",
+    };
+  }
+
+  if (lowerStrike === higherStrike) {
+    return {
+      ok: false,
+      reason: "invalid",
+      message: VERTICAL_SAME_STRIKES_MESSAGE,
+    };
+  }
+
+  if (higherStrike < lowerStrike) {
+    return {
+      ok: false,
+      reason: "invalid",
+      message: VERTICAL_STRIKE_ORDER_MESSAGE,
+    };
+  }
+
+  const width = roundCents(higherStrike - lowerStrike);
+  const callNet = roundCents(lowerPremium - higherPremium);
+  const putNet = roundCents(higherPremium - lowerPremium);
+  const net = right === "call" ? callNet : putNet;
+
+  if (structure === "debit" && net < 0) {
+    return {
+      ok: false,
+      reason: "invalid",
+      message: VERTICAL_NET_CREDIT_ON_DEBIT_MESSAGE,
+    };
+  }
+  if (structure === "credit" && net < 0) {
+    return {
+      ok: false,
+      reason: "invalid",
+      message: VERTICAL_NET_DEBIT_ON_CREDIT_MESSAGE,
+    };
+  }
+
+  if (net > width) {
+    return {
+      ok: false,
+      reason: "invalid",
+      message:
+        structure === "debit"
+          ? VERTICAL_NET_DEBIT_EXCEEDS_WIDTH_MESSAGE
+          : VERTICAL_NET_CREDIT_EXCEEDS_WIDTH_MESSAGE,
+    };
+  }
+
+  const isDebit = structure === "debit";
+  const debitCredit = roundCents(net * CONTRACT_MULTIPLIER * quantity);
+  const widthValue = roundCents(width * CONTRACT_MULTIPLIER * quantity);
+  const maxLoss = isDebit ? debitCredit : roundCents(widthValue - debitCredit);
+  const maxGain = isDebit ? roundCents(widthValue - debitCredit) : debitCredit;
+  const breakeven =
+    right === "call"
+      ? roundCents(lowerStrike + net)
+      : roundCents(higherStrike - net);
+
+  if (right === "put" && putBreakevenInvalid(breakeven)) {
+    return {
+      ok: false,
+      reason: "invalid",
+      message: VERTICAL_PUT_BREAKEVEN_MESSAGE,
+    };
+  }
+
+  const collateralNote = isDebit
+    ? `Defined-risk debit: capital is the ${formatUsdCents(maxLoss)} net debit paid.`
+    : `Defined-risk credit: collateral is ${formatUsdCents(maxLoss)} (width minus credit). Broker margin not modeled.`;
+
+  return {
+    ok: true,
+    payoff: {
+      debitCredit,
+      maxLoss,
+      maxGain,
+      breakeven,
+      collateralNote,
+    },
+  };
+}
+
 function formatShareCount(quantity: number): string {
   if (Number.isInteger(quantity)) return String(quantity);
   return quantity.toLocaleString("en-US", { maximumFractionDigits: 4 });
@@ -332,4 +496,61 @@ export function buildEntryContextLine(
   }
 
   return line;
+}
+
+/**
+ * Book context for a vertical. Underlying holdings only — never covered,
+ * never "already hold this contract".
+ */
+export function buildVerticalContextLine(
+  proposal: Pick<VerticalProposal, "symbol">,
+  positions: Position[] | null | undefined,
+): string | null {
+  if (!positions || positions.length === 0) return null;
+  const symbol = proposal.symbol.trim().toUpperCase();
+  if (!symbol) return null;
+
+  const matches = positions.filter(
+    (position) => position.symbol.trim().toUpperCase() === symbol,
+  );
+  if (matches.length === 0) return null;
+
+  const stockPositions = matches.filter(
+    (position) => position.asset_type === "stock",
+  );
+  const optionPositions = matches.filter(
+    (position) => position.asset_type === "option",
+  );
+  const stockQty = stockPositions.reduce(
+    (sum, position) => sum + position.quantity,
+    0,
+  );
+
+  const parts: string[] = [];
+  if (stockPositions.length > 0) {
+    parts.push(`Open ${symbol}: ${formatShareCount(stockQty)} sh`);
+  }
+  if (optionPositions.length === 1) {
+    const label =
+      optionPositions[0].display_label ||
+      optionPositions[0].contract_label ||
+      `${symbol} option`;
+    parts.push(
+      stockPositions.length > 0
+        ? "1 option position"
+        : `Open ${symbol} option: ${label}`,
+    );
+  } else if (optionPositions.length > 1) {
+    parts.push(
+      stockPositions.length > 0
+        ? `${optionPositions.length} option positions`
+        : `Open ${symbol}: ${optionPositions.length} option positions`,
+    );
+  }
+
+  if (parts.length === 0) return null;
+
+  return parts.length === 2 && stockPositions.length > 0
+    ? `${parts[0]} and ${parts[1]}`
+    : parts[0];
 }

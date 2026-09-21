@@ -862,4 +862,26 @@ test.describe("Open 2026 sample", () => {
     );
     await expect(page.getByRole("button", { name: /Pay \$49/i })).toBeVisible();
   });
+
+  test("empty desk vertical what-if on phone-390", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await mockGuestDesk(page);
+    await page.goto("/dashboard");
+    await expect(page.getByTestId("entry-analysis-panel")).toBeVisible({
+      timeout: 15000,
+    });
+    await expect(page.getByTestId("entry-rank-leaps")).toBeVisible();
+    await page.getByTestId("entry-structure-vertical").click();
+    await page.getByTestId("entry-symbol").fill("NVDA");
+    await page.getByTestId("entry-strike-lower").fill("250");
+    await page.getByTestId("entry-strike-higher").fill("260");
+    await page.getByTestId("entry-expiration").fill("2027-12-17");
+    await page.getByTestId("entry-premium-lower").fill("6.00");
+    await page.getByTestId("entry-premium-higher").fill("2.00");
+    await expect(page.getByTestId("entry-results")).toBeVisible();
+    await expect(page.getByTestId("entry-max-loss")).toHaveText("$400.00");
+    await expect(page.getByTestId("entry-max-gain")).toHaveText("$600.00");
+    await expect(page.getByTestId("entry-breakeven")).toHaveText("$254.00");
+    await expect(page.getByTestId("entry-context")).toHaveCount(0);
+  });
 });

@@ -1,13 +1,24 @@
 import {
   addCalendarDaysIso,
   analyzeEntry,
+  analyzeVertical,
   buildEntryContextLine,
+  buildVerticalContextLine,
   formatUsdCents,
   leapWindowForPreset,
   parseContractLabel,
   todayIso,
   utcTodayIso,
+  VERTICAL_INCOMPLETE_MESSAGE,
+  VERTICAL_NET_CREDIT_EXCEEDS_WIDTH_MESSAGE,
+  VERTICAL_NET_CREDIT_ON_DEBIT_MESSAGE,
+  VERTICAL_NET_DEBIT_EXCEEDS_WIDTH_MESSAGE,
+  VERTICAL_NET_DEBIT_ON_CREDIT_MESSAGE,
+  VERTICAL_PUT_BREAKEVEN_MESSAGE,
+  VERTICAL_SAME_STRIKES_MESSAGE,
+  VERTICAL_STRIKE_ORDER_MESSAGE,
   type EntryProposal,
+  type VerticalProposal,
 } from "../../lib/entryAnalysis";
 import type { Position } from "../../lib/types";
 
@@ -24,6 +35,23 @@ function proposal(
     side: "buy",
     quantity: 1,
     premium: 4.2,
+    ...overrides,
+  };
+}
+
+function verticalProposal(
+  overrides: Partial<VerticalProposal> = {},
+): VerticalProposal {
+  return {
+    symbol: "NVDA",
+    right: "call",
+    structure: "debit",
+    lowerStrike: 250,
+    higherStrike: 260,
+    expiration: "2026-12-18",
+    quantity: 1,
+    lowerPremium: 6,
+    higherPremium: 2,
     ...overrides,
   };
 }
@@ -431,5 +459,230 @@ describe("parseContractLabel and todayIso", () => {
     const nextYear = `${new Date().getFullYear() + 1}-06-15`;
     const result = analyzeEntry(proposal({ expiration: nextYear }));
     expect(result.ok).toBe(true);
+  });
+});
+
+describe("analyzeVertical", () => {
+  it("call debit: max loss is net debit, max gain is width minus debit", () => {
+    const result = analyzeVertical(verticalProposal(), AS_OF);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.payoff.maxLoss).toBe(400);
+    expect(result.payoff.maxGain).toBe(600);
+    expect(result.payoff.breakeven).toBe(254);
+    expect(result.payoff.collateralNote).toBe(
+      "Defined-risk debit: capital is the $400.00 net debit paid.",
+    );
+    expect(formatUsdCents(result.payoff.maxLoss ?? 0)).toBe("$400.00");
+  });
+
+  it("call credit: max gain is net credit, max loss is width minus credit", () => {
+    const result = analyzeVertical(
+      verticalProposal({ structure: "credit" }),
+      AS_OF,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.payoff.maxLoss).toBe(600);
+    expect(result.payoff.maxGain).toBe(400);
+    expect(result.payoff.breakeven).toBe(254);
+    expect(result.payoff.collateralNote).toBe(
+      "Defined-risk credit: collateral is $600.00 (width minus credit). Broker margin not modeled.",
+    );
+  });
+
+  it("put debit: buy higher / sell lower", () => {
+    const result = analyzeVertical(
+      verticalProposal({
+        symbol: "AMD",
+        right: "put",
+        structure: "debit",
+        lowerStrike: 45,
+        higherStrike: 50,
+        lowerPremium: 0.8,
+        higherPremium: 2.5,
+      }),
+      AS_OF,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.payoff.maxLoss).toBe(170);
+    expect(result.payoff.maxGain).toBe(330);
+    expect(result.payoff.breakeven).toBe(48.3);
+    expect(result.payoff.collateralNote).toBe(
+      "Defined-risk debit: capital is the $170.00 net debit paid.",
+    );
+  });
+
+  it("put credit: sell higher / buy lower", () => {
+    const result = analyzeVertical(
+      verticalProposal({
+        symbol: "AMD",
+        right: "put",
+        structure: "credit",
+        lowerStrike: 45,
+        higherStrike: 50,
+        lowerPremium: 0.8,
+        higherPremium: 2.5,
+      }),
+      AS_OF,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.payoff.maxLoss).toBe(330);
+    expect(result.payoff.maxGain).toBe(170);
+    expect(result.payoff.breakeven).toBe(48.3);
+    expect(result.payoff.collateralNote).toBe(
+      "Defined-risk credit: collateral is $330.00 (width minus credit). Broker margin not modeled.",
+    );
+  });
+
+  it("scales a call debit by quantity 2", () => {
+    const result = analyzeVertical(verticalProposal({ quantity: 2 }), AS_OF);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.payoff.maxLoss).toBe(800);
+    expect(result.payoff.maxGain).toBe(1200);
+    expect(result.payoff.breakeven).toBe(254);
+    expect(result.payoff.collateralNote).toMatch(/\$800\.00 net debit paid/);
+  });
+
+  it("allows a zero net debit", () => {
+    const result = analyzeVertical(
+      verticalProposal({ lowerPremium: 2, higherPremium: 2 }),
+      AS_OF,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.payoff.maxLoss).toBe(0);
+    expect(result.payoff.maxGain).toBe(1000);
+    expect(result.payoff.breakeven).toBe(250);
+  });
+
+  it("incomplete fields return no payoff", () => {
+    const result = analyzeVertical(
+      verticalProposal({ higherPremium: null }),
+      AS_OF,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("incomplete");
+    expect(result.message).toBe(VERTICAL_INCOMPLETE_MESSAGE);
+  });
+
+  it("rejects non-positive strikes, fractional qty, and negative premium", () => {
+    expect(analyzeVertical(verticalProposal({ lowerStrike: 0 }), AS_OF).ok).toBe(
+      false,
+    );
+    expect(analyzeVertical(verticalProposal({ quantity: 1.5 }), AS_OF).ok).toBe(
+      false,
+    );
+    expect(
+      analyzeVertical(verticalProposal({ lowerPremium: -1 }), AS_OF).ok,
+    ).toBe(false);
+  });
+
+  it("past expiration returns an honest error", () => {
+    const result = analyzeVertical(
+      verticalProposal({ expiration: "2026-01-16" }),
+      AS_OF,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("expired");
+    expect(result.message).toMatch(/Expiration is in the past/);
+  });
+
+  it("rejects the same two strikes", () => {
+    const result = analyzeVertical(
+      verticalProposal({ lowerStrike: 250, higherStrike: 250 }),
+      AS_OF,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toBe(VERTICAL_SAME_STRIKES_MESSAGE);
+  });
+
+  it("rejects a higher strike below the lower strike", () => {
+    const result = analyzeVertical(
+      verticalProposal({ lowerStrike: 260, higherStrike: 250 }),
+      AS_OF,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toBe(VERTICAL_STRIKE_ORDER_MESSAGE);
+  });
+
+  it("rejects a debit whose premiums are a net credit", () => {
+    const result = analyzeVertical(
+      verticalProposal({ lowerPremium: 1, higherPremium: 4 }),
+      AS_OF,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toBe(VERTICAL_NET_CREDIT_ON_DEBIT_MESSAGE);
+  });
+
+  it("rejects a credit whose premiums are a net debit", () => {
+    const result = analyzeVertical(
+      verticalProposal({
+        structure: "credit",
+        lowerPremium: 1,
+        higherPremium: 4,
+      }),
+      AS_OF,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toBe(VERTICAL_NET_DEBIT_ON_CREDIT_MESSAGE);
+  });
+
+  it("rejects a net debit wider than the strikes", () => {
+    const result = analyzeVertical(
+      verticalProposal({ lowerPremium: 12, higherPremium: 1 }),
+      AS_OF,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toBe(VERTICAL_NET_DEBIT_EXCEEDS_WIDTH_MESSAGE);
+  });
+
+  it("rejects a net credit wider than the strikes", () => {
+    const result = analyzeVertical(
+      verticalProposal({
+        structure: "credit",
+        lowerPremium: 12,
+        higherPremium: 1,
+      }),
+      AS_OF,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toBe(VERTICAL_NET_CREDIT_EXCEEDS_WIDTH_MESSAGE);
+  });
+
+  it("exports put-vertical breakeven copy even when width checks fire first", () => {
+    expect(VERTICAL_PUT_BREAKEVEN_MESSAGE).toMatch(/at or below \$0/);
+  });
+});
+
+describe("buildVerticalContextLine", () => {
+  const tsla = stockPosition("TSLA", 100);
+
+  it("returns null when no positions are loaded", () => {
+    expect(buildVerticalContextLine({ symbol: "TSLA" }, null)).toBeNull();
+    expect(buildVerticalContextLine({ symbol: "TSLA" }, [])).toBeNull();
+  });
+
+  it("shows underlying holdings only", () => {
+    expect(buildVerticalContextLine({ symbol: "TSLA" }, [tsla])).toBe(
+      "Open TSLA: 100 sh",
+    );
+  });
+
+  it("never claims a vertical call credit is covered", () => {
+    const line = buildVerticalContextLine({ symbol: "TSLA" }, [tsla]);
+    expect(line).toBe("Open TSLA: 100 sh");
+    expect(line).not.toMatch(/covered|keep the shares/i);
   });
 });
