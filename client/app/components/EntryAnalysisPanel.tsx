@@ -20,7 +20,9 @@ import type {
 } from "@/lib/types";
 import {
   analyzeEntry,
+  analyzeVertical,
   buildEntryContextLine,
+  buildVerticalContextLine,
   formatUsdCents,
   leapWindowForPreset,
   type EntryAnalysisResult,
@@ -28,6 +30,8 @@ import {
   type LeapWindowPreset,
   type OptionRight,
   type OptionSide,
+  type VerticalProposal,
+  type VerticalStructure,
 } from "@/lib/entryAnalysis";
 
 const monoSx = {
@@ -48,6 +52,7 @@ const toggleGroupSx = {
 };
 
 type WindowPreset = LeapWindowPreset | "custom";
+type StructureMode = "single" | "vertical";
 
 function parsePositiveNumber(raw: string): number | null {
   const trimmed = raw.trim();
@@ -105,6 +110,12 @@ export default function EntryAnalysisPanel({
   const [expiration, setExpiration] = useState("");
   const [quantity, setQuantity] = useState("1");
   const [premium, setPremium] = useState("");
+  const [structure, setStructure] = useState<StructureMode>("single");
+  const [verticalKind, setVerticalKind] = useState<VerticalStructure>("debit");
+  const [lowerStrike, setLowerStrike] = useState("");
+  const [higherStrike, setHigherStrike] = useState("");
+  const [lowerPremium, setLowerPremium] = useState("");
+  const [higherPremium, setHigherPremium] = useState("");
   const [windowPreset, setWindowPreset] = useState<WindowPreset>("12-24");
   const [expiryFrom, setExpiryFrom] = useState(
     () => leapWindowForPreset("12-24").from,
@@ -127,8 +138,39 @@ export default function EntryAnalysisPanel({
     [symbol, right, strike, expiration, side, quantity, premium],
   );
 
-  const analysis = analyzeEntry(proposal);
-  const contextLine = buildEntryContextLine(proposal, positions);
+  const verticalProposal: VerticalProposal = useMemo(
+    () => ({
+      symbol,
+      right,
+      structure: verticalKind,
+      lowerStrike: parsePositiveNumber(lowerStrike),
+      higherStrike: parsePositiveNumber(higherStrike),
+      expiration,
+      quantity: parseQuantity(quantity),
+      lowerPremium: parsePositiveNumber(lowerPremium),
+      higherPremium: parsePositiveNumber(higherPremium),
+    }),
+    [
+      symbol,
+      right,
+      verticalKind,
+      lowerStrike,
+      higherStrike,
+      expiration,
+      quantity,
+      lowerPremium,
+      higherPremium,
+    ],
+  );
+
+  const analysis =
+    structure === "vertical"
+      ? analyzeVertical(verticalProposal)
+      : analyzeEntry(proposal);
+  const contextLine =
+    structure === "vertical"
+      ? buildVerticalContextLine(verticalProposal, positions)
+      : buildEntryContextLine(proposal, positions);
 
   const applyPreset = (preset: WindowPreset) => {
     setWindowPreset(preset);
@@ -154,6 +196,7 @@ export default function EntryAnalysisPanel({
 
   const selectCandidate = (candidate: LeapRankCandidate) => {
     setSelectedRank(candidate.rank);
+    setStructure("single");
     setSymbol(candidate.symbol);
     setRight(candidate.right);
     setSide("buy");
@@ -268,7 +311,7 @@ export default function EntryAnalysisPanel({
     >
       <Stack spacing={2} data-testid="entry-analysis-stack">
         <Box>
-          <Typography sx={monoSx}>What-if · single-leg</Typography>
+          <Typography sx={monoSx}>What-if · single-leg or vertical</Typography>
           <Typography variant="h6" sx={{ mt: 0.5, fontWeight: 700 }}>
             Analyze a new option
           </Typography>
@@ -477,37 +520,124 @@ export default function EntryAnalysisPanel({
           <ToggleButtonGroup
             exclusive
             size="small"
-            value={side}
-            onChange={(_, value: OptionSide | null) => {
-              if (value) setSide(value);
+            value={structure}
+            onChange={(_, value: StructureMode | null) => {
+              if (!value) return;
+              if (value === "vertical") {
+                setLowerStrike((current) => current || strike);
+                setLowerPremium((current) => current || premium);
+              }
+              setStructure(value);
             }}
-            aria-label="Buy or sell"
+            aria-label="Single-leg or vertical"
             sx={toggleGroupSx}
           >
-            <ToggleButton value="buy" data-testid="entry-side-buy">
-              Buy
+            <ToggleButton value="single" data-testid="entry-structure-single">
+              Single-leg
             </ToggleButton>
-            <ToggleButton value="sell" data-testid="entry-side-sell">
-              Sell
+            <ToggleButton value="vertical" data-testid="entry-structure-vertical">
+              Vertical
             </ToggleButton>
           </ToggleButtonGroup>
 
-          <Stack
-            direction={{ xs: "column", sm: "row" }}
-            spacing={1.5}
-            useFlexGap
-          >
-            <TextField
-              label="Strike"
-              value={strike}
-              onChange={(event) => setStrike(event.target.value)}
-              inputProps={{
-                "data-testid": "entry-strike",
-                inputMode: "decimal",
-              }}
+          {structure === "single" ? (
+            <ToggleButtonGroup
+              exclusive
               size="small"
-              fullWidth
-            />
+              value={side}
+              onChange={(_, value: OptionSide | null) => {
+                if (value) setSide(value);
+              }}
+              aria-label="Buy or sell"
+              sx={toggleGroupSx}
+            >
+              <ToggleButton value="buy" data-testid="entry-side-buy">
+                Buy
+              </ToggleButton>
+              <ToggleButton value="sell" data-testid="entry-side-sell">
+                Sell
+              </ToggleButton>
+            </ToggleButtonGroup>
+          ) : (
+            <ToggleButtonGroup
+              exclusive
+              size="small"
+              value={verticalKind}
+              onChange={(_, value: VerticalStructure | null) => {
+                if (value) setVerticalKind(value);
+              }}
+              aria-label="Debit or credit"
+              sx={toggleGroupSx}
+            >
+              <ToggleButton value="debit" data-testid="entry-debit">
+                Debit
+              </ToggleButton>
+              <ToggleButton value="credit" data-testid="entry-credit">
+                Credit
+              </ToggleButton>
+            </ToggleButtonGroup>
+          )}
+
+          {structure === "single" ? (
+            <Stack
+              direction={{ xs: "column", sm: "row" }}
+              spacing={1.5}
+              useFlexGap
+            >
+              <TextField
+                label="Strike"
+                value={strike}
+                onChange={(event) => setStrike(event.target.value)}
+                inputProps={{
+                  "data-testid": "entry-strike",
+                  inputMode: "decimal",
+                }}
+                size="small"
+                fullWidth
+              />
+              <TextField
+                label="Expiration"
+                type="date"
+                value={expiration}
+                onChange={(event) => setExpiration(event.target.value)}
+                inputProps={{ "data-testid": "entry-expiration" }}
+                InputLabelProps={{ shrink: true }}
+                size="small"
+                fullWidth
+              />
+            </Stack>
+          ) : (
+            <Stack
+              direction={{ xs: "column", sm: "row" }}
+              spacing={1.5}
+              useFlexGap
+            >
+              <TextField
+                label="Lower strike"
+                value={lowerStrike}
+                onChange={(event) => setLowerStrike(event.target.value)}
+                inputProps={{
+                  "data-testid": "entry-strike-lower",
+                  inputMode: "decimal",
+                }}
+                size="small"
+                fullWidth
+              />
+              <TextField
+                label="Higher strike"
+                value={higherStrike}
+                onChange={(event) => setHigherStrike(event.target.value)}
+                inputProps={{
+                  "data-testid": "entry-strike-higher",
+                  inputMode: "decimal",
+                }}
+                size="small"
+                fullWidth
+              />
+            </Stack>
+          )}
+
+          {structure === "vertical" ? (
             <TextField
               label="Expiration"
               type="date"
@@ -518,7 +648,7 @@ export default function EntryAnalysisPanel({
               size="small"
               fullWidth
             />
-          </Stack>
+          ) : null}
 
           <Stack
             direction={{ xs: "column", sm: "row" }}
@@ -536,18 +666,51 @@ export default function EntryAnalysisPanel({
               size="small"
               fullWidth
             />
-            <TextField
-              label="Premium (per share)"
-              value={premium}
-              onChange={(event) => setPremium(event.target.value)}
-              inputProps={{
-                "data-testid": "entry-premium",
-                inputMode: "decimal",
-              }}
-              size="small"
-              fullWidth
-            />
+            {structure === "single" ? (
+              <TextField
+                label="Premium (per share)"
+                value={premium}
+                onChange={(event) => setPremium(event.target.value)}
+                inputProps={{
+                  "data-testid": "entry-premium",
+                  inputMode: "decimal",
+                }}
+                size="small"
+                fullWidth
+              />
+            ) : null}
           </Stack>
+
+          {structure === "vertical" ? (
+            <Stack
+              direction={{ xs: "column", sm: "row" }}
+              spacing={1.5}
+              useFlexGap
+            >
+              <TextField
+                label="Lower premium (per share)"
+                value={lowerPremium}
+                onChange={(event) => setLowerPremium(event.target.value)}
+                inputProps={{
+                  "data-testid": "entry-premium-lower",
+                  inputMode: "decimal",
+                }}
+                size="small"
+                fullWidth
+              />
+              <TextField
+                label="Higher premium (per share)"
+                value={higherPremium}
+                onChange={(event) => setHigherPremium(event.target.value)}
+                inputProps={{
+                  "data-testid": "entry-premium-higher",
+                  inputMode: "decimal",
+                }}
+                size="small"
+                fullWidth
+              />
+            </Stack>
+          ) : null}
         </Stack>
 
         {resultsNode}
