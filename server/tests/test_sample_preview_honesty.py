@@ -17,6 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import main
+from ledger import SAMPLE_FIXTURE_PRICES
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SAMPLE_CSV_PATH = (
@@ -29,15 +30,7 @@ DESK_PREVIEW_PATH = REPO_ROOT / "client" / "app" / "components" / "DeskPreview.t
 
 # Snapshot quotes keep analyze stable; advertised landing dollars are
 # 1099 vs export totals, not harvest estimates.
-SAMPLE_PREVIEW_PRICES = {
-    "AAPL": 315.0,
-    "AMD": 477.0,
-    "META": 571.0,
-    "MSFT": 505.0,
-    "NVDA": 228.0,
-    "SPY": 771.0,
-    "TSLA": 355.0,
-}
+SAMPLE_PREVIEW_PRICES = SAMPLE_FIXTURE_PRICES
 
 client = TestClient(main.app)
 
@@ -62,12 +55,15 @@ def test_public_sample_analyze_matches_landing_preview(monkeypatch):
     """Guest analyze of the 2026 sample must match the home preview numbers."""
     monkeypatch.setattr(
         "main.fetch_current_prices",
-        lambda symbols, fb=None: (
+        lambda symbols, fb=None, allow_network=True: (
             {symbol.upper(): SAMPLE_PREVIEW_PRICES[symbol.upper()] for symbol in symbols},
             [],
         ),
     )
-    monkeypatch.setattr("main.fetch_option_prices", lambda labels, fb=None: ({}, []))
+    monkeypatch.setattr(
+        "main.fetch_option_prices",
+        lambda labels, fb=None, allow_network=True: ({}, []),
+    )
     monkeypatch.setattr("main.prepare_positions_for_ai", lambda lots: [])
     monkeypatch.setattr("main._save_history_best_effort", lambda *args, **kwargs: None)
 

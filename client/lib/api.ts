@@ -229,6 +229,17 @@ function analyzePortfolioPath(params: AnalyzePortfolioParams): string {
  * Authentication is optional. With a session, POST /api/portfolio/analyze includes
  * a JWT so the run is saved to history. Guests still get a full analysis.
  */
+export const ANALYZE_TIMEOUT_MS = 30_000;
+export const ANALYZE_TIMEOUT_MESSAGE =
+  "Analysis timed out. Please try again in a few minutes.";
+
+function isAbortError(error: unknown): boolean {
+  return (
+    (error instanceof DOMException && error.name === "AbortError") ||
+    (error instanceof Error && error.name === "AbortError")
+  );
+}
+
 async function analyzePortfolio(
   params: AnalyzePortfolioParams,
 ): Promise<PortfolioAnalysis> {
@@ -240,22 +251,34 @@ async function analyzePortfolio(
 
   const url = apiPath(analyzePortfolioPath(params));
   const headers = await getOptionalAuthHeaders();
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), ANALYZE_TIMEOUT_MS);
 
-  const response = await fetch(url, {
-    method: "POST",
-    body: formData,
-    headers,
-  });
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      body: formData,
+      headers,
+      signal: controller.signal,
+    });
 
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => null);
-    throw new Error(
-      messageFromApiErrorBody(errorData) ||
-        analysisFailureFallback(response.status, response.statusText),
-    );
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => null);
+      throw new Error(
+        messageFromApiErrorBody(errorData) ||
+          analysisFailureFallback(response.status, response.statusText),
+      );
+    }
+
+    return await response.json();
+  } catch (error) {
+    if (isAbortError(error)) {
+      throw new Error(ANALYZE_TIMEOUT_MESSAGE);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
   }
-
-  return response.json();
 }
 
 /**
@@ -270,6 +293,7 @@ async function analyzePortfolio(
 export function useAnalyzePortfolio() {
   return useMutation({
     mutationFn: analyzePortfolio,
+    retry: 0,
   });
 }
 

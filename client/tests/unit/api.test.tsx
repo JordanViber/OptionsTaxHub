@@ -39,6 +39,7 @@ import {
   persistGuestAnalysis,
   getAnalysisErrorMessage,
   getBackendUnreachableMessage,
+  ANALYZE_TIMEOUT_MESSAGE,
   fetchLeapRank,
   useLeapRankMutation,
   fetchRhChain,
@@ -466,6 +467,53 @@ describe("api hooks", () => {
       expect(message).toBe("Field required");
       expect(message).not.toMatch(/\[object Object\]/i);
       expect(getAnalysisErrorMessage(result.current.error)).toBe("Field required");
+    });
+
+    it("turns a hung analyze fetch into a timeout error", async () => {
+      globalThis.fetch = jest.fn().mockRejectedValue(
+        new DOMException("The operation was aborted.", "AbortError"),
+      ) as typeof fetch;
+
+      const file = new File(["content"], "test.csv", { type: "text/csv" });
+      const wrapper = createWrapper();
+      const { result } = renderHook(() => useAnalyzePortfolio(), { wrapper });
+
+      await act(async () => {
+        result.current.mutate({ file });
+      });
+
+      await waitFor(() => {
+        expect(result.current.isError).toBe(true);
+      });
+      expect(result.current.isPending).toBe(false);
+      expect(result.current.error).toBeInstanceOf(Error);
+      expect(result.current.error?.message).toBe(ANALYZE_TIMEOUT_MESSAGE);
+      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not retry a 400 analyze error", async () => {
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: false,
+        status: 400,
+        statusText: "Bad Request",
+        json: async () => ({
+          detail: "Could not parse any positions from the CSV file.",
+        }),
+      } as Response);
+
+      const file = new File(["content"], "test.csv", { type: "text/csv" });
+      const wrapper = createWrapper();
+      const { result } = renderHook(() => useAnalyzePortfolio(), { wrapper });
+
+      await act(async () => {
+        result.current.mutate({ file });
+      });
+
+      await waitFor(() => {
+        expect(result.current.isError).toBe(true);
+      });
+      expect(result.current.isPending).toBe(false);
+      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
     });
 
     it("uses detail.message when the 400 body is a FastAPI object", async () => {

@@ -768,9 +768,11 @@ describe("DashboardPage", () => {
       });
       expect(globalThis.fetch).toHaveBeenCalledWith(
         "/sample-robinhood-transactions.csv",
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
       );
       expect(globalThis.fetch).toHaveBeenCalledWith(
         "/sample-robinhood-1099-2026.pdf",
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
       );
     } finally {
       globalThis.fetch = originalFetch;

@@ -117,31 +117,65 @@ const SAMPLE_CSV_URL = "/sample-robinhood-transactions.csv";
 const SAMPLE_CSV_FILENAME = "sample-robinhood-transactions.csv";
 const SAMPLE_1099_URL = "/sample-robinhood-1099-2026.pdf";
 const SAMPLE_1099_FILENAME = "sample-robinhood-1099-2026.pdf";
+export const SAMPLE_FETCH_TIMEOUT_MS = 8000;
+const SAMPLE_FETCH_TIMEOUT_MESSAGE = "Could not load the 2026 sample.";
 
-async function fetchSampleCsvAnd1099(): Promise<{
+function isAbortError(error: unknown): boolean {
+  return (
+    (error instanceof DOMException && error.name === "AbortError") ||
+    (error instanceof Error && error.name === "AbortError")
+  );
+}
+
+async function fetchSampleCsvAnd1099(
+  externalSignal?: AbortSignal,
+): Promise<{
   csvFile: File;
   form1099File: File;
 }> {
-  const [csvResponse, pdfResponse] = await Promise.all([
-    fetch(SAMPLE_CSV_URL),
-    fetch(SAMPLE_1099_URL),
-  ]);
-  if (!csvResponse.ok) {
-    throw new Error("Could not load the sample CSV.");
+  const controller = new AbortController();
+  const timeoutId = setTimeout(
+    () => controller.abort(),
+    SAMPLE_FETCH_TIMEOUT_MS,
+  );
+  const onExternalAbort = () => controller.abort();
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      controller.abort();
+    } else {
+      externalSignal.addEventListener("abort", onExternalAbort);
+    }
   }
-  if (!pdfResponse.ok) {
-    throw new Error("Could not load the sample 1099.");
+  try {
+    const [csvResponse, pdfResponse] = await Promise.all([
+      fetch(SAMPLE_CSV_URL, { signal: controller.signal }),
+      fetch(SAMPLE_1099_URL, { signal: controller.signal }),
+    ]);
+    if (!csvResponse.ok) {
+      throw new Error("Could not load the sample CSV.");
+    }
+    if (!pdfResponse.ok) {
+      throw new Error("Could not load the sample 1099.");
+    }
+    const [csvBlob, pdfBlob] = await Promise.all([
+      csvResponse.blob(),
+      pdfResponse.blob(),
+    ]);
+    return {
+      csvFile: new File([csvBlob], SAMPLE_CSV_FILENAME, { type: "text/csv" }),
+      form1099File: new File([pdfBlob], SAMPLE_1099_FILENAME, {
+        type: "application/pdf",
+      }),
+    };
+  } catch (error) {
+    if (isAbortError(error)) {
+      throw new Error(SAMPLE_FETCH_TIMEOUT_MESSAGE);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+    externalSignal?.removeEventListener("abort", onExternalAbort);
   }
-  const [csvBlob, pdfBlob] = await Promise.all([
-    csvResponse.blob(),
-    pdfResponse.blob(),
-  ]);
-  return {
-    csvFile: new File([csvBlob], SAMPLE_CSV_FILENAME, { type: "text/csv" }),
-    form1099File: new File([pdfBlob], SAMPLE_1099_FILENAME, {
-      type: "application/pdf",
-    }),
-  };
 }
 
 type AnalysisSource = "fresh-upload" | "saved-history" | "restored-session";
@@ -1195,6 +1229,9 @@ export default function DashboardPage() {
   const [isSampleRun, setIsSampleRun] = useState(false);
   const [packetPaid, setPacketPaid] = useState(false);
   const [replaceBook, setReplaceBook] = useState(false);
+  const [sampleLoading, setSampleLoading] = useState(false);
+  const [sampleLoadError, setSampleLoadError] = useState<string | null>(null);
+  const sampleAnalyzeStartedRef = useRef(false);
   const queryClient = useQueryClient();
 
   // Load the user's tax profile for analyze params
@@ -1236,7 +1273,15 @@ export default function DashboardPage() {
 
     const saved = restoreAnalysisFromStorage();
     if (wantsSample) {
-      // Open the 2026 sample must not keep a prior restore that lacks lot counts.
+      if (saved?.sample_run) {
+        setLoadedAnalysis(saved);
+        setAnalysisSource("fresh-upload");
+        try {
+          sessionStorage.removeItem(LOAD_SAMPLE_KEY);
+        } catch {
+          // ignore
+        }
+      }
       return;
     }
     if (wantsUpload) {
@@ -1334,6 +1379,7 @@ export default function DashboardPage() {
       csvFile.name === "sample-robinhood-transactions.csv";
     setIsSampleRun(sample);
     setPacketPaid(false);
+    setSampleLoadError(null);
     setLastUploadedCsv(csvFile);
     const mergeMode =
       sample || replaceBook ? "replace" : "auto";
@@ -1348,8 +1394,19 @@ export default function DashboardPage() {
       },
       {
         onSuccess: (data) => {
-          setLoadedAnalysis(null);
+          const normalized = normalizeAnalysis(data);
+          saveAnalysisToStorage(normalized);
+          setLoadedAnalysis(normalized);
+          setAnalysisSource("fresh-upload");
           setForceEmpty(false);
+          setSampleLoading(false);
+          if (sample) {
+            try {
+              sessionStorage.removeItem(LOAD_SAMPLE_KEY);
+            } catch {
+              // ignore
+            }
+          }
           if (data.packet_unlocked && data.packet_session_id) {
             rememberYearClosePacketPaid(
               data.analysis_id || "local-analysis",
@@ -1385,14 +1442,25 @@ export default function DashboardPage() {
             queryKey: ["portfolio-history", user?.id],
           });
         },
+        onError: () => {
+          setSampleLoading(false);
+        },
+        onSettled: () => {
+          setSampleLoading(false);
+        },
       },
     );
   };
 
   const handleLoadSample = () => {
+    const abort = new AbortController();
     void (async () => {
       try {
-        const { csvFile, form1099File } = await fetchSampleCsvAnd1099();
+        setSampleLoadError(null);
+        setSampleLoading(true);
+        const { csvFile, form1099File } = await fetchSampleCsvAnd1099(
+          abort.signal,
+        );
         clearCurrentAnalysisView({
           setLoadedAnalysis,
           setAnalysisSource,
@@ -1401,19 +1469,27 @@ export default function DashboardPage() {
         setSupplemental1099File(form1099File);
         runPortfolioAnalysis(csvFile, form1099File);
       } catch (err) {
-        setSnackbar({
-          message:
-            err instanceof Error
-              ? err.message
-              : "Could not load the 2026 sample.",
-          severity: "error",
-        });
+        setSampleLoading(false);
+        setSampleLoadError(
+          err instanceof Error && err.message.trim()
+            ? err.message
+            : "Could not load the 2026 sample.",
+        );
       }
     })();
   };
 
   useEffect(() => {
-    let cancelled = false;
+    if (authLoading) {
+      return undefined;
+    }
+    if (user && !emailConfirmed) {
+      return undefined;
+    }
+    if (sampleAnalyzeStartedRef.current) {
+      return undefined;
+    }
+
     let wantsSample = false;
     try {
       wantsSample = sessionStorage.getItem(LOAD_SAMPLE_KEY) === "1";
@@ -1424,17 +1500,23 @@ export default function DashboardPage() {
       return undefined;
     }
 
+    let cancelled = false;
+    const abort = new AbortController();
+    setSampleLoadError(null);
+    setSampleLoading(true);
+
     void (async () => {
       try {
-        const { csvFile, form1099File } = await fetchSampleCsvAnd1099();
-        if (cancelled) {
+        const { csvFile, form1099File } = await fetchSampleCsvAnd1099(
+          abort.signal,
+        );
+        if (cancelled || sampleAnalyzeStartedRef.current) {
+          if (cancelled) {
+            setSampleLoading(false);
+          }
           return;
         }
-        try {
-          sessionStorage.removeItem(LOAD_SAMPLE_KEY);
-        } catch {
-          // ignore
-        }
+        sampleAnalyzeStartedRef.current = true;
         clearCurrentAnalysisView({
           setLoadedAnalysis,
           setAnalysisSource,
@@ -1442,21 +1524,26 @@ export default function DashboardPage() {
         setForceEmpty(false);
         setSupplemental1099File(form1099File);
         runPortfolioAnalysis(csvFile, form1099File);
-      } catch {
+      } catch (err) {
+        sampleAnalyzeStartedRef.current = false;
+        setSampleLoading(false);
         if (!cancelled) {
-          setSnackbar({
-            message: "Could not load the 2026 sample.",
-            severity: "error",
-          });
+          setSampleLoadError(
+            err instanceof Error && err.message.trim()
+              ? err.message
+              : "Could not load the 2026 sample.",
+          );
         }
       }
     })();
 
     return () => {
       cancelled = true;
+      abort.abort();
+      setSampleLoading(false);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [authLoading, user, emailConfirmed]);
 
   useEffect(() => {
     if (!confirmedUserId) {
@@ -1672,6 +1759,7 @@ export default function DashboardPage() {
   const avatarLetter = displayName[0].toUpperCase();
 
   // displayedAnalysis is computed above (near sessionStorage effects)
+  const analyzing = isPending || sampleLoading;
   const hasResults = !!displayedAnalysis && !forceEmpty;
   const confidenceSummary = displayedAnalysis
     ? getConfidenceSummary(displayedAnalysis)
@@ -1694,7 +1782,9 @@ export default function DashboardPage() {
     : null;
 
   // Pre-compute error message using if/else to avoid nested ternary (SonarQube S3358)
-  const analysisErrorMessage = getAnalysisErrorMessage(error);
+  const analysisErrorMessage = error
+    ? getAnalysisErrorMessage(error)
+    : sampleLoadError;
 
   return (
     <>
@@ -1899,7 +1989,7 @@ export default function DashboardPage() {
       </Dialog>
 
       {/* Loading bar — shows for new analysis (isPending) and history fetch (historyLoading) */}
-      {isPending && <LinearProgress />}
+      {analyzing && <LinearProgress />}
       {historyLoading && <LinearProgress color="secondary" />}
 
       {/* Snackbar for history load feedback */}
@@ -1960,13 +2050,13 @@ export default function DashboardPage() {
                 />
                 <Box
                   component="label"
-                  htmlFor={isPending ? undefined : "desk-csv-input"}
+                  htmlFor={analyzing ? undefined : "desk-csv-input"}
                   data-testid="csv-dropzone"
                   role="button"
-                  tabIndex={isPending ? -1 : 0}
+                  tabIndex={analyzing ? -1 : 0}
                   aria-label="Upload CSV"
                   onKeyDown={(event) => {
-                    if (isPending) {
+                    if (analyzing) {
                       return;
                     }
                     if (event.key === "Enter" || event.key === " ") {
@@ -1976,18 +2066,18 @@ export default function DashboardPage() {
                   }}
                   sx={{
                     border: "1px dashed",
-                    borderColor: isPending ? "divider" : "primary.main",
+                    borderColor: analyzing ? "divider" : "primary.main",
                     borderRadius: 2,
                     p: 3,
                     textAlign: "center",
-                    cursor: isPending ? "default" : "pointer",
+                    cursor: analyzing ? "default" : "pointer",
                     display: "block",
                     transition: "all 0.2s",
-                    opacity: isPending ? 0.6 : 1,
+                    opacity: analyzing ? 0.6 : 1,
                     "& *": {
                       cursor: "inherit",
                     },
-                    "&:hover": isPending
+                    "&:hover": analyzing
                       ? {}
                       : {
                           backgroundColor: "action.hover",
@@ -2004,7 +2094,7 @@ export default function DashboardPage() {
                     sx={{ fontSize: 40, color: "primary.main", mb: 0.5 }}
                   />
                   <Typography variant="body1" sx={{ fontWeight: 500 }}>
-                    {isPending
+                    {analyzing
                       ? "Analyzing portfolio..."
                       : "Click to upload CSV"}
                   </Typography>
@@ -2052,7 +2142,7 @@ export default function DashboardPage() {
                   }
                   onChooseFile={handleSupplemental1099UploadClick}
                   onClearFile={handleClearSupplemental1099}
-                  isPending={isPending}
+                  isPending={analyzing}
                 />
                 {supplemental1099Warnings.length > 0 && (
                   <Alert severity="warning">
@@ -2087,14 +2177,14 @@ export default function DashboardPage() {
           )}
 
           {/* Error Alert */}
-          {error && (
+          {(error || sampleLoadError) && analysisErrorMessage && (
             <Alert severity="error" icon={<ErrorIcon />}>
               <AlertTitle>Analysis Failed</AlertTitle>{" "}
               <Typography variant="caption">{analysisErrorMessage}</Typography>
             </Alert>
           )}
 
-          {forceEmpty && heldAnalysis && !isPending && (
+          {forceEmpty && heldAnalysis && !analyzing && (
             <Alert
               severity="info"
               variant="outlined"
@@ -2115,7 +2205,7 @@ export default function DashboardPage() {
           )}
 
           {/* First-run guidance when the user has not analyzed a CSV yet */}
-          {!hasResults && !isPending && !error && (
+          {!hasResults && !analyzing && !error && !sampleLoadError && (
             <FirstRunEmptyState
               onLoadSample={handleLoadSample}
               settingsHref={user ? "/settings" : "/auth/signin?reason=profile"}

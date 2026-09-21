@@ -14,13 +14,38 @@ import logging
 import math
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from datetime import date, datetime, timezone
-from typing import Any, Optional
+from functools import partial
+from typing import Any, Callable, Optional, TypeVar
 
 logger = logging.getLogger(__name__)
 
 # Cache configuration
 CACHE_TTL_SECONDS = 300  # 5-minute cache TTL
+YFINANCE_TIMEOUT_SECONDS = 5.0
+
+_T = TypeVar("_T")
+
+
+def _call_with_timeout(fn: Callable[[], _T], timeout_seconds: float) -> _T:
+    """Run a blocking provider call with a hard timeout.
+
+    Do not ``shutdown(wait=True)``: a never-returning Yahoo thread would
+    block the caller until that worker finished. Cancel and return.
+    """
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(fn)
+    try:
+        return future.result(timeout=timeout_seconds)
+    except FuturesTimeoutError as exc:
+        future.cancel()
+        raise TimeoutError(
+            f"Live price fetch timed out after {timeout_seconds:.0f}s"
+        ) from exc
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
 # In-memory price cache: {symbol: (price, timestamp)}
 _price_cache: dict[str, tuple[float, float]] = {}
@@ -217,6 +242,18 @@ def _group_parsed_option_contracts(
     return grouped, warnings
 
 
+def _load_option_chain(yf: Any, symbol: str, expiration: str):
+    """Load one yfinance option chain for a symbol/expiration pair."""
+    ticker = yf.Ticker(symbol)
+    resolved_expiration, resolution_warning = _resolve_option_chain_expiration(
+        ticker,
+        symbol,
+        expiration,
+    )
+    chain = ticker.option_chain(resolved_expiration)
+    return chain, resolution_warning
+
+
 def _fetch_grouped_option_prices(
     grouped_contracts: dict[tuple[str, str], list[dict[str, str | float]]],
 ) -> tuple[dict[str, float], list[str]]:
@@ -236,16 +273,12 @@ def _fetch_grouped_option_prices(
 
     for (symbol, expiration), contracts in grouped_contracts.items():
         try:
-            ticker = yf.Ticker(symbol)
-            resolved_expiration, resolution_warning = _resolve_option_chain_expiration(
-                ticker,
-                symbol,
-                expiration,
+            chain, resolution_warning = _call_with_timeout(
+                partial(_load_option_chain, yf, symbol, expiration),
+                YFINANCE_TIMEOUT_SECONDS,
             )
             if resolution_warning is not None:
                 warnings.append(resolution_warning)
-
-            chain = ticker.option_chain(resolved_expiration)
         except Exception as exc:
             warnings.append(
                 f"Could not fetch live option prices for {symbol} {expiration}: {str(exc)}"
@@ -291,6 +324,7 @@ def _apply_option_fallback_prices(
 def fetch_option_prices(
     contract_labels: list[str],
     fallback_prices: dict[str, float] | None = None,
+    allow_network: bool = True,
 ) -> tuple[dict[str, float], list[str]]:
     """Fetch current option prices for parsed contract labels via yfinance."""
     if not contract_labels:
@@ -298,10 +332,17 @@ def fetch_option_prices(
 
     unique_labels = list(dict.fromkeys(contract_labels))
     prices, labels_to_fetch = _resolve_cached_option_prices(unique_labels)
-    grouped_contracts, warnings = _group_parsed_option_contracts(labels_to_fetch)
-    fetched_prices, fetch_warnings = _fetch_grouped_option_prices(grouped_contracts)
-    prices.update(fetched_prices)
-    warnings.extend(fetch_warnings)
+    warnings: list[str] = []
+    if allow_network and labels_to_fetch:
+        grouped_contracts, parse_warnings = _group_parsed_option_contracts(
+            labels_to_fetch
+        )
+        warnings.extend(parse_warnings)
+        fetched_prices, fetch_warnings = _fetch_grouped_option_prices(
+            grouped_contracts
+        )
+        prices.update(fetched_prices)
+        warnings.extend(fetch_warnings)
     warnings.extend(_apply_option_fallback_prices(unique_labels, prices, fallback_prices))
 
     return prices, warnings
@@ -360,11 +401,14 @@ def _download_yfinance_prices(
     try:
         import yfinance as yf
 
-        data = yf.download(
-            tickers=symbols_to_fetch,
-            period="1d",
-            progress=False,
-            threads=True,
+        data = _call_with_timeout(
+            lambda: yf.download(
+                tickers=symbols_to_fetch,
+                period="1d",
+                progress=False,
+                threads=True,
+            ),
+            YFINANCE_TIMEOUT_SECONDS,
         )
 
         if data is None or data.empty:
@@ -388,6 +432,11 @@ def _download_yfinance_prices(
         warnings.append(
             "yfinance is not installed. Run: pip install yfinance. "
             "Using CSV-provided prices."
+        )
+    except TimeoutError as e:
+        logger.error(f"yfinance timeout: {e}")
+        warnings.append(
+            "Live price fetch timed out. Using CSV-provided prices as fallback."
         )
     except Exception as e:
         logger.error(f"yfinance error: {e}")
@@ -425,6 +474,7 @@ def _apply_fallback_prices(
 def fetch_current_prices(
     symbols: list[str],
     fallback_prices: dict[str, float] | None = None,
+    allow_network: bool = True,
 ) -> tuple[dict[str, float], list[str]]:
     """
     Fetch current prices for a list of stock symbols using yfinance.
@@ -435,6 +485,7 @@ def fetch_current_prices(
     Args:
         symbols: List of ticker symbols (e.g., ["AAPL", "MSFT"]).
         fallback_prices: Optional dict of symbol->price to use if yfinance fails.
+        allow_network: When False, skip Yahoo and use cache plus fallback only.
 
     Returns:
         Tuple of (dict mapping symbol to current price, list of warnings).
@@ -443,11 +494,10 @@ def fetch_current_prices(
         return {}, []
 
     prices, symbols_to_fetch = _resolve_cached_prices(symbols)
-    if not symbols_to_fetch:
-        return prices, []
-
-    fetched, warnings = _download_yfinance_prices(symbols_to_fetch)
-    prices.update(fetched)
+    warnings: list[str] = []
+    if allow_network and symbols_to_fetch:
+        fetched, warnings = _download_yfinance_prices(symbols_to_fetch)
+        prices.update(fetched)
 
     fallback_warnings = _apply_fallback_prices(symbols, prices, fallback_prices)
     warnings.extend(fallback_warnings)
