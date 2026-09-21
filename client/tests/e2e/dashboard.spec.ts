@@ -761,4 +761,29 @@ test.describe("Open 2026 sample", () => {
     await expect(page.getByText("Analyzing portfolio...")).toHaveCount(0);
     await expect(page.getByText("Analysis Failed")).toBeVisible();
   });
+
+  test("a real analyze failure shows the server string and clears Analyzing", async ({
+    page,
+  }) => {
+    await mockGuestDesk(page);
+    await page.route("**/api/portfolio/analyze*", (route) =>
+      route.fulfill({
+        status: 400,
+        contentType: "application/json",
+        body: JSON.stringify({
+          detail: {
+            message: "Could not parse any positions from the CSV file.",
+            errors: ["Unrecognized CSV format"],
+          },
+        }),
+      }),
+    );
+    await openSampleFromLanding(page);
+    await expect(
+      page.getByText("Could not parse any positions from the CSV file."),
+    ).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText("Analysis Failed")).toBeVisible();
+    await expect(page.getByText("Analyzing portfolio...")).toHaveCount(0);
+    await expect(page.getByText("[object Object]")).toHaveCount(0);
+  });
 });

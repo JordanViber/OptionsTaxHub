@@ -646,6 +646,66 @@ describe("Home page", () => {
     expect(screen.queryByText("Analyzing portfolio...")).not.toBeInTheDocument();
   });
 
+  it("shows the analyze error string and clears Analyzing after a failed sample", async () => {
+    const mutate = jest.fn(
+      (
+        _params: unknown,
+        options?: { onError?: (error: Error) => void },
+      ) => {
+        options?.onError?.(new Error("Could not parse any positions from the CSV file."));
+      },
+    );
+    setupMocks(
+      createAuthMock(null, false),
+      createAnalyzeMock({
+        mutate,
+        error: new Error(
+          "Could not parse any positions from the CSV file.",
+        ),
+        isPending: false,
+      }),
+    );
+    sessionStorage.setItem("oth-load-sample", "1");
+    mockSampleCsvFetch();
+
+    renderWithClient(<Home />);
+
+    await waitFor(() => {
+      expect(mutate).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.getByText("Analysis Failed")).toBeInTheDocument();
+    expect(
+      screen.getByText("Could not parse any positions from the CSV file."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Analyzing portfolio...")).not.toBeInTheDocument();
+  });
+
+  it("shows a real sample-fetch error and never leaves Analyzing up", async () => {
+    const mutate = jest.fn();
+    setupMocks(createAuthMock(null, false), createAnalyzeMock({ mutate }));
+    sessionStorage.setItem("oth-load-sample", "1");
+    globalThis.fetch = jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("sample-robinhood-transactions.csv")) {
+        return { ok: false, blob: async () => new Blob([]) };
+      }
+      return {
+        ok: true,
+        blob: async () =>
+          new Blob(["%PDF-1.4 sample"], { type: "application/pdf" }),
+      };
+    }) as typeof fetch;
+
+    renderWithClient(<Home />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Analysis Failed")).toBeInTheDocument();
+    });
+    expect(screen.getByText("Could not load the sample CSV.")).toBeInTheDocument();
+    expect(mutate).not.toHaveBeenCalled();
+    expect(screen.queryByText("Analyzing portfolio...")).not.toBeInTheDocument();
+  });
+
   it("restores a finished sample after remount without a second analyze", async () => {
     const mutate = jest.fn();
     setupMocks(createAuthMock(null, false), createAnalyzeMock({ mutate }));

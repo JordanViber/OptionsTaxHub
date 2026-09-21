@@ -1196,6 +1196,7 @@ export default function DashboardPage() {
   const [packetPaid, setPacketPaid] = useState(false);
   const [replaceBook, setReplaceBook] = useState(false);
   const [sampleLoading, setSampleLoading] = useState(false);
+  const [sampleLoadError, setSampleLoadError] = useState<string | null>(null);
   const sampleAnalyzeStartedRef = useRef(false);
   const queryClient = useQueryClient();
 
@@ -1336,6 +1337,7 @@ export default function DashboardPage() {
       csvFile.name === "sample-robinhood-transactions.csv";
     setIsSampleRun(sample);
     setPacketPaid(false);
+    setSampleLoadError(null);
     setLastUploadedCsv(csvFile);
     const mergeMode =
       sample || replaceBook ? "replace" : "auto";
@@ -1394,6 +1396,9 @@ export default function DashboardPage() {
         onError: () => {
           setSampleLoading(false);
         },
+        onSettled: () => {
+          setSampleLoading(false);
+        },
       },
     );
   };
@@ -1412,13 +1417,11 @@ export default function DashboardPage() {
         runPortfolioAnalysis(csvFile, form1099File);
       } catch (err) {
         setSampleLoading(false);
-        setSnackbar({
-          message:
-            err instanceof Error
-              ? err.message
-              : "Could not load the 2026 sample.",
-          severity: "error",
-        });
+        setSampleLoadError(
+          err instanceof Error && err.message.trim()
+            ? err.message
+            : "Could not load the 2026 sample.",
+        );
       }
     })();
   };
@@ -1466,14 +1469,15 @@ export default function DashboardPage() {
         setForceEmpty(false);
         setSupplemental1099File(form1099File);
         runPortfolioAnalysis(csvFile, form1099File);
-      } catch {
+      } catch (err) {
         sampleAnalyzeStartedRef.current = false;
         if (!cancelled) {
           setSampleLoading(false);
-          setSnackbar({
-            message: "Could not load the 2026 sample.",
-            severity: "error",
-          });
+          setSampleLoadError(
+            err instanceof Error && err.message.trim()
+              ? err.message
+              : "Could not load the 2026 sample.",
+          );
         }
       }
     })();
@@ -1721,7 +1725,9 @@ export default function DashboardPage() {
     : null;
 
   // Pre-compute error message using if/else to avoid nested ternary (SonarQube S3358)
-  const analysisErrorMessage = getAnalysisErrorMessage(error);
+  const analysisErrorMessage = error
+    ? getAnalysisErrorMessage(error)
+    : sampleLoadError;
 
   return (
     <>
@@ -2114,7 +2120,7 @@ export default function DashboardPage() {
           )}
 
           {/* Error Alert */}
-          {error && (
+          {(error || sampleLoadError) && analysisErrorMessage && (
             <Alert severity="error" icon={<ErrorIcon />}>
               <AlertTitle>Analysis Failed</AlertTitle>{" "}
               <Typography variant="caption">{analysisErrorMessage}</Typography>
