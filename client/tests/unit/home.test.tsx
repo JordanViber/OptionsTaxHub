@@ -220,6 +220,11 @@ describe("Home page", () => {
 
     expect(mockPush).not.toHaveBeenCalledWith("/auth/signin");
     expect(screen.getByText("Portfolio Analysis")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /Upload your Robinhood CSV export \(and optional 1099\) to reconcile 1099-B and wash-sale gaps toward Schedule D/i,
+      ),
+    ).toBeInTheDocument();
     expect(screen.getByTestId("entry-analysis-panel")).toBeInTheDocument();
     expect(screen.getByTestId("entry-rank-leaps")).toBeInTheDocument();
     expect(screen.queryByTestId("entry-rank-find")).not.toBeInTheDocument();
