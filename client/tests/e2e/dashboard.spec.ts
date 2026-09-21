@@ -711,6 +711,11 @@ test.describe("Open 2026 sample", () => {
     page: Parameters<typeof setupMockAnalysis>[0],
   ) {
     await page.goto("/");
+    await expect(page.getByText(/toward Schedule D/i).first()).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Open the 2026 sample" }),
+    ).toBeVisible();
+    await expect(page.getByTestId("entry-analysis-panel")).toHaveCount(0);
     await page.getByRole("button", { name: "Open the 2026 sample" }).click();
     await expect(page).toHaveURL(/\/dashboard/, { timeout: 30000 });
   }
@@ -812,6 +817,10 @@ test.describe("Open 2026 sample", () => {
       page.getByRole("heading", {
         name: /Your 1099 and your export will disagree/,
       }),
+    ).toBeVisible();
+    await expect(page.getByText(/toward Schedule D/i).first()).toBeVisible();
+    await expect(
+      page.getByText(/Wash flags on a 1099 are often scoped to that one account/i),
     ).toBeVisible();
     await page.getByRole("button", { name: "Open the 2026 sample" }).click();
     await expect(page).toHaveURL(/\/dashboard/, { timeout: 30000 });

@@ -25,7 +25,7 @@ const plexMono = IBM_Plex_Mono({
 export const metadata: Metadata = {
   title: "OptionsTaxHub",
   description:
-    "Robinhood whole-portfolio tax desk: 1099 vs export, wash sales, and harvest lots. Broker 1099 uses settlement date; your export uses trade date.",
+    "Robinhood whole-portfolio tax desk: reconcile 1099-B and wash-sale gaps toward Schedule D. Broker 1099 uses settlement date; your export uses trade date.",
   manifest: "/manifest.json",
   appleWebApp: {
     capable: true,

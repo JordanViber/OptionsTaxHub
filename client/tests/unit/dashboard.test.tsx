@@ -271,7 +271,9 @@ describe("DashboardPage", () => {
     render(<DashboardPage />, { wrapper: createWrapper() });
 
     await waitFor(() => {
-      expect(screen.getByText(/OptionsTaxHub/i)).toBeInTheDocument();
+      expect(
+        screen.getByRole("link", { name: /OptionsTaxHub/i }),
+      ).toBeInTheDocument();
     });
     expect(screen.getByRole("link", { name: /OptionsTaxHub/i })).toHaveAttribute(
       "href",
@@ -725,6 +727,16 @@ describe("DashboardPage", () => {
     expect(
       screen.getByText(/Savings estimates use your tax profile/i),
     ).toBeInTheDocument();
+    expect(screen.getByText(/toward Schedule D/i)).toBeInTheDocument();
+    expect(screen.getByText(/not a Form 8949 rebuild/i)).toBeInTheDocument();
+    expect(screen.getByText(/free, no card/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /Wash flags on a 1099 are often scoped to that one account/i,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/year-end clear around 12\/31/i)).toBeInTheDocument();
+    expect(screen.queryByText(/options traders only/i)).not.toBeInTheDocument();
   });
 
   it("Open the 2026 sample attaches the CSV and the 2026 1099 together", async () => {
