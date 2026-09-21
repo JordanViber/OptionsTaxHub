@@ -1,5 +1,5 @@
 import { StrictMode } from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import Home from "../../app/dashboard/page";
 import { persistGuestAnalysis } from "../../lib/api";
@@ -156,10 +156,15 @@ const sampleAnalysis = {
   suggestions: [],
   wash_sale_flags: [],
   summary: { total_market_value: 1000, positions_count: 1 },
-  tax_profile: null,
+  tax_profile: {
+    filing_status: "single",
+    estimated_annual_income: 75000,
+    tax_year: 2026,
+  },
   disclaimer: "",
   warnings: [],
   errors: [],
+  sample_run: true,
 };
 
 function mockSampleCsvFetch() {
@@ -566,6 +571,24 @@ describe("Home page", () => {
     });
   });
 
+  it("does not start the landing sample while auth is still loading", async () => {
+    const mutate = jest.fn();
+    setupMocks(createAuthMock(null, true), createAnalyzeMock({ mutate }));
+    sessionStorage.setItem("oth-load-sample", "1");
+    mockSampleCsvFetch();
+
+    renderWithClient(<Home />);
+
+    expect(screen.getByRole("progressbar")).toBeInTheDocument();
+    await act(async () => {
+      await new Promise((resolve) => {
+        setTimeout(resolve, 30);
+      });
+    });
+    expect(mutate).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem("oth-load-sample")).toBe("1");
+  });
+
   it("loads the landing sample through analyze under Strict Mode", async () => {
     const mutate = jest.fn();
     setupMocks(createAuthMock(null, false), createAnalyzeMock({ mutate }));
@@ -591,6 +614,60 @@ describe("Home page", () => {
       }),
     });
     expect(sessionStorage.getItem("oth-load-sample")).toBeNull();
+  });
+
+  it("finishes the landing sample on the first visit once auth is ready", async () => {
+    const mutate = jest.fn((_params: unknown, options?: { onSuccess?: (data: typeof sampleAnalysis) => void }) => {
+      options?.onSuccess?.(sampleAnalysis);
+    });
+    let loading = true;
+    mockUseAuth.mockImplementation(() => createAuthMock(null, loading));
+    mockUseAnalyzePortfolio.mockReturnValue(createAnalyzeMock({ mutate }));
+    mockUseTaxProfile.mockReturnValue({ data: null, isLoading: false });
+    mockUsePortfolioHistory.mockReturnValue({ data: [], isLoading: false });
+    sessionStorage.setItem("oth-load-sample", "1");
+    mockSampleCsvFetch();
+
+    const wrapper = createWrapper();
+    const { rerender } = render(<Home />, { wrapper });
+
+    expect(mutate).not.toHaveBeenCalled();
+    expect(screen.getByRole("progressbar")).toBeInTheDocument();
+
+    loading = false;
+    rerender(<Home />);
+
+    await waitFor(() => {
+      expect(mutate).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.getByText("Tax Year: 2026")).toBeInTheDocument();
+    expect(screen.getByText(/Positions \(1\)/)).toBeInTheDocument();
+    expect(screen.getByTestId("summary-cards")).toBeInTheDocument();
+    expect(screen.queryByText("Analyzing portfolio...")).not.toBeInTheDocument();
+  });
+
+  it("restores a finished sample after remount without a second analyze", async () => {
+    const mutate = jest.fn();
+    setupMocks(createAuthMock(null, false), createAnalyzeMock({ mutate }));
+    sessionStorage.setItem(
+      "optionstaxhub-analysis",
+      JSON.stringify({
+        ...sampleAnalysis,
+        tax_profile: {
+          filing_status: "single",
+          estimated_annual_income: 75000,
+          tax_year: 2026,
+        },
+      }),
+    );
+
+    renderWithClient(<Home />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Tax Year: 2026")).toBeInTheDocument();
+    });
+    expect(screen.getByText(/Positions \(1\)/)).toBeInTheDocument();
+    expect(mutate).not.toHaveBeenCalled();
   });
 
   it("sets lastUploadedCsv after the landing sample so a 1099 rerun is not null", async () => {

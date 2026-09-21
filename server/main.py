@@ -63,6 +63,7 @@ from year_close_packet import (
 from csv_parser import parse_csv, RealizedEvent, transactions_to_tax_lots
 from lot_matcher import match_1099b_lots
 from ledger import (
+    SAMPLE_FIXTURE_PRICES,
     is_sample_csv_filename,
     is_trusted_in_app_sample,
     merge_transaction_books,
@@ -894,7 +895,13 @@ async def _maybe_parse_supplemental_1099(
     return summary, warnings, supplemental_bytes
 
 
-def _apply_live_prices_to_tax_lots(tax_lots: list, all_warnings: list[str]) -> list:
+def _apply_live_prices_to_tax_lots(
+    tax_lots: list,
+    all_warnings: list[str],
+    *,
+    allow_network: bool = True,
+    fixture_prices: dict[str, float] | None = None,
+) -> list:
     """Populate stock and option lots with live prices when available."""
     symbols = list({lot.symbol for lot in tax_lots if lot.asset_type == AssetType.STOCK})
     fallback_prices = {
@@ -902,7 +909,16 @@ def _apply_live_prices_to_tax_lots(tax_lots: list, all_warnings: list[str]) -> l
         for lot in tax_lots
         if lot.asset_type == AssetType.STOCK and lot.current_price is not None
     }
-    live_prices, price_warnings = fetch_current_prices(symbols, fallback_prices)
+    if fixture_prices:
+        fallback_prices = {**fixture_prices, **fallback_prices}
+    if allow_network:
+        live_prices, price_warnings = fetch_current_prices(symbols, fallback_prices)
+    else:
+        live_prices, price_warnings = fetch_current_prices(
+            symbols,
+            fallback_prices,
+            allow_network=False,
+        )
     all_warnings.extend(price_warnings)
 
     option_labels = list(
@@ -919,10 +935,17 @@ def _apply_live_prices_to_tax_lots(tax_lots: list, all_warnings: list[str]) -> l
         and lot.contract_label
         and lot.current_price is not None
     }
-    option_prices, option_price_warnings = fetch_option_prices(
-        option_labels,
-        option_fallback_prices,
-    )
+    if allow_network:
+        option_prices, option_price_warnings = fetch_option_prices(
+            option_labels,
+            option_fallback_prices,
+        )
+    else:
+        option_prices, option_price_warnings = fetch_option_prices(
+            option_labels,
+            option_fallback_prices,
+            allow_network=False,
+        )
     all_warnings.extend(option_price_warnings)
 
     for lot in tax_lots:
@@ -1226,7 +1249,13 @@ async def _run_portfolio_analysis(
     )
     all_warnings.extend(supplemental_1099_warnings)
 
-    tax_lots = _apply_live_prices_to_tax_lots(tax_lots, all_warnings)
+    trusted_sample = is_trusted_in_app_sample(contents, supplemental_bytes)
+    tax_lots = _apply_live_prices_to_tax_lots(
+        tax_lots,
+        all_warnings,
+        allow_network=not trusted_sample,
+        fixture_prices=SAMPLE_FIXTURE_PRICES if trusted_sample else None,
+    )
 
     tax_lots = compute_lot_metrics(tax_lots)
 
@@ -1313,7 +1342,7 @@ async def _run_portfolio_analysis(
         warnings=_summarize_warnings(all_warnings),
     )
     result = _apply_packet_year_grant(result, user_id)
-    keep_lot_rows = is_trusted_in_app_sample(contents, supplemental_bytes)
+    keep_lot_rows = trusted_sample
     if keep_lot_rows:
         result = result.model_copy(update={"sample_run": True})
     full_dump = (

@@ -678,3 +678,44 @@ test.describe("Tip Jar", () => {
     ).toBeVisible();
   });
 });
+
+test.describe("Open 2026 sample", () => {
+  test("finishes analysis on the desk without leave or return", async ({
+    page,
+  }) => {
+    const sampleAnalysis = {
+      ...MOCK_ANALYSIS,
+      sample_run: true,
+      tax_profile: {
+        ...MOCK_ANALYSIS.tax_profile,
+        tax_year: 2026,
+      },
+    };
+    await setupMockAnalysis(page, sampleAnalysis);
+    await page.route("**/health", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ status: "ok" }),
+      }),
+    );
+    await page.route("**/auth/v1/**", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({}),
+      }),
+    );
+
+    await page.goto("/");
+    await page.getByRole("button", { name: "Open the 2026 sample" }).click();
+    await expect(page).toHaveURL(/\/dashboard/, { timeout: 30000 });
+    await expect(page.getByText("Tax Year: 2026")).toBeVisible({
+      timeout: 20000,
+    });
+    await expect(page.getByText("Fresh upload")).toBeVisible();
+    await expect(page.getByText(/Positions \(2\)/)).toBeVisible();
+    await expect(page.getByText("Net Open Position Value")).toBeVisible();
+    await expect(page.getByText("Analyzing portfolio...")).toHaveCount(0);
+  });
+});

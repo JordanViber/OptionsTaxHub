@@ -448,9 +448,15 @@ def _stub_analyze_network(monkeypatch):
     """Stub live prices, AI, and history so analyze can run without network I/O."""
     monkeypatch.setattr(
         "main.fetch_current_prices",
-        lambda symbols, fb=None: ({s.upper(): 100.0 for s in symbols}, []),
+        lambda symbols, fb=None, allow_network=True: (
+            {s.upper(): 100.0 for s in symbols},
+            [],
+        ),
     )
-    monkeypatch.setattr("main.fetch_option_prices", lambda labels, fb=None: ({}, []))
+    monkeypatch.setattr(
+        "main.fetch_option_prices",
+        lambda labels, fb=None, allow_network=True: ({}, []),
+    )
     monkeypatch.setattr("main.prepare_positions_for_ai", lambda lots: [])
     monkeypatch.setattr("main._save_history_best_effort", lambda *args, **kwargs: None)
     monkeypatch.setattr("main.get_latest_activity_book", lambda uid, client=None: None)
@@ -2410,6 +2416,40 @@ def test_paid_year_analyze_includes_lot_match_rows(monkeypatch):
     assert {row["symbol"] for row in report["gap"]} >= {"NVDA", "TSLA", "AMD"}
     assert any(row["symbol"] == "SPX" for row in report["unmatched"])
     assert body["supplemental_1099"]["lots"]
+
+
+def test_trusted_in_app_sample_skips_yahoo_and_still_returns_positions(monkeypatch):
+    """Open sample must finish even when Yahoo is blocked."""
+    monkeypatch.setattr("main.prepare_positions_for_ai", lambda lots: [])
+    monkeypatch.setattr("main._save_history_best_effort", lambda *args, **kwargs: None)
+    monkeypatch.setattr("main.get_latest_activity_book", lambda uid, client=None: None)
+    monkeypatch.setattr("main.get_packet_grant_for_tax_year", lambda *args, **kwargs: None)
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("yfinance should not run for the in-app sample")
+
+    monkeypatch.setattr("price_service._download_yfinance_prices", boom)
+    monkeypatch.setattr("price_service._fetch_grouped_option_prices", boom)
+
+    repo = Path(__file__).resolve().parents[2]
+    sample_csv = (repo / "client" / "public" / "sample-robinhood-transactions.csv").read_bytes()
+    sample_1099 = (repo / "client" / "public" / "sample-robinhood-1099-2026.pdf").read_bytes()
+    response = client.post(
+        "/api/portfolio/analyze?filing_status=single&estimated_income=75000&tax_year=2026",
+        files={
+            "file": ("sample-robinhood-transactions.csv", sample_csv, "text/csv"),
+            "supplemental_1099": (
+                "sample-robinhood-1099-2026.pdf",
+                sample_1099,
+                "application/pdf",
+            ),
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["sample_run"] is True
+    assert body["positions"]
+    assert body["tax_profile"]["tax_year"] == 2026
 
 
 def test_guest_sample_analyze_includes_lot_match_rows_without_unlocking(monkeypatch):

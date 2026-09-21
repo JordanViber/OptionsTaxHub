@@ -222,6 +222,21 @@ class TestDownloadYfinancePrices:
             assert prices == {}
             assert len(warnings) >= 1
 
+    def test_timeout_returns_fallback_warning(self, monkeypatch):
+        """A hung Yahoo download must not block analyze."""
+        monkeypatch.setattr(price_service, "YFINANCE_TIMEOUT_SECONDS", 0.05)
+        mock_yf = MagicMock()
+
+        def hang(*_args, **_kwargs):
+            time.sleep(1)
+            return pd.DataFrame({"Close": [1.0]})
+
+        mock_yf.download.side_effect = hang
+        with patch.dict("sys.modules", {"yfinance": mock_yf}):
+            prices, warnings = price_service._download_yfinance_prices(["AAPL"])
+        assert prices == {}
+        assert any("timed out" in warning.lower() for warning in warnings)
+
 
 # --- _apply_fallback_prices ---
 
@@ -265,6 +280,20 @@ class TestFetchCurrentPrices:
         prices, warnings = fetch_current_prices([])
         assert prices == {}
         assert warnings == []
+
+    def test_allow_network_false_skips_yahoo(self, monkeypatch):
+        monkeypatch.setattr(
+            price_service,
+            "_download_yfinance_prices",
+            lambda _symbols: (_ for _ in ()).throw(AssertionError("network")),
+        )
+        prices, warnings = fetch_current_prices(
+            ["AAPL"],
+            fallback_prices={"AAPL": 315.0},
+            allow_network=False,
+        )
+        assert prices["AAPL"] == pytest.approx(315.0)
+        assert any("AAPL" in warning for warning in warnings)
 
     def test_all_cached(self):
         _set_cached_price("AAPL", 150.0)

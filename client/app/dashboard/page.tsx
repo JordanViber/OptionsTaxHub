@@ -1195,6 +1195,8 @@ export default function DashboardPage() {
   const [isSampleRun, setIsSampleRun] = useState(false);
   const [packetPaid, setPacketPaid] = useState(false);
   const [replaceBook, setReplaceBook] = useState(false);
+  const [sampleLoading, setSampleLoading] = useState(false);
+  const sampleAnalyzeStartedRef = useRef(false);
   const queryClient = useQueryClient();
 
   // Load the user's tax profile for analyze params
@@ -1348,8 +1350,12 @@ export default function DashboardPage() {
       },
       {
         onSuccess: (data) => {
-          setLoadedAnalysis(null);
+          const normalized = normalizeAnalysis(data);
+          saveAnalysisToStorage(normalized);
+          setLoadedAnalysis(normalized);
+          setAnalysisSource("fresh-upload");
           setForceEmpty(false);
+          setSampleLoading(false);
           if (data.packet_unlocked && data.packet_session_id) {
             rememberYearClosePacketPaid(
               data.analysis_id || "local-analysis",
@@ -1385,6 +1391,9 @@ export default function DashboardPage() {
             queryKey: ["portfolio-history", user?.id],
           });
         },
+        onError: () => {
+          setSampleLoading(false);
+        },
       },
     );
   };
@@ -1392,6 +1401,7 @@ export default function DashboardPage() {
   const handleLoadSample = () => {
     void (async () => {
       try {
+        setSampleLoading(true);
         const { csvFile, form1099File } = await fetchSampleCsvAnd1099();
         clearCurrentAnalysisView({
           setLoadedAnalysis,
@@ -1401,6 +1411,7 @@ export default function DashboardPage() {
         setSupplemental1099File(form1099File);
         runPortfolioAnalysis(csvFile, form1099File);
       } catch (err) {
+        setSampleLoading(false);
         setSnackbar({
           message:
             err instanceof Error
@@ -1413,7 +1424,16 @@ export default function DashboardPage() {
   };
 
   useEffect(() => {
-    let cancelled = false;
+    if (authLoading) {
+      return undefined;
+    }
+    if (user && !emailConfirmed) {
+      return undefined;
+    }
+    if (sampleAnalyzeStartedRef.current) {
+      return undefined;
+    }
+
     let wantsSample = false;
     try {
       wantsSample = sessionStorage.getItem(LOAD_SAMPLE_KEY) === "1";
@@ -1424,12 +1444,16 @@ export default function DashboardPage() {
       return undefined;
     }
 
+    let cancelled = false;
+    setSampleLoading(true);
+
     void (async () => {
       try {
         const { csvFile, form1099File } = await fetchSampleCsvAnd1099();
-        if (cancelled) {
+        if (cancelled || sampleAnalyzeStartedRef.current) {
           return;
         }
+        sampleAnalyzeStartedRef.current = true;
         try {
           sessionStorage.removeItem(LOAD_SAMPLE_KEY);
         } catch {
@@ -1443,7 +1467,9 @@ export default function DashboardPage() {
         setSupplemental1099File(form1099File);
         runPortfolioAnalysis(csvFile, form1099File);
       } catch {
+        sampleAnalyzeStartedRef.current = false;
         if (!cancelled) {
+          setSampleLoading(false);
           setSnackbar({
             message: "Could not load the 2026 sample.",
             severity: "error",
@@ -1456,7 +1482,7 @@ export default function DashboardPage() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [authLoading, user, emailConfirmed]);
 
   useEffect(() => {
     if (!confirmedUserId) {
@@ -1672,6 +1698,7 @@ export default function DashboardPage() {
   const avatarLetter = displayName[0].toUpperCase();
 
   // displayedAnalysis is computed above (near sessionStorage effects)
+  const analyzing = isPending || sampleLoading;
   const hasResults = !!displayedAnalysis && !forceEmpty;
   const confidenceSummary = displayedAnalysis
     ? getConfidenceSummary(displayedAnalysis)
@@ -1899,7 +1926,7 @@ export default function DashboardPage() {
       </Dialog>
 
       {/* Loading bar — shows for new analysis (isPending) and history fetch (historyLoading) */}
-      {isPending && <LinearProgress />}
+      {analyzing && <LinearProgress />}
       {historyLoading && <LinearProgress color="secondary" />}
 
       {/* Snackbar for history load feedback */}
@@ -1960,13 +1987,13 @@ export default function DashboardPage() {
                 />
                 <Box
                   component="label"
-                  htmlFor={isPending ? undefined : "desk-csv-input"}
+                  htmlFor={analyzing ? undefined : "desk-csv-input"}
                   data-testid="csv-dropzone"
                   role="button"
-                  tabIndex={isPending ? -1 : 0}
+                  tabIndex={analyzing ? -1 : 0}
                   aria-label="Upload CSV"
                   onKeyDown={(event) => {
-                    if (isPending) {
+                    if (analyzing) {
                       return;
                     }
                     if (event.key === "Enter" || event.key === " ") {
@@ -1976,18 +2003,18 @@ export default function DashboardPage() {
                   }}
                   sx={{
                     border: "1px dashed",
-                    borderColor: isPending ? "divider" : "primary.main",
+                    borderColor: analyzing ? "divider" : "primary.main",
                     borderRadius: 2,
                     p: 3,
                     textAlign: "center",
-                    cursor: isPending ? "default" : "pointer",
+                    cursor: analyzing ? "default" : "pointer",
                     display: "block",
                     transition: "all 0.2s",
-                    opacity: isPending ? 0.6 : 1,
+                    opacity: analyzing ? 0.6 : 1,
                     "& *": {
                       cursor: "inherit",
                     },
-                    "&:hover": isPending
+                    "&:hover": analyzing
                       ? {}
                       : {
                           backgroundColor: "action.hover",
@@ -2004,7 +2031,7 @@ export default function DashboardPage() {
                     sx={{ fontSize: 40, color: "primary.main", mb: 0.5 }}
                   />
                   <Typography variant="body1" sx={{ fontWeight: 500 }}>
-                    {isPending
+                    {analyzing
                       ? "Analyzing portfolio..."
                       : "Click to upload CSV"}
                   </Typography>
@@ -2052,7 +2079,7 @@ export default function DashboardPage() {
                   }
                   onChooseFile={handleSupplemental1099UploadClick}
                   onClearFile={handleClearSupplemental1099}
-                  isPending={isPending}
+                  isPending={analyzing}
                 />
                 {supplemental1099Warnings.length > 0 && (
                   <Alert severity="warning">
@@ -2094,7 +2121,7 @@ export default function DashboardPage() {
             </Alert>
           )}
 
-          {forceEmpty && heldAnalysis && !isPending && (
+          {forceEmpty && heldAnalysis && !analyzing && (
             <Alert
               severity="info"
               variant="outlined"
@@ -2115,7 +2142,7 @@ export default function DashboardPage() {
           )}
 
           {/* First-run guidance when the user has not analyzed a CSV yet */}
-          {!hasResults && !isPending && !error && (
+          {!hasResults && !analyzing && !error && (
             <FirstRunEmptyState
               onLoadSample={handleLoadSample}
               settingsHref={user ? "/settings" : "/auth/signin?reason=profile"}
