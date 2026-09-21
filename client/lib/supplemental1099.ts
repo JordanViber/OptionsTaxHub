@@ -27,6 +27,12 @@ export const SUPPLEMENTAL_1099_UNKNOWN_YEAR_HELPER =
 export const SUPPLEMENTAL_1099_UNKNOWN_YEAR_RESTORED_HELPER =
   "This restored result already includes a broker 1099 whose tax year could not be determined — reconciliation context, not lot history. Upload the PDF again only if you want to refresh it.";
 
+export const SCHEDULE_D_RECONCILE_COPY =
+  "OptionsTaxHub helps reconcile a Robinhood whole-portfolio 1099-B and wash-sale gaps toward Schedule D. Path is your CSV export plus the 1099 — not a Form 8949 rebuild, and not tax advice.";
+
+export const WASH_ACCOUNT_SCOPE_COPY =
+  "Wash flags on a 1099 are often scoped to that one account, so a second account or a year-end clear around 12/31 can also explain why the export and the 1099 disagree.";
+
 export const SUPPLEMENTAL_1099_COMPARE_TITLE = "1099 vs your export";
 
 export const SUPPLEMENTAL_1099_COMPARE_COPY =
@@ -37,7 +43,9 @@ export const SUPPLEMENTAL_1099_BROKER_COLUMN = "Broker 1099 (settlement date)";
 export const SUPPLEMENTAL_1099_EXPORT_COLUMN = "This export (trade date)";
 
 export const SUPPLEMENTAL_1099_GAP_COPY =
-  "These totals often disagree. A year-end short option (for example SPX 12/31) can print a gain on the 1099 while this export still shows a loss until January settlement. That is not a software bug. The $49 packet lists matched, gap, and unmatched lots. An incomplete export also shows up here. Traders on r/options have reported the same gap — a Robinhood 1099 showing +$2,699 while the export showed a $542 loss.";
+  "These totals often disagree. A year-end short option (for example SPX 12/31) can print a gain on the 1099 while this export still shows a loss until January settlement. That is not a software bug. " +
+  WASH_ACCOUNT_SCOPE_COPY +
+  " The $49 packet lists matched, gap, and unmatched lots. An incomplete export also shows up here. Traders on r/options have reported the same gap — a Robinhood 1099 showing +$2,699 while the export showed a $542 loss.";
 
 export const SUPPLEMENTAL_1099_SETTLEMENT_FAQ =
   "Robinhood 1099 uses settlement date, so a year-end short option (for example SPX 12/31) can show a gain on the 1099 for a trade that does not settle until January. Matched lots still show both dates so the split is visible.";

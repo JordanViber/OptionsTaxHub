@@ -235,7 +235,7 @@ function uploadIntroCopy({
   if (signedIn) {
     return "First upload: go back to the oldest shares you still hold. Later this year you can send only new activity plus a little overlap.";
   }
-  return "Upload your Robinhood CSV export to analyze tax-loss harvesting opportunities. Sign in, then upload a full export so later files only need new activity.";
+  return "Upload your Robinhood CSV export (and optional 1099) to reconcile 1099-B and wash-sale gaps toward Schedule D. Sign in, then upload a full export so later files only need new activity.";
 }
 
 type DeleteTarget = {

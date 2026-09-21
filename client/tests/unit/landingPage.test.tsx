@@ -13,6 +13,10 @@ jest.mock("../../app/context/auth", () => ({
 }));
 
 import LandingPage from "../../app/page";
+import {
+  SCHEDULE_D_RECONCILE_COPY,
+  WASH_ACCOUNT_SCOPE_COPY,
+} from "../../lib/supplemental1099";
 
 const createWrapper = () => {
   const queryClient = new QueryClient({
@@ -87,14 +91,26 @@ describe("LandingPage", () => {
       }),
     ).toBeInTheDocument();
     expect(
+      screen.getByText(SCHEDULE_D_RECONCILE_COPY, { exact: false }),
+    ).toBeInTheDocument();
+    expect(
       screen.getByText(/Broker 1099 uses settlement date/i),
     ).toBeInTheDocument();
     expect(screen.getByText(/your export uses trade date/i)).toBeInTheDocument();
+    expect(screen.getByText(/CSV export plus the 1099/i)).toBeInTheDocument();
+    expect(screen.getByText(/not a Form 8949 rebuild/i)).toBeInTheDocument();
     expect(screen.getAllByText(/SPX 12\/31/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/not a software bug/i).length).toBeGreaterThan(0);
     expect(
+      screen.getByText(WASH_ACCOUNT_SCOPE_COPY, { exact: false }),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText(/toward Schedule D/i).length).toBeGreaterThan(0);
+    expect(
       screen.queryByText(/Keep more of what you trade/),
     ).not.toBeInTheDocument();
+    expect(screen.queryByText(/options traders only/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/we file Schedule D/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/CPA advice/i)).not.toBeInTheDocument();
   });
 
   it("renders navigation with Sign In and Open desk", () => {
@@ -117,6 +133,9 @@ describe("LandingPage", () => {
     expect(screen.getByText(/Robinhood whole-portfolio tax desk/i)).toBeInTheDocument();
     expect(screen.getByText(/stocks and options — ranked by federal savings/i)).toBeInTheDocument();
     expect(screen.getByText(/Whole book, not options-only/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Wash flags on a 1099 are often scoped to that one account/i),
+    ).toBeInTheDocument();
   });
 
   it("renders How the desk works with 3 steps", () => {
@@ -132,6 +151,9 @@ describe("LandingPage", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("Drop a CSV")).toBeInTheDocument();
     expect(screen.getByText("Read the desk")).toBeInTheDocument();
+    expect(
+      screen.getByText(/1099 vs export first — toward Schedule D/i),
+    ).toBeInTheDocument();
     expect(screen.getByText("Take the packet")).toBeInTheDocument();
   });
 
@@ -246,6 +268,7 @@ describe("LandingPage", () => {
 
     expect(screen.getAllByText(/lot-matched 1099-B/i).length).toBeGreaterThan(0);
     expect(screen.getByText(/not a filed Form 8949/i)).toBeInTheDocument();
+    expect(screen.getByText(/not a Form 8949 rebuild/i)).toBeInTheDocument();
     expect(screen.queryByText(/file your Form 8949/i)).not.toBeInTheDocument();
     expect(
       screen.queryByText(/full lot rebuild from the PDF/i),

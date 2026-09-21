@@ -10,6 +10,7 @@ import {
   SUPPLEMENTAL_1099_EXPORT_COLUMN,
   SUPPLEMENTAL_1099_GAP_COPY,
   SUPPLEMENTAL_1099_SETTLEMENT_FAQ,
+  WASH_ACCOUNT_SCOPE_COPY,
   SUPPLEMENTAL_1099_UNKNOWN_YEAR_COPY,
   SUPPLEMENTAL_1099_UNKNOWN_YEAR_TITLE,
   SUPPLEMENTAL_1099_WASH_SALE_FAQ,
@@ -138,6 +139,8 @@ describe("Supplemental1099InsightsPanel", () => {
     expect(screen.getByText(SUPPLEMENTAL_1099_COMPARE_TITLE)).toBeInTheDocument();
     expect(screen.getByText(SUPPLEMENTAL_1099_COMPARE_COPY)).toBeInTheDocument();
     expect(screen.getByText(SUPPLEMENTAL_1099_GAP_COPY)).toBeInTheDocument();
+    expect(screen.getByText(WASH_ACCOUNT_SCOPE_COPY, { exact: false })).toBeInTheDocument();
+    expect(screen.getByText(/SPX 12\/31/i)).toBeInTheDocument();
     expect(screen.getByText(SUPPLEMENTAL_1099_BROKER_COLUMN)).toBeInTheDocument();
     expect(screen.getByText(SUPPLEMENTAL_1099_EXPORT_COLUMN)).toBeInTheDocument();
     expect(screen.getByTestId("1099-vs-export-panel")).toBeInTheDocument();

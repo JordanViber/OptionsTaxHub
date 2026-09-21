@@ -16,7 +16,10 @@ import {
   Settings as SettingsIcon,
 } from "@mui/icons-material";
 import NextLink from "next/link";
-import { SUPPLEMENTAL_1099_FIRST_RUN_HINT } from "@/lib/supplemental1099";
+import {
+  SUPPLEMENTAL_1099_FIRST_RUN_HINT,
+  WASH_ACCOUNT_SCOPE_COPY,
+} from "@/lib/supplemental1099";
 
 /**
  * First-run guidance shown on the dashboard before any analysis exists.
@@ -37,9 +40,10 @@ export default function FirstRunEmptyState({
               Get started with your first analysis
             </Typography>
             <Typography variant="body2" color="text.secondary">
-              Upload a Robinhood transactions CSV to see open positions, tax
-              lots, wash-sale flags, and federal tax-loss harvesting estimates.
-              Or open the 2026 sample — no account required.
+              Upload a Robinhood transactions CSV and, if you have it, the 1099
+              PDF. OptionsTaxHub helps reconcile whole-portfolio 1099-B and
+              wash-sale gaps toward Schedule D — export plus 1099, not a Form
+              8949 rebuild. Or open the 2026 sample — free, no card.
             </Typography>
           </Box>
 
@@ -59,6 +63,9 @@ export default function FirstRunEmptyState({
                 {SUPPLEMENTAL_1099_FIRST_RUN_HINT}
               </Typography>
             </Box>
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 1.5 }}>
+              {WASH_ACCOUNT_SCOPE_COPY} Educational compare only.
+            </Typography>
           </Box>
 
           <Stack
