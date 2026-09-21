@@ -669,6 +669,21 @@ describe("Home page", () => {
     });
     expect(screen.getByTestId("entry-results")).toBeInTheDocument();
     expect(screen.getByTestId("entry-max-loss")).toHaveTextContent("$420.00");
+    expect(
+      screen.queryByRole("button", { name: /connect robinhood/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /reconnect/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /^tax desk$/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: /options desk/i }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("year-close-packet-panel")).toHaveTextContent(
+      "$49",
+    );
   });
 
   it("shows the analyze error string and clears Analyzing after a failed sample", async () => {

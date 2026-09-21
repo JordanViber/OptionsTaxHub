@@ -839,5 +839,18 @@ test.describe("Open 2026 sample", () => {
     await expect(page.getByTestId("entry-rank-1")).toHaveCount(0);
     await expect(page.getByTestId("entry-results")).toBeVisible();
     await expect(page.getByTestId("entry-max-loss")).toHaveText("$420.00");
+    await expect(
+      page.getByRole("button", { name: /connect robinhood/i }),
+    ).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /reconnect/i })).toHaveCount(
+      0,
+    );
+    await expect(page.getByRole("button", { name: /^tax desk$/i })).toHaveCount(
+      0,
+    );
+    await expect(page.getByRole("link", { name: /options desk/i })).toHaveCount(
+      0,
+    );
+    await expect(page.getByRole("button", { name: /Pay \$49/i })).toBeVisible();
   });
 });
