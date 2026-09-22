@@ -19,13 +19,20 @@ import type {
   RhChainResponse,
 } from "@/lib/types";
 import {
+  analyzeCombo,
   analyzeEntry,
   analyzeVertical,
+  buildComboContextLine,
   buildEntryContextLine,
   buildVerticalContextLine,
   formatUsdCents,
   leapWindowForPreset,
+  type ComboAnalysisResult,
+  type ComboKind,
+  type ComboPayoff,
+  type ComboProposal,
   type EntryAnalysisResult,
+  type EntryPayoff,
   type EntryProposal,
   type LeapWindowPreset,
   type OptionRight,
@@ -52,7 +59,8 @@ const toggleGroupSx = {
 };
 
 type WindowPreset = LeapWindowPreset | "custom";
-type StructureMode = "single" | "vertical";
+type StructureMode = "single" | "vertical" | "straddle" | "strangle";
+type AnyAnalysisResult = EntryAnalysisResult | ComboAnalysisResult;
 
 function parsePositiveNumber(raw: string): number | null {
   const trimmed = raw.trim();
@@ -71,9 +79,15 @@ function formatPayoffMoney(value: number | null): string {
 }
 
 function isEntryFail(
-  result: EntryAnalysisResult,
-): result is Extract<EntryAnalysisResult, { ok: false }> {
+  result: AnyAnalysisResult,
+): result is Extract<AnyAnalysisResult, { ok: false }> {
   return result.ok === false;
+}
+
+function isComboPayoff(
+  payoff: EntryPayoff | ComboPayoff,
+): payoff is ComboPayoff {
+  return "breakevenLow" in payoff;
 }
 
 function isLeapRankFail(
@@ -116,6 +130,10 @@ export default function EntryAnalysisPanel({
   const [higherStrike, setHigherStrike] = useState("");
   const [lowerPremium, setLowerPremium] = useState("");
   const [higherPremium, setHigherPremium] = useState("");
+  const [putStrike, setPutStrike] = useState("");
+  const [callStrike, setCallStrike] = useState("");
+  const [callPremium, setCallPremium] = useState("");
+  const [putPremium, setPutPremium] = useState("");
   const [windowPreset, setWindowPreset] = useState<WindowPreset>("12-24");
   const [expiryFrom, setExpiryFrom] = useState(
     () => leapWindowForPreset("12-24").from,
@@ -163,12 +181,45 @@ export default function EntryAnalysisPanel({
     ],
   );
 
-  const analysis =
+  const comboKind: ComboKind =
+    structure === "strangle" ? "strangle" : "straddle";
+  const comboProposal: ComboProposal = useMemo(
+    () => ({
+      symbol,
+      kind: comboKind,
+      side,
+      strike: parsePositiveNumber(strike),
+      putStrike: parsePositiveNumber(putStrike),
+      callStrike: parsePositiveNumber(callStrike),
+      expiration,
+      quantity: parseQuantity(quantity),
+      callPremium: parsePositiveNumber(callPremium),
+      putPremium: parsePositiveNumber(putPremium),
+    }),
+    [
+      symbol,
+      comboKind,
+      side,
+      strike,
+      putStrike,
+      callStrike,
+      expiration,
+      quantity,
+      callPremium,
+      putPremium,
+    ],
+  );
+
+  const isCombo = structure === "straddle" || structure === "strangle";
+  const analysis: AnyAnalysisResult =
     structure === "vertical"
       ? analyzeVertical(verticalProposal)
-      : analyzeEntry(proposal);
-  const contextLine =
-    structure === "vertical"
+      : isCombo
+        ? analyzeCombo(comboProposal)
+        : analyzeEntry(proposal);
+  const contextLine = isCombo
+    ? buildComboContextLine(comboProposal, positions)
+    : structure === "vertical"
       ? buildVerticalContextLine(verticalProposal, positions)
       : buildEntryContextLine(proposal, positions);
 
@@ -256,6 +307,26 @@ export default function EntryAnalysisPanel({
     );
   } else {
     const ok = analysis;
+    const breakevenRows = isComboPayoff(ok.payoff) ? (
+      <>
+        <ResultRow
+          label="Lower breakeven"
+          value={formatUsdCents(ok.payoff.breakevenLow)}
+          testId="entry-breakeven-low"
+        />
+        <ResultRow
+          label="Upper breakeven"
+          value={formatUsdCents(ok.payoff.breakevenHigh)}
+          testId="entry-breakeven-high"
+        />
+      </>
+    ) : (
+      <ResultRow
+        label="Breakeven"
+        value={formatUsdCents(ok.payoff.breakeven)}
+        testId="entry-breakeven"
+      />
+    );
     resultsNode = (
       <Stack spacing={0.75} data-testid="entry-results">
         <ResultRow
@@ -268,11 +339,7 @@ export default function EntryAnalysisPanel({
           value={formatPayoffMoney(ok.payoff.maxGain)}
           testId="entry-max-gain"
         />
-        <ResultRow
-          label="Breakeven"
-          value={formatUsdCents(ok.payoff.breakeven)}
-          testId="entry-breakeven"
-        />
+        {breakevenRows}
         {ok.payoff.collateralNote ? (
           <Typography
             variant="body2"
@@ -311,7 +378,9 @@ export default function EntryAnalysisPanel({
     >
       <Stack spacing={2} data-testid="entry-analysis-stack">
         <Box>
-          <Typography sx={monoSx}>What-if · single-leg or vertical</Typography>
+          <Typography sx={monoSx}>
+            What-if · single-leg, vertical, straddle, or strangle
+          </Typography>
           <Typography variant="h6" sx={{ mt: 0.5, fontWeight: 700 }}>
             Analyze a new option
           </Typography>
@@ -529,7 +598,7 @@ export default function EntryAnalysisPanel({
               }
               setStructure(value);
             }}
-            aria-label="Single-leg or vertical"
+            aria-label="Single-leg, vertical, straddle, or strangle"
             sx={toggleGroupSx}
           >
             <ToggleButton value="single" data-testid="entry-structure-single">
@@ -538,27 +607,15 @@ export default function EntryAnalysisPanel({
             <ToggleButton value="vertical" data-testid="entry-structure-vertical">
               Vertical
             </ToggleButton>
+            <ToggleButton value="straddle" data-testid="entry-structure-straddle">
+              Straddle
+            </ToggleButton>
+            <ToggleButton value="strangle" data-testid="entry-structure-strangle">
+              Strangle
+            </ToggleButton>
           </ToggleButtonGroup>
 
-          {structure === "single" ? (
-            <ToggleButtonGroup
-              exclusive
-              size="small"
-              value={side}
-              onChange={(_, value: OptionSide | null) => {
-                if (value) setSide(value);
-              }}
-              aria-label="Buy or sell"
-              sx={toggleGroupSx}
-            >
-              <ToggleButton value="buy" data-testid="entry-side-buy">
-                Buy
-              </ToggleButton>
-              <ToggleButton value="sell" data-testid="entry-side-sell">
-                Sell
-              </ToggleButton>
-            </ToggleButtonGroup>
-          ) : (
+          {structure === "vertical" ? (
             <ToggleButtonGroup
               exclusive
               size="small"
@@ -576,9 +633,27 @@ export default function EntryAnalysisPanel({
                 Credit
               </ToggleButton>
             </ToggleButtonGroup>
+          ) : (
+            <ToggleButtonGroup
+              exclusive
+              size="small"
+              value={side}
+              onChange={(_, value: OptionSide | null) => {
+                if (value) setSide(value);
+              }}
+              aria-label="Buy or sell"
+              sx={toggleGroupSx}
+            >
+              <ToggleButton value="buy" data-testid="entry-side-buy">
+                Buy
+              </ToggleButton>
+              <ToggleButton value="sell" data-testid="entry-side-sell">
+                Sell
+              </ToggleButton>
+            </ToggleButtonGroup>
           )}
 
-          {structure === "single" ? (
+          {structure === "single" || structure === "straddle" ? (
             <Stack
               direction={{ xs: "column", sm: "row" }}
               spacing={1.5}
@@ -602,6 +677,35 @@ export default function EntryAnalysisPanel({
                 onChange={(event) => setExpiration(event.target.value)}
                 inputProps={{ "data-testid": "entry-expiration" }}
                 InputLabelProps={{ shrink: true }}
+                size="small"
+                fullWidth
+              />
+            </Stack>
+          ) : structure === "strangle" ? (
+            <Stack
+              direction={{ xs: "column", sm: "row" }}
+              spacing={1.5}
+              useFlexGap
+            >
+              <TextField
+                label="Put strike"
+                value={putStrike}
+                onChange={(event) => setPutStrike(event.target.value)}
+                inputProps={{
+                  "data-testid": "entry-strike-put",
+                  inputMode: "decimal",
+                }}
+                size="small"
+                fullWidth
+              />
+              <TextField
+                label="Call strike"
+                value={callStrike}
+                onChange={(event) => setCallStrike(event.target.value)}
+                inputProps={{
+                  "data-testid": "entry-strike-call",
+                  inputMode: "decimal",
+                }}
                 size="small"
                 fullWidth
               />
@@ -637,7 +741,7 @@ export default function EntryAnalysisPanel({
             </Stack>
           )}
 
-          {structure === "vertical" ? (
+          {structure === "vertical" || structure === "strangle" ? (
             <TextField
               label="Expiration"
               type="date"
@@ -704,6 +808,37 @@ export default function EntryAnalysisPanel({
                 onChange={(event) => setHigherPremium(event.target.value)}
                 inputProps={{
                   "data-testid": "entry-premium-higher",
+                  inputMode: "decimal",
+                }}
+                size="small"
+                fullWidth
+              />
+            </Stack>
+          ) : null}
+
+          {isCombo ? (
+            <Stack
+              direction={{ xs: "column", sm: "row" }}
+              spacing={1.5}
+              useFlexGap
+            >
+              <TextField
+                label="Call premium (per share)"
+                value={callPremium}
+                onChange={(event) => setCallPremium(event.target.value)}
+                inputProps={{
+                  "data-testid": "entry-premium-call",
+                  inputMode: "decimal",
+                }}
+                size="small"
+                fullWidth
+              />
+              <TextField
+                label="Put premium (per share)"
+                value={putPremium}
+                onChange={(event) => setPutPremium(event.target.value)}
+                inputProps={{
+                  "data-testid": "entry-premium-put",
                   inputMode: "decimal",
                 }}
                 size="small"

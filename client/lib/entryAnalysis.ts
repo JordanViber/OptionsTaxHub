@@ -35,6 +35,23 @@ export interface VerticalProposal {
   higherPremium: number | null;
 }
 
+export type ComboKind = "straddle" | "strangle";
+
+export interface ComboProposal {
+  symbol: string;
+  kind: ComboKind;
+  side: OptionSide | "";
+  /** Straddle only. Ignored for strangle. */
+  strike: number | null;
+  /** Strangle only. Ignored for straddle. */
+  putStrike: number | null;
+  callStrike: number | null;
+  expiration: string;
+  quantity: number | null;
+  callPremium: number | null;
+  putPremium: number | null;
+}
+
 export interface EntryPayoff {
   debitCredit: number;
   maxLoss: number | null;
@@ -47,6 +64,19 @@ export type EntryFailReason = "incomplete" | "invalid" | "expired";
 
 export type EntryAnalysisResult =
   | { ok: true; payoff: EntryPayoff }
+  | { ok: false; reason: EntryFailReason; message: string };
+
+export interface ComboPayoff {
+  debitCredit: number;
+  maxLoss: number | null;
+  maxGain: number | null;
+  breakevenLow: number;
+  breakevenHigh: number;
+  collateralNote: string | null;
+}
+
+export type ComboAnalysisResult =
+  | { ok: true; payoff: ComboPayoff }
   | { ok: false; reason: EntryFailReason; message: string };
 
 const CONTRACT_LABEL_PATTERN =
@@ -71,6 +101,14 @@ export const VERTICAL_NET_CREDIT_EXCEEDS_WIDTH_MESSAGE =
   "Net credit cannot exceed the strike width.";
 export const VERTICAL_PUT_BREAKEVEN_MESSAGE =
   "Breakeven is at or below $0 for this put vertical — check strikes and premiums.";
+export const STRADDLE_INCOMPLETE_MESSAGE =
+  "Enter strike and both premiums to see max gain, max loss, and both breakevens.";
+export const STRANGLE_INCOMPLETE_MESSAGE =
+  "Enter both strikes and both premiums to see max gain, max loss, and both breakevens.";
+export const STRANGLE_STRIKE_ORDER_MESSAGE =
+  "Put strike must be below the call strike.";
+export const COMBO_BREAKEVEN_MESSAGE =
+  "Lower breakeven is at or below $0 for this position — check strikes and premiums.";
 
 export function todayIso(now: Date = new Date()): string {
   const year = now.getFullYear();
@@ -390,6 +428,118 @@ export function analyzeVertical(
   };
 }
 
+export function analyzeCombo(
+  proposal: ComboProposal,
+  asOf: string = todayIso(),
+): ComboAnalysisResult {
+  const symbol = proposal.symbol.trim();
+  const { kind, side, expiration } = proposal;
+  const { strike, putStrike, callStrike, quantity, callPremium, putPremium } =
+    proposal;
+
+  const missingCore =
+    !symbol ||
+    (side !== "buy" && side !== "sell") ||
+    !expiration.trim();
+  const missingNumbers =
+    kind === "straddle"
+      ? !isFiniteNumber(strike) ||
+        !isFiniteNumber(quantity) ||
+        !isFiniteNumber(callPremium) ||
+        !isFiniteNumber(putPremium)
+      : !isFiniteNumber(putStrike) ||
+        !isFiniteNumber(callStrike) ||
+        !isFiniteNumber(quantity) ||
+        !isFiniteNumber(callPremium) ||
+        !isFiniteNumber(putPremium);
+
+  if (missingCore || missingNumbers) {
+    return {
+      ok: false,
+      reason: "incomplete",
+      message:
+        kind === "strangle"
+          ? STRANGLE_INCOMPLETE_MESSAGE
+          : STRADDLE_INCOMPLETE_MESSAGE,
+    };
+  }
+
+  const comboStrikes =
+    kind === "straddle" ? [strike, strike] : [putStrike, callStrike];
+  if (
+    comboStrikes.some((value) => !isFiniteNumber(value) || value <= 0) ||
+    !isFiniteNumber(quantity) ||
+    quantity < 1 ||
+    !Number.isInteger(quantity) ||
+    !isFiniteNumber(callPremium) ||
+    !isFiniteNumber(putPremium) ||
+    callPremium < 0 ||
+    putPremium < 0
+  ) {
+    return {
+      ok: false,
+      reason: "invalid",
+      message: "Strike, quantity, and premium must be valid numbers.",
+    };
+  }
+
+  if (expiration < asOf) {
+    return {
+      ok: false,
+      reason: "expired",
+      message: "Expiration is in the past.",
+    };
+  }
+
+  const lowerStrike = kind === "straddle" ? strike : putStrike;
+  const upperStrike = kind === "straddle" ? strike : callStrike;
+  if (!isFiniteNumber(lowerStrike) || !isFiniteNumber(upperStrike)) {
+    return {
+      ok: false,
+      reason: "invalid",
+      message: "Strike, quantity, and premium must be valid numbers.",
+    };
+  }
+
+  if (kind === "strangle" && lowerStrike >= upperStrike) {
+    return {
+      ok: false,
+      reason: "invalid",
+      message: STRANGLE_STRIKE_ORDER_MESSAGE,
+    };
+  }
+
+  const net = roundCents(callPremium + putPremium);
+  const debitCredit = roundCents(net * CONTRACT_MULTIPLIER * quantity);
+  const breakevenLow = roundCents(lowerStrike - net);
+  const breakevenHigh = roundCents(upperStrike + net);
+
+  if (putBreakevenInvalid(breakevenLow)) {
+    return {
+      ok: false,
+      reason: "invalid",
+      message: COMBO_BREAKEVEN_MESSAGE,
+    };
+  }
+
+  const isBuy = side === "buy";
+  const collateralNote = isBuy
+    ? `Long ${kind}: capital is the ${formatUsdCents(debitCredit)} net debit paid.`
+    : `Short ${kind}: broker-specific collateral is not modeled.`;
+
+  return {
+    ok: true,
+    payoff: {
+      debitCredit,
+      maxLoss: isBuy ? debitCredit : null,
+      maxGain: isBuy ? null : debitCredit,
+      breakevenLow,
+      breakevenHigh,
+      collateralNote,
+    },
+  };
+}
+
 function formatShareCount(quantity: number): string {
   if (Number.isInteger(quantity)) return String(quantity);
   return quantity.toLocaleString("en-US", { maximumFractionDigits: 4 });
@@ -549,4 +699,15 @@ export function buildVerticalContextLine(
   return parts.length === 2 && stockPositions.length > 0
     ? `${parts[0]} and ${parts[1]}`
     : parts[0];
+}
+
+/**
+ * Book context for a straddle or strangle. Underlying holdings only —
+ * never covered, never "already hold this contract".
+ */
+export function buildComboContextLine(
+  proposal: Pick<ComboProposal, "symbol">,
+  positions: Position[] | null | undefined,
+): string | null {
+  return buildVerticalContextLine(proposal, positions);
 }
