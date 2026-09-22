@@ -1,12 +1,18 @@
 import {
   addCalendarDaysIso,
+  analyzeCombo,
   analyzeEntry,
   analyzeVertical,
+  buildComboContextLine,
   buildEntryContextLine,
   buildVerticalContextLine,
+  COMBO_BREAKEVEN_MESSAGE,
   formatUsdCents,
   leapWindowForPreset,
   parseContractLabel,
+  STRADDLE_INCOMPLETE_MESSAGE,
+  STRANGLE_INCOMPLETE_MESSAGE,
+  STRANGLE_STRIKE_ORDER_MESSAGE,
   todayIso,
   utcTodayIso,
   VERTICAL_CALL_PREMIUM_ORDER_MESSAGE,
@@ -17,6 +23,7 @@ import {
   VERTICAL_PUT_PREMIUM_ORDER_MESSAGE,
   VERTICAL_SAME_STRIKES_MESSAGE,
   VERTICAL_STRIKE_ORDER_MESSAGE,
+  type ComboProposal,
   type EntryProposal,
   type VerticalProposal,
 } from "../../lib/entryAnalysis";
@@ -54,6 +61,38 @@ function verticalProposal(
     higherPremium: 2,
     ...overrides,
   };
+}
+
+function comboProposal(
+  overrides: Partial<ComboProposal> = {},
+): ComboProposal {
+  return {
+    symbol: "NVDA",
+    kind: "straddle",
+    side: "buy",
+    strike: 250,
+    putStrike: null,
+    callStrike: null,
+    expiration: "2026-12-18",
+    quantity: 1,
+    callPremium: 4.2,
+    putPremium: 3.8,
+    ...overrides,
+  };
+}
+
+function strangleProposal(
+  overrides: Partial<ComboProposal> = {},
+): ComboProposal {
+  return comboProposal({
+    kind: "strangle",
+    strike: null,
+    putStrike: 240,
+    callStrike: 260,
+    callPremium: 2.5,
+    putPremium: 2.5,
+    ...overrides,
+  });
 }
 
 function stockPosition(
@@ -722,5 +761,299 @@ describe("buildVerticalContextLine", () => {
     const line = buildVerticalContextLine({ symbol: "TSLA" }, [tsla]);
     expect(line).toBe("Open TSLA: 100 sh");
     expect(line).not.toMatch(/covered|keep the shares/i);
+  });
+});
+
+describe("analyzeCombo", () => {
+  it("A long straddle qty 1: max loss is net debit, unlimited gain, both BEs", () => {
+    const result = analyzeCombo(comboProposal(), AS_OF);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.payoff.maxLoss).toBe(800);
+    expect(result.payoff.maxGain).toBeNull();
+    expect(result.payoff.debitCredit).toBe(800);
+    expect(result.payoff.breakevenLow).toBe(242);
+    expect(result.payoff.breakevenHigh).toBe(258);
+    expect(result.payoff.collateralNote).toBe(
+      "Long straddle: capital is the $800.00 net debit paid.",
+    );
+    expect(result.payoff).not.toHaveProperty("breakeven");
+    expect(formatUsdCents(result.payoff.maxLoss ?? 0)).toBe("$800.00");
+  });
+
+  it("B long straddle qty 2 scales debit and keeps per-share BEs", () => {
+    const result = analyzeCombo(comboProposal({ quantity: 2 }), AS_OF);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.payoff.maxLoss).toBe(1600);
+    expect(result.payoff.maxGain).toBeNull();
+    expect(result.payoff.breakevenLow).toBe(242);
+    expect(result.payoff.breakevenHigh).toBe(258);
+    expect(result.payoff.collateralNote).toBe(
+      "Long straddle: capital is the $1,600.00 net debit paid.",
+    );
+  });
+
+  it("C short straddle qty 1: unlimited loss, credit is max gain, same BEs", () => {
+    const result = analyzeCombo(comboProposal({ side: "sell" }), AS_OF);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.payoff.maxGain).toBe(800);
+    expect(result.payoff.maxLoss).toBeNull();
+    expect(result.payoff.breakevenLow).toBe(242);
+    expect(result.payoff.breakevenHigh).toBe(258);
+    expect(result.payoff.collateralNote).toBe(
+      "Short straddle: broker-specific collateral is not modeled.",
+    );
+    expect(result.payoff.collateralNote).not.toMatch(
+      /cash-secured|margin \$|buying-power/i,
+    );
+  });
+
+  it("D short straddle qty 2", () => {
+    const result = analyzeCombo(
+      comboProposal({
+        strike: 50,
+        callPremium: 1.25,
+        putPremium: 1.75,
+        side: "sell",
+        quantity: 2,
+      }),
+      AS_OF,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.payoff.maxGain).toBe(600);
+    expect(result.payoff.maxLoss).toBeNull();
+    expect(result.payoff.breakevenLow).toBe(47);
+    expect(result.payoff.breakevenHigh).toBe(53);
+    expect(result.payoff.collateralNote).toBe(
+      "Short straddle: broker-specific collateral is not modeled.",
+    );
+  });
+
+  it("E long strangle qty 1", () => {
+    const result = analyzeCombo(strangleProposal(), AS_OF);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.payoff.maxLoss).toBe(500);
+    expect(result.payoff.maxGain).toBeNull();
+    expect(result.payoff.breakevenLow).toBe(235);
+    expect(result.payoff.breakevenHigh).toBe(265);
+    expect(result.payoff.collateralNote).toBe(
+      "Long strangle: capital is the $500.00 net debit paid.",
+    );
+  });
+
+  it("F long strangle qty 2 with unequal premiums", () => {
+    const result = analyzeCombo(
+      strangleProposal({
+        putStrike: 100,
+        callStrike: 110,
+        putPremium: 3,
+        callPremium: 1.5,
+        quantity: 2,
+      }),
+      AS_OF,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.payoff.maxLoss).toBe(900);
+    expect(result.payoff.maxGain).toBeNull();
+    expect(result.payoff.breakevenLow).toBe(95.5);
+    expect(result.payoff.breakevenHigh).toBe(114.5);
+    expect(result.payoff.collateralNote).toBe(
+      "Long strangle: capital is the $900.00 net debit paid.",
+    );
+  });
+
+  it("G short strangle qty 1", () => {
+    const result = analyzeCombo(strangleProposal({ side: "sell" }), AS_OF);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.payoff.maxGain).toBe(500);
+    expect(result.payoff.maxLoss).toBeNull();
+    expect(result.payoff.breakevenLow).toBe(235);
+    expect(result.payoff.breakevenHigh).toBe(265);
+    expect(result.payoff.collateralNote).toBe(
+      "Short strangle: broker-specific collateral is not modeled.",
+    );
+  });
+
+  it("allows a zero-premium long straddle", () => {
+    const result = analyzeCombo(
+      comboProposal({ callPremium: 0, putPremium: 0 }),
+      AS_OF,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.payoff.maxLoss).toBe(0);
+    expect(result.payoff.breakevenLow).toBe(250);
+    expect(result.payoff.breakevenHigh).toBe(250);
+  });
+
+  it("1 straddle missing call premium is incomplete", () => {
+    const result = analyzeCombo(comboProposal({ callPremium: null }), AS_OF);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("incomplete");
+    expect(result.message).toBe(STRADDLE_INCOMPLETE_MESSAGE);
+  });
+
+  it("1 straddle missing put premium or strike is incomplete", () => {
+    expect(analyzeCombo(comboProposal({ putPremium: null }), AS_OF).ok).toBe(
+      false,
+    );
+    const missingStrike = analyzeCombo(comboProposal({ strike: null }), AS_OF);
+    expect(missingStrike.ok).toBe(false);
+    if (missingStrike.ok) return;
+    expect(missingStrike.reason).toBe("incomplete");
+    expect(missingStrike.message).toBe(STRADDLE_INCOMPLETE_MESSAGE);
+  });
+
+  it("2 strangle missing a strike or a premium is incomplete", () => {
+    const result = analyzeCombo(strangleProposal({ callStrike: null }), AS_OF);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("incomplete");
+    expect(result.message).toBe(STRANGLE_INCOMPLETE_MESSAGE);
+    expect(
+      analyzeCombo(strangleProposal({ putPremium: null }), AS_OF).ok,
+    ).toBe(false);
+  });
+
+  it("3 blank symbol is incomplete", () => {
+    const straddle = analyzeCombo(comboProposal({ symbol: "  " }), AS_OF);
+    expect(straddle.ok).toBe(false);
+    if (straddle.ok) return;
+    expect(straddle.reason).toBe("incomplete");
+    expect(straddle.message).toBe(STRADDLE_INCOMPLETE_MESSAGE);
+    const strangle = analyzeCombo(strangleProposal({ symbol: "" }), AS_OF);
+    expect(strangle.ok).toBe(false);
+    if (strangle.ok) return;
+    expect(strangle.message).toBe(STRANGLE_INCOMPLETE_MESSAGE);
+  });
+
+  it("4 missing expiry is incomplete", () => {
+    const result = analyzeCombo(comboProposal({ expiration: "" }), AS_OF);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("incomplete");
+    expect(result.message).toBe(STRADDLE_INCOMPLETE_MESSAGE);
+  });
+
+  it("5 past expiration is expired", () => {
+    const result = analyzeCombo(
+      comboProposal({ expiration: "2026-01-16" }),
+      AS_OF,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("expired");
+    expect(result.message).toMatch(/Expiration is in the past/);
+  });
+
+  it("6 rejects non-positive strikes", () => {
+    expect(analyzeCombo(comboProposal({ strike: 0 }), AS_OF).ok).toBe(false);
+    expect(analyzeCombo(comboProposal({ strike: -5 }), AS_OF).ok).toBe(false);
+    expect(analyzeCombo(strangleProposal({ putStrike: 0 }), AS_OF).ok).toBe(
+      false,
+    );
+    const invalid = analyzeCombo(comboProposal({ strike: 0 }), AS_OF);
+    expect(invalid.ok).toBe(false);
+    if (invalid.ok) return;
+    expect(invalid.reason).toBe("invalid");
+    expect(invalid.message).toBe(
+      "Strike, quantity, and premium must be valid numbers.",
+    );
+  });
+
+  it("7 rejects invalid quantity", () => {
+    expect(analyzeCombo(comboProposal({ quantity: 0 }), AS_OF).ok).toBe(false);
+    expect(analyzeCombo(comboProposal({ quantity: 1.5 }), AS_OF).ok).toBe(
+      false,
+    );
+    expect(analyzeCombo(comboProposal({ quantity: -1 }), AS_OF).ok).toBe(false);
+  });
+
+  it("8 rejects negative premiums", () => {
+    expect(
+      analyzeCombo(comboProposal({ callPremium: -0.01 }), AS_OF).ok,
+    ).toBe(false);
+    expect(analyzeCombo(comboProposal({ putPremium: -0.01 }), AS_OF).ok).toBe(
+      false,
+    );
+  });
+
+  it("9 rejects the same two strangle strikes", () => {
+    const result = analyzeCombo(
+      strangleProposal({ putStrike: 250, callStrike: 250 }),
+      AS_OF,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("invalid");
+    expect(result.message).toBe(STRANGLE_STRIKE_ORDER_MESSAGE);
+    expect(result.message).not.toMatch(/actually a straddle|switch to/i);
+  });
+
+  it("10 rejects a put strike above the call strike", () => {
+    const result = analyzeCombo(
+      strangleProposal({ putStrike: 260, callStrike: 250 }),
+      AS_OF,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("invalid");
+    expect(result.message).toBe(STRANGLE_STRIKE_ORDER_MESSAGE);
+  });
+
+  it("11 rejects a long straddle whose lower BE is at or below zero", () => {
+    const result = analyzeCombo(
+      comboProposal({ strike: 5, callPremium: 3, putPremium: 3 }),
+      AS_OF,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("invalid");
+    expect(result.message).toBe(COMBO_BREAKEVEN_MESSAGE);
+  });
+
+  it("12 rejects a short strangle whose lower BE is at or below zero", () => {
+    const result = analyzeCombo(
+      strangleProposal({
+        putStrike: 2,
+        callStrike: 4,
+        callPremium: 1.5,
+        putPremium: 1.5,
+        side: "sell",
+      }),
+      AS_OF,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("invalid");
+    expect(result.message).toBe(COMBO_BREAKEVEN_MESSAGE);
+  });
+});
+
+describe("buildComboContextLine", () => {
+  const tsla = stockPosition("TSLA", 100);
+
+  it("returns null when no positions are loaded", () => {
+    expect(buildComboContextLine({ symbol: "TSLA" }, null)).toBeNull();
+    expect(buildComboContextLine({ symbol: "TSLA" }, [])).toBeNull();
+  });
+
+  it("shows underlying holdings only", () => {
+    expect(buildComboContextLine({ symbol: "TSLA" }, [tsla])).toBe(
+      "Open TSLA: 100 sh",
+    );
+  });
+
+  it("never claims a short combo is covered", () => {
+    const line = buildComboContextLine({ symbol: "TSLA" }, [tsla]);
+    expect(line).toBe("Open TSLA: 100 sh");
+    expect(line).not.toMatch(/covered|keep the shares|already hold this contract/i);
   });
 });
