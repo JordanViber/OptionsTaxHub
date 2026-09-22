@@ -29,7 +29,11 @@ jest.mock("../../app/context/auth", () => ({
 }));
 
 import EntryAnalysisPanel from "../../app/components/EntryAnalysisPanel";
-import { leapWindowForPreset } from "../../lib/entryAnalysis";
+import {
+  COMBO_BREAKEVEN_MESSAGE,
+  leapWindowForPreset,
+  STRANGLE_STRIKE_ORDER_MESSAGE,
+} from "../../lib/entryAnalysis";
 import { RH_CONNECTION_REQUIRED_COPY } from "../../lib/types";
 
 function futureIso(): string {
@@ -842,5 +846,299 @@ describe("EntryAnalysisPanel", () => {
     expect(
       screen.queryByRole("button", { name: /connect robinhood/i }),
     ).not.toBeInTheDocument();
+  });
+
+  function fillLongStraddle() {
+    fireEvent.click(screen.getByTestId("entry-structure-straddle"));
+    fireEvent.change(screen.getByTestId("entry-symbol"), {
+      target: { value: "NVDA" },
+    });
+    fireEvent.change(screen.getByTestId("entry-strike"), {
+      target: { value: "250" },
+    });
+    fireEvent.change(screen.getByTestId("entry-expiration"), {
+      target: { value: futureIso() },
+    });
+    fireEvent.change(screen.getByTestId("entry-premium-call"), {
+      target: { value: "4.20" },
+    });
+    fireEvent.change(screen.getByTestId("entry-premium-put"), {
+      target: { value: "3.80" },
+    });
+  }
+
+  function fillLongStrangle() {
+    fireEvent.click(screen.getByTestId("entry-structure-strangle"));
+    fireEvent.change(screen.getByTestId("entry-symbol"), {
+      target: { value: "NVDA" },
+    });
+    fireEvent.change(screen.getByTestId("entry-strike-put"), {
+      target: { value: "240" },
+    });
+    fireEvent.change(screen.getByTestId("entry-strike-call"), {
+      target: { value: "260" },
+    });
+    fireEvent.change(screen.getByTestId("entry-expiration"), {
+      target: { value: futureIso() },
+    });
+    fireEvent.change(screen.getByTestId("entry-premium-call"), {
+      target: { value: "2.50" },
+    });
+    fireEvent.change(screen.getByTestId("entry-premium-put"), {
+      target: { value: "2.50" },
+    });
+  }
+
+  it("defaults to single-leg and shows four structure buttons", () => {
+    render(<EntryAnalysisPanel />);
+    expect(screen.getByTestId("entry-structure-single")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByTestId("entry-structure-vertical")).toBeInTheDocument();
+    expect(screen.getByTestId("entry-structure-straddle")).toBeInTheDocument();
+    expect(screen.getByTestId("entry-structure-strangle")).toBeInTheDocument();
+  });
+
+  it("reveals straddle fields when selected", () => {
+    render(<EntryAnalysisPanel />);
+    fireEvent.click(screen.getByTestId("entry-structure-straddle"));
+    expect(screen.getByTestId("entry-structure-straddle")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByTestId("entry-side-buy")).toBeInTheDocument();
+    expect(screen.getByTestId("entry-strike")).toBeInTheDocument();
+    expect(screen.getByTestId("entry-premium-call")).toBeInTheDocument();
+    expect(screen.getByTestId("entry-premium-put")).toBeInTheDocument();
+    expect(screen.queryByTestId("entry-debit")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("entry-strike-put")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("entry-premium")).not.toBeInTheDocument();
+    expect(
+      screen.getByTestId("entry-analysis-panel").querySelector("table"),
+    ).toBeNull();
+  });
+
+  it("reveals strangle fields when selected", () => {
+    render(<EntryAnalysisPanel />);
+    fireEvent.click(screen.getByTestId("entry-structure-strangle"));
+    expect(screen.getByTestId("entry-strike-put")).toBeInTheDocument();
+    expect(screen.getByTestId("entry-strike-call")).toBeInTheDocument();
+    expect(screen.getByTestId("entry-premium-call")).toBeInTheDocument();
+    expect(screen.getByTestId("entry-premium-put")).toBeInTheDocument();
+    expect(screen.getByTestId("entry-side-buy")).toBeInTheDocument();
+    expect(screen.queryByTestId("entry-strike")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("entry-premium")).not.toBeInTheDocument();
+  });
+
+  it("shows buy straddle max loss / unlimited gain / both BEs", () => {
+    render(<EntryAnalysisPanel />);
+    fillLongStraddle();
+    expect(screen.getByTestId("entry-results")).toBeInTheDocument();
+    expect(screen.getByTestId("entry-max-loss")).toHaveTextContent("$800.00");
+    expect(screen.getByTestId("entry-max-gain")).toHaveTextContent("Unlimited");
+    expect(screen.getByTestId("entry-breakeven-low")).toHaveTextContent(
+      "$242.00",
+    );
+    expect(screen.getByTestId("entry-breakeven-high")).toHaveTextContent(
+      "$258.00",
+    );
+    expect(screen.getByTestId("entry-collateral")).toHaveTextContent(
+      /Long straddle: capital is the \$800\.00 net debit paid/,
+    );
+    expect(screen.queryByTestId("entry-breakeven")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("entry-context")).not.toBeInTheDocument();
+  });
+
+  it("shows sell straddle unlimited loss / credit / both BEs", () => {
+    render(<EntryAnalysisPanel />);
+    fillLongStraddle();
+    fireEvent.click(screen.getByTestId("entry-side-sell"));
+    expect(screen.getByTestId("entry-max-loss")).toHaveTextContent("Unlimited");
+    expect(screen.getByTestId("entry-max-gain")).toHaveTextContent("$800.00");
+    expect(screen.getByTestId("entry-breakeven-low")).toHaveTextContent(
+      "$242.00",
+    );
+    expect(screen.getByTestId("entry-breakeven-high")).toHaveTextContent(
+      "$258.00",
+    );
+    expect(screen.getByTestId("entry-collateral")).toHaveTextContent(
+      /broker-specific collateral is not modeled/,
+    );
+    expect(screen.getByTestId("entry-collateral")).not.toHaveTextContent(
+      /cash-secured|margin \$/i,
+    );
+  });
+
+  it("shows buy strangle max loss / unlimited gain / both BEs", () => {
+    render(<EntryAnalysisPanel />);
+    fillLongStrangle();
+    expect(screen.getByTestId("entry-max-loss")).toHaveTextContent("$500.00");
+    expect(screen.getByTestId("entry-max-gain")).toHaveTextContent("Unlimited");
+    expect(screen.getByTestId("entry-breakeven-low")).toHaveTextContent(
+      "$235.00",
+    );
+    expect(screen.getByTestId("entry-breakeven-high")).toHaveTextContent(
+      "$265.00",
+    );
+  });
+
+  it("shows sell strangle unlimited loss / credit / both BEs", () => {
+    render(<EntryAnalysisPanel />);
+    fillLongStrangle();
+    fireEvent.click(screen.getByTestId("entry-side-sell"));
+    expect(screen.getByTestId("entry-max-loss")).toHaveTextContent("Unlimited");
+    expect(screen.getByTestId("entry-max-gain")).toHaveTextContent("$500.00");
+    expect(screen.getByTestId("entry-breakeven-low")).toHaveTextContent(
+      "$235.00",
+    );
+    expect(screen.getByTestId("entry-breakeven-high")).toHaveTextContent(
+      "$265.00",
+    );
+    expect(screen.getByTestId("entry-collateral")).toHaveTextContent(
+      /Short strangle: broker-specific collateral is not modeled/,
+    );
+  });
+
+  it("blocks the same two strangle strikes without switching strategy", () => {
+    render(<EntryAnalysisPanel />);
+    fillLongStrangle();
+    fireEvent.change(screen.getByTestId("entry-strike-call"), {
+      target: { value: "240" },
+    });
+    expect(screen.getByTestId("entry-error")).toHaveTextContent(
+      STRANGLE_STRIKE_ORDER_MESSAGE,
+    );
+    expect(screen.queryByTestId("entry-results")).not.toBeInTheDocument();
+    expect(screen.getByTestId("entry-structure-strangle")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByTestId("entry-side-buy")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByTestId("entry-error")).not.toHaveTextContent(
+      /switch to (Buy|Sell)|actually a straddle|this is a straddle/i,
+    );
+  });
+
+  it("blocks a straddle whose lower BE is at or below zero without switching side", () => {
+    render(<EntryAnalysisPanel />);
+    fillLongStraddle();
+    fireEvent.change(screen.getByTestId("entry-strike"), {
+      target: { value: "5" },
+    });
+    fireEvent.change(screen.getByTestId("entry-premium-call"), {
+      target: { value: "3" },
+    });
+    fireEvent.change(screen.getByTestId("entry-premium-put"), {
+      target: { value: "3" },
+    });
+    expect(screen.getByTestId("entry-error")).toHaveTextContent(
+      COMBO_BREAKEVEN_MESSAGE,
+    );
+    expect(screen.queryByTestId("entry-results")).not.toBeInTheDocument();
+    expect(screen.getByTestId("entry-structure-straddle")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByTestId("entry-side-buy")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByTestId("entry-error")).not.toHaveTextContent(
+      /switch to (Buy|Sell)|actually a straddle/i,
+    );
+  });
+
+  it("shows an honest error for a past combo expiration", () => {
+    render(<EntryAnalysisPanel />);
+    fillLongStraddle();
+    fireEvent.change(screen.getByTestId("entry-expiration"), {
+      target: { value: "2020-01-16" },
+    });
+    expect(screen.getByTestId("entry-error")).toHaveTextContent(
+      /Expiration is in the past/,
+    );
+    expect(screen.queryByTestId("entry-results")).not.toBeInTheDocument();
+  });
+
+  it("rejects a fractional combo quantity as invalid", () => {
+    render(<EntryAnalysisPanel />);
+    fillLongStraddle();
+    fireEvent.change(screen.getByTestId("entry-quantity"), {
+      target: { value: "1.5" },
+    });
+    expect(screen.getByTestId("entry-error")).toHaveTextContent(
+      /Strike, quantity, and premium must be valid numbers/,
+    );
+  });
+
+  it("rejects a negative combo premium as invalid", () => {
+    render(<EntryAnalysisPanel />);
+    fillLongStraddle();
+    fireEvent.change(screen.getByTestId("entry-premium-call"), {
+      target: { value: "-0.01" },
+    });
+    expect(screen.getByTestId("entry-error")).toHaveTextContent(
+      /Strike, quantity, and premium must be valid numbers/,
+    );
+  });
+
+  it("empty-desk straddle has no book context", () => {
+    render(<EntryAnalysisPanel positions={[]} />);
+    fillLongStraddle();
+    expect(screen.getByTestId("entry-max-loss")).toHaveTextContent("$800.00");
+    expect(screen.queryByTestId("entry-context")).not.toBeInTheDocument();
+  });
+
+  it("does not claim a short straddle is covered against 100 shares", () => {
+    const tslaStock: Position = {
+      ...nvdaStock,
+      position_id: "TSLA:stock",
+      symbol: "TSLA",
+      display_label: "TSLA",
+      quantity: 100,
+    };
+    render(<EntryAnalysisPanel positions={[tslaStock]} />);
+    fillLongStraddle();
+    fireEvent.click(screen.getByTestId("entry-side-sell"));
+    fireEvent.change(screen.getByTestId("entry-symbol"), {
+      target: { value: "TSLA" },
+    });
+    expect(screen.getByTestId("entry-max-gain")).toHaveTextContent("$800.00");
+    expect(screen.getByTestId("entry-context")).toHaveTextContent(
+      "Open TSLA: 100 sh",
+    );
+    expect(screen.getByTestId("entry-context")).not.toHaveTextContent(
+      /covered|keep the shares/i,
+    );
+  });
+
+  it("Rank LEAPs #1 returns to single-leg v1 payoff from straddle mode", async () => {
+    mockRhChainMutateAsync.mockResolvedValue({
+      ...mockRankSuccess(),
+      provider: "robinhood",
+      code: "ok",
+    });
+    render(<EntryAnalysisPanel />);
+    fireEvent.click(screen.getByTestId("entry-structure-straddle"));
+    fireEvent.change(screen.getByTestId("entry-symbol"), {
+      target: { value: "NVDA" },
+    });
+    fireEvent.click(screen.getByTestId("entry-rank-leaps"));
+    await waitFor(() => {
+      expect(screen.getByTestId("entry-rank-1")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTestId("entry-rank-1"));
+    expect(screen.getByTestId("entry-structure-single")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByTestId("entry-max-loss")).toHaveTextContent("$420.00");
+    expect(screen.getByTestId("entry-max-gain")).toHaveTextContent("Unlimited");
+    expect(screen.getByTestId("entry-breakeven")).toHaveTextContent("$94.20");
+    expect(mockLeapRankMutateAsync).not.toHaveBeenCalled();
   });
 });
