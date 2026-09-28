@@ -1146,8 +1146,6 @@ def session_grants_packet(session: Any, analysis_id: str = "") -> bool:
 
     Session metadata.analysis_id (or packet_analysis) is canonical; a client
     analysis_id of local-analysis / missing must not 403 a paid TEST session.
-    Sandbox Checkout may be status=complete while payment_status is not
-    exactly paid.
     """
     if session is None:
         return False
@@ -1159,16 +1157,22 @@ def session_grants_packet(session: Any, analysis_id: str = "") -> bool:
     amount = _session_attr(session, "amount_total")
     amount_cents = _coerce_amount_cents(amount)
 
-    paid_ok = payment_status in ("paid", "no_payment_required")
+    currency = str(_session_attr(session, "currency") or "").lower()
+    mode = str(_session_attr(session, "mode") or "").lower()
+    livemode = _session_attr(session, "livemode")
+    expected_livemode = not packet_requires_test_stripe()
+    paid_ok = payment_status == "paid"
     amount_is_packet = amount_cents == PACKET_AMOUNT_CENTS
-    complete_ok = status == "complete" and (
-        amount_cents is None or amount_is_packet
-    )
-    amount_ok = amount_cents is None or amount_is_packet
     granted = (
         product == PACKET_METADATA_PRODUCT
-        and amount_ok
-        and (paid_ok or complete_ok)
+        and bool(session_analysis)
+        and paid_ok
+        and status == "complete"
+        and amount_is_packet
+        and currency == "usd"
+        and mode == "payment"
+        and isinstance(livemode, bool)
+        and livemode == expected_livemode
     )
     if not granted:
         logger.info(

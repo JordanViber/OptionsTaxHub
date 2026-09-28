@@ -19,10 +19,10 @@ SAMPLE_CSV_FILENAMES = frozenset({"sample-robinhood-transactions.csv"})
 SAMPLE_1099_FILENAMES = frozenset({"sample-robinhood-1099-2026.pdf"})
 # SHA-256 of client/public sample fixtures. Filenames are not trusted.
 SAMPLE_CSV_SHA256 = (
-    "b7928619296c9f38d26f770f6a08a473dea4ae6c045d0dd05aff7c79aaace146"
+    "3e5ad25059876389e8e8e2df5da0d5faf17118a52be1da1615632212c95be349"
 )
 SAMPLE_1099_SHA256 = (
-    "16a2d2af4b80c4fed6febf6e798489911f27a0acbb17d0733a77f0baf0096ba8"
+    "0c44b6241810f877b5840c4ae0ae1e598e5a58bc97b737b19d421c08988c7e78"
 )
 # Snapshot quotes for the in-app 2026 sample so Open sample does not wait on Yahoo.
 SAMPLE_FIXTURE_PRICES = {
