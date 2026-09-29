@@ -279,6 +279,23 @@ def test_payload_and_pdf_contain_1099_totals_amd_and_faqs():
     assert "credit-spread" in pdf_text.lower() or "credit spread" in pdf_text.lower()
 
 
+def test_analysis_with_history_suggestions_finds_embedded_analysis_id(monkeypatch):
+    monkeypatch.setattr(main, "get_analysis_by_id", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        main,
+        "get_analysis_by_result_analysis_id",
+        lambda *_args, **_kwargs: {
+            "result": {"suggestions": [{"symbol": "AMD"}]}
+        },
+    )
+
+    result = main._analysis_with_history_suggestions(
+        "analysis-uuid", "test-user-123", {"positions": []}
+    )
+
+    assert result["suggestions"] == [{"symbol": "AMD"}]
+
+
 def test_unpaid_download_is_403(monkeypatch):
     _test_stripe_env(monkeypatch)
     main.remember_analysis("analysis-sample-1", "test-user-123", SAMPLE_ANALYSIS)
@@ -369,9 +386,12 @@ def test_checkout_rekeys_local_analysis_per_user(monkeypatch):
         return FakeCheckoutSession(**kwargs)
 
     monkeypatch.setattr(main.stripe.checkout.Session, "create", create)
+    analysis_without_id = {
+        key: value for key, value in SAMPLE_ANALYSIS.items() if key != "analysis_id"
+    }
     response = client.post(
         "/api/year-close-packet/checkout",
-        json={"analysis_id": "local-analysis", "analysis": SAMPLE_ANALYSIS},
+        json={"analysis_id": "local-analysis", "analysis": analysis_without_id},
     )
 
     assert response.status_code == 200
@@ -560,6 +580,137 @@ def test_download_rejects_b_users_session_for_a_users_snapshot(monkeypatch):
     assert response.status_code == 403
     assert PACKET_STORE["victim-analysis"]["user_id"] == "user-A"
     assert PACKET_STORE["victim-analysis"]["paid"] is False
+
+
+def test_reused_same_year_checkout_survives_packet_store_restart(monkeypatch):
+    _test_stripe_env(monkeypatch)
+    session_id = "cs_test_year_grant"
+    source = {
+        "id": "history-source",
+        "user_id": "test-user-123",
+        "result": {
+            "analysis_id": "analysis-source",
+            "packet_unlocked": True,
+            "packet_session_id": session_id,
+            "tax_profile": {"tax_year": 2025},
+        },
+    }
+    target = {
+        "id": "history-target",
+        "user_id": "test-user-123",
+        "result": {
+            "analysis_id": "analysis-followup",
+            "packet_unlocked": True,
+            "packet_session_id": session_id,
+            "tax_profile": {"tax_year": 2025},
+        },
+    }
+    rows = {"analysis-source": source, "analysis-followup": target}
+    monkeypatch.setattr(
+        main,
+        "get_analysis_by_id",
+        lambda analysis_id, _user_id, client=None: rows.get(analysis_id),
+    )
+    monkeypatch.setattr(
+        main,
+        "get_analysis_by_result_analysis_id",
+        lambda analysis_id, _user_id, client=None: rows.get(analysis_id),
+    )
+    monkeypatch.setattr(
+        main,
+        "get_packet_grant_for_tax_year",
+        lambda _user_id, tax_year: session_id if tax_year == 2025 else None,
+    )
+    reused_session = _stripe_object_session(
+        id=session_id,
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": "analysis-source",
+            "user_id": "test-user-123",
+        },
+    )
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda *_args, **_kwargs: reused_session,
+    )
+    reset_packet_store()
+
+    response = client.post(
+        "/api/year-close-packet/download",
+        json={
+            "analysis_id": "analysis-followup",
+            "session_id": session_id,
+            "analysis": SAMPLE_ANALYSIS,
+        },
+    )
+
+    assert response.status_code == 200
+    assert PACKET_STORE["analysis-followup"]["user_id"] == "test-user-123"
+    assert PACKET_STORE["analysis-followup"]["paid"] is True
+
+
+def test_reused_packet_session_does_not_unlock_a_different_tax_year(monkeypatch):
+    _test_stripe_env(monkeypatch)
+    session_id = "cs_test_year_grant"
+    source = {
+        "id": "history-source",
+        "user_id": "test-user-123",
+        "result": {
+            "analysis_id": "analysis-source",
+            "packet_unlocked": True,
+            "packet_session_id": session_id,
+            "tax_profile": {"tax_year": 2025},
+        },
+    }
+    target = {
+        "id": "history-target",
+        "user_id": "test-user-123",
+        "result": {
+            "analysis_id": "analysis-followup",
+            "packet_unlocked": True,
+            "packet_session_id": session_id,
+            "tax_profile": {"tax_year": 2026},
+        },
+    }
+    rows = {"analysis-source": source, "analysis-followup": target}
+    monkeypatch.setattr(
+        main,
+        "get_analysis_by_id",
+        lambda analysis_id, _user_id, client=None: rows.get(analysis_id),
+    )
+    monkeypatch.setattr(
+        main,
+        "get_analysis_by_result_analysis_id",
+        lambda analysis_id, _user_id, client=None: rows.get(analysis_id),
+    )
+    monkeypatch.setattr(main, "get_packet_grant_for_tax_year", lambda *_args: session_id)
+    reused_session = _stripe_object_session(
+        id=session_id,
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": "analysis-source",
+            "user_id": "test-user-123",
+        },
+    )
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda *_args, **_kwargs: reused_session,
+    )
+    reset_packet_store()
+
+    response = client.post(
+        "/api/year-close-packet/download",
+        json={
+            "analysis_id": "analysis-followup",
+            "session_id": session_id,
+            "analysis": SAMPLE_ANALYSIS,
+        },
+    )
+
+    assert response.status_code == 403
+    assert "analysis-followup" not in PACKET_STORE
 
 
 def test_three_dollar_tip_does_not_unlock_packet(monkeypatch):

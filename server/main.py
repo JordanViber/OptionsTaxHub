@@ -60,6 +60,7 @@ from year_close_packet import (
     render_packet_pdf,
     resolve_packet_stripe_secret_key,
     session_grants_packet,
+    session_is_settled_packet,
     upsert_payload,
 )
 from csv_parser import parse_csv, RealizedEvent, transactions_to_tax_lots
@@ -1930,17 +1931,16 @@ def _configure_packet_stripe() -> str:
     return key
 
 
-def _grant_packet_from_session(session, analysis_id: str, user_id: str = "") -> bool:
+def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[bool]:
     if not session_grants_packet(session, analysis_id):
         return False
     session_analysis_id = packet_analysis_id_from_session(session)
     session_user_id = packet_user_id_from_session(session)
-    if (
-        not session_user_id
-        or not user_id
-        or session_user_id != user_id
-        or not packet_store_belongs_to_user(session_analysis_id, user_id)
-    ):
+    if not session_user_id or not user_id or session_user_id != user_id:
+        logger.warning("Rejecting packet grant with missing or mismatched checkout owner")
+        return False
+    if not packet_store_belongs_to_user(session_analysis_id, user_id):
+        logger.warning("Rejecting packet grant for another user's in-memory snapshot")
         return False
     persisted = patch_analysis_result(
         session_analysis_id,
@@ -1956,10 +1956,7 @@ def _grant_packet_from_session(session, analysis_id: str, user_id: str = "") -> 
             session_analysis_id,
             session_user_id,
         )
-        raise HTTPException(
-            status_code=503,
-            detail="Unable to persist packet payment. Please retry the download.",
-        )
+        return None
     if not persisted:
         return False
     if not mark_paid(
@@ -1969,6 +1966,16 @@ def _grant_packet_from_session(session, analysis_id: str, user_id: str = "") -> 
     ):
         return False
     return True
+
+
+def _grant_packet_from_session(session, analysis_id: str, user_id: str = "") -> bool:
+    granted = _persist_packet_grant(session, analysis_id, user_id)
+    if granted is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Payment was verified but could not be saved. Please retry.",
+        )
+    return granted
 
 
 def _analysis_with_history_suggestions(
@@ -1982,12 +1989,70 @@ def _analysis_with_history_suggestions(
     if not analysis_id or not user_id:
         return analysis
     record = get_analysis_by_id(analysis_id, user_id)
+    if not record:
+        record = get_analysis_by_result_analysis_id(analysis_id, user_id)
     result = record.get("result") if isinstance(record, dict) else None
     if not isinstance(result, dict) or not result.get("suggestions"):
         return analysis
     merged = dict(analysis or {})
     merged["suggestions"] = result["suggestions"]
     return merged
+
+
+def _packet_result_tax_year(result: Optional[dict]) -> Optional[int]:
+    if not isinstance(result, dict):
+        return None
+    year = result.get("analysis_tax_year")
+    profile = result.get("tax_profile")
+    if year is None and isinstance(profile, dict):
+        year = profile.get("tax_year")
+    try:
+        return int(year) if year is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_persisted_same_year_packet_grant(
+    analysis_id: str,
+    session_id: str,
+    user_id: str,
+    session,
+) -> bool:
+    """Accept a reused Checkout only when owner-scoped rows prove same-year entitlement."""
+    source_analysis_id = packet_analysis_id_from_session(session)
+    if (
+        not session_id
+        or not user_id
+        or packet_session_id(session) != session_id
+        or packet_user_id_from_session(session) != user_id
+        or not source_analysis_id
+        or source_analysis_id == "local-analysis"
+        or not session_is_settled_packet(session)
+    ):
+        return False
+
+    target = get_analysis_by_id(analysis_id, user_id)
+    if not target:
+        target = get_analysis_by_result_analysis_id(analysis_id, user_id)
+    source = get_analysis_by_id(source_analysis_id, user_id)
+    if not source:
+        source = get_analysis_by_result_analysis_id(source_analysis_id, user_id)
+    target_result = target.get("result") if isinstance(target, dict) else None
+    source_result = source.get("result") if isinstance(source, dict) else None
+    if not isinstance(target_result, dict) or not isinstance(source_result, dict):
+        return False
+    if (
+        not target_result.get("packet_unlocked")
+        or target_result.get("packet_session_id") != session_id
+        or not source_result.get("packet_unlocked")
+        or source_result.get("packet_session_id") != session_id
+    ):
+        return False
+    target_year = _packet_result_tax_year(target_result)
+    source_year = _packet_result_tax_year(source_result)
+    if target_year is None or target_year != source_year:
+        return False
+    return get_packet_grant_for_tax_year(user_id, target_year) == session_id
 
 
 def _payload_for_download(analysis_id: str, user_id: str, analysis: Optional[dict]):
@@ -2056,6 +2121,17 @@ async def create_year_close_packet_checkout(
             raise HTTPException(
                 status_code=503,
                 detail="Could not verify this analysis before checkout. Please reload and retry.",
+            )
+        analysis_id = str(uuid.uuid4())
+        analysis = {**analysis, "analysis_id": analysis_id}
+
+    try:
+        uuid.UUID(analysis_id)
+    except (TypeError, ValueError, AttributeError):
+        if not isinstance(analysis, dict):
+            raise HTTPException(
+                status_code=400,
+                detail="This analysis has no stable ID. Reload it before starting checkout.",
             )
         analysis_id = str(uuid.uuid4())
         analysis = {**analysis, "analysis_id": analysis_id}
@@ -2192,36 +2268,12 @@ async def year_close_packet_webhook(request: Request):
     if not analysis_id:
         return {"received": True, "granted": False}
 
-    granted = session_grants_packet(session_obj, analysis_id)
-    if granted:
-        user_id = packet_user_id_from_session(session_obj)
-        if not user_id or not packet_store_belongs_to_user(analysis_id, user_id):
-            logger.warning("Ignoring packet event with missing owner or conflicting snapshot")
-            return {"received": True, "granted": False}
-        persisted = patch_analysis_result(
-            analysis_id,
-            user_id,
-            {
-                "packet_unlocked": True,
-                "packet_session_id": packet_session_id(session_obj),
-            },
+    granted = _persist_packet_grant(session_obj, analysis_id, packet_user_id_from_session(session_obj))
+    if granted is None:
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to persist packet payment; Stripe may retry this event.",
         )
-        if persisted is None:
-            logger.error(
-                "Failed to persist packet grant analysis_id=%s user_id=%s",
-                analysis_id,
-                user_id,
-            )
-            raise HTTPException(
-                status_code=500,
-                detail="Unable to persist packet payment; Stripe may retry this event.",
-            )
-        if not persisted or not mark_paid(
-            analysis_id,
-            packet_session_id(session_obj),
-            user_id=user_id,
-        ):
-            return {"received": True, "granted": False}
     return {"received": True, "granted": granted}
 
 
@@ -2242,12 +2294,20 @@ def _authorized_packet_download(
         session = stripe.checkout.Session.retrieve(session_id)
     except stripe.StripeError:
         raise HTTPException(status_code=403, detail="Year-close packet download requires payment.")
-    if not _grant_packet_from_session(session, analysis_id, user_id=user_id):
-        raise HTTPException(
-            status_code=403,
-            detail="Year-close packet download requires payment.",
-        )
-    return packet_analysis_id_from_session(session)
+    if _grant_packet_from_session(session, analysis_id, user_id=user_id):
+        return packet_analysis_id_from_session(session)
+    if _is_persisted_same_year_packet_grant(
+        analysis_id,
+        session_id,
+        user_id,
+        session,
+    ) and packet_store_belongs_to_user(analysis_id, user_id):
+        if mark_paid(analysis_id, session_id, user_id=user_id):
+            return analysis_id
+    raise HTTPException(
+        status_code=403,
+        detail="Year-close packet download requires payment.",
+    )
 
 
 @app.get("/api/year-close-packet/download")

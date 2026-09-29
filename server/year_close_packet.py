@@ -1167,29 +1167,12 @@ def _coerce_amount_cents(amount: Any) -> Optional[int]:
         return None
 
 
-def session_grants_packet(session: Any, analysis_id: str = "") -> bool:
-    """True only for a paid Year-close packet session.
-
-    TipJar sessions (Coffee/Lunch/Generous, $3/$10/$25) never grant this.
-
-    Session metadata.analysis_id (or packet_analysis) is canonical; a client
-    analysis_id of local-analysis / missing must not 403 a paid TEST session.
-    """
+def session_is_settled_packet(session: Any) -> bool:
+    """Validate paid packet attributes without deciding which analysis it unlocks."""
     if session is None:
         return False
     metadata = _session_metadata(session)
     product = str(metadata.get("product") or "")
-    session_analysis = packet_analysis_id_from_session(session)
-    requested_analysis = str(analysis_id or "").strip()
-    analysis_matches = (
-        bool(requested_analysis)
-        and bool(session_analysis)
-        and session_analysis != "local-analysis"
-        and (
-            requested_analysis == "local-analysis"
-            or requested_analysis == session_analysis
-        )
-    )
     payment_status = str(_session_attr(session, "payment_status") or "").lower()
     status = str(_session_attr(session, "status") or "").lower()
     amount = _session_attr(session, "amount_total")
@@ -1201,9 +1184,8 @@ def session_grants_packet(session: Any, analysis_id: str = "") -> bool:
     expected_livemode = not packet_requires_test_stripe()
     paid_ok = payment_status == "paid"
     amount_is_packet = amount_cents == PACKET_AMOUNT_CENTS
-    granted = (
+    return (
         product == PACKET_METADATA_PRODUCT
-        and analysis_matches
         and paid_ok
         and status == "complete"
         and amount_is_packet
@@ -1212,14 +1194,35 @@ def session_grants_packet(session: Any, analysis_id: str = "") -> bool:
         and isinstance(livemode, bool)
         and livemode == expected_livemode
     )
+
+
+def session_grants_packet(session: Any, analysis_id: str = "") -> bool:
+    """True only for a settled packet session bound to the requested analysis.
+
+    The request may use ``local-analysis`` as a compatibility alias, but the
+    signed session must always contain a real canonical analysis ID.
+    """
+    session_analysis = packet_analysis_id_from_session(session)
+    requested_analysis = str(analysis_id or "").strip()
+    analysis_matches = (
+        bool(requested_analysis)
+        and bool(session_analysis)
+        and session_analysis != "local-analysis"
+        and (
+            requested_analysis == "local-analysis"
+            or requested_analysis == session_analysis
+        )
+    )
+    granted = analysis_matches and session_is_settled_packet(session)
     if not granted:
+        metadata = _session_metadata(session)
         logger.info(
             "year-close packet session rejected product=%s payment_status=%s "
             "status=%s amount=%s analysis_id=%s",
-            product or "-",
-            payment_status or "-",
-            status or "-",
-            amount_cents if amount_cents is not None else "-",
+            str(metadata.get("product") or "-"),
+            str(_session_attr(session, "payment_status") or "-"),
+            str(_session_attr(session, "status") or "-"),
+            _coerce_amount_cents(_session_attr(session, "amount_total")) or "-",
             session_analysis or "-",
         )
     return granted

@@ -224,6 +224,7 @@ def get_analysis_by_result_analysis_id(
             .select("id, user_id, filename, uploaded_at, summary, positions_count, total_market_value, result")
             .eq("user_id", user_id)
             .contains("result", {"analysis_id": analysis_id})
+            .order("uploaded_at", desc=True)
             .limit(1)
             .execute()
         )
@@ -233,6 +234,44 @@ def get_analysis_by_result_analysis_id(
     except Exception as e:
         logger.error("Failed to fetch analysis by embedded id: %s", e)
         return None
+
+
+def _lookup_analysis_for_entitlement(
+    analysis_id: str,
+    user_id: str,
+    client,
+) -> tuple[Optional[dict], bool]:
+    """Find the owner-scoped row; the bool distinguishes a miss from DB errors."""
+    try:
+        result = (
+            client.table("portfolio_analyses")
+            .select("id, user_id, result")
+            .eq("id", analysis_id)
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception as e:
+        logger.error("Failed to find analysis row %s: %s", analysis_id, e)
+        return None, False
+    if result.data:
+        return dict(result.data[0]), True
+    try:
+        result = (
+            client.table("portfolio_analyses")
+            .select("id, user_id, result")
+            .eq("user_id", user_id)
+            .contains("result", {"analysis_id": analysis_id})
+            .order("uploaded_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+    except Exception as e:
+        logger.error("Failed to find analysis result %s: %s", analysis_id, e)
+        return None, False
+    if result.data:
+        return dict(result.data[0]), True
+    return None, True
 
 
 def ensure_analysis_history(
@@ -246,9 +285,13 @@ def ensure_analysis_history(
     client = get_supabase()
     if client is None:
         return None
-    record = get_analysis_by_id(analysis_id, user_id, client=client)
-    if not record:
-        record = get_analysis_by_result_analysis_id(analysis_id, user_id, client=client)
+    record, lookup_succeeded = _lookup_analysis_for_entitlement(
+        analysis_id,
+        user_id,
+        client,
+    )
+    if not lookup_succeeded:
+        return None
     if record:
         return record
     if not isinstance(analysis, dict) or analysis.get("analysis_id") != analysis_id:
@@ -426,33 +469,13 @@ def patch_analysis_result(
     client = get_supabase()
     if client is None:
         return None
-    try:
-        lookup = (
-            client.table("portfolio_analyses")
-            .select("id, user_id, result")
-            .eq("id", analysis_id)
-            .eq("user_id", user_id)
-            .limit(1)
-            .execute()
-        )
-        record = dict(lookup.data[0]) if lookup.data else None
-    except Exception as e:
-        logger.error("Failed to find analysis row %s: %s", analysis_id, e)
+    record, lookup_succeeded = _lookup_analysis_for_entitlement(
+        analysis_id,
+        user_id,
+        client,
+    )
+    if not lookup_succeeded:
         return None
-    if not record:
-        try:
-            lookup = (
-                client.table("portfolio_analyses")
-                .select("id, user_id, result")
-                .eq("user_id", user_id)
-                .contains("result", {"analysis_id": analysis_id})
-                .limit(1)
-                .execute()
-            )
-            record = dict(lookup.data[0]) if lookup.data else None
-        except Exception as e:
-            logger.error("Failed to find analysis result %s: %s", analysis_id, e)
-            return None
     if not record or not record.get("id"):
         return False
     result = record.get("result")

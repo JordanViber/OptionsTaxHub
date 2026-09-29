@@ -201,7 +201,7 @@ class TestPatchAnalysisResult:
         }
         builder = MagicMock()
         builder.select.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value.data = []
-        builder.select.return_value.eq.return_value.contains.return_value.limit.return_value.execute.return_value.data = [record]
+        builder.select.return_value.eq.return_value.contains.return_value.order.return_value.limit.return_value.execute.return_value.data = [record]
         builder.update.return_value.eq.return_value.eq.return_value.execute.return_value.data = [record]
         client = MagicMock()
         client.table.return_value = builder
@@ -218,7 +218,7 @@ class TestPatchAnalysisResult:
     def test_does_not_patch_embedded_analysis_from_another_user(self, monkeypatch):
         builder = MagicMock()
         builder.select.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value.data = []
-        builder.select.return_value.eq.return_value.contains.return_value.limit.return_value.execute.return_value.data = []
+        builder.select.return_value.eq.return_value.contains.return_value.order.return_value.limit.return_value.execute.return_value.data = []
         client = MagicMock()
         client.table.return_value = builder
         monkeypatch.setattr(db, "get_supabase", lambda: client)
@@ -241,13 +241,11 @@ class TestPatchAnalysisResult:
 class TestEnsureAnalysisHistory:
     def test_reuses_existing_row_found_by_embedded_analysis_id(self, monkeypatch):
         record = {"id": "history-row", "user_id": "user1"}
-        monkeypatch.setattr(db, "get_supabase", lambda: object())
-        monkeypatch.setattr(db, "get_analysis_by_id", lambda *_args, **_kwargs: None)
-        monkeypatch.setattr(
-            db,
-            "get_analysis_by_result_analysis_id",
-            lambda *_args, **_kwargs: record,
-        )
+        client = MagicMock()
+        builder = client.table.return_value
+        builder.select.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value.data = []
+        builder.select.return_value.eq.return_value.contains.return_value.order.return_value.limit.return_value.execute.return_value.data = [record]
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
         monkeypatch.setattr(
             db,
             "save_analysis_history",
@@ -255,16 +253,20 @@ class TestEnsureAnalysisHistory:
         )
 
         assert db.ensure_analysis_history("analysis-uuid", "user1", None) == record
+        builder.select.return_value.eq.return_value.contains.assert_called_once_with(
+            "result", {"analysis_id": "analysis-uuid"}
+        )
+        builder.select.return_value.eq.return_value.contains.return_value.order.assert_called_once_with(
+            "uploaded_at", desc=True
+        )
 
     def test_inserts_matching_analysis_when_history_row_is_missing(self, monkeypatch):
         inserted = {"id": "history-row", "user_id": "user1"}
-        monkeypatch.setattr(db, "get_supabase", lambda: object())
-        monkeypatch.setattr(db, "get_analysis_by_id", lambda *_args, **_kwargs: None)
-        monkeypatch.setattr(
-            db,
-            "get_analysis_by_result_analysis_id",
-            lambda *_args, **_kwargs: None,
-        )
+        client = MagicMock()
+        builder = client.table.return_value
+        builder.select.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value.data = []
+        builder.select.return_value.eq.return_value.contains.return_value.order.return_value.limit.return_value.execute.return_value.data = []
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
         saved = {}
 
         def save(user_id, filename, summary, result_data=None):
@@ -283,13 +285,11 @@ class TestEnsureAnalysisHistory:
         }
 
     def test_refuses_to_insert_mismatched_analysis(self, monkeypatch):
-        monkeypatch.setattr(db, "get_supabase", lambda: object())
-        monkeypatch.setattr(db, "get_analysis_by_id", lambda *_args, **_kwargs: None)
-        monkeypatch.setattr(
-            db,
-            "get_analysis_by_result_analysis_id",
-            lambda *_args, **_kwargs: None,
-        )
+        client = MagicMock()
+        builder = client.table.return_value
+        builder.select.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value.data = []
+        builder.select.return_value.eq.return_value.contains.return_value.order.return_value.limit.return_value.execute.return_value.data = []
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
         monkeypatch.setattr(
             db,
             "save_analysis_history",
@@ -298,6 +298,22 @@ class TestEnsureAnalysisHistory:
 
         assert db.ensure_analysis_history(
             "analysis-uuid", "user1", {"analysis_id": "different-analysis"}
+        ) is None
+
+    def test_does_not_insert_when_history_lookup_errors(self, monkeypatch):
+        client = MagicMock()
+        builder = client.table.return_value
+        builder.select.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value.data = []
+        builder.select.return_value.eq.return_value.contains.return_value.order.return_value.limit.return_value.execute.side_effect = RuntimeError("PostgREST failure")
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+        monkeypatch.setattr(
+            db,
+            "save_analysis_history",
+            lambda *_args, **_kwargs: pytest.fail("lookup failure must not duplicate the analysis"),
+        )
+
+        assert db.ensure_analysis_history(
+            "analysis-uuid", "user1", {"analysis_id": "analysis-uuid"}
         ) is None
 
     def test_returns_record(self, monkeypatch):
