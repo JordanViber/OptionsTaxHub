@@ -69,6 +69,7 @@ main.app.dependency_overrides[get_current_user] = mock_get_current_user
 main.app.dependency_overrides[get_current_user_with_token] = mock_get_current_user_with_token
 
 client = TestClient(main.app)
+_FAKE_PACKET_SNAPSHOTS = {}
 
 SAMPLE_ANALYSIS = {
     "analysis_id": "analysis-sample-1",
@@ -152,9 +153,56 @@ def _assert_three_identity(
 
 
 @pytest.fixture(autouse=True)
-def _clean_store():
+def _clean_store(monkeypatch):
     reset_packet_store()
+    _FAKE_PACKET_SNAPSHOTS.clear()
+
+    def save_snapshot(analysis_id, user_id, tax_year, payload, *, session_id=None, paid=False):
+        key = (user_id, analysis_id)
+        previous = _FAKE_PACKET_SNAPSHOTS.get(key, {})
+        _FAKE_PACKET_SNAPSHOTS[key] = {
+            "analysis_id": analysis_id,
+            "user_id": user_id,
+            "tax_year": tax_year,
+            "packet_payload": payload,
+            "packet_session_id": session_id or previous.get("packet_session_id"),
+            "paid_at": "now" if paid else previous.get("paid_at"),
+        }
+        return {"analysis_id": analysis_id}
+
+    def get_snapshot(analysis_id, user_id):
+        return _FAKE_PACKET_SNAPSHOTS.get((user_id, analysis_id)), True
+
+    def mark_snapshot_paid(analysis_id, user_id, tax_year, session_id):
+        row = _FAKE_PACKET_SNAPSHOTS.get((user_id, analysis_id))
+        if not row or int(row["tax_year"]) != int(tax_year):
+            return False
+        row["packet_session_id"] = session_id
+        row["paid_at"] = "now"
+        return True
+
+    def lookup_analysis(analysis_id, user_id):
+        record = PACKET_STORE.get(analysis_id)
+        if not record or not main.packet_store_belongs_to_user(analysis_id, user_id):
+            return None, True
+        payload = record.get("payload")
+        return {
+            "id": analysis_id,
+            "user_id": user_id,
+            "result": {
+                "analysis_id": analysis_id,
+                "analysis_tax_year": payload.get("analysis_tax_year") if isinstance(payload, dict) else None,
+                "tax_profile": payload.get("tax_profile") if isinstance(payload, dict) else {},
+            },
+        }, True
+
+    monkeypatch.setattr(main, "save_packet_snapshot", save_snapshot)
+    monkeypatch.setattr(main, "get_packet_snapshot", get_snapshot)
+    monkeypatch.setattr(main, "mark_packet_snapshot_paid", mark_snapshot_paid)
+    monkeypatch.setattr(main, "lookup_packet_grant_for_tax_year", lambda *_args, **_kwargs: (None, True))
+    monkeypatch.setattr(main, "lookup_analysis_for_entitlement", lookup_analysis)
     yield
+    _FAKE_PACKET_SNAPSHOTS.clear()
     reset_packet_store()
 
 
@@ -306,6 +354,7 @@ def test_unpaid_download_is_403(monkeypatch):
 
 def test_checkout_session_is_4900_cents_year_close_packet_not_tips(monkeypatch):
     _test_stripe_env(monkeypatch)
+    remember_analysis("analysis-sample-1", "test-user-123", SAMPLE_ANALYSIS)
     monkeypatch.setattr(main, "lookup_analysis_for_entitlement", lambda *_args: (None, True))
     monkeypatch.setattr(main, "ensure_analysis_history", lambda *_args: {"id": "history-row"})
     captured = {}
@@ -346,10 +395,11 @@ def test_checkout_session_is_4900_cents_year_close_packet_not_tips(monkeypatch):
 
 def test_checkout_keeps_client_analysis_id_when_history_is_missing(monkeypatch):
     _test_stripe_env(monkeypatch)
-    monkeypatch.setattr(main, "lookup_analysis_for_entitlement", lambda *_args: (None, True))
-    monkeypatch.setattr(main, "ensure_analysis_history", lambda *_args: {"id": "history-row"})
     analysis_id = "11111111-1111-4111-8111-111111111111"
     analysis = {**SAMPLE_ANALYSIS, "analysis_id": analysis_id}
+    remember_analysis(analysis_id, "test-user-123", analysis)
+    monkeypatch.setattr(main, "lookup_analysis_for_entitlement", lambda *_args: (None, True))
+    monkeypatch.setattr(main, "ensure_analysis_history", lambda *_args: {"id": "history-row"})
     captured = {}
     monkeypatch.setattr(
         main.stripe.checkout.Session,
@@ -396,6 +446,36 @@ def test_checkout_claims_guest_snapshot_and_keeps_its_full_payload(monkeypatch):
     assert captured["metadata"]["analysis_id"] == analysis_id
     assert PACKET_STORE[analysis_id]["user_id"] == "test-user-123"
     assert PACKET_STORE[analysis_id]["payload"] == original
+
+
+def test_checkout_reuses_durable_same_year_entitlement_without_charging_again(monkeypatch):
+    _test_stripe_env(monkeypatch)
+    analysis_id = "analysis-second-upload"
+    analysis = {**SAMPLE_ANALYSIS, "analysis_id": analysis_id}
+    remember_analysis(analysis_id, "test-user-123", analysis)
+    monkeypatch.setattr(main, "ensure_analysis_history", lambda *_args: {"id": "history-row"})
+    monkeypatch.setattr(
+        main,
+        "lookup_packet_grant_for_tax_year",
+        lambda *_args: ("cs_test_prior_year", True),
+    )
+    created = []
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "create",
+        lambda **kwargs: created.append(kwargs),
+    )
+
+    response = client.post(
+        "/api/year-close-packet/checkout",
+        json={"analysis_id": analysis_id, "analysis": analysis},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["already_paid"] is True
+    assert response.json()["session_id"] == "cs_test_prior_year"
+    assert created == []
+    assert _FAKE_PACKET_SNAPSHOTS[("test-user-123", analysis_id)]["paid_at"]
 
 
 def test_checkout_stops_before_stripe_when_history_lookup_fails(monkeypatch):
@@ -478,12 +558,10 @@ def test_checkout_rekeys_local_analysis_per_user(monkeypatch):
         json={"analysis_id": "local-analysis", "analysis": analysis_without_id},
     )
 
-    assert response.status_code == 200
-    canonical_id = response.json()["analysis_id"]
-    assert canonical_id != "local-analysis"
-    assert canonical_ids == [(canonical_id, canonical_id)]
-    assert captured["metadata"]["analysis_id"] == canonical_id
-    assert captured["metadata"]["user_id"] == "user-B"
+    assert response.status_code == 409
+    assert "private packet snapshot" in response.json()["detail"]
+    assert canonical_ids and canonical_ids[0][0] != "local-analysis"
+    assert captured == {}
     assert PACKET_STORE["local-analysis"]["user_id"] == "user-A"
     assert PACKET_STORE["local-analysis"]["paid"] is False
 
@@ -583,6 +661,7 @@ def test_confirm_does_not_grant_transient_access_when_persistence_fails(monkeypa
     _test_stripe_env(monkeypatch)
     main.remember_analysis("analysis-sample-1", "test-user-123", SAMPLE_ANALYSIS)
     monkeypatch.setattr(main, "patch_analysis_result", lambda *_args: None)
+    monkeypatch.setattr(main, "mark_packet_snapshot_paid", lambda *_args: None)
     paid_session = _stripe_object_session(
         id="cs_test_paid_persistence_failure",
         metadata={
@@ -670,16 +749,6 @@ def test_download_rejects_b_users_session_for_a_users_snapshot(monkeypatch):
 def test_reused_same_year_checkout_survives_packet_store_restart(monkeypatch):
     _test_stripe_env(monkeypatch)
     session_id = "cs_test_year_grant"
-    source = {
-        "id": "history-source",
-        "user_id": "test-user-123",
-        "result": {
-            "analysis_id": "analysis-source",
-            "packet_unlocked": True,
-            "packet_session_id": session_id,
-            "tax_profile": {"tax_year": 2025},
-        },
-    }
     target = {
         "id": "history-target",
         "user_id": "test-user-123",
@@ -690,7 +759,24 @@ def test_reused_same_year_checkout_survives_packet_store_restart(monkeypatch):
             "tax_profile": {"tax_year": 2025},
         },
     }
-    rows = {"analysis-source": source, "analysis-followup": target}
+    # The source analysis may have been deleted; the owner-scoped target row
+    # records the inherited entitlement and is sufficient proof.
+    rows = {"analysis-followup": target}
+    _FAKE_PACKET_SNAPSHOTS[("test-user-123", "analysis-followup")] = {
+        "analysis_id": "analysis-followup",
+        "user_id": "test-user-123",
+        "tax_year": 2025,
+        "packet_payload": build_packet_payload(
+            {
+                **LOT_MATCH_ANALYSIS,
+                "analysis_id": "analysis-followup",
+                "tax_profile": {"tax_year": 2025, "filing_status": "single"},
+            },
+            analysis_id="analysis-followup",
+        ),
+        "packet_session_id": session_id,
+        "paid_at": "now",
+    }
     monkeypatch.setattr(
         main,
         "lookup_analysis_for_entitlement",
@@ -705,11 +791,6 @@ def test_reused_same_year_checkout_survives_packet_store_restart(monkeypatch):
         main,
         "get_analysis_by_result_analysis_id",
         lambda analysis_id, _user_id, client=None: rows.get(analysis_id),
-    )
-    monkeypatch.setattr(
-        main,
-        "get_packet_grant_for_tax_year",
-        lambda _user_id, tax_year: session_id if tax_year == 2025 else None,
     )
     reused_session = _stripe_object_session(
         id=session_id,
@@ -736,6 +817,15 @@ def test_reused_same_year_checkout_survives_packet_store_restart(monkeypatch):
     )
 
     assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/pdf")
+    restored_pdf_text = _pdf_text(response.content)
+    assert "Matched (1)" in restored_pdf_text
+    assert "Gap (1)" in restored_pdf_text
+    assert "Unmatched (2)" in restored_pdf_text
+    assert "matched AMD" in restored_pdf_text
+    assert "matched_settlement_gap NVDA" in restored_pdf_text
+    assert "1099_only SPX" in restored_pdf_text
+    assert "csv_only META" in restored_pdf_text
     assert PACKET_STORE["analysis-followup"]["user_id"] == "test-user-123"
     assert PACKET_STORE["analysis-followup"]["paid"] is True
 
@@ -758,12 +848,17 @@ def test_reused_packet_session_does_not_unlock_a_different_tax_year(monkeypatch)
         "user_id": "test-user-123",
         "result": {
             "analysis_id": "analysis-followup",
-            "packet_unlocked": True,
-            "packet_session_id": session_id,
+            "packet_unlocked": False,
+            "packet_session_id": None,
             "tax_profile": {"tax_year": 2026},
         },
     }
     rows = {"analysis-source": source, "analysis-followup": target}
+    monkeypatch.setattr(
+        main,
+        "lookup_analysis_for_entitlement",
+        lambda analysis_id, _user_id: (rows.get(analysis_id), True),
+    )
     monkeypatch.setattr(
         main,
         "get_analysis_by_id",
@@ -774,7 +869,11 @@ def test_reused_packet_session_does_not_unlock_a_different_tax_year(monkeypatch)
         "get_analysis_by_result_analysis_id",
         lambda analysis_id, _user_id, client=None: rows.get(analysis_id),
     )
-    monkeypatch.setattr(main, "get_packet_grant_for_tax_year", lambda *_args: session_id)
+    monkeypatch.setattr(
+        main,
+        "lookup_analysis_for_entitlement",
+        lambda analysis_id, _user_id: (rows.get(analysis_id), True),
+    )
     reused_session = _stripe_object_session(
         id=session_id,
         metadata={
@@ -795,12 +894,48 @@ def test_reused_packet_session_does_not_unlock_a_different_tax_year(monkeypatch)
         json={
             "analysis_id": "analysis-followup",
             "session_id": session_id,
-            "analysis": SAMPLE_ANALYSIS,
+            "analysis": {
+                **SAMPLE_ANALYSIS,
+                "analysis_id": "analysis-followup",
+                "tax_profile": {"tax_year": 2026},
+            },
         },
     )
 
     assert response.status_code == 403
     assert "analysis-followup" not in PACKET_STORE
+
+
+def test_same_year_download_database_failure_is_retryable(monkeypatch):
+    _test_stripe_env(monkeypatch)
+    reused_session = _stripe_object_session(
+        id="cs_test_same_year_outage",
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": "analysis-source",
+            "user_id": "test-user-123",
+        },
+    )
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda *_args, **_kwargs: reused_session,
+    )
+    monkeypatch.setattr(
+        main,
+        "lookup_analysis_for_entitlement",
+        lambda *_args: (None, False),
+    )
+
+    response = client.get(
+        "/api/year-close-packet/download",
+        params={
+            "analysis_id": "analysis-followup",
+            "session_id": reused_session.id,
+        },
+    )
+
+    assert response.status_code == 503
 
 
 def test_three_dollar_tip_does_not_unlock_packet(monkeypatch):
@@ -944,16 +1079,22 @@ def test_post_download_rebuilds_from_analysis_json(monkeypatch):
             },
         },
     )
-    assert response.status_code == 200
-    pdf_text = _pdf_text(response.content)
-    assert "17,442.80" in pdf_text
-    assert "AMD" in pdf_text
+    assert response.status_code == 503
+    assert "private packet snapshot" in response.json()["detail"]
 
 
 def test_local_analysis_alias_never_rebinds_session_to_caller_payload(monkeypatch):
     _test_stripe_env(monkeypatch)
     monkeypatch.setattr(main, "patch_analysis_result", lambda *_args: True)
     saved_analysis = {**SAMPLE_ANALYSIS, "analysis_id": "analysis-sample-1"}
+    _FAKE_PACKET_SNAPSHOTS[("test-user-123", "analysis-sample-1")] = {
+        "analysis_id": "analysis-sample-1",
+        "user_id": "test-user-123",
+        "tax_year": 2025,
+        "packet_payload": build_packet_payload(saved_analysis, analysis_id="analysis-sample-1"),
+        "packet_session_id": "cs_test_paid_alias",
+        "paid_at": "now",
+    }
     monkeypatch.setattr(
         main,
         "lookup_analysis_for_entitlement",
@@ -1167,6 +1308,11 @@ def test_download_rejects_paid_session_for_another_analysis(monkeypatch):
         "retrieve",
         lambda *_args, **_kwargs: paid_session,
     )
+    monkeypatch.setattr(
+        main,
+        "lookup_analysis_for_entitlement",
+        lambda *_args: (None, True),
+    )
     response = client.get(
         "/api/year-close-packet/download",
         params={"analysis_id": "another-analysis", "session_id": paid_session.id},
@@ -1209,8 +1355,8 @@ def test_same_year_grant_does_not_report_unlocked_after_owner_conflict(monkeypat
     remember_analysis(result.analysis_id, "user-A", analysis)
     monkeypatch.setattr(
         main,
-        "get_packet_grant_for_tax_year",
-        lambda *_args: "cs_test_paid_by_other_owner",
+        "lookup_packet_grant_for_tax_year",
+        lambda *_args: ("cs_test_paid_by_other_owner", True),
     )
 
     granted = main._apply_packet_year_grant(result, "user-B")
@@ -1308,6 +1454,7 @@ def test_webhook_retries_when_durable_packet_grant_fails(monkeypatch):
     monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_packet_test_secret")
     main.remember_analysis("analysis-sample-1", "test-user-123", SAMPLE_ANALYSIS)
     monkeypatch.setattr(main, "patch_analysis_result", lambda *_args: None)
+    monkeypatch.setattr(main, "mark_packet_snapshot_paid", lambda *_args: None)
     response = _post_signed_webhook(
         _packet_checkout_event(event_type="checkout.session.async_payment_succeeded")
     )
@@ -1315,7 +1462,7 @@ def test_webhook_retries_when_durable_packet_grant_fails(monkeypatch):
     assert PACKET_STORE["analysis-sample-1"]["paid"] is False
 
 
-def test_webhook_retries_when_history_row_disappeared_after_checkout(monkeypatch):
+def test_webhook_grants_when_history_row_disappeared_after_checkout(monkeypatch):
     _test_stripe_env(monkeypatch)
     monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_packet_test_secret")
     main.remember_analysis("analysis-sample-1", "test-user-123", SAMPLE_ANALYSIS)
@@ -1325,8 +1472,9 @@ def test_webhook_retries_when_history_row_disappeared_after_checkout(monkeypatch
         _packet_checkout_event(event_type="checkout.session.async_payment_succeeded")
     )
 
-    assert response.status_code == 500
-    assert PACKET_STORE["analysis-sample-1"]["paid"] is False
+    assert response.status_code == 200
+    assert response.json()["granted"] is True
+    assert PACKET_STORE["analysis-sample-1"]["paid"] is True
 
 
 def test_webhook_acknowledges_missing_history_when_no_snapshot_can_restore(monkeypatch):
@@ -1354,11 +1502,10 @@ def test_webhook_claims_guest_snapshot_before_persisting_grant(monkeypatch):
     assert PACKET_STORE["analysis-sample-1"]["paid"] is True
 
 
-def test_paid_grant_restores_missing_history_from_owned_memory_snapshot(monkeypatch):
+def test_paid_grant_survives_history_miss_from_owned_private_snapshot(monkeypatch):
     _test_stripe_env(monkeypatch)
     remember_analysis("analysis-sample-1", "test-user-123", SAMPLE_ANALYSIS)
-    patch_results = iter([False, True])
-    monkeypatch.setattr(main, "patch_analysis_result", lambda *_args: next(patch_results))
+    monkeypatch.setattr(main, "patch_analysis_result", lambda *_args: False)
     restored = []
     monkeypatch.setattr(
         main,
@@ -1375,8 +1522,7 @@ def test_paid_grant_restores_missing_history_from_owned_memory_snapshot(monkeypa
     )
 
     assert granted is True
-    assert restored[0][0:2] == ("analysis-sample-1", "test-user-123")
-    assert restored[0][2]["analysis_id"] == "analysis-sample-1"
+    assert restored == []
     assert PACKET_STORE["analysis-sample-1"]["paid"] is True
 
 
@@ -2557,6 +2703,28 @@ def test_paid_download_reloads_suggestions_from_history_on_store_miss(monkeypatc
     _test_stripe_env(monkeypatch)
     monkeypatch.setattr(main, "patch_analysis_result", lambda *_args: True)
     analysis_id = "analysis-history-harvest"
+    packet_source = {
+        **LOT_MATCH_ANALYSIS,
+        "analysis_id": analysis_id,
+        "suggestions": [
+            {
+                "symbol": "TSLA",
+                "display_label": "TSLA",
+                "estimated_loss": 50,
+                "tax_savings_estimate": 12.0,
+                "is_long_term": False,
+                "wash_sale_risk": False,
+            }
+        ],
+    }
+    _FAKE_PACKET_SNAPSHOTS[("test-user-123", analysis_id)] = {
+        "analysis_id": analysis_id,
+        "user_id": "test-user-123",
+        "tax_year": 2025,
+        "packet_payload": build_packet_payload(packet_source, analysis_id=analysis_id),
+        "packet_session_id": "cs_test_hist_harvest",
+        "paid_at": "now",
+    }
     reset_packet_store()
     mark_paid(analysis_id, "cs_test_hist_harvest", user_id="test-user-123")
     compact = {

@@ -44,6 +44,18 @@ function canonicalStorageKey(analysisId: string): string {
   return `optionstaxhub-packet-canonical:${analysisId}`;
 }
 
+function localAnalysisIdentity(analysis: PortfolioAnalysis): string {
+  const source = JSON.stringify(compactAnalysis(analysis));
+  let first = 0x811c9dc5;
+  let second = 0x9e3779b9;
+  for (let index = 0; index < source.length; index += 1) {
+    const code = source.charCodeAt(index);
+    first = Math.imul(first ^ code, 0x01000193);
+    second = Math.imul(second ^ code, 0x85ebca6b);
+  }
+  return `local-${(first >>> 0).toString(16)}${(second >>> 0).toString(16)}`;
+}
+
 export function isYearClosePacketPaid(analysisId: string): boolean {
   const stored = readSessionItem(paidStorageKey(analysisId));
   return Boolean(stored && stored.startsWith("cs_"));
@@ -166,16 +178,33 @@ function triggerPdfDownload(blob: Blob): void {
   URL.revokeObjectURL(url);
 }
 
-export default function YearClosePacketPanel({
+export default function YearClosePacketPanel(props: Readonly<{
+  analysis: PortfolioAnalysis;
+  onPaidChange?: (paid: boolean) => void;
+}>) {
+  const identity = props.analysis.analysis_id || localAnalysisIdentity(props.analysis);
+  return (
+    <YearClosePacketPanelForAnalysis
+      key={identity}
+      analysis={props.analysis}
+      analysisStorageId={identity}
+      onPaidChange={props.onPaidChange}
+    />
+  );
+}
+
+function YearClosePacketPanelForAnalysis({
   analysis,
+  analysisStorageId,
   onPaidChange,
 }: Readonly<{
   analysis: PortfolioAnalysis;
+  analysisStorageId: string;
   onPaidChange?: (paid: boolean) => void;
 }>) {
   const analysisId = analysis.analysis_id || "local-analysis";
   const [canonicalAnalysisId, setCanonicalAnalysisId] = useState(
-    () => readSessionItem(canonicalStorageKey(analysisId)) || analysisId,
+    () => readSessionItem(canonicalStorageKey(analysisStorageId)) || analysisId,
   );
   const [busy, setBusy] = useState<"pay" | "download" | "confirm" | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -199,19 +228,19 @@ export default function YearClosePacketPanel({
 
   useEffect(() => {
     const savedCanonicalId =
-      readSessionItem(canonicalStorageKey(analysisId)) || analysisId;
+      readSessionItem(canonicalStorageKey(analysisStorageId)) || analysisId;
     setCanonicalAnalysisId(savedCanonicalId);
     if (analysis.packet_unlocked) {
       setPaid(true);
       if (analysis.packet_session_id?.startsWith("cs_")) {
         setSessionId(analysis.packet_session_id);
-        writeSessionItem(paidStorageKey(analysisId), analysis.packet_session_id);
+        writeSessionItem(paidStorageKey(analysisStorageId), analysis.packet_session_id);
       }
       onPaidChange?.(true);
     }
     const stored =
       readSessionItem(paidStorageKey(savedCanonicalId)) ||
-      readSessionItem(paidStorageKey(analysisId));
+      readSessionItem(paidStorageKey(analysisStorageId));
     if (stored && stored.startsWith("cs_")) {
       setPaid(true);
       setSessionId(stored);
@@ -223,7 +252,7 @@ export default function YearClosePacketPanel({
     const packetAnalysisId = params.get("packet_analysis");
     const confirmedAnalysisId = packetAnalysisId || savedCanonicalId;
     const canceled = params.get("packet_canceled") === "1";
-    const inflight = readSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY) === analysisId;
+    const inflight = readSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY) === analysisStorageId;
 
     if (sid) {
       clearSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY);
@@ -256,10 +285,10 @@ export default function YearClosePacketPanel({
               ? confirmData.analysis_id
               : confirmedAnalysisId;
           setCanonicalAnalysisId(canonicalId);
-          writeSessionItem(canonicalStorageKey(analysisId), canonicalId);
+          writeSessionItem(canonicalStorageKey(analysisStorageId), canonicalId);
           setPaid(true);
           writeSessionItem(paidStorageKey(canonicalId), sid);
-          writeSessionItem(paidStorageKey(analysisId), sid);
+          writeSessionItem(paidStorageKey(analysisStorageId), sid);
           onPaidChange?.(true);
           stripPacketQueryParams();
         } catch (err) {
@@ -277,20 +306,20 @@ export default function YearClosePacketPanel({
       setCanceledNotice(true);
       stripPacketQueryParams();
     }
-  }, [analysis, analysisId]);
+  }, [analysis, analysisId, analysisStorageId]);
 
   const handlePay = async () => {
     setBusy("pay");
     setError(null);
     setCanceledNotice(false);
-    writeSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY, analysisId);
+    writeSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY, analysisStorageId);
     try {
       const headers = await authHeaders();
       const response = await fetch(`${API_URL}/api/year-close-packet/checkout`, {
         method: "POST",
         headers,
         body: JSON.stringify({
-          analysis_id: analysisId,
+          analysis_id: canonicalAnalysisId,
           analysis: compactAnalysis(analysis),
         }),
       });
@@ -299,12 +328,26 @@ export default function YearClosePacketPanel({
         throw new Error(errData?.detail || "Failed to start checkout.");
       }
       const data = await response.json();
+      if (data?.already_paid === true && typeof data?.session_id === "string") {
+        clearSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY);
+        const paidAnalysisId =
+          typeof data.analysis_id === "string" ? data.analysis_id : canonicalAnalysisId;
+        setCanonicalAnalysisId(paidAnalysisId);
+        setSessionId(data.session_id);
+        setPaid(true);
+        writeSessionItem(canonicalStorageKey(analysisStorageId), paidAnalysisId);
+        writeSessionItem(paidStorageKey(paidAnalysisId), data.session_id);
+        writeSessionItem(paidStorageKey(analysisStorageId), data.session_id);
+        onPaidChange?.(true);
+        setBusy(null);
+        return;
+      }
       if (typeof data?.checkout_url !== "string" || data.checkout_url.length === 0) {
         throw new Error("Checkout did not return a payment link.");
       }
       if (typeof data?.analysis_id === "string" && data.analysis_id.length > 0) {
         setCanonicalAnalysisId(data.analysis_id);
-        writeSessionItem(canonicalStorageKey(analysisId), data.analysis_id);
+        writeSessionItem(canonicalStorageKey(analysisStorageId), data.analysis_id);
       }
       try {
         globalThis.location.href = data.checkout_url;

@@ -9,6 +9,8 @@ NOTE: Requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in .env.local.
 
 import os
 import logging
+import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 from dotenv import load_dotenv
@@ -21,6 +23,17 @@ logger = logging.getLogger(__name__)
 
 # Lazy-initialized Supabase client
 _supabase_client = None
+
+UNPAID_PACKET_SNAPSHOT_TTL = timedelta(hours=24)
+PAID_PACKET_SNAPSHOT_TTL = timedelta(days=90)
+
+
+def _cleanup_expired_packet_snapshots(client) -> None:
+    try:
+        client.rpc("delete_expired_year_close_packet_snapshots").execute()
+    except Exception:
+        # Expiration filters remain authoritative if best-effort cleanup fails.
+        logger.debug("Expired packet snapshot cleanup was unavailable", exc_info=True)
 
 
 def get_supabase():
@@ -126,9 +139,10 @@ def save_analysis_history(
         result = client.table("portfolio_analyses").insert(row).select("id").execute()
         if result.data:
             return dict(result.data[0])
-        # The insert completed without an exception. Keep a usable snapshot so
-        # callers do not retry and create duplicate rows if PostgREST omits data.
-        return row
+        # Checkout depends on the returned persisted row ID. An empty
+        # representation is not proof that the insert committed.
+        logger.error("Analysis history insert returned no persisted row")
+        return None
     except Exception as e:
         logger.error(f"Failed to save analysis history: {e}")
         return None
@@ -245,19 +259,25 @@ def _lookup_analysis_for_entitlement(
 ) -> tuple[Optional[dict], bool]:
     """Find the owner-scoped row; the bool distinguishes a miss from DB errors."""
     try:
-        result = (
-            client.table("portfolio_analyses")
-            .select("id, user_id, result")
-            .eq("id", analysis_id)
-            .eq("user_id", user_id)
-            .limit(1)
-            .execute()
-        )
-    except Exception as e:
-        logger.error("Failed to find analysis row %s: %s", analysis_id, e)
-        return None, False
-    if result.data:
-        return dict(result.data[0]), True
+        uuid.UUID(analysis_id)
+    except (TypeError, ValueError, AttributeError):
+        # The primary key is a UUID; guest and legacy IDs may be arbitrary text.
+        pass
+    else:
+        try:
+            result = (
+                client.table("portfolio_analyses")
+                .select("id, user_id, result")
+                .eq("id", analysis_id)
+                .eq("user_id", user_id)
+                .limit(1)
+                .execute()
+            )
+        except Exception as e:
+            logger.error("Failed to find analysis row %s: %s", analysis_id, e)
+            return None, False
+        if result.data:
+            return dict(result.data[0]), True
     try:
         result = (
             client.table("portfolio_analyses")
@@ -434,45 +454,60 @@ def get_latest_activity_book(user_id: str, client=None) -> Optional[dict]:
     return None
 
 
-def get_packet_grant_for_tax_year(
+def lookup_packet_grant_for_tax_year(
     user_id: str,
     tax_year: int,
     client=None,
-) -> Optional[str]:
-    """Return a Stripe session id if this user already paid for this tax year."""
-    if not user_id:
-        return None
+) -> tuple[Optional[str], bool]:
+    """Return the same-year session and whether the owner-scoped lookup succeeded."""
+    if not user_id or tax_year is None:
+        return None, False
     if client is None:
         client = get_supabase()
     if client is None:
-        return None
+        return None, False
+    _cleanup_expired_packet_snapshots(client)
 
     try:
+        snapshots = (
+            client.table("year_close_packet_snapshots")
+            .select("analysis_id, packet_session_id, paid_at")
+            .eq("user_id", user_id)
+            .eq("tax_year", int(tax_year))
+            .gt("expires_at", datetime.now(timezone.utc).isoformat())
+            .order("created_at", desc=True)
+            .execute()
+        )
+        for row in snapshots.data or []:
+            session_id = row.get("packet_session_id") if isinstance(row, dict) else None
+            if (
+                isinstance(row, dict)
+                and row.get("paid_at")
+                and isinstance(session_id, str)
+                and session_id.startswith("cs_")
+            ):
+                return session_id, True
+
         result = (
             client.table("portfolio_analyses")
             .select("id, result")
             .eq("user_id", user_id)
-            .contains(
-                "result",
-                {
-                    "packet_unlocked": True,
-                    "tax_profile": {"tax_year": int(tax_year)},
-                },
-            )
+            .contains("result", {"packet_unlocked": True})
             .order("uploaded_at", desc=True)
-            .limit(1)
             .execute()
         )
     except Exception as e:
         logger.error(f"Failed to fetch packet grant: {e}")
-        return None
+        return None, False
 
     for row in result.data or []:
         payload = row.get("result") if isinstance(row, dict) else None
         if not isinstance(payload, dict) or not payload.get("packet_unlocked"):
             continue
+        year = payload.get("analysis_tax_year")
         profile = payload.get("tax_profile") or {}
-        year = profile.get("tax_year") if isinstance(profile, dict) else None
+        if year is None and isinstance(profile, dict):
+            year = profile.get("tax_year")
         try:
             if year is None or int(year) != int(tax_year):
                 continue
@@ -480,8 +515,150 @@ def get_packet_grant_for_tax_year(
             continue
         session_id = payload.get("packet_session_id") or ""
         if isinstance(session_id, str) and session_id.startswith("cs_"):
-            return session_id
-    return None
+            return session_id, True
+    return None, True
+
+
+def get_packet_grant_for_tax_year(
+    user_id: str,
+    tax_year: int,
+    client=None,
+) -> Optional[str]:
+    """Return a Stripe session id if this user already paid for this tax year."""
+    session_id, lookup_succeeded = lookup_packet_grant_for_tax_year(
+        user_id,
+        tax_year,
+        client=client,
+    )
+    return session_id if lookup_succeeded else None
+
+
+def save_packet_snapshot(
+    analysis_id: str,
+    user_id: str,
+    tax_year: int,
+    packet_payload: Optional[dict],
+    *,
+    session_id: Optional[str] = None,
+    paid: bool = False,
+    client=None,
+) -> Optional[dict]:
+    """Persist a private packet snapshot separately from user history."""
+    if not analysis_id or not user_id or tax_year is None:
+        return None
+    if client is None:
+        client = get_supabase()
+    if client is None:
+        return None
+    _cleanup_expired_packet_snapshots(client)
+    now = datetime.now(timezone.utc)
+    paid_at = now.isoformat() if paid and session_id else None
+    effective_session_id = session_id
+    expires_at = now + (PAID_PACKET_SNAPSHOT_TTL if paid else UNPAID_PACKET_SNAPSHOT_TTL)
+    if not paid:
+        try:
+            existing = (
+                client.table("year_close_packet_snapshots")
+                .select("packet_session_id, paid_at")
+                .eq("analysis_id", analysis_id)
+                .eq("user_id", user_id)
+                .limit(1)
+                .execute()
+            )
+            if existing.data and existing.data[0].get("paid_at"):
+                paid_at = existing.data[0]["paid_at"]
+                effective_session_id = existing.data[0].get("packet_session_id")
+                expires_at = now + PAID_PACKET_SNAPSHOT_TTL
+        except Exception as e:
+            logger.error("Failed to check prior packet entitlement for %s: %s", analysis_id, e)
+            return None
+    row = {
+        "analysis_id": analysis_id,
+        "user_id": user_id,
+        "tax_year": int(tax_year),
+        "packet_payload": packet_payload,
+        "packet_session_id": effective_session_id,
+        "paid_at": paid_at,
+        "expires_at": expires_at.isoformat(),
+        "updated_at": now.isoformat(),
+    }
+    try:
+        result = (
+            client.table("year_close_packet_snapshots")
+            .upsert(row, on_conflict="user_id,analysis_id")
+            .select("analysis_id, user_id, tax_year")
+            .execute()
+        )
+        return dict(result.data[0]) if result.data else None
+    except Exception as e:
+        logger.error("Failed to save packet snapshot for %s: %s", analysis_id, e)
+        return None
+
+
+def get_packet_snapshot(
+    analysis_id: str,
+    user_id: str,
+    client=None,
+) -> tuple[Optional[dict], bool]:
+    """Load a caller-owned, unexpired packet snapshot and distinguish outages."""
+    if not analysis_id or not user_id:
+        return None, False
+    if client is None:
+        client = get_supabase()
+    if client is None:
+        return None, False
+    _cleanup_expired_packet_snapshots(client)
+    try:
+        result = (
+            client.table("year_close_packet_snapshots")
+            .select("analysis_id, user_id, tax_year, packet_payload, packet_session_id, paid_at, expires_at")
+            .eq("analysis_id", analysis_id)
+            .eq("user_id", user_id)
+            .gt("expires_at", datetime.now(timezone.utc).isoformat())
+            .limit(1)
+            .execute()
+        )
+        return (dict(result.data[0]), True) if result.data else (None, True)
+    except Exception as e:
+        logger.error("Failed to load packet snapshot for %s: %s", analysis_id, e)
+        return None, False
+
+
+def mark_packet_snapshot_paid(
+    analysis_id: str,
+    user_id: str,
+    tax_year: int,
+    session_id: str,
+    client=None,
+) -> Optional[bool]:
+    """Mark an existing owner-scoped snapshot as paid for a settled session."""
+    if not analysis_id or not user_id or tax_year is None or not session_id:
+        return False
+    if client is None:
+        client = get_supabase()
+    if client is None:
+        return None
+    _cleanup_expired_packet_snapshots(client)
+    now = datetime.now(timezone.utc)
+    try:
+        result = (
+            client.table("year_close_packet_snapshots")
+            .update({
+                "packet_session_id": session_id,
+                "paid_at": now.isoformat(),
+                "expires_at": (now + PAID_PACKET_SNAPSHOT_TTL).isoformat(),
+                "updated_at": now.isoformat(),
+            })
+            .eq("analysis_id", analysis_id)
+            .eq("user_id", user_id)
+            .eq("tax_year", int(tax_year))
+            .select("analysis_id")
+            .execute()
+        )
+        return bool(result.data)
+    except Exception as e:
+        logger.error("Failed to mark packet snapshot paid for %s: %s", analysis_id, e)
+        return None
 
 
 def patch_analysis_result(

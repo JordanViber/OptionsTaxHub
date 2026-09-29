@@ -1,0 +1,2 @@
+# Preserve the PDF fixture byte-for-byte; CRLF conversion corrupts xref offsets.
+client/public/sample-robinhood-1099-2026.pdf binary

@@ -1013,6 +1013,10 @@ def paid_session_for_user_year(user_id: str, tax_year: int | None = None) -> str
     for rec in PACKET_STORE.values():
         if rec.get("user_id") != user_id or not rec.get("paid"):
             continue
+        # A cache entry with no year-bound analysis is not evidence that this
+        # user paid for every tax year.
+        if tax_year is None:
+            continue
         payload = rec.get("payload") or {}
         year = None
         if isinstance(payload, dict):
@@ -1020,7 +1024,12 @@ def paid_session_for_user_year(user_id: str, tax_year: int | None = None) -> str
             profile = payload.get("tax_profile")
             if year is None and isinstance(profile, dict):
                 year = profile.get("tax_year")
-        if tax_year is not None and year is not None and int(year) != int(tax_year):
+        if year is None:
+            continue
+        try:
+            if int(year) != int(tax_year):
+                continue
+        except (TypeError, ValueError):
             continue
         session_ids = rec.get("session_ids") or set()
         for session_id in session_ids:

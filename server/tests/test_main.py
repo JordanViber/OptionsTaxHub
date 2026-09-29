@@ -458,9 +458,16 @@ def _stub_analyze_network(monkeypatch):
         lambda labels, fb=None, allow_network=True: ({}, []),
     )
     monkeypatch.setattr("main.prepare_positions_for_ai", lambda lots: [])
-    monkeypatch.setattr("main._save_history_best_effort", lambda *args, **kwargs: None)
+    monkeypatch.setattr("main._save_history_best_effort", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        "main.save_packet_snapshot",
+        lambda analysis_id, *_args, **_kwargs: {"analysis_id": analysis_id},
+    )
     monkeypatch.setattr("main.get_latest_activity_book", lambda uid, client=None: None)
-    monkeypatch.setattr("main.get_packet_grant_for_tax_year", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "main.lookup_packet_grant_for_tax_year",
+        lambda *args, **kwargs: (None, True),
+    )
 
 
 def _make_supplemental_1099_upload() -> tuple[str, bytes, str]:
@@ -619,8 +626,8 @@ def test_analyze_merges_new_activity_with_saved_book(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        "main.get_packet_grant_for_tax_year",
-        lambda uid, year, client=None: "cs_test_yeargrant",
+        "main.lookup_packet_grant_for_tax_year",
+        lambda uid, year, client=None: ("cs_test_yeargrant", True),
     )
 
     new_csv = _rh_csv(
@@ -645,6 +652,32 @@ def test_analyze_merges_new_activity_with_saved_book(monkeypatch):
     assert data["packet_session_id"] == "cs_test_yeargrant"
     assert data["summary"]["activity_transaction_count"] == 3
     assert any("Added 1 new trade" in w for w in data["warnings"])
+
+
+def test_inherited_packet_grant_is_not_returned_when_history_save_fails(monkeypatch):
+    from year_close_packet import PACKET_STORE
+
+    _stub_analyze_network(monkeypatch)
+    monkeypatch.setattr(
+        "main.lookup_packet_grant_for_tax_year",
+        lambda *_args, **_kwargs: ("cs_test_yeargrant", True),
+    )
+    monkeypatch.setattr("main._save_history_best_effort", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("main.save_packet_snapshot", lambda *_args, **_kwargs: None)
+    csv_data = _rh_csv(
+        "01/01/2026,01/01/2026,01/03/2026,AAPL,Apple,Buy,2,180.00,-360.00\n",
+    )
+
+    response = client.post(
+        "/api/portfolio/analyze?tax_year=2026",
+        files={"file": ("update.csv", csv_data, "text/csv")},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["packet_unlocked"] is False
+    assert body["packet_session_id"] is None
+    assert PACKET_STORE[body["analysis_id"]]["paid"] is False
 
 
 def test_analyze_replace_mode_ignores_saved_book(monkeypatch):
@@ -1728,7 +1761,7 @@ def test_analyze_portfolio_applies_live_option_prices(monkeypatch):
     monkeypatch.setattr("main.prepare_positions_for_ai", lambda l: [])
     monkeypatch.setattr("main.generate_suggestions", lambda **kw: [])
     monkeypatch.setattr("main.detect_wash_sales", lambda *args, **kwargs: [])
-    monkeypatch.setattr("main._save_history_best_effort", lambda *args, **kwargs: None)
+    monkeypatch.setattr("main._save_history_best_effort", lambda *args, **kwargs: True)
 
     response = client.post("/api/portfolio/analyze", files=_make_csv())
     assert response.status_code == 200
@@ -2427,7 +2460,10 @@ def test_trusted_in_app_sample_skips_yahoo_and_still_returns_positions(monkeypat
     monkeypatch.setattr("main.prepare_positions_for_ai", lambda lots: [])
     monkeypatch.setattr("main._save_history_best_effort", lambda *args, **kwargs: None)
     monkeypatch.setattr("main.get_latest_activity_book", lambda uid, client=None: None)
-    monkeypatch.setattr("main.get_packet_grant_for_tax_year", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "main.lookup_packet_grant_for_tax_year",
+        lambda *args, **kwargs: (None, True),
+    )
 
     def boom(*_args, **_kwargs):
         raise AssertionError("yfinance should not run for the in-app sample")

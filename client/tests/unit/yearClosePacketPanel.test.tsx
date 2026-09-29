@@ -325,7 +325,13 @@ describe("YearClosePacketPanel", () => {
     const confirmBody = JSON.parse(mockFetch.mock.calls[0][1].body);
     expect(confirmBody.analysis_id).toBe(canonicalId);
     expect(confirmBody.packet_analysis).toBe(canonicalId);
-    expect(store["optionstaxhub-packet-canonical:local-analysis"]).toBe(canonicalId);
+    expect(
+      Object.entries(store).some(
+        ([key, value]) =>
+          key.startsWith("optionstaxhub-packet-canonical:local-") &&
+          value === canonicalId,
+      ),
+    ).toBe(true);
 
     fireEvent.click(screen.getByRole("button", { name: /Download/i }));
     await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));
@@ -374,6 +380,70 @@ describe("YearClosePacketPanel", () => {
       expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
     });
     expect(store[PACKET_CHECKOUT_INFLIGHT_KEY]).toBeUndefined();
+  });
+
+  it("scopes canonical checkout IDs to each ID-less analysis", async () => {
+    const firstAnalysis = { ...analysis, analysis_id: undefined };
+    const secondAnalysis = {
+      ...analysis,
+      analysis_id: undefined,
+      tax_profile: { ...analysis.tax_profile!, tax_year: 2026 },
+    };
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            checkout_url: "https://checkout.stripe.com/c/pay/first",
+            analysis_id: "canonical-first",
+          }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            checkout_url: "https://checkout.stripe.com/c/pay/second",
+            analysis_id: "canonical-second",
+          }),
+      });
+
+    const first = render(<YearClosePacketPanel analysis={firstAnalysis} />);
+    fireEvent.click(screen.getByRole("button", { name: /Pay \$49/i }));
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+    const firstBody = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(firstBody.analysis_id).toBe("local-analysis");
+    first.unmount();
+
+    render(<YearClosePacketPanel analysis={secondAnalysis} />);
+    fireEvent.click(screen.getByRole("button", { name: /Pay \$49/i }));
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));
+    const secondBody = JSON.parse(mockFetch.mock.calls[1][1].body);
+    expect(secondBody.analysis_id).toBe("local-analysis");
+    expect(secondBody.analysis.tax_profile.tax_year).toBe(2026);
+  });
+
+  it("uses an existing paid-year entitlement without opening another Checkout", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          already_paid: true,
+          session_id: "cs_test_existing_year",
+          analysis_id: "analysis-1",
+        }),
+    });
+
+    render(<YearClosePacketPanel analysis={analysis} />);
+    fireEvent.click(screen.getByRole("button", { name: /Pay \$49/i }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/Unlocked for this tax year/i)).toBeInTheDocument(),
+    );
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeDisabled();
+    expect(store["optionstaxhub-packet-paid:analysis-1"]).toBe(
+      "cs_test_existing_year",
+    );
   });
 
   it("treats Stripe cancel_url as a closed checkout, not a hang", async () => {

@@ -55,7 +55,14 @@ def sha256_hex(data: bytes | None) -> str:
 
 
 def is_trusted_sample_csv_bytes(contents: bytes | None) -> bool:
-    return sha256_hex(contents) == SAMPLE_CSV_SHA256
+    if not contents:
+        return False
+    # The checked-in CSV is text, so Windows may check it out with CRLF even
+    # though the browser uploads those exact bytes. Authenticate the content
+    # independent of Git's line-ending conversion while keeping every other
+    # byte covered by the fixture hash.
+    canonical_contents = contents.replace(b"\r\n", b"\n")
+    return sha256_hex(canonical_contents) == SAMPLE_CSV_SHA256
 
 
 def is_trusted_sample_1099_bytes(contents: bytes | None) -> bool:
