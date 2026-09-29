@@ -58,6 +58,9 @@ class _FakeQueryBuilder:
     def contains(self, *args):
         return self
 
+    def contains(self, *args):
+        return self
+
     def is_(self, *args):
         return self
 
@@ -274,14 +277,22 @@ class TestEnsureAnalysisHistory:
             return inserted
 
         monkeypatch.setattr(db, "save_analysis_history", save)
-        analysis = {"analysis_id": "analysis-uuid", "summary": {"positions_count": 2}}
+        analysis = {
+            "analysis_id": "analysis-uuid",
+            "summary": {"positions_count": 2},
+            "packet_unlocked": True,
+            "packet_session_id": "cs_test_forged",
+        }
 
         assert db.ensure_analysis_history("analysis-uuid", "user1", analysis) == inserted
         assert saved == {
             "user_id": "user1",
             "filename": "year-close-packet.csv",
             "summary": {"positions_count": 2},
-            "result": analysis,
+            "result": {
+                "analysis_id": "analysis-uuid",
+                "summary": {"positions_count": 2},
+            },
         }
 
     def test_refuses_to_insert_mismatched_analysis(self, monkeypatch):
@@ -503,3 +514,17 @@ class TestLatestActivityBook:
         monkeypatch.setattr(db, "get_supabase", lambda: client)
         assert db.get_packet_grant_for_tax_year("user1", 2026) == "cs_2026"
         assert db.get_packet_grant_for_tax_year("user1", 2025) is None
+
+    def test_packet_grant_does_not_match_missing_or_malformed_tax_year(self, monkeypatch):
+        rows = [
+            {
+                "id": "a",
+                "result": {
+                    "packet_unlocked": True,
+                    "packet_session_id": "cs_ambiguous",
+                    "tax_profile": {},
+                },
+            }
+        ]
+        monkeypatch.setattr(db, "get_supabase", lambda: _FakeClient(table_data=rows))
+        assert db.get_packet_grant_for_tax_year("user1", 2026) is None

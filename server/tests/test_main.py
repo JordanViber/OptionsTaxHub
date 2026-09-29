@@ -982,6 +982,8 @@ def test_persist_guest_analysis_saves_history(monkeypatch):
             "analysis": {
                 "analysis_id": "guest-abc",
                 "summary": {"positions_count": 3, "total_market_value": 1000},
+                "packet_unlocked": True,
+                "packet_session_id": "cs_test_forged",
             },
         },
     )
@@ -990,6 +992,8 @@ def test_persist_guest_analysis_saves_history(monkeypatch):
     assert saved["filename"] == "sample-robinhood-transactions.csv"
     assert saved["summary"]["positions_count"] == 3
     assert saved["result_data"]["analysis_id"] == "guest-abc"
+    assert "packet_unlocked" not in saved["result_data"]
+    assert "packet_session_id" not in saved["result_data"]
 
 
 def test_persist_guest_analysis_requires_auth():

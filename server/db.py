@@ -313,11 +313,16 @@ def ensure_analysis_history(
     if not isinstance(summary, dict):
         summary = {}
     filename = str(analysis.get("filename") or "year-close-packet.csv")[:255]
+    # Checkout receives this value from the browser. Grant fields are written
+    # only after a settled Stripe session is verified server-side.
+    safe_analysis = dict(analysis)
+    safe_analysis.pop("packet_unlocked", None)
+    safe_analysis.pop("packet_session_id", None)
     return save_analysis_history(
         user_id,
         filename,
         summary,
-        result_data=analysis,
+        result_data=safe_analysis,
     )
 
 
@@ -445,8 +450,15 @@ def get_packet_grant_for_tax_year(
             client.table("portfolio_analyses")
             .select("id, result")
             .eq("user_id", user_id)
+            .contains(
+                "result",
+                {
+                    "packet_unlocked": True,
+                    "tax_profile": {"tax_year": int(tax_year)},
+                },
+            )
             .order("uploaded_at", desc=True)
-            .limit(20)
+            .limit(1)
             .execute()
         )
     except Exception as e:
@@ -459,7 +471,10 @@ def get_packet_grant_for_tax_year(
             continue
         profile = payload.get("tax_profile") or {}
         year = profile.get("tax_year") if isinstance(profile, dict) else None
-        if year is not None and int(year) != int(tax_year):
+        try:
+            if year is None or int(year) != int(tax_year):
+                continue
+        except (TypeError, ValueError):
             continue
         session_id = payload.get("packet_session_id") or ""
         if isinstance(session_id, str) and session_id.startswith("cs_"):

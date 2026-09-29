@@ -348,6 +348,8 @@ def test_checkout_keeps_client_analysis_id_when_history_is_missing(monkeypatch):
     _test_stripe_env(monkeypatch)
     monkeypatch.setattr(main, "lookup_analysis_for_entitlement", lambda *_args: (None, True))
     monkeypatch.setattr(main, "ensure_analysis_history", lambda *_args: {"id": "history-row"})
+    analysis_id = "11111111-1111-4111-8111-111111111111"
+    analysis = {**SAMPLE_ANALYSIS, "analysis_id": analysis_id}
     captured = {}
     monkeypatch.setattr(
         main.stripe.checkout.Session,
@@ -357,13 +359,43 @@ def test_checkout_keeps_client_analysis_id_when_history_is_missing(monkeypatch):
 
     response = client.post(
         "/api/year-close-packet/checkout",
-        json={"analysis_id": "analysis-sample-1", "analysis": SAMPLE_ANALYSIS},
+        json={"analysis_id": analysis_id, "analysis": analysis},
     )
 
     assert response.status_code == 200
-    assert response.json()["analysis_id"] == "analysis-sample-1"
-    assert captured["metadata"]["analysis_id"] == "analysis-sample-1"
-    assert captured["success_url"].endswith("packet_analysis=analysis-sample-1")
+    assert response.json()["analysis_id"] == analysis_id
+    assert captured["metadata"]["analysis_id"] == analysis_id
+    assert captured["success_url"].endswith(f"packet_analysis={analysis_id}")
+
+
+def test_checkout_claims_guest_snapshot_and_keeps_its_full_payload(monkeypatch):
+    _test_stripe_env(monkeypatch)
+    analysis_id = SAMPLE_ANALYSIS["analysis_id"]
+    remember_analysis(analysis_id, "", SAMPLE_ANALYSIS)
+    original = PACKET_STORE[analysis_id]["payload"]
+    monkeypatch.setattr(
+        main,
+        "lookup_analysis_for_entitlement",
+        lambda *_args: ({"result": SAMPLE_ANALYSIS}, True),
+    )
+    monkeypatch.setattr(main, "ensure_analysis_history", lambda *_args: {"id": "history-row"})
+    captured = {}
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "create",
+        lambda **kwargs: captured.update(kwargs) or FakeCheckoutSession(**kwargs),
+    )
+
+    response = client.post(
+        "/api/year-close-packet/checkout",
+        json={"analysis_id": analysis_id, "analysis": {"analysis_id": analysis_id}},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["analysis_id"] == analysis_id
+    assert captured["metadata"]["analysis_id"] == analysis_id
+    assert PACKET_STORE[analysis_id]["user_id"] == "test-user-123"
+    assert PACKET_STORE[analysis_id]["payload"] == original
 
 
 def test_checkout_stops_before_stripe_when_history_lookup_fails(monkeypatch):

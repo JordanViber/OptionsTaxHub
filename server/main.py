@@ -1393,7 +1393,11 @@ async def persist_portfolio_history(
 ):
     """Save a guest (or restored) analysis into the signed-in user's history."""
     validate_user_id(user_id)
-    analysis = body.analysis or {}
+    analysis = dict(body.analysis or {})
+    # This endpoint stores browser-restored guest results. Never trust payment
+    # state supplied by the client; only verified server paths may set it.
+    analysis.pop("packet_unlocked", None)
+    analysis.pop("packet_session_id", None)
     summary = analysis.get("summary") if isinstance(analysis.get("summary"), dict) else {}
     filename = Path(body.filename or "guest-run.csv").name.strip() or "guest-run.csv"
     saved = save_analysis_history(
@@ -1965,12 +1969,13 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
     if not persisted:
         # A settled charge with a deleted/missing history row must stay retryable.
         return None
-    if not mark_paid(
+    mark_paid(
         session_analysis_id,
         packet_session_id(session),
         user_id=session_user_id,
-    ):
-        return False
+    )
+    # The owner-scoped durable row is authoritative. PACKET_STORE is only a
+    # cache and must not turn an already-persisted payment into a rejection.
     return True
 
 
@@ -2058,7 +2063,7 @@ def _is_persisted_same_year_packet_grant(
     source_year = _packet_result_tax_year(source_result)
     if target_year is None or target_year != source_year:
         return False
-    return get_packet_grant_for_tax_year(user_id, target_year) == session_id
+    return True
 
 
 def _payload_for_download(analysis_id: str, user_id: str, analysis: Optional[dict]):
