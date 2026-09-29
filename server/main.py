@@ -2089,30 +2089,31 @@ async def confirm_year_close_packet(
 
 @app.post("/api/year-close-packet/webhook")
 async def year_close_packet_webhook(request: Request):
-    """Mark packet paid on checkout.session.completed. Tips never match product metadata."""
+    """Grant packet access only from a verified, settled Stripe Checkout event."""
     payload = await request.body()
-    event_type = ""
-    session_obj = None
     webhook_secret = os.environ.get("STRIPE_WEBHOOK_SECRET") or ""
     sig = request.headers.get("stripe-signature")
 
-    if webhook_secret and sig:
-        try:
-            event = stripe.Webhook.construct_event(payload, sig, webhook_secret)
-            event_type = event.get("type") if isinstance(event, dict) else getattr(event, "type", "")
-            data = event.get("data") if isinstance(event, dict) else getattr(event, "data", None)
-            session_obj = (data or {}).get("object") if isinstance(data, dict) else getattr(data, "object", None)
-        except Exception:
-            raise HTTPException(status_code=400, detail="Invalid Stripe webhook signature")
-    else:
-        try:
-            event = json.loads(payload.decode("utf-8") or "{}")
-        except json.JSONDecodeError:
-            raise HTTPException(status_code=400, detail="Invalid webhook payload")
-        event_type = event.get("type") or ""
-        session_obj = (event.get("data") or {}).get("object")
+    if not webhook_secret:
+        logger.error("STRIPE_WEBHOOK_SECRET is not configured")
+        raise HTTPException(status_code=503, detail="Stripe webhook is not configured")
+    if not sig:
+        raise HTTPException(status_code=400, detail="Stripe-Signature header is required")
+    try:
+        event = stripe.Webhook.construct_event(payload, sig, webhook_secret)
+    except stripe.SignatureVerificationError:
+        raise HTTPException(status_code=400, detail="Invalid Stripe webhook signature")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid webhook payload")
 
-    if event_type != "checkout.session.completed":
+    event_type = event.get("type") if isinstance(event, dict) else getattr(event, "type", "")
+    data = event.get("data") if isinstance(event, dict) else getattr(event, "data", None)
+    session_obj = (data or {}).get("object") if isinstance(data, dict) else getattr(data, "object", None)
+
+    if event_type not in (
+        "checkout.session.completed",
+        "checkout.session.async_payment_succeeded",
+    ):
         return {"received": True, "granted": False}
 
     analysis_id = packet_analysis_id_from_session(session_obj)

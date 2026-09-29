@@ -21,6 +21,8 @@ services:
         sync: false
       - key: STRIPE_SECRET_KEY
         sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
@@ -74,6 +76,8 @@ services:
       - key: GEMINI_API_KEY
         sync: false
       - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
         sync: false
       # Year-close packet on staging MUST use Stripe TEST (sk_test_).
       # Set this to a test secret even if STRIPE_SECRET_KEY is live.

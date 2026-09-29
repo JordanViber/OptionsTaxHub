@@ -1,7 +1,8 @@
 import { StrictMode } from "react";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import Home, { SAMPLE_FETCH_TIMEOUT_MS } from "../../app/dashboard/page";
+import Home from "../../app/dashboard/page";
+import { SAMPLE_FETCH_TIMEOUT_MS } from "../../lib/constants";
 import { persistGuestAnalysis } from "../../lib/api";
 import { resetGuestPersistInFlight } from "../../lib/guest-persist-lock";
 
