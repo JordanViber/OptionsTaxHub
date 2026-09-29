@@ -566,6 +566,42 @@ def test_checkout_rekeys_local_analysis_per_user(monkeypatch):
     assert PACKET_STORE["local-analysis"]["paid"] is False
 
 
+def test_checkout_copies_same_users_local_snapshot_to_canonical_id(monkeypatch):
+    _test_stripe_env(monkeypatch)
+    remember_analysis("local-analysis", "test-user-123", LOT_MATCH_ANALYSIS)
+    monkeypatch.setattr(
+        main,
+        "ensure_analysis_history",
+        lambda *_args: {"id": "canonical-history-row"},
+    )
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "create",
+        lambda **kwargs: FakeCheckoutSession(**kwargs),
+    )
+    analysis_without_id = {
+        key: value for key, value in LOT_MATCH_ANALYSIS.items() if key != "analysis_id"
+    }
+
+    response = client.post(
+        "/api/year-close-packet/checkout",
+        json={"analysis_id": "local-analysis", "analysis": analysis_without_id},
+    )
+
+    assert response.status_code == 200, response.text
+    canonical_id = response.json()["analysis_id"]
+    assert canonical_id != "local-analysis"
+    assert PACKET_STORE[canonical_id]["user_id"] == "test-user-123"
+    assert PACKET_STORE[canonical_id]["payload"]["analysis_id"] == canonical_id
+    report = PACKET_STORE[canonical_id]["payload"]["lot_match_report"]
+    assert [row["symbol"] for row in report["matched"]] == ["AMD"]
+    assert [row["symbol"] for row in report["gap"]] == ["NVDA"]
+    assert {row["symbol"] for row in report["unmatched"]} == {"SPX", "META"}
+    assert PACKET_STORE["local-analysis"]["paid"] is False
+    saved_snapshot = _FAKE_PACKET_SNAPSHOTS[("test-user-123", canonical_id)]
+    assert saved_snapshot["packet_payload"]["lot_match_report"] == report
+
+
 def test_checkout_refuses_live_key_on_staging(monkeypatch):
     monkeypatch.setenv("FRONTEND_URL", "https://options-tax-hub-client-staging.onrender.com")
     monkeypatch.setenv("STRIPE_FORCE_TEST_MODE", "true")

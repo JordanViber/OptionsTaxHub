@@ -1047,6 +1047,40 @@ def get_payload(analysis_id: str) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def copy_packet_payload_to_id(
+    source_analysis_id: str,
+    target_analysis_id: str,
+    user_id: str,
+) -> bool:
+    """Copy an owner-validated local snapshot onto a fresh canonical ID."""
+    if not source_analysis_id or not target_analysis_id or not user_id:
+        return False
+    source = PACKET_STORE.get(source_analysis_id)
+    if not source or not _same_packet_owner(source.get("user_id"), user_id):
+        return False
+    payload = source.get("payload")
+    if not isinstance(payload, dict):
+        return False
+    existing_target = PACKET_STORE.get(target_analysis_id)
+    if existing_target and not _same_packet_owner(
+        existing_target.get("user_id"), user_id
+    ):
+        return False
+    if existing_target and isinstance(existing_target.get("payload"), dict):
+        return True
+
+    canonical_payload = dict(payload)
+    canonical_payload["analysis_id"] = target_analysis_id
+    PACKET_STORE[target_analysis_id] = _new_packet_record(
+        user_id,
+        payload=canonical_payload,
+        paid=False,
+        session_ids=set(),
+    )
+    purge_packet_store()
+    return True
+
+
 def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in ("1", "true", "yes")
 

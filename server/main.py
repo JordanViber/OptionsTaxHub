@@ -45,6 +45,7 @@ from year_close_packet import (
     PACKET_METADATA_PRODUCT,
     PACKET_PRODUCT_NAME,
     build_packet_payload,
+    copy_packet_payload_to_id,
     get_payload,
     is_packet_paid,
     mark_paid,
@@ -2233,6 +2234,11 @@ async def create_year_close_packet_checkout(
                 detail="This analysis has no stable ID. Reload it before starting checkout.",
             )
         analysis_id = str(uuid.uuid4())
+        copy_packet_payload_to_id(
+            requested_analysis_id,
+            analysis_id,
+            user_id,
+        )
         analysis = {**analysis, "analysis_id": analysis_id}
     else:
         record, lookup_succeeded = lookup_analysis_for_entitlement(
