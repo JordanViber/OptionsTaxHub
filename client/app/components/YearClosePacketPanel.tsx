@@ -56,8 +56,13 @@ function localAnalysisIdentity(analysis: PortfolioAnalysis): string {
   return `local-${(first >>> 0).toString(16)}${(second >>> 0).toString(16)}`;
 }
 
+export function yearClosePacketStorageId(analysis: PortfolioAnalysis): string {
+  return analysis.analysis_id || localAnalysisIdentity(analysis);
+}
+
 export function isYearClosePacketPaid(analysisId: string): boolean {
-  const stored = readSessionItem(paidStorageKey(analysisId));
+  const canonicalId = readSessionItem(canonicalStorageKey(analysisId));
+  const stored = readSessionItem(paidStorageKey(canonicalId || analysisId));
   return Boolean(stored && stored.startsWith("cs_"));
 }
 
@@ -182,7 +187,7 @@ export default function YearClosePacketPanel(props: Readonly<{
   analysis: PortfolioAnalysis;
   onPaidChange?: (paid: boolean) => void;
 }>) {
-  const identity = props.analysis.analysis_id || localAnalysisIdentity(props.analysis);
+  const identity = yearClosePacketStorageId(props.analysis);
   return (
     <YearClosePacketPanelForAnalysis
       key={identity}
@@ -227,20 +232,22 @@ function YearClosePacketPanelForAnalysis({
   }, []);
 
   useEffect(() => {
-    const savedCanonicalId =
-      readSessionItem(canonicalStorageKey(analysisStorageId)) || analysisId;
+    const savedCanonical = readSessionItem(canonicalStorageKey(analysisStorageId));
+    const savedCanonicalId = savedCanonical || analysisId;
     setCanonicalAnalysisId(savedCanonicalId);
     if (analysis.packet_unlocked) {
       setPaid(true);
       if (analysis.packet_session_id?.startsWith("cs_")) {
         setSessionId(analysis.packet_session_id);
-        writeSessionItem(paidStorageKey(analysisStorageId), analysis.packet_session_id);
+        writeSessionItem(paidStorageKey(savedCanonicalId), analysis.packet_session_id);
       }
       onPaidChange?.(true);
     }
     const stored =
       readSessionItem(paidStorageKey(savedCanonicalId)) ||
-      readSessionItem(paidStorageKey(analysisStorageId));
+      (!savedCanonical
+        ? readSessionItem(paidStorageKey(analysisStorageId))
+        : null);
     if (stored && stored.startsWith("cs_")) {
       setPaid(true);
       setSessionId(stored);
@@ -255,6 +262,13 @@ function YearClosePacketPanelForAnalysis({
     const inflight = readSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY) === analysisStorageId;
 
     if (sid) {
+      if (
+        !inflight &&
+        packetAnalysisId !== savedCanonicalId &&
+        packetAnalysisId !== analysisId
+      ) {
+        return;
+      }
       clearSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY);
       setCanceledNotice(false);
       setSessionId(sid);
@@ -288,7 +302,6 @@ function YearClosePacketPanelForAnalysis({
           writeSessionItem(canonicalStorageKey(analysisStorageId), canonicalId);
           setPaid(true);
           writeSessionItem(paidStorageKey(canonicalId), sid);
-          writeSessionItem(paidStorageKey(analysisStorageId), sid);
           onPaidChange?.(true);
           stripPacketQueryParams();
         } catch (err) {
@@ -319,7 +332,10 @@ function YearClosePacketPanelForAnalysis({
         method: "POST",
         headers,
         body: JSON.stringify({
-          analysis_id: canonicalAnalysisId,
+          analysis_id:
+            canonicalAnalysisId === "local-analysis"
+              ? analysisStorageId
+              : canonicalAnalysisId,
           analysis: compactAnalysis(analysis),
         }),
       });
@@ -337,7 +353,6 @@ function YearClosePacketPanelForAnalysis({
         setPaid(true);
         writeSessionItem(canonicalStorageKey(analysisStorageId), paidAnalysisId);
         writeSessionItem(paidStorageKey(paidAnalysisId), data.session_id);
-        writeSessionItem(paidStorageKey(analysisStorageId), data.session_id);
         onPaidChange?.(true);
         setBusy(null);
         return;

@@ -4,7 +4,9 @@ import YearClosePacketPanel, {
   purchaseDateFromSuggestionId,
   PACKET_CHECKOUT_CANCELED_COPY,
   PACKET_CHECKOUT_INFLIGHT_KEY,
+  isYearClosePacketPaid,
   YEAR_CLOSE_PACKET_TITLE,
+  yearClosePacketStorageId,
 } from "../../app/components/YearClosePacketPanel";
 import type { PortfolioAnalysis } from "../../lib/types";
 
@@ -93,6 +95,31 @@ describe("YearClosePacketPanel", () => {
     expect(screen.getByRole("button", { name: /Download/i })).toBeInTheDocument();
     expect(screen.queryByText("Coffee")).not.toBeInTheDocument();
     expect(screen.queryByText("Buy us a coffee")).not.toBeInTheDocument();
+  });
+
+  it("uses the same stable, analysis-specific storage key outside the panel", () => {
+    const first = { ...analysis, analysis_id: undefined };
+    const second = {
+      ...analysis,
+      analysis_id: undefined,
+      tax_lots: analysis.tax_lots.map((lot) => ({ ...lot, quantity: 9 })),
+    };
+
+    const firstId = yearClosePacketStorageId(first);
+    expect(firstId).toMatch(/^local-/);
+    expect(yearClosePacketStorageId(first)).toBe(firstId);
+    expect(yearClosePacketStorageId(second)).not.toBe(firstId);
+  });
+
+  it("lets the dashboard read a local analysis payment only through its saved canonical ID", () => {
+    const local = yearClosePacketStorageId({ ...analysis, analysis_id: undefined });
+    store[`optionstaxhub-packet-canonical:${local}`] = "canonical-analysis";
+    store["optionstaxhub-packet-paid:canonical-analysis"] = "cs_test_paid";
+    store[`optionstaxhub-packet-paid:${local}`] = "cs_test_stale";
+
+    expect(isYearClosePacketPaid(local)).toBe(true);
+    store[`optionstaxhub-packet-canonical:${local}`] = "different-analysis";
+    expect(isYearClosePacketPaid(local)).toBe(false);
   });
 
   it("compact checkout payload includes harvest suggestions for reconstruct", () => {
@@ -295,6 +322,12 @@ describe("YearClosePacketPanel", () => {
 
   it("keeps the canonical checkout ID through confirm and download for guest IDs", async () => {
     const canonicalId = "11111111-1111-4111-8111-111111111111";
+    const localIdentity = yearClosePacketStorageId({
+      ...analysis,
+      analysis_id: undefined,
+    });
+    store[`optionstaxhub-packet-canonical:${localIdentity}`] = canonicalId;
+    store[PACKET_CHECKOUT_INFLIGHT_KEY] = localIdentity;
     window.history.replaceState(
       null,
       "",
@@ -382,7 +415,7 @@ describe("YearClosePacketPanel", () => {
     expect(store[PACKET_CHECKOUT_INFLIGHT_KEY]).toBeUndefined();
   });
 
-  it("scopes canonical checkout IDs to each ID-less analysis", async () => {
+  it("sends a stable analysis-specific key for each ID-less checkout", async () => {
     const firstAnalysis = { ...analysis, analysis_id: undefined };
     const secondAnalysis = {
       ...analysis,
@@ -411,14 +444,15 @@ describe("YearClosePacketPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: /Pay \$49/i }));
     await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
     const firstBody = JSON.parse(mockFetch.mock.calls[0][1].body);
-    expect(firstBody.analysis_id).toBe("local-analysis");
+    expect(firstBody.analysis_id).toBe(yearClosePacketStorageId(firstAnalysis));
     first.unmount();
 
     render(<YearClosePacketPanel analysis={secondAnalysis} />);
     fireEvent.click(screen.getByRole("button", { name: /Pay \$49/i }));
     await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));
     const secondBody = JSON.parse(mockFetch.mock.calls[1][1].body);
-    expect(secondBody.analysis_id).toBe("local-analysis");
+    expect(secondBody.analysis_id).toBe(yearClosePacketStorageId(secondAnalysis));
+    expect(secondBody.analysis_id).not.toBe(firstBody.analysis_id);
     expect(secondBody.analysis.tax_profile.tax_year).toBe(2026);
   });
 
@@ -489,5 +523,19 @@ describe("YearClosePacketPanel", () => {
       );
     });
     expect(window.location.search).toContain("packet_session=cs_test_packet");
+  });
+
+  it("does not confirm a return URL for a different analysis", async () => {
+    window.history.replaceState(
+      null,
+      "",
+      "/dashboard?packet_session=cs_test_packet&packet_analysis=analysis-2",
+    );
+    render(<YearClosePacketPanel analysis={analysis} />);
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(window.location.search).toContain("packet_analysis=analysis-2");
   });
 });

@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from copy import deepcopy
 from datetime import date, datetime
 from io import BytesIO
 from typing import Any, Optional
@@ -968,6 +969,31 @@ def upsert_payload(analysis_id: str, user_id: str, analysis: dict[str, Any] | No
     return PACKET_STORE[analysis_id]
 
 
+def upsert_packet_payload(
+    analysis_id: str,
+    user_id: str,
+    payload: dict[str, Any],
+) -> bool:
+    """Cache a packet built from server-owned data without rebuilding client JSON."""
+    if not analysis_id or not user_id or not isinstance(payload, dict):
+        return False
+    rec = PACKET_STORE.get(analysis_id)
+    if rec and not _same_packet_owner(rec.get("user_id"), user_id):
+        return False
+    if rec and isinstance(rec.get("payload"), dict):
+        _claim_packet_owner(rec, user_id)
+        return True
+    PACKET_STORE[analysis_id] = _new_packet_record(
+        user_id,
+        payload=deepcopy(payload),
+        paid=bool(rec and rec.get("paid")),
+        session_ids=set(rec.get("session_ids") or []) if rec else set(),
+        created_at=rec.get("created_at") if rec else None,
+    )
+    purge_packet_store()
+    return True
+
+
 def packet_store_belongs_to_user(analysis_id: str, user_id: str) -> bool:
     """Return false when a globally keyed memory record belongs to another owner."""
     rec = PACKET_STORE.get(analysis_id)
@@ -1056,7 +1082,9 @@ def copy_packet_payload_to_id(
     if not source_analysis_id or not target_analysis_id or not user_id:
         return False
     source = PACKET_STORE.get(source_analysis_id)
-    if not source or not _same_packet_owner(source.get("user_id"), user_id):
+    # A blank owner is shared guest state, not proof that this signed-in caller
+    # owns it. Never let a caller adopt a process-global guest alias.
+    if not source or source.get("user_id") != user_id:
         return False
     payload = source.get("payload")
     if not isinstance(payload, dict):
@@ -1069,7 +1097,7 @@ def copy_packet_payload_to_id(
     if existing_target and isinstance(existing_target.get("payload"), dict):
         return True
 
-    canonical_payload = dict(payload)
+    canonical_payload = deepcopy(payload)
     canonical_payload["analysis_id"] = target_analysis_id
     PACKET_STORE[target_analysis_id] = _new_packet_record(
         user_id,
@@ -1193,7 +1221,13 @@ def _session_metadata(session: Any) -> dict[str, str]:
     mapping = _plain_mapping(raw)
     if mapping is None and raw is not None:
         out: dict[str, str] = {}
-        for key in ("product", "analysis_id", "packet_analysis", "user_id"):
+        for key in (
+            "product",
+            "analysis_id",
+            "packet_analysis",
+            "user_id",
+            "tax_year",
+        ):
             val = getattr(raw, key, None)
             if val is not None:
                 out[key] = str(val)

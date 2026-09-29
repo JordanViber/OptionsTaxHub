@@ -56,6 +56,7 @@ from year_close_packet import (
     packet_requires_test_stripe,
     packet_user_id_from_session,
     packet_session_id,
+    _session_metadata,
     packet_store_belongs_to_user,
     paid_session_for_user_year,
     remember_analysis,
@@ -63,7 +64,7 @@ from year_close_packet import (
     resolve_packet_stripe_secret_key,
     session_grants_packet,
     session_is_settled_packet,
-    upsert_payload,
+    upsert_packet_payload,
 )
 from csv_parser import parse_csv, RealizedEvent, transactions_to_tax_lots
 from lot_matcher import match_1099b_lots
@@ -108,7 +109,6 @@ from db import (
     get_analysis_by_id,
     get_analysis_by_result_analysis_id,
     lookup_analysis_for_entitlement,
-    ensure_analysis_history,
     delete_analyses_without_result,
     delete_analysis_by_id,
     save_tax_profile as db_save_tax_profile,
@@ -1393,6 +1393,20 @@ async def _run_portfolio_analysis(
     history_saved = _save_history_best_effort(
         user_id, filename, summary, public_result
     )
+    if user_id and not (result.packet_unlocked and result.packet_session_id):
+        packet_payload = get_payload(result.analysis_id)
+        tax_year = _packet_result_tax_year(packet_payload)
+        if packet_payload and tax_year is not None:
+            if not save_packet_snapshot(
+                result.analysis_id,
+                user_id,
+                tax_year,
+                packet_payload,
+            ):
+                logger.warning(
+                    "Could not persist unpaid packet snapshot for analysis %s",
+                    result.analysis_id,
+                )
     if result.packet_unlocked and result.packet_session_id:
         packet_payload = get_payload(result.analysis_id)
         tax_year = _packet_result_tax_year(packet_payload)
@@ -2029,13 +2043,7 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
             return None
         result = record.get("result") if isinstance(record, dict) else None
         tax_year = _packet_result_tax_year(result)
-        metadata = (
-            session.get("metadata")
-            if isinstance(session, dict)
-            else getattr(session, "metadata", None)
-        )
-        if not isinstance(metadata, dict):
-            metadata = {}
+        metadata = _session_metadata(session)
         try:
             tax_year = int(metadata.get("tax_year") or tax_year)
         except (TypeError, ValueError):
@@ -2055,6 +2063,19 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
         tax_year = int(tax_year)
     except (TypeError, ValueError):
         return False
+    if not isinstance(packet_payload, dict):
+        # Keep the settled session as a same-year entitlement, but do not tell
+        # confirm/webhook that a downloadable packet exists without its private
+        # source document.
+        saved_entitlement = save_packet_snapshot(
+            session_analysis_id,
+            session_user_id,
+            tax_year,
+            None,
+            session_id=session_id,
+            paid=True,
+        )
+        return None if saved_entitlement is None else False
     entitlement_saved = mark_packet_snapshot_paid(
         session_analysis_id,
         session_user_id,
@@ -2146,15 +2167,9 @@ def _is_persisted_same_year_packet_grant(
     ):
         return False
 
-    metadata = (
-        session.get("metadata")
-        if isinstance(session, dict)
-        else getattr(session, "metadata", None)
-    )
+    metadata = _session_metadata(session)
     session_year = _packet_result_tax_year(
         {"analysis_tax_year": metadata.get("tax_year")}
-        if isinstance(metadata, dict)
-        else None
     )
     if session_year is None:
         source_snapshot, source_snapshot_lookup_succeeded = get_packet_snapshot(
@@ -2275,11 +2290,15 @@ async def create_year_close_packet_checkout(
                 detail="This analysis has no stable ID. Reload it before starting checkout.",
             )
         analysis_id = str(uuid.uuid4())
-        copy_packet_payload_to_id(
+        if not copy_packet_payload_to_id(
             requested_analysis_id,
             analysis_id,
             user_id,
-        )
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="This analysis has no owner-scoped private snapshot. Re-run it before checkout.",
+            )
         analysis = {**analysis, "analysis_id": analysis_id}
     else:
         record, lookup_succeeded = lookup_analysis_for_entitlement(
@@ -2326,13 +2345,21 @@ async def create_year_close_packet_checkout(
 
     analysis = _analysis_with_history_suggestions(analysis_id, user_id, analysis)
     _configure_packet_stripe()
-    if not ensure_analysis_history(analysis_id, user_id, analysis):
-        raise HTTPException(
-            status_code=503,
-            detail="Could not save this analysis before checkout. Please retry.",
-        )
-
     packet_snapshot = get_payload(analysis_id)
+    if not isinstance(packet_snapshot, dict):
+        durable_snapshot, snapshot_lookup_succeeded = get_packet_snapshot(
+            analysis_id,
+            user_id,
+        )
+        if not snapshot_lookup_succeeded:
+            raise HTTPException(
+                status_code=503,
+                detail="Could not load the saved packet snapshot. Please retry.",
+            )
+        if isinstance(durable_snapshot, dict) and isinstance(
+            durable_snapshot.get("packet_payload"), dict
+        ):
+            packet_snapshot = durable_snapshot["packet_payload"]
     if not isinstance(packet_snapshot, dict):
         raise HTTPException(
             status_code=409,
@@ -2364,6 +2391,7 @@ async def create_year_close_packet_checkout(
                 status_code=503,
                 detail="Could not save the packet snapshot. Please retry.",
             )
+        upsert_packet_payload(analysis_id, user_id, packet_snapshot)
         mark_paid(analysis_id, existing_session_id, user_id=user_id)
         return {
             "already_paid": True,
@@ -2403,8 +2431,7 @@ async def create_year_close_packet_checkout(
                 "tax_year": str(tax_year),
             },
         )
-        # Claim a guest's in-memory lot snapshot only after Stripe accepted Checkout.
-        upsert_payload(analysis_id, user_id, analysis)
+        upsert_packet_payload(analysis_id, user_id, packet_snapshot)
         return {
             "checkout_url": session.url,
             "session_id": session.id,
