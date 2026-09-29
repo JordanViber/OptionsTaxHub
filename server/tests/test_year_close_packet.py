@@ -717,12 +717,45 @@ def test_download_rejects_b_users_session_for_a_users_snapshot(monkeypatch):
     _test_stripe_env(monkeypatch)
     remember_analysis("victim-analysis", "user-A", SAMPLE_ANALYSIS)
     monkeypatch.setitem(main.app.dependency_overrides, get_current_user, lambda: "user-B")
+    _FAKE_PACKET_SNAPSHOTS[("user-B", "victim-analysis")] = {
+        "analysis_id": "victim-analysis",
+        "user_id": "user-B",
+        "tax_year": 2025,
+        "packet_payload": build_packet_payload(
+            {**SAMPLE_ANALYSIS, "analysis_id": "victim-analysis"},
+            analysis_id="victim-analysis",
+        ),
+        "packet_session_id": None,
+        "paid_at": None,
+    }
+    monkeypatch.setattr(
+        main,
+        "lookup_analysis_for_entitlement",
+        lambda analysis_id, user_id: (
+            {
+                "id": "user-b-history-row",
+                "user_id": user_id,
+                "result": {
+                    "analysis_id": analysis_id,
+                    "tax_profile": {"tax_year": 2025},
+                },
+            },
+            True,
+        ),
+    )
+    history_patches = []
+    monkeypatch.setattr(
+        main,
+        "patch_analysis_result",
+        lambda *args: history_patches.append(args) or True,
+    )
     paid_session = _stripe_object_session(
         id="cs_test_cross_owner_analysis",
         metadata={
             "product": PACKET_METADATA_PRODUCT,
             "analysis_id": "victim-analysis",
             "user_id": "user-B",
+            "tax_year": "2025",
         },
     )
     monkeypatch.setattr(
@@ -742,6 +775,7 @@ def test_download_rejects_b_users_session_for_a_users_snapshot(monkeypatch):
     )
 
     assert response.status_code == 403
+    assert history_patches == []
     assert PACKET_STORE["victim-analysis"]["user_id"] == "user-A"
     assert PACKET_STORE["victim-analysis"]["paid"] is False
 
