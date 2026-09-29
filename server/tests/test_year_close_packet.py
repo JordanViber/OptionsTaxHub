@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
+import time
 from io import BytesIO
 from types import SimpleNamespace
 
@@ -174,9 +178,61 @@ class FakeCheckoutSession:
 
 def _stripe_object_session(**fields):
     """Real stripe.checkout.Session.retrieve shape (StripeObject, not dict)."""
-    payload = {"object": "checkout.session", "id": "cs_test_retrieve"}
+    payload = {
+        "object": "checkout.session",
+        "id": "cs_test_retrieve",
+        "status": "complete",
+        "payment_status": "paid",
+        "amount_total": PACKET_AMOUNT_CENTS,
+        "currency": "usd",
+        "mode": "payment",
+        "livemode": False,
+    }
     payload.update(fields)
     return StripeObject.construct_from(payload, "sk_test")
+
+
+def _signed_webhook_payload(event, secret="whsec_packet_test_secret"):
+    payload = json.dumps(event, separators=(",", ":")).encode()
+    timestamp = int(time.time())
+    signed = f"{timestamp}.".encode() + payload
+    signature = hmac.new(secret.encode(), signed, hashlib.sha256).hexdigest()
+    return payload, f"t={timestamp},v1={signature}"
+
+
+def _post_signed_webhook(event, *, secret="whsec_packet_test_secret"):
+    payload, signature = _signed_webhook_payload(event, secret)
+    return client.post(
+        "/api/year-close-packet/webhook",
+        content=payload,
+        headers={"Stripe-Signature": signature, "Content-Type": "application/json"},
+    )
+
+
+def _packet_checkout_event(
+    *, event_type="checkout.session.completed", payment_status="paid", event_id="evt_packet"
+):
+    return {
+        "id": event_id,
+        "object": "event",
+        "type": event_type,
+        "data": {
+            "object": {
+                "object": "checkout.session",
+                "id": "cs_test_paid_1",
+                "status": "complete",
+                "payment_status": payment_status,
+                "amount_total": PACKET_AMOUNT_CENTS,
+                "currency": "usd",
+                "mode": "payment",
+                "livemode": False,
+                "metadata": {
+                    "product": PACKET_METADATA_PRODUCT,
+                    "analysis_id": "analysis-sample-1",
+                },
+            }
+        },
+    }
 
 
 def test_payload_and_pdf_contain_1099_totals_amd_and_faqs():
@@ -274,30 +330,19 @@ def test_checkout_refuses_live_key_on_staging(monkeypatch):
 
 def test_webhook_unlocks_download(monkeypatch):
     _test_stripe_env(monkeypatch)
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_packet_test_secret")
     main.remember_analysis("analysis-sample-1", "test-user-123", SAMPLE_ANALYSIS)
 
     unpaid = client.get("/api/year-close-packet/download?analysis_id=analysis-sample-1")
     assert unpaid.status_code == 403
 
-    webhook = client.post(
-        "/api/year-close-packet/webhook",
-        json={
-            "type": "checkout.session.completed",
-            "data": {
-                "object": {
-                    "id": "cs_test_paid_1",
-                    "payment_status": "paid",
-                    "amount_total": 4900,
-                    "metadata": {
-                        "product": PACKET_METADATA_PRODUCT,
-                        "analysis_id": "analysis-sample-1",
-                    },
-                }
-            },
-        },
-    )
+    webhook = _post_signed_webhook(_packet_checkout_event())
     assert webhook.status_code == 200
     assert webhook.json()["granted"] is True
+    duplicate = _post_signed_webhook(_packet_checkout_event())
+    assert duplicate.status_code == 200
+    assert duplicate.json()["granted"] is True
+    assert PACKET_STORE["analysis-sample-1"]["session_ids"] == {"cs_test_paid_1"}
 
     paid = client.get("/api/year-close-packet/download?analysis_id=analysis-sample-1")
     assert paid.status_code == 200
@@ -316,6 +361,10 @@ def test_confirm_session_unlocks_download(monkeypatch):
         id="cs_test_paid_confirm",
         payment_status="paid",
         amount_total=4900,
+        status="complete",
+        currency="usd",
+        mode="payment",
+        livemode=False,
         metadata={
             "product": PACKET_METADATA_PRODUCT,
             "analysis_id": "analysis-sample-1",
@@ -373,20 +422,16 @@ def test_three_dollar_tip_does_not_unlock_packet(monkeypatch):
     )
     assert confirm.status_code == 403
 
-    webhook = client.post(
-        "/api/year-close-packet/webhook",
-        json={
-            "type": "checkout.session.completed",
-            "data": {
-                "object": {
-                    "id": "cs_test_tip_coffee",
-                    "payment_status": "paid",
-                    "amount_total": 300,
-                    "metadata": {"tier": "coffee"},
-                }
-            },
-        },
-    )
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_packet_test_secret")
+    webhook = _post_signed_webhook({
+        "id": "evt_tip", "object": "event", "type": "checkout.session.completed",
+        "data": {"object": {
+            "object": "checkout.session", "id": "cs_test_tip_coffee",
+            "status": "complete", "payment_status": "paid", "amount_total": 300,
+            "currency": "usd", "mode": "payment", "livemode": False,
+            "metadata": {"tier": "coffee"},
+        }},
+    })
     assert webhook.status_code == 200
     assert webhook.json()["granted"] is False
 
@@ -414,6 +459,10 @@ def test_session_grants_packet_rejects_wrong_product_and_amount():
     ok = SimpleNamespace(
         payment_status="paid",
         amount_total=4900,
+        status="complete",
+        currency="usd",
+        mode="payment",
+        livemode=False,
         metadata={"product": PACKET_METADATA_PRODUCT, "analysis_id": "a1"},
     )
     assert session_grants_packet(ok, "a1") is True
@@ -456,6 +505,10 @@ def test_post_download_rebuilds_from_analysis_json(monkeypatch):
         id="cs_test_paid_post",
         payment_status="paid",
         amount_total=4900,
+        status="complete",
+        currency="usd",
+        mode="payment",
+        livemode=False,
         metadata={
             "product": PACKET_METADATA_PRODUCT,
             "analysis_id": "fresh-id",
@@ -486,11 +539,13 @@ def test_checkout_missing_analysis_id_is_400(monkeypatch):
     assert response.status_code == 400
 
 
-def test_webhook_ignores_other_events():
-    response = client.post(
-        "/api/year-close-packet/webhook",
-        json={"type": "payment_intent.succeeded", "data": {"object": {}}},
-    )
+def test_webhook_ignores_other_events(monkeypatch):
+    _test_stripe_env(monkeypatch)
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_packet_test_secret")
+    response = _post_signed_webhook({
+        "id": "evt_other", "object": "event", "type": "payment_intent.succeeded",
+        "data": {"object": {}},
+    })
     assert response.status_code == 200
     assert response.json()["granted"] is False
 
@@ -509,27 +564,27 @@ def test_checkout_stripe_error_is_502(monkeypatch):
     assert response.status_code == 502
 
 
-def test_session_grants_packet_reads_stripe_object_not_only_dict():
-    """Mira FAIL: retrieve returned StripeObject; dict-only metadata read 403'd paid TEST."""
+def test_session_grants_packet_accepts_valid_stripe_object(monkeypatch):
+    _test_stripe_env(monkeypatch)
     session = _stripe_object_session(
         payment_status="paid",
         status="complete",
         amount_total=4900,
+        currency="usd",
+        mode="payment",
+        livemode=False,
         metadata={
             "product": PACKET_METADATA_PRODUCT,
             "analysis_id": "analysis-sample-1",
         },
     )
-    assert not isinstance(session, dict)
-    assert not isinstance(session.metadata, dict)
     assert session_grants_packet(session, "analysis-sample-1") is True
     # Client restored analysis_id may be local-analysis; session metadata is canonical.
     assert session_grants_packet(session, "local-analysis") is True
     assert session_grants_packet(session, "") is True
 
 
-def test_session_grants_packet_complete_status_without_exact_paid():
-    """Sandbox Checkout can be status=complete while payment_status is not paid."""
+def test_session_grants_packet_rejects_complete_but_unpaid_checkout():
     session = _stripe_object_session(
         payment_status="unpaid",
         status="complete",
@@ -539,8 +594,9 @@ def test_session_grants_packet_complete_status_without_exact_paid():
             "analysis_id": "analysis-sample-1",
         },
     )
-    assert session_grants_packet(session, "analysis-sample-1") is True
+    assert session_grants_packet(session, "analysis-sample-1") is False
     missing_payment = _stripe_object_session(
+        payment_status=None,
         status="complete",
         amount_total=4900,
         metadata={
@@ -548,7 +604,72 @@ def test_session_grants_packet_complete_status_without_exact_paid():
             "analysis_id": "analysis-sample-1",
         },
     )
-    assert session_grants_packet(missing_payment, "analysis-sample-1") is True
+    assert session_grants_packet(missing_payment, "analysis-sample-1") is False
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"currency": "eur"},
+        {"mode": "subscription"},
+        {"livemode": True},
+        {"status": "open"},
+        {"payment_status": "no_payment_required"},
+    ],
+)
+def test_session_grants_packet_requires_settled_expected_stripe_checkout(monkeypatch, overrides):
+    _test_stripe_env(monkeypatch)
+    fields = {
+        "payment_status": "paid", "status": "complete", "amount_total": 4900,
+        "currency": "usd", "mode": "payment", "livemode": False,
+        "metadata": {"product": PACKET_METADATA_PRODUCT, "analysis_id": "analysis-sample-1"},
+    }
+    fields.update(overrides)
+    assert session_grants_packet(_stripe_object_session(**fields), "analysis-sample-1") is False
+
+
+@pytest.mark.parametrize("headers,secret,expected_status", [
+    ({}, "whsec_packet_test_secret", 400),
+    ({"Stripe-Signature": "invalid-current-signature"}, "whsec_packet_test_secret", 400),
+    ({"Stripe-Signature": "invalid-current-signature"}, "", 503),
+])
+def test_webhook_requires_configured_secret_and_valid_signature(monkeypatch, headers, secret, expected_status):
+    _test_stripe_env(monkeypatch)
+    if secret:
+        monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", secret)
+    else:
+        monkeypatch.delenv("STRIPE_WEBHOOK_SECRET", raising=False)
+    request_headers = {"Content-Type": "application/json", **headers}
+    if request_headers.get("Stripe-Signature") == "invalid-current-signature":
+        request_headers["Stripe-Signature"] = f"t={int(time.time())},v1=bad"
+    response = client.post(
+        "/api/year-close-packet/webhook",
+        content=json.dumps(_packet_checkout_event()).encode(),
+        headers=request_headers,
+    )
+    assert response.status_code == expected_status
+
+
+def test_async_payment_succeeded_event_unlocks_packet(monkeypatch):
+    _test_stripe_env(monkeypatch)
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_packet_test_secret")
+    main.remember_analysis("analysis-sample-1", "test-user-123", SAMPLE_ANALYSIS)
+    event = _packet_checkout_event(
+        event_type="checkout.session.async_payment_succeeded", event_id="evt_async_paid"
+    )
+    response = _post_signed_webhook(event)
+    assert response.status_code == 200
+    assert response.json()["granted"] is True
+
+
+def test_unpaid_completed_webhook_does_not_unlock_packet(monkeypatch):
+    _test_stripe_env(monkeypatch)
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_packet_test_secret")
+    main.remember_analysis("analysis-sample-1", "test-user-123", SAMPLE_ANALYSIS)
+    response = _post_signed_webhook(_packet_checkout_event(payment_status="unpaid"))
+    assert response.status_code == 200
+    assert response.json()["granted"] is False
+    assert client.get("/api/year-close-packet/download?analysis_id=analysis-sample-1").status_code == 403
 
 
 def test_confirm_packet_analysis_when_client_analysis_id_missing(monkeypatch):
@@ -558,7 +679,7 @@ def test_confirm_packet_analysis_when_client_analysis_id_missing(monkeypatch):
 
     paid_session = _stripe_object_session(
         id="cs_test_paid_packet_analysis",
-        payment_status="unpaid",
+        payment_status="paid",
         status="complete",
         amount_total=4900,
         metadata={
