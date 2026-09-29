@@ -102,6 +102,8 @@ from db import (
     save_analysis_history,
     get_analysis_history,
     get_analysis_by_id,
+    ensure_analysis_history,
+    ensure_analysis_history,
     delete_analyses_without_result,
     delete_analysis_by_id,
     save_tax_profile as db_save_tax_profile,
@@ -1932,12 +1934,30 @@ def _grant_packet_from_session(session, analysis_id: str, user_id: str = "") -> 
         return False
     session_analysis_id = packet_analysis_id_from_session(session)
     session_user_id = packet_user_id_from_session(session)
-    if session_user_id and user_id and session_user_id != user_id:
+    if not session_user_id or not user_id or session_user_id != user_id:
         return False
+    persisted = patch_analysis_result(
+        session_analysis_id,
+        session_user_id,
+        {
+            "packet_unlocked": True,
+            "packet_session_id": packet_session_id(session),
+        },
+    )
+    if not persisted:
+        logger.error(
+            "Failed to persist packet grant analysis_id=%s user_id=%s",
+            session_analysis_id,
+            session_user_id,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Unable to persist packet payment. Please retry the download.",
+        )
     mark_paid(
         session_analysis_id,
         packet_session_id(session),
-        user_id=session_user_id or user_id,
+        user_id=session_user_id,
     )
     return True
 
@@ -1999,12 +2019,14 @@ async def create_year_close_packet_checkout(
     if not analysis_id:
         raise HTTPException(status_code=400, detail="analysis_id is required")
 
-    upsert_payload(
-        analysis_id,
-        user_id,
-        _analysis_with_history_suggestions(analysis_id, user_id, body.analysis),
-    )
+    analysis = _analysis_with_history_suggestions(analysis_id, user_id, body.analysis)
     _configure_packet_stripe()
+    if not ensure_analysis_history(analysis_id, user_id, analysis):
+        raise HTTPException(
+            status_code=503,
+            detail="Could not save this analysis before checkout. Please retry.",
+        )
+    upsert_payload(analysis_id, user_id, analysis)
 
     success_url = (
         f"{FRONTEND_URL}/dashboard?packet_session={{CHECKOUT_SESSION_ID}}"
@@ -2079,15 +2101,6 @@ async def confirm_year_close_packet(
         raise HTTPException(
             status_code=403,
             detail="Checkout session does not unlock the year-close packet.",
-        )
-    if user_id:
-        patch_analysis_result(
-            analysis_id,
-            user_id,
-            {
-                "packet_unlocked": True,
-                "packet_session_id": packet_session_id(session),
-            },
         )
     return {
         "paid": True,

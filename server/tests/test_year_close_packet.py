@@ -188,6 +188,13 @@ def _stripe_object_session(**fields):
         "mode": "payment",
         "livemode": False,
     }
+    metadata = {
+        "product": PACKET_METADATA_PRODUCT,
+        "analysis_id": "analysis-sample-1",
+        "user_id": "test-user-123",
+    }
+    metadata.update(fields.pop("metadata", {}) or {})
+    payload["metadata"] = metadata
     payload.update(fields)
     return StripeObject.construct_from(payload, "sk_test")
 
@@ -279,6 +286,7 @@ def test_unpaid_download_is_403(monkeypatch):
 
 def test_checkout_session_is_4900_cents_year_close_packet_not_tips(monkeypatch):
     _test_stripe_env(monkeypatch)
+    monkeypatch.setattr(main, "ensure_analysis_history", lambda *_args: {"id": "history-row"})
     captured = {}
 
     def fake_create(**kwargs):
@@ -313,6 +321,24 @@ def test_checkout_session_is_4900_cents_year_close_packet_not_tips(monkeypatch):
         "https://options-tax-hub-client-staging.onrender.com/dashboard"
     )
     assert "packet_session={CHECKOUT_SESSION_ID}" in captured["success_url"]
+
+
+def test_checkout_rejects_when_analysis_cannot_be_persisted(monkeypatch):
+    _test_stripe_env(monkeypatch)
+    monkeypatch.setattr(main, "ensure_analysis_history", lambda *_args: None)
+    created = []
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "create",
+        lambda **kwargs: created.append(kwargs),
+    )
+
+    response = client.post(
+        "/api/year-close-packet/checkout",
+        json={"analysis_id": "analysis-sample-1", "analysis": SAMPLE_ANALYSIS},
+    )
+    assert response.status_code == 503
+    assert created == []
 
 
 def test_checkout_refuses_live_key_on_staging(monkeypatch):
@@ -361,6 +387,7 @@ def test_webhook_unlocks_download(monkeypatch):
 
 def test_confirm_session_unlocks_download(monkeypatch):
     _test_stripe_env(monkeypatch)
+    monkeypatch.setattr(main, "patch_analysis_result", lambda *_args: True)
     main.remember_analysis("analysis-sample-1", "test-user-123", SAMPLE_ANALYSIS)
 
     paid_session = SimpleNamespace(
@@ -374,6 +401,7 @@ def test_confirm_session_unlocks_download(monkeypatch):
         metadata={
             "product": PACKET_METADATA_PRODUCT,
             "analysis_id": "analysis-sample-1",
+            "user_id": "test-user-123",
         },
     )
     monkeypatch.setattr(
@@ -401,6 +429,33 @@ def test_confirm_session_unlocks_download(monkeypatch):
     )
     assert paid.status_code == 200
     assert "year-close-packet.pdf" in paid.headers.get("content-disposition", "")
+
+
+def test_confirm_does_not_grant_transient_access_when_persistence_fails(monkeypatch):
+    _test_stripe_env(monkeypatch)
+    main.remember_analysis("analysis-sample-1", "test-user-123", SAMPLE_ANALYSIS)
+    monkeypatch.setattr(main, "patch_analysis_result", lambda *_args: False)
+    paid_session = _stripe_object_session(
+        id="cs_test_paid_persistence_failure",
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": "analysis-sample-1",
+            "user_id": "test-user-123",
+        },
+    )
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda *_args, **_kwargs: paid_session,
+    )
+
+    response = client.post(
+        "/api/year-close-packet/confirm",
+        json={"session_id": paid_session.id, "analysis_id": "analysis-sample-1"},
+    )
+
+    assert response.status_code == 503
+    assert PACKET_STORE["analysis-sample-1"]["paid"] is False
 
 
 def test_three_dollar_tip_does_not_unlock_packet(monkeypatch):
@@ -507,6 +562,7 @@ def test_custom_domain_frontend_uses_live_stripe(monkeypatch):
 
 def test_post_download_rebuilds_from_analysis_json(monkeypatch):
     _test_stripe_env(monkeypatch)
+    monkeypatch.setattr(main, "patch_analysis_result", lambda *_args: True)
     paid_session = SimpleNamespace(
         id="cs_test_paid_post",
         payment_status="paid",
@@ -518,6 +574,7 @@ def test_post_download_rebuilds_from_analysis_json(monkeypatch):
         metadata={
             "product": PACKET_METADATA_PRODUCT,
             "analysis_id": "fresh-id",
+            "user_id": "test-user-123",
         },
     )
     monkeypatch.setattr(
@@ -558,6 +615,7 @@ def test_webhook_ignores_other_events(monkeypatch):
 
 def test_checkout_stripe_error_is_502(monkeypatch):
     _test_stripe_env(monkeypatch)
+    monkeypatch.setattr(main, "ensure_analysis_history", lambda *_args: {"id": "history-row"})
 
     def boom(**_kwargs):
         raise main.stripe.StripeError("nope")
@@ -790,6 +848,7 @@ def test_unpaid_completed_webhook_does_not_unlock_packet(monkeypatch):
 def test_confirm_packet_analysis_when_client_analysis_id_missing(monkeypatch):
     """Success URL has packet_analysis; client analysis_id is optional / local-analysis."""
     _test_stripe_env(monkeypatch)
+    monkeypatch.setattr(main, "patch_analysis_result", lambda *_args: True)
     main.remember_analysis("analysis-sample-1", "test-user-123", SAMPLE_ANALYSIS)
 
     paid_session = _stripe_object_session(
@@ -833,6 +892,7 @@ def test_confirm_packet_analysis_when_client_analysis_id_missing(monkeypatch):
 
 def test_confirm_uses_session_analysis_id_when_client_sends_local_analysis(monkeypatch):
     _test_stripe_env(monkeypatch)
+    monkeypatch.setattr(main, "patch_analysis_result", lambda *_args: True)
     main.remember_analysis("analysis-sample-1", "test-user-123", SAMPLE_ANALYSIS)
 
     paid_session = _stripe_object_session(
@@ -1924,6 +1984,7 @@ def test_compact_explicit_purchase_date_distinguishes_lots():
 
 def test_paid_download_reloads_suggestions_from_history_on_store_miss(monkeypatch):
     _test_stripe_env(monkeypatch)
+    monkeypatch.setattr(main, "patch_analysis_result", lambda *_args: True)
     analysis_id = "analysis-history-harvest"
     reset_packet_store()
     mark_paid(analysis_id, "cs_test_hist_harvest", user_id="test-user-123")
@@ -1957,6 +2018,7 @@ def test_paid_download_reloads_suggestions_from_history_on_store_miss(monkeypatc
         metadata={
             "product": PACKET_METADATA_PRODUCT,
             "analysis_id": analysis_id,
+            "user_id": "test-user-123",
         },
     )
     monkeypatch.setattr(

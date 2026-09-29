@@ -228,6 +228,69 @@ class TestPatchAnalysisResult:
         ) is False
         builder.update.assert_not_called()
 
+
+class TestEnsureAnalysisHistory:
+    def test_reuses_existing_row_found_by_embedded_analysis_id(self, monkeypatch):
+        record = {"id": "history-row", "user_id": "user1"}
+        monkeypatch.setattr(db, "get_supabase", lambda: object())
+        monkeypatch.setattr(db, "get_analysis_by_id", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(
+            db,
+            "get_analysis_by_result_analysis_id",
+            lambda *_args, **_kwargs: record,
+        )
+        monkeypatch.setattr(
+            db,
+            "save_analysis_history",
+            lambda *_args, **_kwargs: pytest.fail("existing row must not be duplicated"),
+        )
+
+        assert db.ensure_analysis_history("analysis-uuid", "user1", None) == record
+
+    def test_inserts_matching_analysis_when_history_row_is_missing(self, monkeypatch):
+        inserted = {"id": "history-row", "user_id": "user1"}
+        monkeypatch.setattr(db, "get_supabase", lambda: object())
+        monkeypatch.setattr(db, "get_analysis_by_id", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(
+            db,
+            "get_analysis_by_result_analysis_id",
+            lambda *_args, **_kwargs: None,
+        )
+        saved = {}
+
+        def save(user_id, filename, summary, result_data=None):
+            saved.update(user_id=user_id, filename=filename, summary=summary, result=result_data)
+            return inserted
+
+        monkeypatch.setattr(db, "save_analysis_history", save)
+        analysis = {"analysis_id": "analysis-uuid", "summary": {"positions_count": 2}}
+
+        assert db.ensure_analysis_history("analysis-uuid", "user1", analysis) == inserted
+        assert saved == {
+            "user_id": "user1",
+            "filename": "year-close-packet.csv",
+            "summary": {"positions_count": 2},
+            "result": analysis,
+        }
+
+    def test_refuses_to_insert_mismatched_analysis(self, monkeypatch):
+        monkeypatch.setattr(db, "get_supabase", lambda: object())
+        monkeypatch.setattr(db, "get_analysis_by_id", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(
+            db,
+            "get_analysis_by_result_analysis_id",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            db,
+            "save_analysis_history",
+            lambda *_args, **_kwargs: pytest.fail("mismatched analysis must not be saved"),
+        )
+
+        assert db.ensure_analysis_history(
+            "analysis-uuid", "user1", {"analysis_id": "different-analysis"}
+        ) is None
+
     def test_returns_record(self, monkeypatch):
         row = {"id": "abc", "user_id": "user1", "result": {"positions": []}}
         client = _FakeClient(table_data=[row])

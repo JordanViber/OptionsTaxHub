@@ -206,6 +206,65 @@ def get_analysis_by_id(
         return None
 
 
+def get_analysis_by_result_analysis_id(
+    analysis_id: str,
+    user_id: str,
+    client=None,
+) -> Optional[dict]:
+    """Find a history row by the analysis ID embedded in its result JSONB."""
+    if not analysis_id or not user_id:
+        return None
+    if client is None:
+        client = get_supabase()
+    if client is None:
+        return None
+    try:
+        result = (
+            client.table("portfolio_analyses")
+            .select("id, user_id, filename, uploaded_at, summary, positions_count, total_market_value, result")
+            .eq("user_id", user_id)
+            .contains("result", {"analysis_id": analysis_id})
+            .limit(1)
+            .execute()
+        )
+        if result.data:
+            return dict(result.data[0])
+        return None
+    except Exception as e:
+        logger.error("Failed to fetch analysis by embedded id: %s", e)
+        return None
+
+
+def ensure_analysis_history(
+    analysis_id: str,
+    user_id: str,
+    analysis: Optional[dict],
+) -> Optional[dict]:
+    """Ensure Checkout can only charge for an analysis with a durable row."""
+    if not analysis_id or not user_id:
+        return None
+    client = get_supabase()
+    if client is None:
+        return None
+    record = get_analysis_by_id(analysis_id, user_id, client=client)
+    if not record:
+        record = get_analysis_by_result_analysis_id(analysis_id, user_id, client=client)
+    if record:
+        return record
+    if not isinstance(analysis, dict) or analysis.get("analysis_id") != analysis_id:
+        return None
+    summary = analysis.get("summary")
+    if not isinstance(summary, dict):
+        summary = {}
+    filename = str(analysis.get("filename") or "year-close-packet.csv")[:255]
+    return save_analysis_history(
+        user_id,
+        filename,
+        summary,
+        result_data=analysis,
+    )
+
+
 def delete_analyses_without_result(user_id: str) -> int:
     """
     Delete portfolio analyses that have no stored result data.
@@ -369,19 +428,7 @@ def patch_analysis_result(
         return False
     record = get_analysis_by_id(analysis_id, user_id, client=client)
     if not record:
-        try:
-            matches = (
-                client.table("portfolio_analyses")
-                .select("id, user_id, result")
-                .eq("user_id", user_id)
-                .contains("result", {"analysis_id": analysis_id})
-                .limit(1)
-                .execute()
-            )
-            record = dict(matches.data[0]) if matches.data else None
-        except Exception as e:
-            logger.error("Failed to locate analysis result %s: %s", analysis_id, e)
-            return False
+        record = get_analysis_by_result_analysis_id(analysis_id, user_id, client=client)
     if not record or not record.get("id"):
         return False
     result = record.get("result")
