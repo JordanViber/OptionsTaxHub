@@ -55,6 +55,9 @@ class _FakeQueryBuilder:
     def eq(self, *args):
         return self
 
+    def contains(self, *args):
+        return self
+
     def is_(self, *args):
         return self
 
@@ -187,6 +190,43 @@ class TestGetAnalysisById:
         monkeypatch.setattr(db, "get_supabase", lambda: None)
         result = db.get_analysis_by_id("abc", "user1")
         assert result is None
+
+
+class TestPatchAnalysisResult:
+    def test_updates_row_found_by_embedded_analysis_id(self, monkeypatch):
+        record = {
+            "id": "history-row-uuid",
+            "user_id": "user1",
+            "result": {"analysis_id": "analysis-uuid", "packet_unlocked": False},
+        }
+        builder = MagicMock()
+        builder.select.return_value.eq.return_value.contains.return_value.limit.return_value.execute.return_value.data = [record]
+        builder.update.return_value.eq.return_value.eq.return_value.execute.return_value.data = [record]
+        client = MagicMock()
+        client.table.return_value = builder
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+        monkeypatch.setattr(db, "get_analysis_by_id", lambda *_args, **_kwargs: None)
+
+        assert db.patch_analysis_result(
+            "analysis-uuid", "user1", {"packet_unlocked": True}
+        ) is True
+        builder.update.assert_called_once_with(
+            {"result": {"analysis_id": "analysis-uuid", "packet_unlocked": True}}
+        )
+        builder.update.return_value.eq.assert_called_once_with("id", "history-row-uuid")
+
+    def test_does_not_patch_embedded_analysis_from_another_user(self, monkeypatch):
+        builder = MagicMock()
+        builder.select.return_value.eq.return_value.contains.return_value.limit.return_value.execute.return_value.data = []
+        client = MagicMock()
+        client.table.return_value = builder
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+        monkeypatch.setattr(db, "get_analysis_by_id", lambda *_args, **_kwargs: None)
+
+        assert db.patch_analysis_result(
+            "analysis-uuid", "user1", {"packet_unlocked": True}
+        ) is False
+        builder.update.assert_not_called()
 
     def test_returns_record(self, monkeypatch):
         row = {"id": "abc", "user_id": "user1", "result": {"positions": []}}

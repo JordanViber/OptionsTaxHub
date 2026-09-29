@@ -357,24 +357,42 @@ def patch_analysis_result(
     user_id: str,
     patch: dict,
 ) -> bool:
-    """Shallow-merge keys into a stored analysis result JSONB."""
+    """Shallow-merge keys into a stored analysis result JSONB.
+
+    Portfolio history row IDs predate the analysis IDs embedded in result JSON,
+    so locate legacy rows by either identity while always filtering by owner.
+    """
     if not analysis_id or not user_id or not patch:
         return False
-    record = get_analysis_by_id(analysis_id, user_id)
+    client = get_supabase()
+    if client is None:
+        return False
+    record = get_analysis_by_id(analysis_id, user_id, client=client)
     if not record:
+        try:
+            matches = (
+                client.table("portfolio_analyses")
+                .select("id, user_id, result")
+                .eq("user_id", user_id)
+                .contains("result", {"analysis_id": analysis_id})
+                .limit(1)
+                .execute()
+            )
+            record = dict(matches.data[0]) if matches.data else None
+        except Exception as e:
+            logger.error("Failed to locate analysis result %s: %s", analysis_id, e)
+            return False
+    if not record or not record.get("id"):
         return False
     result = record.get("result")
     if not isinstance(result, dict):
         result = {}
     merged = {**result, **patch}
-    client = get_supabase()
-    if client is None:
-        return False
     try:
         updated = (
             client.table("portfolio_analyses")
             .update({"result": merged})
-            .eq("id", analysis_id)
+            .eq("id", record["id"])
             .eq("user_id", user_id)
             .execute()
         )
