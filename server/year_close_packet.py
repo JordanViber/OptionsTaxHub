@@ -96,6 +96,19 @@ COMPARE_GAP_COPY = (
 # from a client-supplied packet payload after Stripe session verification.
 PACKET_STORE: dict[str, dict[str, Any]] = {}
 
+
+def _same_packet_owner(stored: Any, user_id: str) -> bool:
+    """Blank guest ownership can be claimed; non-empty owners never transfer."""
+    if not user_id:
+        return False
+    current = stored or ""
+    return current in ("", user_id)
+
+
+def _claim_packet_owner(rec: dict[str, Any], user_id: str) -> None:
+    if user_id and not rec.get("user_id"):
+        rec["user_id"] = user_id
+
 # Guest analyses are stored under an empty user_id. Without TTL + a cap this
 # dict grows without bound on every unauthenticated POST /analyze.
 ANON_PACKET_TTL_SECONDS = 60 * 60
@@ -902,9 +915,10 @@ def _payload_preserving_harvest(
 
 def remember_analysis(analysis_id: str, user_id: str, analysis: dict[str, Any]) -> None:
     existing = PACKET_STORE.get(analysis_id) or {}
-    if existing and existing.get("user_id") != user_id:
+    if existing and not _same_packet_owner(existing.get("user_id"), user_id):
         logger.warning("Refusing to replace packet snapshot owned by another user")
         return
+    _claim_packet_owner(existing, user_id)
     existing_payload = existing.get("payload")
     if not isinstance(existing_payload, dict):
         existing_payload = None
@@ -925,7 +939,7 @@ def remember_analysis(analysis_id: str, user_id: str, analysis: dict[str, Any]) 
 
 def upsert_payload(analysis_id: str, user_id: str, analysis: dict[str, Any] | None) -> dict[str, Any]:
     rec = PACKET_STORE.get(analysis_id)
-    if rec and rec.get("user_id") != user_id:
+    if rec and not _same_packet_owner(rec.get("user_id"), user_id):
         logger.warning("Refusing to reuse packet snapshot owned by another user")
         payload = build_packet_payload(analysis, analysis_id=analysis_id) if analysis else None
         return _new_packet_record(
@@ -935,8 +949,7 @@ def upsert_payload(analysis_id: str, user_id: str, analysis: dict[str, Any] | No
             session_ids=set(),
         )
     if rec and rec.get("payload"):
-        if user_id and rec.get("user_id") in ("", None):
-            rec["user_id"] = user_id
+        _claim_packet_owner(rec, user_id)
         purge_packet_store()
         return PACKET_STORE.get(analysis_id) or rec
     if analysis:
@@ -958,7 +971,12 @@ def upsert_payload(analysis_id: str, user_id: str, analysis: dict[str, Any] | No
 def packet_store_belongs_to_user(analysis_id: str, user_id: str) -> bool:
     """Return false when a globally keyed memory record belongs to another owner."""
     rec = PACKET_STORE.get(analysis_id)
-    return rec is None or (bool(user_id) and rec.get("user_id") == user_id)
+    if rec is None:
+        return True
+    if not _same_packet_owner(rec.get("user_id"), user_id):
+        return False
+    _claim_packet_owner(rec, user_id)
+    return True
 
 
 def mark_paid(analysis_id: str, session_id: str, user_id: str = "") -> bool:
@@ -974,8 +992,9 @@ def mark_paid(analysis_id: str, session_id: str, user_id: str = "") -> bool:
         )
         purge_packet_store()
         return True
-    if rec.get("user_id") != user_id:
+    if not _same_packet_owner(rec.get("user_id"), user_id):
         return False
+    _claim_packet_owner(rec, user_id)
     rec["paid"] = True
     if session_id:
         rec.setdefault("session_ids", set()).add(session_id)

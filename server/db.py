@@ -274,6 +274,19 @@ def _lookup_analysis_for_entitlement(
     return None, True
 
 
+def lookup_analysis_for_entitlement(
+    analysis_id: str,
+    user_id: str,
+) -> tuple[Optional[dict], bool]:
+    """Resolve a caller-owned history row and distinguish a miss from an outage."""
+    if not analysis_id or not user_id:
+        return None, False
+    client = get_supabase()
+    if client is None:
+        return None, False
+    return _lookup_analysis_for_entitlement(analysis_id, user_id, client)
+
+
 def ensure_analysis_history(
     analysis_id: str,
     user_id: str,

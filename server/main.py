@@ -105,6 +105,7 @@ from db import (
     get_analysis_history,
     get_analysis_by_id,
     get_analysis_by_result_analysis_id,
+    lookup_analysis_for_entitlement,
     ensure_analysis_history,
     delete_analyses_without_result,
     delete_analysis_by_id,
@@ -1055,15 +1056,19 @@ def _apply_packet_year_grant(result: PortfolioAnalysis, user_id: str) -> Portfol
     if not user_id or not result.analysis_id:
         return result
     if result.packet_unlocked and result.packet_session_id:
-        mark_paid(result.analysis_id, result.packet_session_id, user_id=user_id)
-        return result
+        if mark_paid(result.analysis_id, result.packet_session_id, user_id=user_id):
+            return result
+        return result.model_copy(
+            update={"packet_unlocked": False, "packet_session_id": None}
+        )
     tax_year = result.tax_profile.tax_year if result.tax_profile else None
     session_id = get_packet_grant_for_tax_year(user_id, tax_year or 2026)
     if not session_id:
         session_id = paid_session_for_user_year(user_id, tax_year)
     if not session_id:
         return result
-    mark_paid(result.analysis_id, session_id, user_id=user_id)
+    if not mark_paid(result.analysis_id, session_id, user_id=user_id):
+        return result
     return result.model_copy(
         update={"packet_unlocked": True, "packet_session_id": session_id}
     )
@@ -1958,7 +1963,8 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
         )
         return None
     if not persisted:
-        return False
+        # A settled charge with a deleted/missing history row must stay retryable.
+        return None
     if not mark_paid(
         session_analysis_id,
         packet_session_id(session),
@@ -2094,40 +2100,7 @@ async def create_year_close_packet_checkout(
         raise HTTPException(status_code=400, detail="analysis_id is required")
 
     analysis = body.analysis
-    record = None
-    if requested_analysis_id != "local-analysis":
-        record = get_analysis_by_id(requested_analysis_id, user_id)
-        if not record:
-            record = get_analysis_by_result_analysis_id(requested_analysis_id, user_id)
-
-    if record:
-        result = record.get("result")
-        stored_analysis_id = (
-            str(result.get("analysis_id") or "").strip()
-            if isinstance(result, dict)
-            else ""
-        )
-        analysis_id = stored_analysis_id or requested_analysis_id
-        if analysis is None and isinstance(result, dict):
-            analysis = result
-    else:
-        if (
-            not isinstance(analysis, dict)
-            or (
-                requested_analysis_id != "local-analysis"
-                and analysis.get("analysis_id") != requested_analysis_id
-            )
-        ):
-            raise HTTPException(
-                status_code=503,
-                detail="Could not verify this analysis before checkout. Please reload and retry.",
-            )
-        analysis_id = str(uuid.uuid4())
-        analysis = {**analysis, "analysis_id": analysis_id}
-
-    try:
-        uuid.UUID(analysis_id)
-    except (TypeError, ValueError, AttributeError):
+    if requested_analysis_id == "local-analysis":
         if not isinstance(analysis, dict):
             raise HTTPException(
                 status_code=400,
@@ -2135,15 +2108,48 @@ async def create_year_close_packet_checkout(
             )
         analysis_id = str(uuid.uuid4())
         analysis = {**analysis, "analysis_id": analysis_id}
-
-    if analysis_id == "local-analysis" or not packet_store_belongs_to_user(analysis_id, user_id):
-        if not isinstance(analysis, dict):
+    else:
+        record, lookup_succeeded = lookup_analysis_for_entitlement(
+            requested_analysis_id,
+            user_id,
+        )
+        if not lookup_succeeded:
             raise HTTPException(
                 status_code=503,
-                detail="Could not load this analysis before checkout. Please reload and retry.",
+                detail="Could not verify this analysis before checkout. Please retry.",
             )
-        analysis_id = str(uuid.uuid4())
-        analysis = {**analysis, "analysis_id": analysis_id}
+        analysis_id = requested_analysis_id
+        if record:
+            result = record.get("result")
+            if isinstance(result, dict):
+                stored_analysis_id = str(result.get("analysis_id") or "").strip()
+                if stored_analysis_id and stored_analysis_id != analysis_id:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="The analysis ID does not match the saved analysis.",
+                    )
+                if analysis is None:
+                    analysis = result
+        elif not isinstance(analysis, dict) or analysis.get("analysis_id") != analysis_id:
+            raise HTTPException(
+                status_code=400,
+                detail="This analysis has no matching stable ID. Reload it before checkout.",
+            )
+        if not packet_store_belongs_to_user(analysis_id, user_id):
+            raise HTTPException(
+                status_code=409,
+                detail="This analysis snapshot belongs to another user.",
+            )
+
+        if not isinstance(analysis, dict):
+            analysis = {"analysis_id": analysis_id}
+        elif not analysis.get("analysis_id"):
+            analysis = {**analysis, "analysis_id": analysis_id}
+        elif analysis.get("analysis_id") != analysis_id:
+            raise HTTPException(
+                status_code=400,
+                detail="The analysis ID does not match the checkout request.",
+            )
 
     analysis = _analysis_with_history_suggestions(analysis_id, user_id, analysis)
     _configure_packet_stripe()
