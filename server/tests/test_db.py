@@ -227,6 +227,19 @@ class TestPatchAnalysisResult:
         )
         builder.update.return_value.eq.assert_called_once_with("id", "history-row-uuid")
         builder.update.return_value.eq.return_value.eq.return_value.select.assert_called_once_with("id")
+        builder.select.return_value.eq.assert_any_call(
+            "id", "00000000-0000-4000-8000-000000000001"
+        )
+        builder.select.return_value.eq.assert_any_call("user_id", "user1")
+        builder.select.return_value.eq.return_value.contains.assert_called_once_with(
+            "result", {"analysis_id": "00000000-0000-4000-8000-000000000001"}
+        )
+        builder.select.return_value.eq.return_value.contains.return_value.order.assert_called_once_with(
+            "uploaded_at", desc=True
+        )
+        builder.select.return_value.eq.return_value.contains.return_value.order.return_value.limit.assert_called_once_with(
+            1
+        )
 
     def test_requests_a_row_representation_when_patching(self, monkeypatch):
         record = {"id": "row-id", "user_id": "user1", "result": {"analysis_id": "00000000-0000-4000-8000-000000000001"}}
@@ -251,6 +264,13 @@ class TestPatchAnalysisResult:
         assert db.patch_analysis_result(
             "00000000-0000-4000-8000-000000000001", "user1", {"packet_unlocked": True}
         ) is False
+        builder.select.return_value.eq.assert_any_call("user_id", "user1")
+        builder.select.return_value.eq.return_value.contains.assert_called_once_with(
+            "result", {"analysis_id": "00000000-0000-4000-8000-000000000001"}
+        )
+        builder.select.return_value.eq.return_value.contains.return_value.order.assert_called_once_with(
+            "uploaded_at", desc=True
+        )
         builder.update.assert_not_called()
 
     def test_returns_none_when_supabase_lookup_raises(self, monkeypatch):
@@ -281,8 +301,12 @@ class TestEnsureAnalysisHistory:
         builder.select.return_value.eq.return_value.contains.assert_called_once_with(
             "result", {"analysis_id": "00000000-0000-4000-8000-000000000001"}
         )
+        builder.select.return_value.eq.assert_any_call("user_id", "user1")
         builder.select.return_value.eq.return_value.contains.return_value.order.assert_called_once_with(
             "uploaded_at", desc=True
+        )
+        builder.select.return_value.eq.return_value.contains.return_value.order.return_value.limit.assert_called_once_with(
+            1
         )
 
     def test_inserts_matching_analysis_when_history_row_is_missing(self, monkeypatch):
