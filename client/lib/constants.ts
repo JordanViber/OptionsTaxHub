@@ -1,0 +1,1 @@
+export const SAMPLE_FETCH_TIMEOUT_MS = 8000;

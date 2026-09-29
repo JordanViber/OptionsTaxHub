@@ -106,6 +106,7 @@ import type {
   AnalysisHistoryItem,
   Position,
 } from "@/lib/types";
+import { SAMPLE_FETCH_TIMEOUT_MS } from "@/lib/constants";
 
 export const dynamic = "force-dynamic";
 
@@ -117,7 +118,6 @@ const SAMPLE_CSV_URL = "/sample-robinhood-transactions.csv";
 const SAMPLE_CSV_FILENAME = "sample-robinhood-transactions.csv";
 const SAMPLE_1099_URL = "/sample-robinhood-1099-2026.pdf";
 const SAMPLE_1099_FILENAME = "sample-robinhood-1099-2026.pdf";
-export const SAMPLE_FETCH_TIMEOUT_MS = 8000;
 const SAMPLE_FETCH_TIMEOUT_MESSAGE = "Could not load the 2026 sample.";
 
 function isAbortError(error: unknown): boolean {
