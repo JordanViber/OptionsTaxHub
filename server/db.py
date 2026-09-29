@@ -25,7 +25,6 @@ logger = logging.getLogger(__name__)
 _supabase_client = None
 
 UNPAID_PACKET_SNAPSHOT_TTL = timedelta(hours=24)
-PAID_PACKET_SNAPSHOT_TTL = timedelta(days=90)
 
 
 def _cleanup_expired_packet_snapshots(client) -> None:
@@ -459,7 +458,7 @@ def lookup_packet_grant_for_tax_year(
     tax_year: int,
     client=None,
 ) -> tuple[Optional[str], bool]:
-    """Return the same-year session and whether the owner-scoped lookup succeeded."""
+    """Return a server-owned, paid snapshot session for the requested year."""
     if not user_id or tax_year is None:
         return None, False
     if client is None:
@@ -474,7 +473,6 @@ def lookup_packet_grant_for_tax_year(
             .select("analysis_id, packet_session_id, paid_at")
             .eq("user_id", user_id)
             .eq("tax_year", int(tax_year))
-            .gt("expires_at", datetime.now(timezone.utc).isoformat())
             .order("created_at", desc=True)
             .execute()
         )
@@ -487,35 +485,9 @@ def lookup_packet_grant_for_tax_year(
                 and session_id.startswith("cs_")
             ):
                 return session_id, True
-
-        result = (
-            client.table("portfolio_analyses")
-            .select("id, result")
-            .eq("user_id", user_id)
-            .contains("result", {"packet_unlocked": True})
-            .order("uploaded_at", desc=True)
-            .execute()
-        )
     except Exception as e:
         logger.error(f"Failed to fetch packet grant: {e}")
         return None, False
-
-    for row in result.data or []:
-        payload = row.get("result") if isinstance(row, dict) else None
-        if not isinstance(payload, dict) or not payload.get("packet_unlocked"):
-            continue
-        year = payload.get("analysis_tax_year")
-        profile = payload.get("tax_profile") or {}
-        if year is None and isinstance(profile, dict):
-            year = profile.get("tax_year")
-        try:
-            if year is None or int(year) != int(tax_year):
-                continue
-        except (TypeError, ValueError):
-            continue
-        session_id = payload.get("packet_session_id") or ""
-        if isinstance(session_id, str) and session_id.startswith("cs_"):
-            return session_id, True
     return None, True
 
 
@@ -554,7 +526,7 @@ def save_packet_snapshot(
     now = datetime.now(timezone.utc)
     paid_at = now.isoformat() if paid and session_id else None
     effective_session_id = session_id
-    expires_at = now + (PAID_PACKET_SNAPSHOT_TTL if paid else UNPAID_PACKET_SNAPSHOT_TTL)
+    expires_at = None if paid_at else now + UNPAID_PACKET_SNAPSHOT_TTL
     if not paid:
         try:
             existing = (
@@ -568,7 +540,7 @@ def save_packet_snapshot(
             if existing.data and existing.data[0].get("paid_at"):
                 paid_at = existing.data[0]["paid_at"]
                 effective_session_id = existing.data[0].get("packet_session_id")
-                expires_at = now + PAID_PACKET_SNAPSHOT_TTL
+                expires_at = None
         except Exception as e:
             logger.error("Failed to check prior packet entitlement for %s: %s", analysis_id, e)
             return None
@@ -579,7 +551,7 @@ def save_packet_snapshot(
         "packet_payload": packet_payload,
         "packet_session_id": effective_session_id,
         "paid_at": paid_at,
-        "expires_at": expires_at.isoformat(),
+        "expires_at": expires_at.isoformat() if expires_at else None,
         "updated_at": now.isoformat(),
     }
     try:
@@ -600,7 +572,7 @@ def get_packet_snapshot(
     user_id: str,
     client=None,
 ) -> tuple[Optional[dict], bool]:
-    """Load a caller-owned, unexpired packet snapshot and distinguish outages."""
+    """Load a caller-owned packet snapshot and distinguish outages."""
     if not analysis_id or not user_id:
         return None, False
     if client is None:
@@ -614,11 +586,23 @@ def get_packet_snapshot(
             .select("analysis_id, user_id, tax_year, packet_payload, packet_session_id, paid_at, expires_at")
             .eq("analysis_id", analysis_id)
             .eq("user_id", user_id)
-            .gt("expires_at", datetime.now(timezone.utc).isoformat())
             .limit(1)
             .execute()
         )
-        return (dict(result.data[0]), True) if result.data else (None, True)
+        if not result.data:
+            return None, True
+        snapshot = dict(result.data[0])
+        if not snapshot.get("paid_at"):
+            expires_at = snapshot.get("expires_at")
+            try:
+                if not expires_at:
+                    return None, True
+                expiry = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+                if expiry <= datetime.now(timezone.utc):
+                    return None, True
+            except (TypeError, ValueError):
+                return None, True
+        return snapshot, True
     except Exception as e:
         logger.error("Failed to load packet snapshot for %s: %s", analysis_id, e)
         return None, False
@@ -646,7 +630,7 @@ def mark_packet_snapshot_paid(
             .update({
                 "packet_session_id": session_id,
                 "paid_at": now.isoformat(),
-                "expires_at": (now + PAID_PACKET_SNAPSHOT_TTL).isoformat(),
+                "expires_at": None,
                 "updated_at": now.isoformat(),
             })
             .eq("analysis_id", analysis_id)

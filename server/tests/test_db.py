@@ -563,13 +563,35 @@ class TestPacketSnapshots:
         upsert = next(call for call in calls if call[0] == "upsert")
         assert upsert[1][0]["paid_at"] is None
         assert upsert[1][0]["tax_year"] == 2026
+        assert upsert[1][0]["expires_at"] is not None
 
-    def test_loads_packet_snapshot_with_owner_and_expiry_filters(self, monkeypatch):
+    def test_paid_packet_snapshot_has_no_expiry(self, monkeypatch):
+        client = _FakeClient(table_data=[{"analysis_id": "analysis-a", "user_id": "user1"}])
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+
+        saved = db.save_packet_snapshot(
+            "analysis-a",
+            "user1",
+            2026,
+            {"lot_match_report": {"matched": [{"symbol": "AMD"}]}},
+            session_id="cs_paid",
+            paid=True,
+        )
+
+        assert saved["analysis_id"] == "analysis-a"
+        upsert = next(call for call in client.builders[0].calls if call[0] == "upsert")
+        assert upsert[1][0]["paid_at"] is not None
+        assert upsert[1][0]["expires_at"] is None
+
+    def test_loads_owner_scoped_paid_packet_snapshot_without_expiry(self, monkeypatch):
         row = {
             "analysis_id": "analysis-a",
             "user_id": "user1",
             "tax_year": 2026,
             "packet_payload": {"lot_match_report": {"matched": []}},
+            "packet_session_id": "cs_paid",
+            "paid_at": "2026-09-29T00:00:00+00:00",
+            "expires_at": None,
         }
         client = _FakeClient(table_data=[row])
         monkeypatch.setattr(db, "get_supabase", lambda: client)
@@ -581,7 +603,19 @@ class TestPacketSnapshots:
         calls = client.builders[0].calls
         assert ("eq", ("analysis_id", "analysis-a"), {}) in calls
         assert ("eq", ("user_id", "user1"), {}) in calls
-        assert any(call[0] == "gt" and call[1][0] == "expires_at" for call in calls)
+        assert not any(call[0] == "gt" and call[1][0] == "expires_at" for call in calls)
+
+    def test_does_not_load_expired_unpaid_snapshot(self, monkeypatch):
+        row = {
+            "analysis_id": "analysis-a",
+            "user_id": "user1",
+            "tax_year": 2026,
+            "packet_payload": {"lot_match_report": {"matched": []}},
+            "paid_at": None,
+            "expires_at": "2000-01-01T00:00:00+00:00",
+        }
+        monkeypatch.setattr(db, "get_supabase", lambda: _FakeClient(table_data=[row]))
+        assert db.get_packet_snapshot("analysis-a", "user1") == (None, True)
 
     def test_packet_year_lookup_uses_owner_scoped_paid_snapshot_first(self, monkeypatch):
         paid = {
@@ -610,72 +644,64 @@ class TestPacketSnapshots:
             "analysis-a", "user1", 2026, "cs_paid_year"
         ) is None
 
-    def test_packet_grant_matches_tax_year(self, monkeypatch):
-        rows = [
-            {
-                "id": "newest-invalid-session",
-                "result": {
-                    "packet_unlocked": True,
-                    "packet_session_id": "invalid",
-                    "analysis_tax_year": "2026",
-                },
-            },
-            {
-                "id": "a",
-                "result": {
-                    "packet_unlocked": True,
-                    "packet_session_id": "cs_2026",
-                    "tax_profile": {"tax_year": "2026"},
-                },
-            },
+    def test_paid_snapshot_update_removes_expiration(self, monkeypatch):
+        client = MagicMock()
+        client.table.return_value.update.return_value.eq.return_value.eq.return_value.eq.return_value.select.return_value.execute.return_value.data = [
+            {"analysis_id": "analysis-a"}
         ]
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+
+        assert db.mark_packet_snapshot_paid(
+            "analysis-a", "user1", 2026, "cs_paid_year"
+        ) is True
+        update = client.table.return_value.update.call_args.args[0]
+        assert update["expires_at"] is None
+
+    def test_packet_grant_ignores_client_writable_history_flags(self, monkeypatch):
+        rows = [{
+            "id": "forged-history-row",
+            "result": {
+                "packet_unlocked": True,
+                "packet_session_id": "cs_forged",
+                "tax_profile": {"tax_year": 2026},
+            },
+        }]
         client = _FakeClient(table_data=rows)
         monkeypatch.setattr(db, "get_supabase", lambda: client)
-        assert db.get_packet_grant_for_tax_year("user1", 2026) == "cs_2026"
-        assert db.get_packet_grant_for_tax_year("user1", 2025) is None
-        calls = client.builders[1].calls
+        assert db.lookup_packet_grant_for_tax_year("user1", 2026) == (None, True)
+        assert len(client.builders) == 1
+        calls = client.builders[0].calls
         assert ("eq", ("user_id", "user1"), {}) in calls
-        assert ("contains", ("result", {"packet_unlocked": True}), {}) in calls
-        assert ("order", ("uploaded_at",), {"desc": True}) in calls
+        assert ("eq", ("tax_year", 2026), {}) in calls
+        assert not any(call[0] == "contains" for call in calls)
 
-    def test_packet_grant_does_not_match_missing_or_malformed_tax_year(self, monkeypatch):
+    def test_packet_grant_scans_all_paid_snapshots_for_a_valid_session(self, monkeypatch):
         rows = [
             {
-                "id": "a",
-                "result": {
-                    "packet_unlocked": True,
-                    "packet_session_id": "cs_ambiguous",
-                    "tax_profile": {},
-                },
-            }
-        ]
-        monkeypatch.setattr(db, "get_supabase", lambda: _FakeClient(table_data=rows))
-        assert db.get_packet_grant_for_tax_year("user1", 2026) is None
-
-    def test_packet_grant_scans_past_more_than_twenty_newer_rows(self, monkeypatch):
-        rows = [
-            {
-                "id": f"newer-{index}",
-                "result": {
-                    "packet_unlocked": True,
-                    "packet_session_id": "invalid",
-                    "tax_profile": {"tax_year": 2026},
-                },
+                "analysis_id": f"newer-{index}",
+                "packet_session_id": "invalid",
+                "tax_year": 2026,
+                "paid_at": "2026-09-29T00:00:00+00:00",
             }
             for index in range(25)
         ]
         rows.append(
             {
-                "id": "older-valid",
-                "result": {
-                    "packet_unlocked": True,
-                    "packet_session_id": "cs_older_valid",
-                    "analysis_tax_year": "2026",
-                },
+                "analysis_id": "older-valid",
+                "packet_session_id": "cs_older_valid",
+                "tax_year": 2026,
+                "paid_at": "2026-09-28T00:00:00+00:00",
             }
         )
         client = _FakeClient(table_data=rows)
         monkeypatch.setattr(db, "get_supabase", lambda: client)
         assert db.get_packet_grant_for_tax_year("user1", 2026) == "cs_older_valid"
-        calls = client.builders[1].calls
-        assert ("contains", ("result", {"packet_unlocked": True}), {}) in calls
+        calls = client.builders[0].calls
+        assert ("order", ("created_at",), {"desc": True}) in calls
+        assert not any(call[0] == "limit" for call in calls)
+
+    def test_packet_grant_query_failure_is_not_reported_as_unpaid(self, monkeypatch):
+        client = MagicMock()
+        client.table.return_value.select.return_value.eq.return_value.eq.return_value.order.return_value.execute.side_effect = RuntimeError("offline")
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+        assert db.lookup_packet_grant_for_tax_year("user1", 2026) == (None, False)

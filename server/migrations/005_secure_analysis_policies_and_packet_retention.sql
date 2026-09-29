@@ -1,38 +1,24 @@
--- Keep private, server-generated packet documents separate from user history.
--- Unpaid snapshots expire after 24 hours; paid snapshots remain available
--- until the user deletes the source analysis.
-ALTER TABLE public.portfolio_analyses
-  ADD COLUMN IF NOT EXISTS result JSONB;
+-- Restrict history writes/deletes to the service role, and retain paid packet
+-- snapshots until the user's source analysis is deleted.
+DROP POLICY IF EXISTS "Service role can insert analyses" ON public.portfolio_analyses;
+CREATE POLICY "Service role can insert analyses"
+  ON public.portfolio_analyses
+  FOR INSERT
+  TO service_role
+  WITH CHECK (true);
 
-CREATE TABLE IF NOT EXISTS public.year_close_packet_snapshots (
-  analysis_id TEXT NOT NULL,
-  user_id TEXT NOT NULL,
-  tax_year INTEGER NOT NULL,
-  packet_payload JSONB,
-  packet_session_id TEXT,
-  paid_at TIMESTAMPTZ,
-  expires_at TIMESTAMPTZ,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  PRIMARY KEY (user_id, analysis_id)
-);
+DROP POLICY IF EXISTS "Service role can delete analyses" ON public.portfolio_analyses;
+CREATE POLICY "Service role can delete analyses"
+  ON public.portfolio_analyses
+  FOR DELETE
+  TO service_role
+  USING (true);
 
-CREATE INDEX IF NOT EXISTS idx_packet_snapshots_paid_year
-  ON public.year_close_packet_snapshots (user_id, tax_year, created_at DESC)
-  WHERE paid_at IS NOT NULL;
-
-CREATE INDEX IF NOT EXISTS idx_packet_snapshots_expiry
-  ON public.year_close_packet_snapshots (expires_at);
-
-ALTER TABLE public.year_close_packet_snapshots ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.year_close_packet_snapshots ALTER COLUMN expires_at DROP NOT NULL;
 UPDATE public.year_close_packet_snapshots SET expires_at = NULL WHERE paid_at IS NOT NULL;
 
 REVOKE ALL ON TABLE public.year_close_packet_snapshots FROM PUBLIC, anon, authenticated;
 GRANT ALL ON TABLE public.year_close_packet_snapshots TO service_role;
-
--- No client policies are granted. The backend accesses this table with the
--- Supabase service role, and ordinary history endpoints never select it.
 
 CREATE OR REPLACE FUNCTION public.delete_expired_year_close_packet_snapshots()
 RETURNS INTEGER
@@ -49,9 +35,7 @@ BEGIN
   RETURN deleted_count;
 END;
 $$;
-
-REVOKE ALL ON FUNCTION public.delete_expired_year_close_packet_snapshots() FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.delete_expired_year_close_packet_snapshots() FROM anon, authenticated;
+REVOKE ALL ON FUNCTION public.delete_expired_year_close_packet_snapshots() FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.delete_expired_year_close_packet_snapshots() TO service_role;
 
 CREATE OR REPLACE FUNCTION public.clear_packet_payload_after_analysis_delete()
@@ -82,9 +66,7 @@ BEGIN
   RETURN OLD;
 END;
 $$;
-
-REVOKE ALL ON FUNCTION public.clear_packet_payload_after_analysis_delete() FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.clear_packet_payload_after_analysis_delete() FROM anon, authenticated;
+REVOKE ALL ON FUNCTION public.clear_packet_payload_after_analysis_delete() FROM PUBLIC, anon, authenticated;
 
 DROP TRIGGER IF EXISTS clear_packet_payload_after_analysis_delete ON public.portfolio_analyses;
 CREATE TRIGGER clear_packet_payload_after_analysis_delete

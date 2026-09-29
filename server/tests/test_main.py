@@ -1452,15 +1452,26 @@ def test_get_portfolio_analysis_not_found(monkeypatch):
 
 def test_delete_analysis_success(monkeypatch):
     """DELETE /api/portfolio/analysis/{id} returns success on deletion."""
+    monkeypatch.setattr(
+        "main.get_analysis_by_id",
+        lambda aid, uid: {"id": aid, "user_id": uid, "result": {"analysis_id": "packet-id"}},
+    )
     monkeypatch.setattr("main.delete_analysis_by_id", lambda aid, uid: True)
+    forgotten = []
+    monkeypatch.setattr(
+        "main.forget_packet_payload",
+        lambda aid, uid: forgotten.append((aid, uid)) or True,
+    )
 
     response = client.delete("/api/portfolio/analysis/abc-123")
     assert response.status_code == 200
     assert response.json()["deleted"] is True
+    assert forgotten == [("packet-id", "test-user-123")]
 
 
 def test_delete_analysis_not_found(monkeypatch):
     """DELETE /api/portfolio/analysis/{id} returns 404 when not found."""
+    monkeypatch.setattr("main.get_analysis_by_id", lambda *_args: None)
     monkeypatch.setattr("main.delete_analysis_by_id", lambda aid, uid: False)
 
     response = client.delete("/api/portfolio/analysis/nonexistent")

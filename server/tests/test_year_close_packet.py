@@ -868,6 +868,7 @@ def test_reused_same_year_checkout_survives_packet_store_restart(monkeypatch):
             "product": PACKET_METADATA_PRODUCT,
             "analysis_id": "analysis-source",
             "user_id": "test-user-123",
+            "tax_year": "2025",
         },
     )
     monkeypatch.setattr(
@@ -898,6 +899,43 @@ def test_reused_same_year_checkout_survives_packet_store_restart(monkeypatch):
     assert "csv_only META" in restored_pdf_text
     assert PACKET_STORE["analysis-followup"]["user_id"] == "test-user-123"
     assert PACKET_STORE["analysis-followup"]["paid"] is True
+
+
+def test_reused_session_does_not_unlock_snapshot_stamped_for_another_year(monkeypatch):
+    _test_stripe_env(monkeypatch)
+    session_id = "cs_test_year_mismatch"
+    _FAKE_PACKET_SNAPSHOTS[("test-user-123", "analysis-followup")] = {
+        "analysis_id": "analysis-followup",
+        "user_id": "test-user-123",
+        "tax_year": 2025,
+        "packet_payload": build_packet_payload(
+            {**SAMPLE_ANALYSIS, "analysis_id": "analysis-followup"},
+            analysis_id="analysis-followup",
+        ),
+        "packet_session_id": session_id,
+        "paid_at": "now",
+    }
+    paid_session = _stripe_object_session(
+        id=session_id,
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": "analysis-source",
+            "user_id": "test-user-123",
+            "tax_year": "2026",
+        },
+    )
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda *_args, **_kwargs: paid_session,
+    )
+
+    response = client.get(
+        "/api/year-close-packet/download",
+        params={"analysis_id": "analysis-followup", "session_id": session_id},
+    )
+
+    assert response.status_code == 403
 
 
 def test_reused_packet_session_does_not_unlock_a_different_tax_year(monkeypatch):

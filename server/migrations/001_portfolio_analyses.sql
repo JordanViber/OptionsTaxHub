@@ -35,10 +35,12 @@ CREATE POLICY "Users can view own analyses"
 CREATE POLICY "Service role can insert analyses"
   ON portfolio_analyses
   FOR INSERT
+  TO service_role
   WITH CHECK (true);
 
 -- Allow service role to delete (cleanup)
 CREATE POLICY "Service role can delete analyses"
   ON portfolio_analyses
   FOR DELETE
+  TO service_role
   USING (true);

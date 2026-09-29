@@ -1081,6 +1081,18 @@ def copy_packet_payload_to_id(
     return True
 
 
+def forget_packet_payload(analysis_id: str, user_id: str) -> bool:
+    """Erase private in-memory packet data while retaining any paid year grant."""
+    record = PACKET_STORE.get(analysis_id)
+    if not record or record.get("user_id") != user_id:
+        return False
+    if record.get("paid"):
+        record["payload"] = None
+    else:
+        PACKET_STORE.pop(analysis_id, None)
+    return True
+
+
 def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in ("1", "true", "yes")
 

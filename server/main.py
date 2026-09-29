@@ -46,6 +46,7 @@ from year_close_packet import (
     PACKET_PRODUCT_NAME,
     build_packet_payload,
     copy_packet_payload_to_id,
+    forget_packet_payload,
     get_payload,
     is_packet_paid,
     mark_paid,
@@ -1566,9 +1567,18 @@ async def delete_portfolio_analysis(
     **Authentication Required**: Must provide valid Supabase JWT token.
     **Authorization**: User can only delete their own analyses.
     """
+    record = get_analysis_by_id(analysis_id, user_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+    result = record.get("result") if isinstance(record, dict) else None
+    packet_analysis_id = (
+        result.get("analysis_id") if isinstance(result, dict) else None
+    )
     deleted = delete_analysis_by_id(analysis_id, user_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Analysis not found")
+    if isinstance(packet_analysis_id, str) and packet_analysis_id:
+        forget_packet_payload(packet_analysis_id, user_id)
     return {"deleted": True}
 
 
@@ -2136,6 +2146,39 @@ def _is_persisted_same_year_packet_grant(
     ):
         return False
 
+    metadata = (
+        session.get("metadata")
+        if isinstance(session, dict)
+        else getattr(session, "metadata", None)
+    )
+    session_year = _packet_result_tax_year(
+        {"analysis_tax_year": metadata.get("tax_year")}
+        if isinstance(metadata, dict)
+        else None
+    )
+    if session_year is None:
+        source_snapshot, source_snapshot_lookup_succeeded = get_packet_snapshot(
+            source_analysis_id,
+            user_id,
+        )
+        if not source_snapshot_lookup_succeeded:
+            return None
+        if isinstance(source_snapshot, dict):
+            session_year = _packet_result_tax_year(
+                {"analysis_tax_year": source_snapshot.get("tax_year")}
+            )
+        if session_year is None:
+            source, source_lookup_succeeded = lookup_analysis_for_entitlement(
+                source_analysis_id,
+                user_id,
+            )
+            if not source_lookup_succeeded:
+                return None
+            source_result = source.get("result") if isinstance(source, dict) else None
+            session_year = _packet_result_tax_year(source_result)
+    if session_year is None:
+        return False
+
     packet_snapshot, snapshot_lookup_succeeded = get_packet_snapshot(
         analysis_id,
         user_id,
@@ -2151,7 +2194,7 @@ def _is_persisted_same_year_packet_grant(
         if (
             packet_snapshot.get("paid_at")
             and packet_snapshot.get("packet_session_id") == session_id
-            and target_year is not None
+            and target_year == session_year
         ):
             return True
 
@@ -2169,9 +2212,7 @@ def _is_persisted_same_year_packet_grant(
     ):
         return False
     target_year = _packet_result_tax_year(target_result)
-    if target_year is None:
-        return False
-    return True
+    return target_year == session_year
 
 
 def _payload_for_download(analysis_id: str, user_id: str, analysis: Optional[dict]):
