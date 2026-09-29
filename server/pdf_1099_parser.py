@@ -92,12 +92,9 @@ def _parse_money(raw_value: str | None) -> float:
 
 
 def extract_text_from_pdf(pdf_bytes: bytes) -> str:
-    """Extract PDF text in layout mode so adjacent table columns stay distinct."""
+    """Extract concatenated text from all pages in a PDF."""
     reader = PdfReader(BytesIO(pdf_bytes))
-    return "\n".join(
-        (page.extract_text(extraction_mode="layout") or "")
-        for page in reader.pages
-    )
+    return "\n".join((page.extract_text() or "") for page in reader.pages)
 
 
 def _extract_tax_year(text: str) -> int | None:
