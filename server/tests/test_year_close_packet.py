@@ -210,7 +210,11 @@ def _post_signed_webhook(event, *, secret="whsec_packet_test_secret"):
 
 
 def _packet_checkout_event(
-    *, event_type="checkout.session.completed", payment_status="paid", event_id="evt_packet"
+    *,
+    event_type="checkout.session.completed",
+    payment_status="paid",
+    event_id="evt_packet",
+    livemode=False,
 ):
     return {
         "id": event_id,
@@ -225,10 +229,11 @@ def _packet_checkout_event(
                 "amount_total": PACKET_AMOUNT_CENTS,
                 "currency": "usd",
                 "mode": "payment",
-                "livemode": False,
+                "livemode": livemode,
                 "metadata": {
                     "product": PACKET_METADATA_PRODUCT,
                     "analysis_id": "analysis-sample-1",
+                    "user_id": "test-user-123",
                 },
             }
         },
@@ -331,6 +336,7 @@ def test_checkout_refuses_live_key_on_staging(monkeypatch):
 def test_webhook_unlocks_download(monkeypatch):
     _test_stripe_env(monkeypatch)
     monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_packet_test_secret")
+    monkeypatch.setattr(main, "patch_analysis_result", lambda *_args: True)
     main.remember_analysis("analysis-sample-1", "test-user-123", SAMPLE_ANALYSIS)
 
     unpaid = client.get("/api/year-close-packet/download?analysis_id=analysis-sample-1")
@@ -582,6 +588,7 @@ def test_session_grants_packet_accepts_valid_stripe_object(monkeypatch):
     # Client restored analysis_id may be local-analysis; session metadata is canonical.
     assert session_grants_packet(session, "local-analysis") is True
     assert session_grants_packet(session, "") is True
+    assert session_grants_packet(session, "some-other-analysis") is False
 
 
 def test_session_grants_packet_rejects_complete_but_unpaid_checkout():
@@ -628,6 +635,64 @@ def test_session_grants_packet_requires_settled_expected_stripe_checkout(monkeyp
     assert session_grants_packet(_stripe_object_session(**fields), "analysis-sample-1") is False
 
 
+def test_session_grants_packet_accepts_live_session_only_in_production(monkeypatch):
+    monkeypatch.setenv("FRONTEND_URL", "https://www.optionstaxhub.com")
+    monkeypatch.setattr(main, "FRONTEND_URL", "https://www.optionstaxhub.com")
+    monkeypatch.setenv("RENDER_SERVICE_NAME", "options-tax-hub-server-prod")
+    monkeypatch.delenv("STRIPE_FORCE_TEST_MODE", raising=False)
+    common = {
+        "payment_status": "paid", "status": "complete", "amount_total": 4900,
+        "currency": "usd", "mode": "payment",
+        "metadata": {"product": PACKET_METADATA_PRODUCT, "analysis_id": "analysis-sample-1"},
+    }
+    assert session_grants_packet(
+        _stripe_object_session(**common, livemode=True), "analysis-sample-1"
+    ) is True
+    assert session_grants_packet(
+        _stripe_object_session(**common, livemode=False), "analysis-sample-1"
+    ) is False
+
+
+def test_download_rejects_paid_session_for_another_analysis(monkeypatch):
+    _test_stripe_env(monkeypatch)
+    main.remember_analysis("another-analysis", "test-user-123", SAMPLE_ANALYSIS)
+    paid_session = _stripe_object_session(
+        id="cs_test_paid_for_sample",
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": "analysis-sample-1",
+        },
+    )
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda *_args, **_kwargs: paid_session,
+    )
+    response = client.get(
+        "/api/year-close-packet/download",
+        params={"analysis_id": "another-analysis", "session_id": paid_session.id},
+    )
+    assert response.status_code == 403
+    assert PACKET_STORE["another-analysis"]["paid"] is False
+    assert PACKET_STORE["another-analysis"]["session_ids"] == set()
+
+
+def test_download_does_not_reuse_another_users_in_memory_grant(monkeypatch):
+    _test_stripe_env(monkeypatch)
+    main.remember_analysis("private-analysis", "test-user-123", SAMPLE_ANALYSIS)
+    mark_paid("private-analysis", "cs_test_private", user_id="test-user-123")
+    monkeypatch.setitem(
+        main.app.dependency_overrides,
+        get_current_user,
+        lambda: "another-user",
+    )
+    response = client.get(
+        "/api/year-close-packet/download",
+        params={"analysis_id": "private-analysis"},
+    )
+    assert response.status_code == 403
+
+
 @pytest.mark.parametrize("headers,secret,expected_status", [
     ({}, "whsec_packet_test_secret", 400),
     ({"Stripe-Signature": "invalid-current-signature"}, "whsec_packet_test_secret", 400),
@@ -654,10 +719,60 @@ def test_async_payment_succeeded_event_unlocks_packet(monkeypatch):
     _test_stripe_env(monkeypatch)
     monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_packet_test_secret")
     main.remember_analysis("analysis-sample-1", "test-user-123", SAMPLE_ANALYSIS)
+    persisted = []
+    monkeypatch.setattr(
+        main,
+        "patch_analysis_result",
+        lambda analysis_id, user_id, patch: persisted.append(
+            (analysis_id, user_id, patch)
+        ) or True,
+    )
     event = _packet_checkout_event(
         event_type="checkout.session.async_payment_succeeded", event_id="evt_async_paid"
     )
     response = _post_signed_webhook(event)
+    assert response.status_code == 200
+    assert response.json()["granted"] is True
+    duplicate = _post_signed_webhook(event)
+    assert duplicate.status_code == 200
+    assert duplicate.json()["granted"] is True
+    assert persisted == [
+        (
+            "analysis-sample-1",
+            "test-user-123",
+            {"packet_unlocked": True, "packet_session_id": "cs_test_paid_1"},
+        ),
+        (
+            "analysis-sample-1",
+            "test-user-123",
+            {"packet_unlocked": True, "packet_session_id": "cs_test_paid_1"},
+        ),
+    ]
+    assert PACKET_STORE["analysis-sample-1"]["user_id"] == "test-user-123"
+    assert PACKET_STORE["analysis-sample-1"]["session_ids"] == {"cs_test_paid_1"}
+
+
+def test_webhook_retries_when_durable_packet_grant_fails(monkeypatch):
+    _test_stripe_env(monkeypatch)
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_packet_test_secret")
+    main.remember_analysis("analysis-sample-1", "test-user-123", SAMPLE_ANALYSIS)
+    monkeypatch.setattr(main, "patch_analysis_result", lambda *_args: False)
+    response = _post_signed_webhook(
+        _packet_checkout_event(event_type="checkout.session.async_payment_succeeded")
+    )
+    assert response.status_code == 500
+    assert PACKET_STORE["analysis-sample-1"]["paid"] is False
+
+
+def test_webhook_grants_live_mode_event_in_production(monkeypatch):
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_packet_test_secret")
+    monkeypatch.setenv("FRONTEND_URL", "https://www.optionstaxhub.com")
+    monkeypatch.setattr(main, "FRONTEND_URL", "https://www.optionstaxhub.com")
+    monkeypatch.setenv("RENDER_SERVICE_NAME", "options-tax-hub-server-prod")
+    monkeypatch.delenv("STRIPE_FORCE_TEST_MODE", raising=False)
+    main.remember_analysis("analysis-sample-1", "test-user-123", SAMPLE_ANALYSIS)
+    monkeypatch.setattr(main, "patch_analysis_result", lambda *_args: True)
+    response = _post_signed_webhook(_packet_checkout_event(livemode=True))
     assert response.status_code == 200
     assert response.json()["granted"] is True
 

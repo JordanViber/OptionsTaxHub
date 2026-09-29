@@ -21,6 +21,7 @@ services:
         sync: false
       - key: STRIPE_SECRET_KEY
         sync: false
+      # Signing secret (whsec_...) for the production live-mode Stripe endpoint.
       - key: STRIPE_WEBHOOK_SECRET
         sync: false
       - key: SUPABASE_URL
@@ -77,6 +78,7 @@ services:
         sync: false
       - key: STRIPE_SECRET_KEY
         sync: false
+      # Signing secret (whsec_...) for the staging test-mode Stripe endpoint.
       - key: STRIPE_WEBHOOK_SECRET
         sync: false
       # Year-close packet on staging MUST use Stripe TEST (sk_test_).

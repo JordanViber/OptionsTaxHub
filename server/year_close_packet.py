@@ -962,10 +962,14 @@ def mark_paid(analysis_id: str, session_id: str, user_id: str = "") -> None:
     purge_packet_store()
 
 
-def is_packet_paid(analysis_id: str) -> bool:
+def is_packet_paid(analysis_id: str, user_id: str | None = None) -> bool:
     purge_packet_store()
     rec = PACKET_STORE.get(analysis_id)
-    return bool(rec and rec.get("paid"))
+    if not rec or not rec.get("paid"):
+        return False
+    if user_id is None:
+        return True
+    return bool(user_id) and rec.get("user_id") == user_id
 
 
 def paid_session_for_user_year(user_id: str, tax_year: int | None = None) -> str | None:
@@ -1115,6 +1119,11 @@ def packet_session_id(session: Any) -> str:
     return str(_session_attr(session, "id") or "")
 
 
+def packet_user_id_from_session(session: Any) -> str:
+    """Authenticated owner recorded in signed Stripe Checkout metadata."""
+    return str(_session_metadata(session).get("user_id") or "").strip()
+
+
 def packet_analysis_id_from_session(session: Any, *fallbacks: str) -> str:
     """Canonical analysis id: session metadata first, then caller fallbacks."""
     metadata = _session_metadata(session)
@@ -1151,7 +1160,13 @@ def session_grants_packet(session: Any, analysis_id: str = "") -> bool:
         return False
     metadata = _session_metadata(session)
     product = str(metadata.get("product") or "")
-    session_analysis = packet_analysis_id_from_session(session, analysis_id)
+    session_analysis = packet_analysis_id_from_session(session)
+    requested_analysis = str(analysis_id or "").strip()
+    analysis_matches = bool(session_analysis) and (
+        not requested_analysis
+        or requested_analysis == "local-analysis"
+        or requested_analysis == session_analysis
+    )
     payment_status = str(_session_attr(session, "payment_status") or "").lower()
     status = str(_session_attr(session, "status") or "").lower()
     amount = _session_attr(session, "amount_total")
@@ -1165,7 +1180,7 @@ def session_grants_packet(session: Any, analysis_id: str = "") -> bool:
     amount_is_packet = amount_cents == PACKET_AMOUNT_CENTS
     granted = (
         product == PACKET_METADATA_PRODUCT
-        and bool(session_analysis)
+        and analysis_matches
         and paid_ok
         and status == "complete"
         and amount_is_packet
