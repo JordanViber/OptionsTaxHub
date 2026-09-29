@@ -40,6 +40,10 @@ function paidStorageKey(analysisId: string): string {
   return `optionstaxhub-packet-paid:${analysisId}`;
 }
 
+function canonicalStorageKey(analysisId: string): string {
+  return `optionstaxhub-packet-canonical:${analysisId}`;
+}
+
 export function isYearClosePacketPaid(analysisId: string): boolean {
   const stored = readSessionItem(paidStorageKey(analysisId));
   return Boolean(stored && stored.startsWith("cs_"));
@@ -170,6 +174,9 @@ export default function YearClosePacketPanel({
   onPaidChange?: (paid: boolean) => void;
 }>) {
   const analysisId = analysis.analysis_id || "local-analysis";
+  const [canonicalAnalysisId, setCanonicalAnalysisId] = useState(
+    () => readSessionItem(canonicalStorageKey(analysisId)) || analysisId,
+  );
   const [busy, setBusy] = useState<"pay" | "download" | "confirm" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [canceledNotice, setCanceledNotice] = useState(false);
@@ -191,6 +198,9 @@ export default function YearClosePacketPanel({
   }, []);
 
   useEffect(() => {
+    const savedCanonicalId =
+      readSessionItem(canonicalStorageKey(analysisId)) || analysisId;
+    setCanonicalAnalysisId(savedCanonicalId);
     if (analysis.packet_unlocked) {
       setPaid(true);
       if (analysis.packet_session_id?.startsWith("cs_")) {
@@ -199,7 +209,9 @@ export default function YearClosePacketPanel({
       }
       onPaidChange?.(true);
     }
-    const stored = readSessionItem(paidStorageKey(analysisId));
+    const stored =
+      readSessionItem(paidStorageKey(savedCanonicalId)) ||
+      readSessionItem(paidStorageKey(analysisId));
     if (stored && stored.startsWith("cs_")) {
       setPaid(true);
       setSessionId(stored);
@@ -208,6 +220,8 @@ export default function YearClosePacketPanel({
 
     const params = new URLSearchParams(window.location.search);
     const sid = params.get("packet_session");
+    const packetAnalysisId = params.get("packet_analysis");
+    const confirmedAnalysisId = packetAnalysisId || savedCanonicalId;
     const canceled = params.get("packet_canceled") === "1";
     const inflight = readSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY) === analysisId;
 
@@ -224,7 +238,8 @@ export default function YearClosePacketPanel({
             method: "POST",
             headers,
             body: JSON.stringify({
-              analysis_id: analysisId,
+              analysis_id: confirmedAnalysisId,
+              packet_analysis: confirmedAnalysisId,
               session_id: sid,
               analysis: compactAnalysis(analysis),
             }),
@@ -235,7 +250,15 @@ export default function YearClosePacketPanel({
               errData?.detail || "Could not confirm packet payment.",
             );
           }
+          const confirmData = await response.json();
+          const canonicalId =
+            typeof confirmData?.analysis_id === "string"
+              ? confirmData.analysis_id
+              : confirmedAnalysisId;
+          setCanonicalAnalysisId(canonicalId);
+          writeSessionItem(canonicalStorageKey(analysisId), canonicalId);
           setPaid(true);
+          writeSessionItem(paidStorageKey(canonicalId), sid);
           writeSessionItem(paidStorageKey(analysisId), sid);
           onPaidChange?.(true);
           stripPacketQueryParams();
@@ -279,6 +302,10 @@ export default function YearClosePacketPanel({
       if (typeof data?.checkout_url !== "string" || data.checkout_url.length === 0) {
         throw new Error("Checkout did not return a payment link.");
       }
+      if (typeof data?.analysis_id === "string" && data.analysis_id.length > 0) {
+        setCanonicalAnalysisId(data.analysis_id);
+        writeSessionItem(canonicalStorageKey(analysisId), data.analysis_id);
+      }
       try {
         globalThis.location.href = data.checkout_url;
       } catch {
@@ -301,7 +328,7 @@ export default function YearClosePacketPanel({
         method: "POST",
         headers,
         body: JSON.stringify({
-          analysis_id: analysisId,
+          analysis_id: canonicalAnalysisId,
           session_id: sessionId,
           analysis: compactAnalysis(analysis),
         }),

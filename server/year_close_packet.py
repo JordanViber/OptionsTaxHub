@@ -971,12 +971,7 @@ def upsert_payload(analysis_id: str, user_id: str, analysis: dict[str, Any] | No
 def packet_store_belongs_to_user(analysis_id: str, user_id: str) -> bool:
     """Return false when a globally keyed memory record belongs to another owner."""
     rec = PACKET_STORE.get(analysis_id)
-    if rec is None:
-        return True
-    if not _same_packet_owner(rec.get("user_id"), user_id):
-        return False
-    _claim_packet_owner(rec, user_id)
-    return True
+    return rec is None or _same_packet_owner(rec.get("user_id"), user_id)
 
 
 def mark_paid(analysis_id: str, session_id: str, user_id: str = "") -> bool:

@@ -293,6 +293,46 @@ describe("YearClosePacketPanel", () => {
     expect(mockFetch.mock.calls[0][0]).not.toContain("/api/tips/checkout");
   });
 
+  it("keeps the canonical checkout ID through confirm and download for guest IDs", async () => {
+    const canonicalId = "11111111-1111-4111-8111-111111111111";
+    window.history.replaceState(
+      null,
+      "",
+      `/dashboard?packet_session=cs_test_packet&packet_analysis=${canonicalId}`,
+    );
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ paid: true, analysis_id: canonicalId }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        blob: () => Promise.resolve(new Blob(["pdf"])),
+      });
+
+    render(
+      <YearClosePacketPanel
+        analysis={{ ...analysis, analysis_id: undefined }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining("/api/year-close-packet/confirm"),
+        expect.any(Object),
+      );
+    });
+    const confirmBody = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(confirmBody.analysis_id).toBe(canonicalId);
+    expect(confirmBody.packet_analysis).toBe(canonicalId);
+    expect(store["optionstaxhub-packet-canonical:local-analysis"]).toBe(canonicalId);
+
+    fireEvent.click(screen.getByRole("button", { name: /Download/i }));
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));
+    const downloadBody = JSON.parse(mockFetch.mock.calls[1][1].body);
+    expect(downloadBody.analysis_id).toBe(canonicalId);
+  });
+
   it("unpaid download shows a blocked error from 403", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: false,

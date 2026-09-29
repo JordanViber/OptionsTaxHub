@@ -123,10 +123,12 @@ def save_analysis_history(
         }
         if result_data is not None:
             row["result"] = result_data
-        result = client.table("portfolio_analyses").insert(row).execute()
+        result = client.table("portfolio_analyses").insert(row).select("id").execute()
         if result.data:
             return dict(result.data[0])
-        return None
+        # The insert completed without an exception. Keep a usable snapshot so
+        # callers do not retry and create duplicate rows if PostgREST omits data.
+        return row
     except Exception as e:
         logger.error(f"Failed to save analysis history: {e}")
         return None
@@ -516,6 +518,7 @@ def patch_analysis_result(
             .update({"result": merged})
             .eq("id", record["id"])
             .eq("user_id", user_id)
+            .select("id")
             .execute()
         )
         return bool(updated.data)

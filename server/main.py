@@ -1967,8 +1967,29 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
         )
         return None
     if not persisted:
-        # A settled charge with a deleted/missing history row must stay retryable.
-        return None
+        snapshot = get_payload(session_analysis_id)
+        if not snapshot or not packet_store_belongs_to_user(session_analysis_id, user_id):
+            logger.warning(
+                "Paid packet has no owner-scoped history or in-memory snapshot; not granting"
+            )
+            return False
+        restored = ensure_analysis_history(session_analysis_id, user_id, snapshot)
+        if not restored:
+            logger.error("Could not restore deleted packet history for %s", session_analysis_id)
+            return None
+        persisted = patch_analysis_result(
+            session_analysis_id,
+            session_user_id,
+            {
+                "packet_unlocked": True,
+                "packet_session_id": packet_session_id(session),
+            },
+        )
+        if persisted is None:
+            return None
+        if not persisted:
+            logger.error("Restored packet history still could not be granted")
+            return None
     mark_paid(
         session_analysis_id,
         packet_session_id(session),
@@ -2067,16 +2088,36 @@ def _is_persisted_same_year_packet_grant(
 
 
 def _payload_for_download(analysis_id: str, user_id: str, analysis: Optional[dict]):
-    analysis = _analysis_with_history_suggestions(analysis_id, user_id, analysis)
-    rec = upsert_payload(analysis_id, user_id, analysis)
-    payload = rec.get("payload") if rec else None
-    if payload:
-        return payload
-    if analysis:
-        return build_packet_payload(analysis, analysis_id=analysis_id)
+    if isinstance(analysis, dict):
+        supplied_id = str(analysis.get("analysis_id") or "").strip()
+        if supplied_id and supplied_id != analysis_id:
+            raise HTTPException(
+                status_code=400,
+                detail="The analysis ID does not match the paid packet.",
+            )
+    if not packet_store_belongs_to_user(analysis_id, user_id):
+        raise HTTPException(status_code=403, detail="This analysis belongs to another user.")
     stored = get_payload(analysis_id)
     if stored:
         return stored
+
+    record, lookup_succeeded = lookup_analysis_for_entitlement(analysis_id, user_id)
+    if not lookup_succeeded:
+        raise HTTPException(
+            status_code=503,
+            detail="Could not load the saved analysis for this packet. Please retry.",
+        )
+    result = record.get("result") if isinstance(record, dict) else None
+    if isinstance(result, dict):
+        saved_id = str(result.get("analysis_id") or "").strip()
+        if saved_id and saved_id != analysis_id:
+            raise HTTPException(status_code=404, detail="Saved packet analysis was not found.")
+        if not saved_id:
+            result = {**result, "analysis_id": analysis_id}
+        rec = upsert_payload(analysis_id, user_id, result)
+        payload = rec.get("payload") if rec else None
+        if payload:
+            return payload
     raise HTTPException(
         status_code=404,
         detail="No year-close packet snapshot found for this analysis.",
@@ -2163,7 +2204,6 @@ async def create_year_close_packet_checkout(
             status_code=503,
             detail="Could not save this analysis before checkout. Please retry.",
         )
-    upsert_payload(analysis_id, user_id, analysis)
 
     success_url = (
         f"{FRONTEND_URL}/dashboard?packet_session={{CHECKOUT_SESSION_ID}}"
@@ -2184,6 +2224,8 @@ async def create_year_close_packet_checkout(
                 "user_id": user_id,
             },
         )
+        # Claim a guest's in-memory lot snapshot only after Stripe accepted Checkout.
+        upsert_payload(analysis_id, user_id, analysis)
         return {
             "checkout_url": session.url,
             "session_id": session.id,
@@ -2225,6 +2267,14 @@ async def confirm_year_close_packet(
     if not analysis_id:
         raise HTTPException(status_code=400, detail="analysis_id is required")
 
+    if isinstance(body.analysis, dict):
+        supplied_id = str(body.analysis.get("analysis_id") or "").strip()
+        if supplied_id and supplied_id != analysis_id:
+            raise HTTPException(
+                status_code=400,
+                detail="The analysis ID does not match the paid packet.",
+            )
+
     if not _grant_packet_from_session(session, analysis_id, user_id=user_id):
         logger.info(
             "year-close packet confirm 403 session_present=1 analysis_id=%s",
@@ -2234,11 +2284,6 @@ async def confirm_year_close_packet(
             status_code=403,
             detail="Checkout session does not unlock the year-close packet.",
         )
-    upsert_payload(
-        analysis_id,
-        user_id,
-        _analysis_with_history_suggestions(analysis_id, user_id, body.analysis),
-    )
     return {
         "paid": True,
         "product": PACKET_PRODUCT_NAME,
@@ -2332,12 +2377,7 @@ async def download_year_close_packet_get(
     if not analysis_id:
         raise HTTPException(status_code=400, detail="analysis_id is required")
     analysis_id = _authorized_packet_download(analysis_id, session_id, user_id)
-    payload = get_payload(analysis_id)
-    if not payload:
-        raise HTTPException(
-            status_code=404,
-            detail="No year-close packet snapshot found for this analysis.",
-        )
+    payload = _payload_for_download(analysis_id, user_id, None)
     pdf_bytes = render_packet_pdf(payload)
     return Response(
         content=pdf_bytes,
