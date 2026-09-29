@@ -470,7 +470,7 @@ def lookup_packet_grant_for_tax_year(
     try:
         snapshots = (
             client.table("year_close_packet_snapshots")
-            .select("analysis_id, packet_session_id, paid_at")
+            .select("analysis_id, packet_session_id, packet_payload, paid_at")
             .eq("user_id", user_id)
             .eq("tax_year", int(tax_year))
             .order("created_at", desc=True)
@@ -481,6 +481,7 @@ def lookup_packet_grant_for_tax_year(
             if (
                 isinstance(row, dict)
                 and row.get("paid_at")
+                and isinstance(row.get("packet_payload"), dict)
                 and isinstance(session_id, str)
                 and session_id.startswith("cs_")
             ):
@@ -489,6 +490,76 @@ def lookup_packet_grant_for_tax_year(
         logger.error(f"Failed to fetch packet grant: {e}")
         return None, False
     return None, True
+
+
+def lookup_packet_entitlement_for_tax_year(
+    user_id: str,
+    tax_year: int,
+    client=None,
+) -> tuple[Optional[dict], bool]:
+    """Find a verified year entitlement even when its source document was deleted."""
+    if not user_id or tax_year is None:
+        return None, False
+    if client is None:
+        client = get_supabase()
+    if client is None:
+        return None, False
+    try:
+        result = (
+            client.table("year_close_packet_entitlements")
+            .select("analysis_id, packet_session_id, tax_year")
+            .eq("user_id", user_id)
+            .eq("tax_year", int(tax_year))
+            .order("created_at", desc=True)
+            .execute()
+        )
+        for row in result.data or []:
+            if (
+                isinstance(row, dict)
+                and isinstance(row.get("packet_session_id"), str)
+                and row["packet_session_id"].startswith("cs_")
+            ):
+                return dict(row), True
+    except Exception as e:
+        logger.error("Failed to fetch packet entitlement: %s", e)
+        return None, False
+    return None, True
+
+
+def save_packet_entitlement(
+    analysis_id: str,
+    user_id: str,
+    tax_year: int,
+    session_id: str,
+    client=None,
+) -> Optional[dict]:
+    """Persist a verified Stripe purchase separately from its private document."""
+    if not analysis_id or not user_id or tax_year is None or not session_id.startswith("cs_"):
+        return None
+    if client is None:
+        client = get_supabase()
+    if client is None:
+        return None
+    try:
+        result = (
+            client.table("year_close_packet_entitlements")
+            .upsert(
+                {
+                    "analysis_id": analysis_id,
+                    "user_id": user_id,
+                    "tax_year": int(tax_year),
+                    "packet_session_id": session_id,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                },
+                on_conflict="user_id,tax_year,packet_session_id",
+            )
+            .select("analysis_id, user_id, tax_year, packet_session_id")
+            .execute()
+        )
+        return dict(result.data[0]) if result.data else None
+    except Exception as e:
+        logger.error("Failed to save packet entitlement for %s: %s", analysis_id, e)
+        return None
 
 
 def get_packet_grant_for_tax_year(
@@ -527,23 +598,33 @@ def save_packet_snapshot(
     paid_at = now.isoformat() if paid and session_id else None
     effective_session_id = session_id
     expires_at = None if paid_at else now + UNPAID_PACKET_SNAPSHOT_TTL
-    if not paid:
-        try:
-            existing = (
-                client.table("year_close_packet_snapshots")
-                .select("packet_session_id, paid_at")
-                .eq("analysis_id", analysis_id)
-                .eq("user_id", user_id)
-                .limit(1)
-                .execute()
-            )
-            if existing.data and existing.data[0].get("paid_at"):
-                paid_at = existing.data[0]["paid_at"]
-                effective_session_id = existing.data[0].get("packet_session_id")
-                expires_at = None
-        except Exception as e:
-            logger.error("Failed to check prior packet entitlement for %s: %s", analysis_id, e)
-            return None
+    try:
+        existing = (
+            client.table("year_close_packet_snapshots")
+            .select("packet_session_id, paid_at, tax_year, packet_payload")
+            .eq("analysis_id", analysis_id)
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        if existing.data and existing.data[0].get("paid_at"):
+            existing_row = existing.data[0]
+            if int(existing_row.get("tax_year")) != int(tax_year):
+                logger.warning(
+                    "Refusing to move paid packet %s from tax year %s to %s",
+                    analysis_id,
+                    existing_row.get("tax_year"),
+                    tax_year,
+                )
+                return None
+            paid_at = existing_row["paid_at"]
+            effective_session_id = existing_row.get("packet_session_id")
+            packet_payload = existing_row.get("packet_payload")
+            tax_year = existing_row["tax_year"]
+            expires_at = None
+    except Exception as e:
+        logger.error("Failed to check prior packet entitlement for %s: %s", analysis_id, e)
+        return None
     row = {
         "analysis_id": analysis_id,
         "user_id": user_id,

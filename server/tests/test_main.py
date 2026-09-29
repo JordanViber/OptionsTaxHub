@@ -1466,7 +1466,28 @@ def test_delete_analysis_success(monkeypatch):
     response = client.delete("/api/portfolio/analysis/abc-123")
     assert response.status_code == 200
     assert response.json()["deleted"] is True
-    assert forgotten == [("packet-id", "test-user-123")]
+    assert forgotten == [
+        ("packet-id", "test-user-123"),
+        ("abc-123", "test-user-123"),
+    ]
+
+
+def test_delete_analysis_clears_packet_by_history_id_when_result_has_no_analysis_id(monkeypatch):
+    monkeypatch.setattr(
+        "main.get_analysis_by_id",
+        lambda aid, uid: {"id": aid, "user_id": uid, "result": None},
+    )
+    monkeypatch.setattr("main.delete_analysis_by_id", lambda aid, uid: True)
+    forgotten = []
+    monkeypatch.setattr(
+        "main.forget_packet_payload",
+        lambda aid, uid: forgotten.append((aid, uid)) or True,
+    )
+
+    response = client.delete("/api/portfolio/analysis/abc-123")
+
+    assert response.status_code == 200
+    assert forgotten == [("abc-123", "test-user-123")]
 
 
 def test_delete_analysis_not_found(monkeypatch):

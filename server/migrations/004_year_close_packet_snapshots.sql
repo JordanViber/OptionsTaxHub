@@ -65,18 +65,18 @@ DECLARE
 BEGIN
   deleted_analysis_id := OLD.result ->> 'analysis_id';
   IF deleted_analysis_id IS NULL OR deleted_analysis_id = '' THEN
-    RETURN OLD;
+    deleted_analysis_id := OLD.id::text;
   END IF;
 
   DELETE FROM public.year_close_packet_snapshots
   WHERE user_id = OLD.user_id
-    AND analysis_id = deleted_analysis_id
+    AND analysis_id IN (OLD.id::text, deleted_analysis_id)
     AND paid_at IS NULL;
 
   UPDATE public.year_close_packet_snapshots
   SET packet_payload = NULL, updated_at = now()
   WHERE user_id = OLD.user_id
-    AND analysis_id = deleted_analysis_id
+    AND analysis_id IN (OLD.id::text, deleted_analysis_id)
     AND paid_at IS NOT NULL;
 
   RETURN OLD;
@@ -85,6 +85,7 @@ $$;
 
 REVOKE ALL ON FUNCTION public.clear_packet_payload_after_analysis_delete() FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.clear_packet_payload_after_analysis_delete() FROM anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.clear_packet_payload_after_analysis_delete() TO service_role;
 
 DROP TRIGGER IF EXISTS clear_packet_payload_after_analysis_delete ON public.portfolio_analyses;
 CREATE TRIGGER clear_packet_payload_after_analysis_delete

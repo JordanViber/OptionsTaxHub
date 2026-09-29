@@ -116,6 +116,8 @@ from db import (
     get_supabase,
     get_latest_activity_book,
     lookup_packet_grant_for_tax_year,
+    lookup_packet_entitlement_for_tax_year,
+    save_packet_entitlement,
     save_packet_snapshot,
     get_packet_snapshot,
     mark_packet_snapshot_paid,
@@ -1593,6 +1595,7 @@ async def delete_portfolio_analysis(
         raise HTTPException(status_code=404, detail="Analysis not found")
     if isinstance(packet_analysis_id, str) and packet_analysis_id:
         forget_packet_payload(packet_analysis_id, user_id)
+    forget_packet_payload(analysis_id, user_id)
     return {"deleted": True}
 
 
@@ -2052,7 +2055,7 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
         if tax_year is None:
             logger.warning("Paid packet has no recoverable tax year: %s", session_analysis_id)
             return False
-        if not save_packet_snapshot(
+        if isinstance(packet_payload, dict) and not save_packet_snapshot(
             session_analysis_id,
             session_user_id,
             tax_year,
@@ -2063,17 +2066,25 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
         tax_year = int(tax_year)
     except (TypeError, ValueError):
         return False
+    metadata_year = _packet_result_tax_year(
+        {"analysis_tax_year": _session_metadata(session).get("tax_year")}
+    )
+    if metadata_year is not None and metadata_year != tax_year:
+        logger.warning(
+            "Rejecting packet session for mismatched tax year %s (snapshot %s)",
+            metadata_year,
+            tax_year,
+        )
+        return False
     if not isinstance(packet_payload, dict):
         # Keep the settled session as a same-year entitlement, but do not tell
         # confirm/webhook that a downloadable packet exists without its private
         # source document.
-        saved_entitlement = save_packet_snapshot(
+        saved_entitlement = save_packet_entitlement(
             session_analysis_id,
             session_user_id,
             tax_year,
-            None,
-            session_id=session_id,
-            paid=True,
+            session_id,
         )
         return None if saved_entitlement is None else False
     entitlement_saved = mark_packet_snapshot_paid(
@@ -2086,6 +2097,13 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
         return None
     if not entitlement_saved:
         return False
+    if not save_packet_entitlement(
+        session_analysis_id,
+        session_user_id,
+        tax_year,
+        session_id,
+    ):
+        return None
     # The independent entitlement/snapshot row is authoritative. History flags
     # help legacy clients but a deleted row or history outage cannot revoke a
     # settled purchase.
@@ -2210,8 +2228,10 @@ def _is_persisted_same_year_packet_grant(
             packet_snapshot.get("paid_at")
             and packet_snapshot.get("packet_session_id") == session_id
             and target_year == session_year
+            and isinstance(packet_snapshot.get("packet_payload"), dict)
         ):
             return True
+        return False
 
     target, target_lookup_succeeded = lookup_analysis_for_entitlement(
         analysis_id, user_id
@@ -2227,7 +2247,7 @@ def _is_persisted_same_year_packet_grant(
     ):
         return False
     target_year = _packet_result_tax_year(target_result)
-    return target_year == session_year
+    return target_year == session_year and isinstance(get_payload(analysis_id), dict)
 
 
 def _payload_for_download(analysis_id: str, user_id: str, analysis: Optional[dict]):
@@ -2377,6 +2397,45 @@ async def create_year_close_packet_checkout(
             status_code=503,
             detail="Could not verify existing packet access. Please retry.",
         )
+    if not existing_session_id:
+        entitlement, entitlement_lookup_succeeded = lookup_packet_entitlement_for_tax_year(
+            user_id,
+            tax_year,
+        )
+        if not entitlement_lookup_succeeded:
+            raise HTTPException(
+                status_code=503,
+                detail="Could not verify existing packet access. Please retry.",
+            )
+        if entitlement:
+            try:
+                prior_session = stripe.checkout.Session.retrieve(
+                    entitlement["packet_session_id"]
+                )
+            except stripe.StripeError as e:
+                logger.error("Year-close packet entitlement retrieve error: %s", e)
+                raise HTTPException(
+                    status_code=503,
+                    detail="Could not verify the prior packet payment. Please retry.",
+                )
+            prior_metadata = _session_metadata(prior_session)
+            try:
+                prior_tax_year = int(prior_metadata.get("tax_year"))
+            except (TypeError, ValueError):
+                prior_tax_year = None
+            if (
+                not session_is_settled_packet(prior_session)
+                or packet_session_id(prior_session) != entitlement["packet_session_id"]
+                or packet_user_id_from_session(prior_session) != user_id
+                or prior_tax_year != tax_year
+                or packet_analysis_id_from_session(prior_session)
+                != entitlement.get("analysis_id")
+            ):
+                raise HTTPException(
+                    status_code=503,
+                    detail="The prior packet payment could not be verified for this tax year.",
+                )
+            existing_session_id = entitlement["packet_session_id"]
     if existing_session_id:
         saved = save_packet_snapshot(
             analysis_id,
@@ -2390,6 +2449,16 @@ async def create_year_close_packet_checkout(
             raise HTTPException(
                 status_code=503,
                 detail="Could not save the packet snapshot. Please retry.",
+            )
+        if not save_packet_entitlement(
+            analysis_id,
+            user_id,
+            tax_year,
+            existing_session_id,
+        ):
+            raise HTTPException(
+                status_code=503,
+                detail="Could not save the packet entitlement. Please retry.",
             )
         upsert_packet_payload(analysis_id, user_id, packet_snapshot)
         mark_paid(analysis_id, existing_session_id, user_id=user_id)

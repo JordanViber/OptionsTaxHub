@@ -579,9 +579,58 @@ class TestPacketSnapshots:
         )
 
         assert saved["analysis_id"] == "analysis-a"
-        upsert = next(call for call in client.builders[0].calls if call[0] == "upsert")
+        upsert = next(call for call in client.builders[1].calls if call[0] == "upsert")
         assert upsert[1][0]["paid_at"] is not None
         assert upsert[1][0]["expires_at"] is None
+
+    def test_unpaid_snapshot_update_preserves_paid_document_and_tax_year(self, monkeypatch):
+        existing = {
+            "analysis_id": "analysis-a",
+            "user_id": "user1",
+            "tax_year": 2025,
+            "packet_payload": {"report": "original"},
+            "packet_session_id": "cs_paid_2025",
+            "paid_at": "2026-09-29T00:00:00+00:00",
+        }
+        client = _FakeClient(table_data=[existing])
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+
+        saved = db.save_packet_snapshot(
+            "analysis-a",
+            "user1",
+            2025,
+            {"report": "client-replacement"},
+        )
+
+        upsert = next(call for call in client.builders[1].calls if call[0] == "upsert")
+        row = upsert[1][0]
+        assert row["tax_year"] == 2025
+        assert row["packet_payload"] == {"report": "original"}
+        assert row["packet_session_id"] == "cs_paid_2025"
+        assert row["paid_at"] == existing["paid_at"]
+        assert saved["analysis_id"] == "analysis-a"
+
+    def test_paid_snapshot_cannot_be_moved_to_another_tax_year(self, monkeypatch):
+        existing = {
+            "analysis_id": "analysis-a",
+            "user_id": "user1",
+            "tax_year": 2025,
+            "packet_payload": {"report": "original"},
+            "packet_session_id": "cs_paid_2025",
+            "paid_at": "2026-09-29T00:00:00+00:00",
+        }
+        client = _FakeClient(table_data=[existing])
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+
+        saved = db.save_packet_snapshot(
+            "analysis-a",
+            "user1",
+            2026,
+            {"report": "wrong-year"},
+        )
+
+        assert saved is None
+        assert len(client.builders) == 1
 
     def test_loads_owner_scoped_paid_packet_snapshot_without_expiry(self, monkeypatch):
         row = {
@@ -620,6 +669,7 @@ class TestPacketSnapshots:
     def test_packet_year_lookup_uses_owner_scoped_paid_snapshot_first(self, monkeypatch):
         paid = {
             "analysis_id": "analysis-a",
+            "packet_payload": {"lot_match_report": {"matched": []}},
             "packet_session_id": "cs_paid_year",
             "paid_at": "2026-09-29T00:00:00+00:00",
         }
@@ -675,11 +725,45 @@ class TestPacketSnapshots:
         assert ("eq", ("tax_year", 2026), {}) in calls
         assert not any(call[0] == "contains" for call in calls)
 
+    def test_packet_grant_does_not_treat_deleted_document_as_downloadable(self, monkeypatch):
+        client = _FakeClient(table_data=[{
+            "analysis_id": "analysis-a",
+            "packet_session_id": "cs_paid_year",
+            "packet_payload": None,
+            "paid_at": "2026-09-29T00:00:00+00:00",
+        }])
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+
+        assert db.lookup_packet_grant_for_tax_year("user1", 2026) == (None, True)
+
+    def test_separate_year_entitlement_survives_deleted_document(self, monkeypatch):
+        row = {
+            "analysis_id": "analysis-a",
+            "packet_session_id": "cs_paid_year",
+            "tax_year": 2026,
+        }
+        client = _FakeClient(table_data=[row])
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+
+        entitlement, lookup_succeeded = db.lookup_packet_entitlement_for_tax_year(
+            "user1", 2026
+        )
+
+        assert lookup_succeeded is True
+        assert entitlement == row
+        assert client.builders[0].calls[0] == (
+            "eq", ("user_id", "user1"), {}
+        )
+        assert client.builders[0].calls[1] == (
+            "eq", ("tax_year", 2026), {}
+        )
+
     def test_packet_grant_scans_all_paid_snapshots_for_a_valid_session(self, monkeypatch):
         rows = [
             {
                 "analysis_id": f"newer-{index}",
                 "packet_session_id": "invalid",
+                "packet_payload": {"report": {}},
                 "tax_year": 2026,
                 "paid_at": "2026-09-29T00:00:00+00:00",
             }
@@ -689,6 +773,7 @@ class TestPacketSnapshots:
             {
                 "analysis_id": "older-valid",
                 "packet_session_id": "cs_older_valid",
+                "packet_payload": {"report": {}},
                 "tax_year": 2026,
                 "paid_at": "2026-09-28T00:00:00+00:00",
             }
