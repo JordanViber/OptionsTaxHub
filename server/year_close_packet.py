@@ -902,6 +902,9 @@ def _payload_preserving_harvest(
 
 def remember_analysis(analysis_id: str, user_id: str, analysis: dict[str, Any]) -> None:
     existing = PACKET_STORE.get(analysis_id) or {}
+    if existing and existing.get("user_id") != user_id:
+        logger.warning("Refusing to replace packet snapshot owned by another user")
+        return
     existing_payload = existing.get("payload")
     if not isinstance(existing_payload, dict):
         existing_payload = None
@@ -922,6 +925,15 @@ def remember_analysis(analysis_id: str, user_id: str, analysis: dict[str, Any]) 
 
 def upsert_payload(analysis_id: str, user_id: str, analysis: dict[str, Any] | None) -> dict[str, Any]:
     rec = PACKET_STORE.get(analysis_id)
+    if rec and rec.get("user_id") != user_id:
+        logger.warning("Refusing to reuse packet snapshot owned by another user")
+        payload = build_packet_payload(analysis, analysis_id=analysis_id) if analysis else None
+        return _new_packet_record(
+            user_id,
+            payload=payload,
+            paid=False,
+            session_ids=set(),
+        )
     if rec and rec.get("payload"):
         if user_id and rec.get("user_id") in ("", None):
             rec["user_id"] = user_id
@@ -943,7 +955,15 @@ def upsert_payload(analysis_id: str, user_id: str, analysis: dict[str, Any] | No
     return PACKET_STORE[analysis_id]
 
 
-def mark_paid(analysis_id: str, session_id: str, user_id: str = "") -> None:
+def packet_store_belongs_to_user(analysis_id: str, user_id: str) -> bool:
+    """Return false when a globally keyed memory record belongs to another owner."""
+    rec = PACKET_STORE.get(analysis_id)
+    return rec is None or (bool(user_id) and rec.get("user_id") == user_id)
+
+
+def mark_paid(analysis_id: str, session_id: str, user_id: str = "") -> bool:
+    if not user_id:
+        return False
     rec = PACKET_STORE.get(analysis_id)
     if rec is None:
         PACKET_STORE[analysis_id] = _new_packet_record(
@@ -953,13 +973,14 @@ def mark_paid(analysis_id: str, session_id: str, user_id: str = "") -> None:
             session_ids={session_id} if session_id else set(),
         )
         purge_packet_store()
-        return
+        return True
+    if rec.get("user_id") != user_id:
+        return False
     rec["paid"] = True
     if session_id:
         rec.setdefault("session_ids", set()).add(session_id)
-    if user_id and not rec.get("user_id"):
-        rec["user_id"] = user_id
     purge_packet_store()
+    return True
 
 
 def is_packet_paid(analysis_id: str, user_id: str | None = None) -> bool:
@@ -967,8 +988,6 @@ def is_packet_paid(analysis_id: str, user_id: str | None = None) -> bool:
     rec = PACKET_STORE.get(analysis_id)
     if not rec or not rec.get("paid"):
         return False
-    if user_id is None:
-        return True
     return bool(user_id) and rec.get("user_id") == user_id
 
 
@@ -1162,10 +1181,14 @@ def session_grants_packet(session: Any, analysis_id: str = "") -> bool:
     product = str(metadata.get("product") or "")
     session_analysis = packet_analysis_id_from_session(session)
     requested_analysis = str(analysis_id or "").strip()
-    analysis_matches = bool(session_analysis) and (
-        not requested_analysis
-        or requested_analysis == "local-analysis"
-        or requested_analysis == session_analysis
+    analysis_matches = (
+        bool(requested_analysis)
+        and bool(session_analysis)
+        and session_analysis != "local-analysis"
+        and (
+            requested_analysis == "local-analysis"
+            or requested_analysis == session_analysis
+        )
     )
     payment_status = str(_session_attr(session, "payment_status") or "").lower()
     status = str(_session_attr(session, "status") or "").lower()

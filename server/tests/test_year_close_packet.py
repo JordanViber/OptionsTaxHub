@@ -222,7 +222,14 @@ def _packet_checkout_event(
     payment_status="paid",
     event_id="evt_packet",
     livemode=False,
+    user_id="test-user-123",
 ):
+    metadata = {
+        "product": PACKET_METADATA_PRODUCT,
+        "analysis_id": "analysis-sample-1",
+    }
+    if user_id:
+        metadata["user_id"] = user_id
     return {
         "id": event_id,
         "object": "event",
@@ -237,11 +244,7 @@ def _packet_checkout_event(
                 "currency": "usd",
                 "mode": "payment",
                 "livemode": livemode,
-                "metadata": {
-                    "product": PACKET_METADATA_PRODUCT,
-                    "analysis_id": "analysis-sample-1",
-                    "user_id": "test-user-123",
-                },
+                "metadata": metadata,
             }
         },
     }
@@ -341,6 +344,46 @@ def test_checkout_rejects_when_analysis_cannot_be_persisted(monkeypatch):
     assert created == []
 
 
+def test_checkout_rekeys_local_analysis_per_user(monkeypatch):
+    _test_stripe_env(monkeypatch)
+    remember_analysis("local-analysis", "user-A", SAMPLE_ANALYSIS)
+    monkeypatch.setitem(main.app.dependency_overrides, get_current_user, lambda: "user-B")
+    monkeypatch.setattr(main, "get_analysis_by_id", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        main,
+        "get_analysis_by_result_analysis_id",
+        lambda *_args, **_kwargs: None,
+    )
+    canonical_ids = []
+    monkeypatch.setattr(
+        main,
+        "ensure_analysis_history",
+        lambda analysis_id, _user_id, analysis: canonical_ids.append(
+            (analysis_id, analysis.get("analysis_id"))
+        ) or {"id": "history-row"},
+    )
+    captured = {}
+
+    def create(**kwargs):
+        captured.update(kwargs)
+        return FakeCheckoutSession(**kwargs)
+
+    monkeypatch.setattr(main.stripe.checkout.Session, "create", create)
+    response = client.post(
+        "/api/year-close-packet/checkout",
+        json={"analysis_id": "local-analysis", "analysis": SAMPLE_ANALYSIS},
+    )
+
+    assert response.status_code == 200
+    canonical_id = response.json()["analysis_id"]
+    assert canonical_id != "local-analysis"
+    assert canonical_ids == [(canonical_id, canonical_id)]
+    assert captured["metadata"]["analysis_id"] == canonical_id
+    assert captured["metadata"]["user_id"] == "user-B"
+    assert PACKET_STORE["local-analysis"]["user_id"] == "user-A"
+    assert PACKET_STORE["local-analysis"]["paid"] is False
+
+
 def test_checkout_refuses_live_key_on_staging(monkeypatch):
     monkeypatch.setenv("FRONTEND_URL", "https://options-tax-hub-client-staging.onrender.com")
     monkeypatch.setenv("STRIPE_FORCE_TEST_MODE", "true")
@@ -434,7 +477,7 @@ def test_confirm_session_unlocks_download(monkeypatch):
 def test_confirm_does_not_grant_transient_access_when_persistence_fails(monkeypatch):
     _test_stripe_env(monkeypatch)
     main.remember_analysis("analysis-sample-1", "test-user-123", SAMPLE_ANALYSIS)
-    monkeypatch.setattr(main, "patch_analysis_result", lambda *_args: False)
+    monkeypatch.setattr(main, "patch_analysis_result", lambda *_args: None)
     paid_session = _stripe_object_session(
         id="cs_test_paid_persistence_failure",
         metadata={
@@ -456,6 +499,67 @@ def test_confirm_does_not_grant_transient_access_when_persistence_fails(monkeypa
 
     assert response.status_code == 503
     assert PACKET_STORE["analysis-sample-1"]["paid"] is False
+
+
+def test_confirm_rejects_checkout_session_owned_by_another_user(monkeypatch):
+    _test_stripe_env(monkeypatch)
+    remember_analysis("victim-analysis", "user-A", SAMPLE_ANALYSIS)
+    monkeypatch.setitem(main.app.dependency_overrides, get_current_user, lambda: "user-B")
+    paid_session = _stripe_object_session(
+        id="cs_test_wrong_owner",
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": "victim-analysis",
+            "user_id": "user-A",
+        },
+    )
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda *_args, **_kwargs: paid_session,
+    )
+
+    response = client.post(
+        "/api/year-close-packet/confirm",
+        json={"session_id": paid_session.id, "analysis_id": "victim-analysis"},
+    )
+
+    assert response.status_code == 403
+    assert PACKET_STORE["victim-analysis"]["user_id"] == "user-A"
+    assert PACKET_STORE["victim-analysis"]["paid"] is False
+
+
+def test_download_rejects_b_users_session_for_a_users_snapshot(monkeypatch):
+    _test_stripe_env(monkeypatch)
+    remember_analysis("victim-analysis", "user-A", SAMPLE_ANALYSIS)
+    monkeypatch.setitem(main.app.dependency_overrides, get_current_user, lambda: "user-B")
+    paid_session = _stripe_object_session(
+        id="cs_test_cross_owner_analysis",
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": "victim-analysis",
+            "user_id": "user-B",
+        },
+    )
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda *_args, **_kwargs: paid_session,
+    )
+    monkeypatch.setattr(
+        main,
+        "patch_analysis_result",
+        lambda *_args: pytest.fail("must reject before modifying history"),
+    )
+
+    response = client.get(
+        "/api/year-close-packet/download",
+        params={"analysis_id": "victim-analysis", "session_id": paid_session.id},
+    )
+
+    assert response.status_code == 403
+    assert PACKET_STORE["victim-analysis"]["user_id"] == "user-A"
+    assert PACKET_STORE["victim-analysis"]["paid"] is False
 
 
 def test_three_dollar_tip_does_not_unlock_packet(monkeypatch):
@@ -645,8 +749,19 @@ def test_session_grants_packet_accepts_valid_stripe_object(monkeypatch):
     assert session_grants_packet(session, "analysis-sample-1") is True
     # Client restored analysis_id may be local-analysis; session metadata is canonical.
     assert session_grants_packet(session, "local-analysis") is True
-    assert session_grants_packet(session, "") is True
+    assert session_grants_packet(session, "") is False
     assert session_grants_packet(session, "some-other-analysis") is False
+
+
+def test_session_grants_packet_never_accepts_local_analysis_as_canonical_id():
+    session = _stripe_object_session(
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": "local-analysis",
+            "user_id": "test-user-123",
+        },
+    )
+    assert session_grants_packet(session, "local-analysis") is False
 
 
 def test_session_grants_packet_rejects_complete_but_unpaid_checkout():
@@ -751,6 +866,22 @@ def test_download_does_not_reuse_another_users_in_memory_grant(monkeypatch):
     assert response.status_code == 403
 
 
+def test_mark_paid_refuses_to_change_another_users_packet_record():
+    remember_analysis("shared-analysis", "user-A", SAMPLE_ANALYSIS)
+
+    assert mark_paid("shared-analysis", "cs_test_user_b", user_id="user-B") is False
+    assert PACKET_STORE["shared-analysis"]["user_id"] == "user-A"
+    assert PACKET_STORE["shared-analysis"]["paid"] is False
+
+
+def test_in_memory_packet_grant_requires_authenticated_owner():
+    remember_analysis("private-analysis", "test-user-123", SAMPLE_ANALYSIS)
+    mark_paid("private-analysis", "cs_test_private", user_id="test-user-123")
+
+    assert main.is_packet_paid("private-analysis") is False
+    assert main.is_packet_paid("private-analysis", user_id="test-user-123") is True
+
+
 @pytest.mark.parametrize("headers,secret,expected_status", [
     ({}, "whsec_packet_test_secret", 400),
     ({"Stripe-Signature": "invalid-current-signature"}, "whsec_packet_test_secret", 400),
@@ -814,11 +945,26 @@ def test_webhook_retries_when_durable_packet_grant_fails(monkeypatch):
     _test_stripe_env(monkeypatch)
     monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_packet_test_secret")
     main.remember_analysis("analysis-sample-1", "test-user-123", SAMPLE_ANALYSIS)
-    monkeypatch.setattr(main, "patch_analysis_result", lambda *_args: False)
+    monkeypatch.setattr(main, "patch_analysis_result", lambda *_args: None)
     response = _post_signed_webhook(
         _packet_checkout_event(event_type="checkout.session.async_payment_succeeded")
     )
     assert response.status_code == 500
+    assert PACKET_STORE["analysis-sample-1"]["paid"] is False
+
+
+def test_webhook_acknowledges_permanent_missing_history_without_retry(monkeypatch):
+    _test_stripe_env(monkeypatch)
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_packet_test_secret")
+    main.remember_analysis("analysis-sample-1", "test-user-123", SAMPLE_ANALYSIS)
+    monkeypatch.setattr(main, "patch_analysis_result", lambda *_args: False)
+
+    response = _post_signed_webhook(
+        _packet_checkout_event(event_type="checkout.session.async_payment_succeeded")
+    )
+
+    assert response.status_code == 200
+    assert response.json()["granted"] is False
     assert PACKET_STORE["analysis-sample-1"]["paid"] is False
 
 
@@ -833,6 +979,19 @@ def test_webhook_grants_live_mode_event_in_production(monkeypatch):
     response = _post_signed_webhook(_packet_checkout_event(livemode=True))
     assert response.status_code == 200
     assert response.json()["granted"] is True
+    assert PACKET_STORE["analysis-sample-1"]["user_id"] == "test-user-123"
+
+
+def test_webhook_acknowledges_paid_session_without_owner_without_granting(monkeypatch):
+    _test_stripe_env(monkeypatch)
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_packet_test_secret")
+    main.remember_analysis("analysis-sample-1", "test-user-123", SAMPLE_ANALYSIS)
+
+    response = _post_signed_webhook(_packet_checkout_event(user_id=""))
+
+    assert response.status_code == 200
+    assert response.json()["granted"] is False
+    assert PACKET_STORE["analysis-sample-1"]["paid"] is False
 
 
 def test_unpaid_completed_webhook_does_not_unlock_packet(monkeypatch):

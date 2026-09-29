@@ -415,7 +415,7 @@ def patch_analysis_result(
     analysis_id: str,
     user_id: str,
     patch: dict,
-) -> bool:
+) -> Optional[bool]:
     """Shallow-merge keys into a stored analysis result JSONB.
 
     Portfolio history row IDs predate the analysis IDs embedded in result JSON,
@@ -425,10 +425,34 @@ def patch_analysis_result(
         return False
     client = get_supabase()
     if client is None:
-        return False
-    record = get_analysis_by_id(analysis_id, user_id, client=client)
+        return None
+    try:
+        lookup = (
+            client.table("portfolio_analyses")
+            .select("id, user_id, result")
+            .eq("id", analysis_id)
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        record = dict(lookup.data[0]) if lookup.data else None
+    except Exception as e:
+        logger.error("Failed to find analysis row %s: %s", analysis_id, e)
+        return None
     if not record:
-        record = get_analysis_by_result_analysis_id(analysis_id, user_id, client=client)
+        try:
+            lookup = (
+                client.table("portfolio_analyses")
+                .select("id, user_id, result")
+                .eq("user_id", user_id)
+                .contains("result", {"analysis_id": analysis_id})
+                .limit(1)
+                .execute()
+            )
+            record = dict(lookup.data[0]) if lookup.data else None
+        except Exception as e:
+            logger.error("Failed to find analysis result %s: %s", analysis_id, e)
+            return None
     if not record or not record.get("id"):
         return False
     result = record.get("result")
@@ -446,7 +470,7 @@ def patch_analysis_result(
         return bool(updated.data)
     except Exception as e:
         logger.error(f"Failed to patch analysis {analysis_id}: {e}")
-        return False
+        return None
 
 
 # ---------- Tax Profiles ----------

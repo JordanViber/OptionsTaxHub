@@ -200,12 +200,12 @@ class TestPatchAnalysisResult:
             "result": {"analysis_id": "analysis-uuid", "packet_unlocked": False},
         }
         builder = MagicMock()
+        builder.select.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value.data = []
         builder.select.return_value.eq.return_value.contains.return_value.limit.return_value.execute.return_value.data = [record]
         builder.update.return_value.eq.return_value.eq.return_value.execute.return_value.data = [record]
         client = MagicMock()
         client.table.return_value = builder
         monkeypatch.setattr(db, "get_supabase", lambda: client)
-        monkeypatch.setattr(db, "get_analysis_by_id", lambda *_args, **_kwargs: None)
 
         assert db.patch_analysis_result(
             "analysis-uuid", "user1", {"packet_unlocked": True}
@@ -217,16 +217,25 @@ class TestPatchAnalysisResult:
 
     def test_does_not_patch_embedded_analysis_from_another_user(self, monkeypatch):
         builder = MagicMock()
+        builder.select.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value.data = []
         builder.select.return_value.eq.return_value.contains.return_value.limit.return_value.execute.return_value.data = []
         client = MagicMock()
         client.table.return_value = builder
         monkeypatch.setattr(db, "get_supabase", lambda: client)
-        monkeypatch.setattr(db, "get_analysis_by_id", lambda *_args, **_kwargs: None)
 
         assert db.patch_analysis_result(
             "analysis-uuid", "user1", {"packet_unlocked": True}
         ) is False
         builder.update.assert_not_called()
+
+    def test_returns_none_when_supabase_lookup_raises(self, monkeypatch):
+        client = MagicMock()
+        client.table.return_value.select.return_value.eq.return_value.eq.return_value.limit.return_value.execute.side_effect = RuntimeError("network")
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+
+        assert db.patch_analysis_result(
+            "analysis-uuid", "user1", {"packet_unlocked": True}
+        ) is None
 
 
 class TestEnsureAnalysisHistory:

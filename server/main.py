@@ -54,6 +54,7 @@ from year_close_packet import (
     packet_requires_test_stripe,
     packet_user_id_from_session,
     packet_session_id,
+    packet_store_belongs_to_user,
     paid_session_for_user_year,
     remember_analysis,
     render_packet_pdf,
@@ -102,7 +103,7 @@ from db import (
     save_analysis_history,
     get_analysis_history,
     get_analysis_by_id,
-    ensure_analysis_history,
+    get_analysis_by_result_analysis_id,
     ensure_analysis_history,
     delete_analyses_without_result,
     delete_analysis_by_id,
@@ -1934,7 +1935,12 @@ def _grant_packet_from_session(session, analysis_id: str, user_id: str = "") -> 
         return False
     session_analysis_id = packet_analysis_id_from_session(session)
     session_user_id = packet_user_id_from_session(session)
-    if not session_user_id or not user_id or session_user_id != user_id:
+    if (
+        not session_user_id
+        or not user_id
+        or session_user_id != user_id
+        or not packet_store_belongs_to_user(session_analysis_id, user_id)
+    ):
         return False
     persisted = patch_analysis_result(
         session_analysis_id,
@@ -1944,7 +1950,7 @@ def _grant_packet_from_session(session, analysis_id: str, user_id: str = "") -> 
             "packet_session_id": packet_session_id(session),
         },
     )
-    if not persisted:
+    if persisted is None:
         logger.error(
             "Failed to persist packet grant analysis_id=%s user_id=%s",
             session_analysis_id,
@@ -1954,11 +1960,14 @@ def _grant_packet_from_session(session, analysis_id: str, user_id: str = "") -> 
             status_code=503,
             detail="Unable to persist packet payment. Please retry the download.",
         )
-    mark_paid(
+    if not persisted:
+        return False
+    if not mark_paid(
         session_analysis_id,
         packet_session_id(session),
         user_id=session_user_id,
-    )
+    ):
+        return False
     return True
 
 
@@ -2015,11 +2024,52 @@ async def create_year_close_packet_checkout(
     Does not reuse /api/tips/checkout or TipJar price IDs.
     Staging / local always uses Stripe TEST keys (never live).
     """
-    analysis_id = (body.analysis_id or "").strip()
-    if not analysis_id:
+    requested_analysis_id = (body.analysis_id or "").strip()
+    if not requested_analysis_id:
         raise HTTPException(status_code=400, detail="analysis_id is required")
 
-    analysis = _analysis_with_history_suggestions(analysis_id, user_id, body.analysis)
+    analysis = body.analysis
+    record = None
+    if requested_analysis_id != "local-analysis":
+        record = get_analysis_by_id(requested_analysis_id, user_id)
+        if not record:
+            record = get_analysis_by_result_analysis_id(requested_analysis_id, user_id)
+
+    if record:
+        result = record.get("result")
+        stored_analysis_id = (
+            str(result.get("analysis_id") or "").strip()
+            if isinstance(result, dict)
+            else ""
+        )
+        analysis_id = stored_analysis_id or requested_analysis_id
+        if analysis is None and isinstance(result, dict):
+            analysis = result
+    else:
+        if (
+            not isinstance(analysis, dict)
+            or (
+                requested_analysis_id != "local-analysis"
+                and analysis.get("analysis_id") != requested_analysis_id
+            )
+        ):
+            raise HTTPException(
+                status_code=503,
+                detail="Could not verify this analysis before checkout. Please reload and retry.",
+            )
+        analysis_id = str(uuid.uuid4())
+        analysis = {**analysis, "analysis_id": analysis_id}
+
+    if analysis_id == "local-analysis" or not packet_store_belongs_to_user(analysis_id, user_id):
+        if not isinstance(analysis, dict):
+            raise HTTPException(
+                status_code=503,
+                detail="Could not load this analysis before checkout. Please reload and retry.",
+            )
+        analysis_id = str(uuid.uuid4())
+        analysis = {**analysis, "analysis_id": analysis_id}
+
+    analysis = _analysis_with_history_suggestions(analysis_id, user_id, analysis)
     _configure_packet_stripe()
     if not ensure_analysis_history(analysis_id, user_id, analysis):
         raise HTTPException(
@@ -2050,6 +2100,7 @@ async def create_year_close_packet_checkout(
         return {
             "checkout_url": session.url,
             "session_id": session.id,
+            "analysis_id": analysis_id,
             "product": PACKET_PRODUCT_NAME,
             "amount": PACKET_AMOUNT_CENTS,
             "stripe_mode": "test" if packet_requires_test_stripe() else "live",
@@ -2087,12 +2138,6 @@ async def confirm_year_close_packet(
     if not analysis_id:
         raise HTTPException(status_code=400, detail="analysis_id is required")
 
-    upsert_payload(
-        analysis_id,
-        user_id,
-        _analysis_with_history_suggestions(analysis_id, user_id, body.analysis),
-    )
-
     if not _grant_packet_from_session(session, analysis_id, user_id=user_id):
         logger.info(
             "year-close packet confirm 403 session_present=1 analysis_id=%s",
@@ -2102,6 +2147,11 @@ async def confirm_year_close_packet(
             status_code=403,
             detail="Checkout session does not unlock the year-close packet.",
         )
+    upsert_payload(
+        analysis_id,
+        user_id,
+        _analysis_with_history_suggestions(analysis_id, user_id, body.analysis),
+    )
     return {
         "paid": True,
         "product": PACKET_PRODUCT_NAME,
@@ -2145,12 +2195,9 @@ async def year_close_packet_webhook(request: Request):
     granted = session_grants_packet(session_obj, analysis_id)
     if granted:
         user_id = packet_user_id_from_session(session_obj)
-        if not user_id:
-            logger.error("Verified packet checkout session is missing metadata.user_id")
-            raise HTTPException(
-                status_code=500,
-                detail="Unable to persist packet payment without a checkout owner.",
-            )
+        if not user_id or not packet_store_belongs_to_user(analysis_id, user_id):
+            logger.warning("Ignoring packet event with missing owner or conflicting snapshot")
+            return {"received": True, "granted": False}
         persisted = patch_analysis_result(
             analysis_id,
             user_id,
@@ -2159,7 +2206,7 @@ async def year_close_packet_webhook(request: Request):
                 "packet_session_id": packet_session_id(session_obj),
             },
         )
-        if not persisted:
+        if persisted is None:
             logger.error(
                 "Failed to persist packet grant analysis_id=%s user_id=%s",
                 analysis_id,
@@ -2169,7 +2216,12 @@ async def year_close_packet_webhook(request: Request):
                 status_code=500,
                 detail="Unable to persist packet payment; Stripe may retry this event.",
             )
-        mark_paid(analysis_id, packet_session_id(session_obj), user_id=user_id)
+        if not persisted or not mark_paid(
+            analysis_id,
+            packet_session_id(session_obj),
+            user_id=user_id,
+        ):
+            return {"received": True, "granted": False}
     return {"received": True, "granted": granted}
 
 
@@ -2178,7 +2230,7 @@ def _authorized_packet_download(
     session_id: Optional[str],
     user_id: str,
 ) -> str:
-    if is_packet_paid(analysis_id, user_id=user_id):
+    if analysis_id != "local-analysis" and is_packet_paid(analysis_id, user_id=user_id):
         return analysis_id
     if not session_id:
         raise HTTPException(
