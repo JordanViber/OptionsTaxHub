@@ -4032,6 +4032,7 @@ def test_same_year_grant_snapshot_failure_keeps_private_lots_out_of_history(monk
             "result": saved_history[0],
         },
     )
+    monkeypatch.setattr(main, "get_supabase", lambda: object())
     loaded = client.get("/api/portfolio/analysis/hist-grant")
     assert loaded.status_code == 200, loaded.text
     loaded_report = loaded.json()["result"]["lot_match_report"]
