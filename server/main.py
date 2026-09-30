@@ -2155,7 +2155,7 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
     if not isinstance(packet_payload, dict):
         # Keep the settled session as a same-year entitlement, but do not tell
         # confirm/webhook that a downloadable packet exists without its private
-        # source document.
+        # source document. A fresh analysis can reuse this receipt.
         saved_entitlement = save_packet_entitlement(
             session_analysis_id,
             session_user_id,
@@ -2168,7 +2168,7 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
             "Persisted paid packet entitlement without its source document: %s",
             session_analysis_id,
         )
-        return True
+        return False
     entitlement_saved = mark_packet_snapshot_paid(
         session_analysis_id,
         session_user_id,
@@ -2493,8 +2493,11 @@ async def create_year_close_packet_checkout(
         packet_snapshot = durable_snapshot.get("packet_payload")
         if not isinstance(packet_snapshot, dict) and durable_snapshot.get("paid_at"):
             raise HTTPException(
-                status_code=503,
-                detail="This paid packet document was deleted. Re-run this analysis to restore it.",
+                status_code=409,
+                detail=(
+                    "This paid packet's source document was deleted. Run a new analysis "
+                    "to restore access for this tax year."
+                ),
             )
     else:
         packet_snapshot = (
@@ -2775,9 +2778,9 @@ def _authorized_packet_download(
                 ),
             )
         if (
-            not session_id
-            and snapshot.get("paid_at")
+            snapshot.get("paid_at")
             and snapshot.get("packet_session_id")
+            and (not session_id or session_id == snapshot.get("packet_session_id"))
         ):
             return analysis_id
     elif is_packet_paid(analysis_id, user_id=user_id):
@@ -2793,6 +2796,15 @@ def _authorized_packet_download(
     try:
         session = stripe.checkout.Session.retrieve(session_id, api_key=packet_api_key)
     except stripe.StripeError:
+        if (
+            isinstance(snapshot, dict)
+            and snapshot.get("paid_at")
+            and isinstance(snapshot.get("packet_payload"), dict)
+        ):
+            raise HTTPException(
+                status_code=503,
+                detail="Could not verify the supplied checkout session. Please retry.",
+            )
         raise HTTPException(status_code=403, detail="Year-close packet download requires payment.")
     if _grant_packet_from_session(session, analysis_id, user_id=user_id):
         return packet_analysis_id_from_session(session)
