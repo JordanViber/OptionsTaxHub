@@ -2153,6 +2153,15 @@ def test_grant_records_separate_entitlement_without_claiming_missing_document_is
         "retrieve",
         lambda *_args, **_kwargs: session,
     )
+    confirm = client.post(
+        "/api/year-close-packet/confirm",
+        json={
+            "analysis_id": "analysis-sample-1",
+            "session_id": "cs_test_missing_packet_document",
+        },
+    )
+    assert confirm.status_code == 409
+    assert confirm.json()["detail"] == main.PACKET_MISSING_SOURCE_DETAIL
     unavailable = client.get(
         "/api/year-close-packet/download",
         params={
