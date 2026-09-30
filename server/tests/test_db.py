@@ -39,6 +39,7 @@ class _FakeQueryBuilder:
         self.calls = []
 
     def insert(self, row):
+        self.calls.append(("insert", (row,), {}))
         return self
 
     def select(self, *args):
@@ -52,6 +53,7 @@ class _FakeQueryBuilder:
         return self
 
     def update(self, row):
+        self.calls.append(("update", (row,), {}))
         return self
 
     def eq(self, *args):
@@ -83,12 +85,17 @@ class _FakeQueryBuilder:
 class _FakeClient:
     """Minimal fake Supabase client."""
 
-    def __init__(self, table_data=None):
+    def __init__(self, table_data=None, table_responses=None):
         self._table_data = table_data
+        self._table_responses = list(table_responses) if table_responses is not None else None
         self.builders = []
 
     def table(self, name):
-        builder = _FakeQueryBuilder(self._table_data)
+        if self._table_responses is not None and self._table_responses:
+            data = self._table_responses.pop(0)
+        else:
+            data = self._table_data
+        builder = _FakeQueryBuilder(data)
         self.builders.append(builder)
         return builder
 
@@ -549,7 +556,9 @@ class TestLatestActivityBook:
 
 class TestPacketSnapshots:
     def test_saves_private_packet_snapshot_with_short_unpaid_retention(self, monkeypatch):
-        client = _FakeClient(table_data=[{"analysis_id": "analysis-a", "user_id": "user1"}])
+        client = _FakeClient(
+            table_responses=[[], [{"analysis_id": "analysis-a", "user_id": "user1"}]],
+        )
         monkeypatch.setattr(db, "get_supabase", lambda: client)
 
         saved = db.save_packet_snapshot(
@@ -561,13 +570,15 @@ class TestPacketSnapshots:
 
         assert saved["analysis_id"] == "analysis-a"
         calls = client.builders[1].calls
-        upsert = next(call for call in calls if call[0] == "upsert")
-        assert upsert[1][0]["paid_at"] is None
-        assert upsert[1][0]["tax_year"] == 2026
-        assert upsert[1][0]["expires_at"] is not None
+        insert = next(call for call in calls if call[0] == "insert")
+        assert insert[1][0]["paid_at"] is None
+        assert insert[1][0]["tax_year"] == 2026
+        assert insert[1][0]["expires_at"] is not None
 
     def test_paid_packet_snapshot_has_no_expiry(self, monkeypatch):
-        client = _FakeClient(table_data=[{"analysis_id": "analysis-a", "user_id": "user1"}])
+        client = _FakeClient(
+            table_responses=[[], [{"analysis_id": "analysis-a", "user_id": "user1"}]],
+        )
         monkeypatch.setattr(db, "get_supabase", lambda: client)
 
         saved = db.save_packet_snapshot(
@@ -580,9 +591,9 @@ class TestPacketSnapshots:
         )
 
         assert saved["analysis_id"] == "analysis-a"
-        upsert = next(call for call in client.builders[1].calls if call[0] == "upsert")
-        assert upsert[1][0]["paid_at"] is not None
-        assert upsert[1][0]["expires_at"] is None
+        insert = next(call for call in client.builders[1].calls if call[0] == "insert")
+        assert insert[1][0]["paid_at"] is not None
+        assert insert[1][0]["expires_at"] is None
 
     def test_unpaid_snapshot_update_preserves_paid_document_and_tax_year(self, monkeypatch):
         existing = {
@@ -603,12 +614,7 @@ class TestPacketSnapshots:
             {"report": "client-replacement"},
         )
 
-        upsert = next(call for call in client.builders[1].calls if call[0] == "upsert")
-        row = upsert[1][0]
-        assert row["tax_year"] == 2025
-        assert row["packet_payload"] == {"report": "original"}
-        assert row["packet_session_id"] == "cs_paid_2025"
-        assert row["paid_at"] == existing["paid_at"]
+        assert len(client.builders) == 1
         assert saved["analysis_id"] == "analysis-a"
 
     def test_paid_snapshot_cannot_be_moved_to_another_tax_year(self, monkeypatch):
@@ -658,6 +664,81 @@ class TestPacketSnapshots:
         assert row["packet_session_id"] == "cs_paid_2025"
         assert row["paid_at"] == existing["paid_at"]
         assert saved["analysis_id"] == "analysis-a"
+
+    def test_racing_unpaid_snapshot_write_cannot_downgrade_a_paid_row(self, monkeypatch):
+        unpaid = {
+            "analysis_id": "analysis-a",
+            "user_id": "user1",
+            "tax_year": 2025,
+            "packet_payload": {"report": "private"},
+            "packet_session_id": None,
+            "paid_at": None,
+            "expires_at": "2026-09-30T00:00:00+00:00",
+        }
+        paid = {
+            **unpaid,
+            "packet_session_id": "cs_paid",
+            "paid_at": "2026-09-30T00:01:00+00:00",
+            "expires_at": None,
+        }
+
+        class RacingClient:
+            def __init__(self):
+                self.reads = 0
+                self.updated_row = None
+                self.update_filters = []
+                self.upserts = []
+
+            def table(self, _name):
+                return self
+
+            def select(self, *_args):
+                return self
+
+            def eq(self, *_args):
+                return self
+
+            def limit(self, *_args):
+                return self
+
+            def is_(self, *args):
+                self.update_filters.append(args)
+                return self
+
+            def update(self, row):
+                self.updated_row = row
+                return self
+
+            def upsert(self, row, **_kwargs):
+                self.upserts.append(row)
+                return self
+
+            def insert(self, _row):
+                raise AssertionError("existing snapshot should not be inserted")
+
+            def execute(self):
+                if self.updated_row is not None:
+                    self.updated_row = None
+                    self.reads += 1
+                    return _FakeExecuteResult([])
+                self.reads += 1
+                return _FakeExecuteResult([unpaid] if self.reads == 1 else [paid])
+
+        client = RacingClient()
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+
+        saved = db.save_packet_snapshot(
+            "analysis-a",
+            "user1",
+            2025,
+            {"report": "private"},
+        )
+
+        assert saved["analysis_id"] == "analysis-a"
+        assert client.update_filters == [("paid_at", "null")]
+        assert client.upserts == []
+        assert paid["paid_at"] is not None
+        assert paid["packet_session_id"] == "cs_paid"
 
     def test_loads_owner_scoped_paid_packet_snapshot_without_expiry(self, monkeypatch):
         row = {

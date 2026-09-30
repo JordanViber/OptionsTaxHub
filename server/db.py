@@ -608,20 +608,29 @@ def save_packet_snapshot(
         return None
     _cleanup_expired_packet_snapshots(client)
     now = datetime.now(timezone.utc)
-    paid_at = now.isoformat() if paid and session_id else None
-    effective_session_id = session_id
-    expires_at = None if paid_at else now + UNPAID_PACKET_SNAPSHOT_TTL
-    try:
-        existing = (
+    requested_paid_at = now.isoformat() if paid and session_id else None
+    expires_at = None if requested_paid_at else now + UNPAID_PACKET_SNAPSHOT_TTL
+
+    def read_existing():
+        result = (
             client.table("year_close_packet_snapshots")
-            .select("packet_session_id, paid_at, tax_year, packet_payload")
+            .select("analysis_id, user_id, tax_year, packet_payload, packet_session_id, paid_at, expires_at")
             .eq("analysis_id", analysis_id)
             .eq("user_id", user_id)
             .limit(1)
             .execute()
         )
-        if existing.data and existing.data[0].get("paid_at"):
-            existing_row = existing.data[0]
+        return dict(result.data[0]) if result.data else None
+
+    def result_row(result, fallback):
+        return dict(result.data[0]) if result.data else {
+            key: fallback.get(key)
+            for key in ("analysis_id", "user_id", "tax_year")
+        }
+
+    try:
+        existing_row = read_existing()
+        if existing_row and existing_row.get("paid_at"):
             if int(existing_row.get("tax_year")) != int(tax_year):
                 logger.warning(
                     "Refusing to move paid packet %s from tax year %s to %s",
@@ -634,32 +643,123 @@ def save_packet_snapshot(
             effective_session_id = existing_row.get("packet_session_id")
             stored_payload = existing_row.get("packet_payload")
             if isinstance(stored_payload, dict) or not isinstance(packet_payload, dict):
-                packet_payload = stored_payload
+                return {
+                    key: existing_row.get(key)
+                    for key in ("analysis_id", "user_id", "tax_year")
+                }
             tax_year = existing_row["tax_year"]
-            expires_at = None
-    except Exception as e:
-        logger.error("Failed to check prior packet entitlement for %s: %s", analysis_id, e)
-        return None
-    row = {
-        "analysis_id": analysis_id,
-        "user_id": user_id,
-        "tax_year": int(tax_year),
-        "packet_payload": packet_payload,
-        "packet_session_id": effective_session_id,
-        "paid_at": paid_at,
-        "expires_at": expires_at.isoformat() if expires_at else None,
-        "updated_at": now.isoformat(),
-    }
-    try:
+            row = {
+                "analysis_id": analysis_id,
+                "user_id": user_id,
+                "tax_year": int(tax_year),
+                "packet_payload": packet_payload,
+                "packet_session_id": effective_session_id,
+                "paid_at": paid_at,
+                "expires_at": None,
+                "updated_at": now.isoformat(),
+            }
+            # This write can only preserve or repair a paid row. Unpaid writes
+            # below use conditional UPDATE/INSERT and cannot overwrite it.
+            result = (
+                client.table("year_close_packet_snapshots")
+                .upsert(row, on_conflict="user_id,analysis_id")
+                .select("analysis_id, user_id, tax_year")
+                .execute()
+            )
+            return result_row(result, row)
+
+        row = {
+            "analysis_id": analysis_id,
+            "user_id": user_id,
+            "tax_year": int(tax_year),
+            "packet_payload": packet_payload,
+            "packet_session_id": session_id,
+            "paid_at": requested_paid_at,
+            "expires_at": expires_at.isoformat() if expires_at else None,
+            "updated_at": now.isoformat(),
+        }
+
+        if existing_row:
+            # The predicate makes this transition atomic with respect to the
+            # webhook's paid_at update. If payment wins the race, the UPDATE
+            # affects no row and the paid row is read back without downgrading.
+            result = (
+                client.table("year_close_packet_snapshots")
+                .update(row)
+                .eq("analysis_id", analysis_id)
+                .eq("user_id", user_id)
+                .is_("paid_at", "null")
+                .select("analysis_id, user_id, tax_year")
+                .execute()
+            )
+            if result.data:
+                return dict(result.data[0])
+            latest_row = read_existing()
+            if not latest_row:
+                return None
+            if latest_row.get("paid_at"):
+                return save_packet_snapshot(
+                    analysis_id,
+                    user_id,
+                    int(latest_row["tax_year"]),
+                    packet_payload,
+                    session_id=latest_row.get("packet_session_id"),
+                    paid=True,
+                    client=client,
+                )
+            if latest_row.get("packet_payload") == packet_payload:
+                return result_row(result, latest_row)
+            return None
+
+        # INSERT preserves any row created by a concurrent webhook/checkout;
+        # unlike UPSERT it can never replace a just-paid snapshot.
         result = (
             client.table("year_close_packet_snapshots")
-            .upsert(row, on_conflict="user_id,analysis_id")
+            .insert(row)
             .select("analysis_id, user_id, tax_year")
             .execute()
         )
-        return dict(result.data[0]) if result.data else None
+        if result.data:
+            return dict(result.data[0])
+        latest_row = read_existing()
+        if latest_row:
+            if latest_row.get("paid_at"):
+                if int(latest_row.get("tax_year")) != int(tax_year):
+                    return None
+                return result_row(None, latest_row)
+            return result_row(None, latest_row)
+        return None
     except Exception as e:
         logger.error("Failed to save packet snapshot for %s: %s", analysis_id, e)
+        # A uniqueness conflict means another request created the row. Treat
+        # that as idempotent only after reading the durable row back.
+        error_text = str(e).lower()
+        error_code = getattr(e, "code", None)
+        if error_code != "23505" and "duplicate key" not in error_text and "unique constraint" not in error_text:
+            return None
+        try:
+            latest_row = read_existing()
+            if latest_row and int(latest_row.get("tax_year")) == int(tax_year):
+                if latest_row.get("paid_at") or not requested_paid_at:
+                    return result_row(None, latest_row)
+                # A paid insert can race an unpaid insert for the same unique
+                # key. Promote only while the database still says unpaid.
+                promoted = (
+                    client.table("year_close_packet_snapshots")
+                    .update(row)
+                    .eq("analysis_id", analysis_id)
+                    .eq("user_id", user_id)
+                    .is_("paid_at", "null")
+                    .select("analysis_id, user_id, tax_year")
+                    .execute()
+                )
+                if promoted.data:
+                    return dict(promoted.data[0])
+                latest_row = read_existing()
+                if latest_row and latest_row.get("paid_at"):
+                    return result_row(None, latest_row)
+        except Exception:
+            pass
         return None
 
 
