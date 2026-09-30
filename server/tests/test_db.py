@@ -632,6 +632,32 @@ class TestPacketSnapshots:
         assert saved is None
         assert len(client.builders) == 1
 
+    def test_paid_snapshot_with_deleted_payload_can_be_refilled(self, monkeypatch):
+        existing = {
+            "analysis_id": "analysis-a",
+            "user_id": "user1",
+            "tax_year": 2025,
+            "packet_payload": None,
+            "packet_session_id": "cs_paid_2025",
+            "paid_at": "2026-09-29T00:00:00+00:00",
+        }
+        client = _FakeClient(table_data=[existing])
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+
+        saved = db.save_packet_snapshot(
+            "analysis-a",
+            "user1",
+            2025,
+            {"report": "restored"},
+        )
+
+        upsert = next(call for call in client.builders[1].calls if call[0] == "upsert")
+        row = upsert[1][0]
+        assert row["packet_payload"] == {"report": "restored"}
+        assert row["packet_session_id"] == "cs_paid_2025"
+        assert row["paid_at"] == existing["paid_at"]
+        assert saved["analysis_id"] == "analysis-a"
+
     def test_loads_owner_scoped_paid_packet_snapshot_without_expiry(self, monkeypatch):
         row = {
             "analysis_id": "analysis-a",
@@ -780,7 +806,7 @@ class TestPacketSnapshots:
         )
         client = _FakeClient(table_data=rows)
         monkeypatch.setattr(db, "get_supabase", lambda: client)
-        assert db.get_packet_grant_for_tax_year("user1", 2026) == "cs_older_valid"
+        assert db.get_packet_grant_for_tax_year("user1", 2026) == ("cs_older_valid", True)
         calls = client.builders[0].calls
         assert ("order", ("created_at",), {"desc": True}) in calls
         assert not any(call[0] == "limit" for call in calls)

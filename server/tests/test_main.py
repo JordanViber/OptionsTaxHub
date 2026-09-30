@@ -1155,13 +1155,42 @@ def test_persist_guest_analysis_claims_matching_private_packet_snapshot(monkeypa
         "supplemental_1099": None,
         "wash_sale_flags": [],
         "suggestions": [],
+        "lot_match_report": {
+            "matched": [{"symbol": "AAPL", "quantity": 10}],
+            "gap": [{"symbol": "NVDA", "quantity": 2}],
+            "unmatched": [],
+            "matched_count": 1,
+            "gap_count": 1,
+            "unmatched_count": 0,
+        },
     }
     main.remember_analysis("guest-claim-1", "", guest_analysis)
+    public_guest_analysis = {
+        **guest_analysis,
+        "lot_match_report": {
+            **guest_analysis["lot_match_report"],
+            "matched": [],
+            "gap": [],
+            "unmatched": [],
+        },
+    }
     saved_snapshots = []
     monkeypatch.setattr(
         main,
         "save_analysis_history",
-        lambda **kwargs: {"id": "history-claim-1", **kwargs},
+        lambda **kwargs: {
+            "id": "history-claim-1",
+            **kwargs,
+            "result": {
+                **kwargs["result_data"],
+                "lot_match_report": {
+                    **kwargs["result_data"]["lot_match_report"],
+                    "matched": [],
+                    "gap": [],
+                    "unmatched": [],
+                },
+            },
+        },
     )
     monkeypatch.setattr(
         main,
@@ -1174,12 +1203,18 @@ def test_persist_guest_analysis_claims_matching_private_packet_snapshot(monkeypa
 
     response = client.post(
         "/api/portfolio/history",
-        json={"filename": "guest.csv", "analysis": guest_analysis},
+        json={"filename": "guest.csv", "analysis": public_guest_analysis},
     )
 
     assert response.status_code == 200, response.text
     assert saved_snapshots[0][0:3] == ("guest-claim-1", "test-user-123", 2025)
     assert saved_snapshots[0][3] == PACKET_STORE["guest-claim-1"]["payload"]
+    assert saved_snapshots[0][3]["lot_match_report"]["matched"] == [
+        {"symbol": "AAPL", "quantity": 10}
+    ]
+    assert saved_snapshots[0][3]["lot_match_report"]["gap"] == [
+        {"symbol": "NVDA", "quantity": 2}
+    ]
     assert PACKET_STORE["guest-claim-1"]["user_id"] == "test-user-123"
 
 

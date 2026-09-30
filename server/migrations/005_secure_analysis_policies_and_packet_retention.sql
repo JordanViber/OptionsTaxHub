@@ -1,6 +1,7 @@
 -- Restrict history writes/deletes to the service role, and retain paid packet
 -- snapshots until the user's source analysis is deleted.
 DROP POLICY IF EXISTS "Service role can insert analyses" ON public.portfolio_analyses;
+DROP POLICY IF EXISTS "Users can create analyses" ON public.portfolio_analyses;
 CREATE POLICY "Service role can insert analyses"
   ON public.portfolio_analyses
   FOR INSERT
@@ -8,11 +9,14 @@ CREATE POLICY "Service role can insert analyses"
   WITH CHECK (true);
 
 DROP POLICY IF EXISTS "Service role can delete analyses" ON public.portfolio_analyses;
+DROP POLICY IF EXISTS "Users can delete their own analyses" ON public.portfolio_analyses;
 CREATE POLICY "Service role can delete analyses"
   ON public.portfolio_analyses
   FOR DELETE
   TO service_role
   USING (true);
+
+DROP POLICY IF EXISTS "Users can update their own analyses" ON public.portfolio_analyses;
 
 ALTER TABLE public.year_close_packet_snapshots ALTER COLUMN expires_at DROP NOT NULL;
 UPDATE public.year_close_packet_snapshots SET expires_at = NULL WHERE paid_at IS NOT NULL;

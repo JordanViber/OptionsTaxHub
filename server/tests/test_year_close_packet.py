@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pypdf import PdfReader
 
+import db
 import main
 from auth import get_current_user, get_current_user_with_token
 from stripe import StripeObject
@@ -71,6 +72,36 @@ main.app.dependency_overrides[get_current_user_with_token] = mock_get_current_us
 client = TestClient(main.app)
 _FAKE_PACKET_SNAPSHOTS = {}
 _FAKE_PACKET_ENTITLEMENTS = {}
+
+
+class _FakeEntitlementQuery:
+    def __init__(self, data):
+        self.data = data
+
+    def upsert(self, *_args, **_kwargs):
+        return self
+
+    def select(self, *_args, **_kwargs):
+        return self
+
+    def eq(self, *_args, **_kwargs):
+        return self
+
+    def limit(self, *_args, **_kwargs):
+        return self
+
+    def execute(self):
+        return SimpleNamespace(data=self.data)
+
+
+class _FakeEntitlementDatabase:
+    def __init__(self, *results):
+        self.results = list(results)
+
+    def table(self, name):
+        assert name == "year_close_packet_entitlements"
+        data = self.results.pop(0) if self.results else []
+        return _FakeEntitlementQuery(data)
 
 SAMPLE_ANALYSIS = {
     "analysis_id": "analysis-sample-1",
@@ -605,6 +636,18 @@ def test_checkout_retrieves_deleted_document_entitlement_before_reuse(monkeypatc
         "tax_year": 2025,
         "packet_session_id": "cs_test_deleted_source",
     }
+    original_receipt = {
+        "analysis_id": source_id,
+        "user_id": "test-user-123",
+        "tax_year": 2025,
+        "packet_session_id": "cs_test_deleted_source",
+    }
+    monkeypatch.setattr(main, "save_packet_entitlement", db.save_packet_entitlement)
+    monkeypatch.setattr(
+        db,
+        "get_supabase",
+        lambda: _FakeEntitlementDatabase([], [original_receipt]),
+    )
     monkeypatch.setattr(main, "lookup_analysis_for_entitlement", lambda *_args: (None, True))
     prior_session = _stripe_object_session(
         id="cs_test_deleted_source",
@@ -614,7 +657,7 @@ def test_checkout_retrieves_deleted_document_entitlement_before_reuse(monkeypatc
     monkeypatch.setattr(
         main.stripe.checkout.Session,
         "retrieve",
-        lambda session_id: retrieved.append(session_id) or prior_session,
+        lambda session_id, **_kwargs: retrieved.append(session_id) or prior_session,
     )
     created = []
     monkeypatch.setattr(
@@ -631,6 +674,7 @@ def test_checkout_retrieves_deleted_document_entitlement_before_reuse(monkeypatc
     assert response.status_code == 200, response.text
     assert response.json()["already_paid"] is True
     assert response.json()["session_id"] == "cs_test_deleted_source"
+    assert response.json()["analysis_id"] == analysis_id
     assert retrieved == ["cs_test_deleted_source"]
     assert created == []
 
@@ -660,7 +704,7 @@ def test_checkout_rejects_deleted_document_entitlement_for_wrong_tax_year(monkey
     monkeypatch.setattr(
         main.stripe.checkout.Session,
         "retrieve",
-        lambda *_args: prior_session,
+        lambda *_args, **_kwargs: prior_session,
     )
     created = []
     monkeypatch.setattr(
@@ -925,6 +969,18 @@ def test_webhook_unlocks_download(monkeypatch):
     monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_packet_test_secret")
     monkeypatch.setattr(main, "patch_analysis_result", lambda *_args: True)
     main.remember_analysis("analysis-sample-1", "test-user-123", SAMPLE_ANALYSIS)
+    receipt = {
+        "analysis_id": "analysis-sample-1",
+        "user_id": "test-user-123",
+        "tax_year": 2025,
+        "packet_session_id": "cs_test_paid_1",
+    }
+    monkeypatch.setattr(main, "save_packet_entitlement", db.save_packet_entitlement)
+    monkeypatch.setattr(
+        db,
+        "get_supabase",
+        lambda: _FakeEntitlementDatabase([receipt], [], [receipt]),
+    )
 
     unpaid = client.get("/api/year-close-packet/download?analysis_id=analysis-sample-1")
     assert unpaid.status_code == 403
@@ -1048,7 +1104,7 @@ def test_confirm_rejects_checkout_session_owned_by_another_user(monkeypatch):
     assert PACKET_STORE["victim-analysis"]["paid"] is False
 
 
-def test_download_rejects_b_users_session_for_a_users_snapshot(monkeypatch):
+def test_download_uses_owner_snapshot_when_packet_cache_belongs_to_another_user(monkeypatch):
     _test_stripe_env(monkeypatch)
     remember_analysis("victim-analysis", "user-A", SAMPLE_ANALYSIS)
     monkeypatch.setitem(main.app.dependency_overrides, get_current_user, lambda: "user-B")
@@ -1078,12 +1134,6 @@ def test_download_rejects_b_users_session_for_a_users_snapshot(monkeypatch):
             True,
         ),
     )
-    history_patches = []
-    monkeypatch.setattr(
-        main,
-        "patch_analysis_result",
-        lambda *args: history_patches.append(args) or True,
-    )
     paid_session = _stripe_object_session(
         id="cs_test_cross_owner_analysis",
         metadata={
@@ -1098,19 +1148,13 @@ def test_download_rejects_b_users_session_for_a_users_snapshot(monkeypatch):
         "retrieve",
         lambda *_args, **_kwargs: paid_session,
     )
-    monkeypatch.setattr(
-        main,
-        "patch_analysis_result",
-        lambda *_args: pytest.fail("must reject before modifying history"),
-    )
-
     response = client.get(
         "/api/year-close-packet/download",
         params={"analysis_id": "victim-analysis", "session_id": paid_session.id},
     )
 
-    assert response.status_code == 403
-    assert history_patches == []
+    assert response.status_code == 200
+    assert response.content.startswith(b"%PDF")
     assert PACKET_STORE["victim-analysis"]["user_id"] == "user-A"
     assert PACKET_STORE["victim-analysis"]["paid"] is False
 
@@ -1487,11 +1531,46 @@ def test_post_download_rebuilds_from_analysis_json(monkeypatch):
             },
         },
     )
-    assert response.status_code == 403
-    assert "payment" in response.json()["detail"].lower()
+    assert response.status_code == 503
+    assert "private packet snapshot" in response.json()["detail"].lower()
 
 
-def test_local_analysis_alias_never_rebinds_session_to_caller_payload(monkeypatch):
+def test_history_flags_alone_do_not_authorize_reused_year_grant(monkeypatch):
+    session = _stripe_object_session(
+        id="cs_test_history_flag_only",
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": "source-analysis",
+            "user_id": "test-user-123",
+            "tax_year": "2025",
+        },
+    )
+    monkeypatch.setattr(main, "get_packet_snapshot", lambda *_args: (None, True))
+    monkeypatch.setattr(
+        main,
+        "lookup_analysis_for_entitlement",
+        lambda *_args: (
+            {
+                "result": {
+                    "analysis_id": "target-analysis",
+                    "tax_profile": {"tax_year": 2025},
+                    "packet_unlocked": True,
+                    "packet_session_id": session.id,
+                }
+            },
+            True,
+        ),
+    )
+
+    assert (
+        main._is_persisted_same_year_packet_grant(
+            "target-analysis", session.id, "test-user-123", session
+        )
+        is False
+    )
+
+
+def test_local_analysis_alias_cannot_select_another_paid_analysis(monkeypatch):
     _test_stripe_env(monkeypatch)
     monkeypatch.setattr(main, "patch_analysis_result", lambda *_args: True)
     saved_analysis = {**SAMPLE_ANALYSIS, "analysis_id": "analysis-sample-1"}
@@ -1531,10 +1610,8 @@ def test_local_analysis_alias_never_rebinds_session_to_caller_payload(monkeypatc
         },
     )
 
-    assert response.status_code == 200
-    pdf_text = _pdf_text(response.content)
-    assert "17,442.80" in pdf_text
-    assert "999,999.00" not in pdf_text
+    assert response.status_code == 400
+    assert "Re-run" in response.json()["detail"]
 
 
 def test_confirm_rejects_body_for_a_different_analysis_before_grant(monkeypatch):
@@ -1621,8 +1698,7 @@ def test_session_grants_packet_accepts_valid_stripe_object(monkeypatch):
         },
     )
     assert session_grants_packet(session, "analysis-sample-1") is True
-    # Client restored analysis_id may be local-analysis; session metadata is canonical.
-    assert session_grants_packet(session, "local-analysis") is True
+    assert session_grants_packet(session, "local-analysis") is False
     assert session_grants_packet(session, "") is False
     assert session_grants_packet(session, "some-other-analysis") is False
 
@@ -1964,7 +2040,7 @@ def test_grant_records_separate_entitlement_without_claiming_missing_document_is
         "test-user-123",
     )
 
-    assert granted is False
+    assert granted is True
     assert PACKET_STORE["analysis-sample-1"]["paid"] is False
     saved = _FAKE_PACKET_SNAPSHOTS[("test-user-123", "analysis-sample-1")]
     assert saved["paid_at"] is None
@@ -2166,10 +2242,8 @@ def test_local_alias_download_uses_paid_owner_snapshot_not_client_body(monkeypat
         },
     )
 
-    assert response.status_code == 200, response.text
-    text = _pdf_text(response.content)
-    assert "281,823.83" in text
-    assert "999,999.00" not in text
+    assert response.status_code == 400, response.text
+    assert "re-run" in response.json()["detail"].lower()
 
 
 def test_three_dollar_stripe_object_tip_does_not_unlock():

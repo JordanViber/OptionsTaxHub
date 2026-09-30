@@ -1015,7 +1015,12 @@ def claimable_guest_packet_payload(
     if not isinstance(payload, dict):
         return None
     expected = build_packet_payload(analysis, analysis_id=analysis_id)
-    if expected != payload:
+    public_payload = deepcopy(payload)
+    private_report = public_payload.get("lot_match_report")
+    if isinstance(private_report, dict):
+        for key in ("matched", "gap", "unmatched"):
+            private_report[key] = []
+    if expected != public_payload:
         return None
     return deepcopy(payload)
 
@@ -1328,21 +1333,15 @@ def session_is_settled_packet(session: Any) -> bool:
 
 
 def session_grants_packet(session: Any, analysis_id: str = "") -> bool:
-    """True only for a settled packet session bound to the requested analysis.
-
-    The request may use ``local-analysis`` as a compatibility alias, but the
-    signed session must always contain a real canonical analysis ID.
-    """
+    """True only for a settled packet session bound to the requested analysis."""
     session_analysis = packet_analysis_id_from_session(session)
     requested_analysis = str(analysis_id or "").strip()
     analysis_matches = (
         bool(requested_analysis)
         and bool(session_analysis)
         and session_analysis != "local-analysis"
-        and (
-            requested_analysis == "local-analysis"
-            or requested_analysis == session_analysis
-        )
+        and requested_analysis != "local-analysis"
+        and requested_analysis == session_analysis
     )
     granted = analysis_matches and session_is_settled_packet(session)
     if not granted:

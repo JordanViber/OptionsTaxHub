@@ -44,6 +44,10 @@ function canonicalStorageKey(analysisId: string): string {
   return `optionstaxhub-packet-canonical:${analysisId}`;
 }
 
+function pendingSessionStorageKey(analysisId: string): string {
+  return `optionstaxhub-packet-pending:${analysisId}`;
+}
+
 function localAnalysisIdentity(analysis: PortfolioAnalysis): string {
   const source = JSON.stringify(compactAnalysis(analysis));
   let first = 0x811c9dc5;
@@ -236,6 +240,8 @@ function YearClosePacketPanelForAnalysis({
     const savedCanonical = readSessionItem(canonicalStorageKey(analysisStorageId));
     const savedCanonicalId = savedCanonical || analysisId;
     setCanonicalAnalysisId(savedCanonicalId);
+    const pendingSessionId = readSessionItem(pendingSessionStorageKey(analysisStorageId));
+    if (pendingSessionId?.startsWith("cs_")) setSessionId(pendingSessionId);
     if (analysis.packet_unlocked) {
       setPaid(true);
       if (analysis.packet_session_id?.startsWith("cs_")) {
@@ -276,6 +282,7 @@ function YearClosePacketPanelForAnalysis({
       setSessionId(sid);
       setBusy("confirm");
       setError(null);
+      let retryableFailure = true;
       void (async () => {
         try {
           const headers = await authHeaders();
@@ -290,6 +297,7 @@ function YearClosePacketPanelForAnalysis({
             }),
           });
           if (!response.ok) {
+            retryableFailure = response.status >= 500;
             const errData = await response.json().catch(() => null);
             throw new Error(
               errData?.detail || "Could not confirm packet payment.",
@@ -303,12 +311,17 @@ function YearClosePacketPanelForAnalysis({
           setCanonicalAnalysisId(canonicalId);
           writeSessionItem(canonicalStorageKey(analysisStorageId), canonicalId);
           setPaid(true);
+          clearSessionItem(pendingSessionStorageKey(analysisStorageId));
           writeSessionItem(paidStorageKey(canonicalId), sid);
           onPaidChange?.(true);
           stripPacketQueryParams();
         } catch (err) {
           setError(err instanceof Error ? err.message : "Could not confirm payment.");
-          stripPacketQueryParams();
+          if (!retryableFailure) {
+            setSessionId(null);
+            clearSessionItem(pendingSessionStorageKey(analysisStorageId));
+            stripPacketQueryParams();
+          }
         } finally {
           setBusy(null);
         }
@@ -316,8 +329,10 @@ function YearClosePacketPanelForAnalysis({
       return;
     }
 
-    if (canceled || inflight) {
+    if (canceled || (inflight && !pendingSessionId)) {
       clearSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY);
+      clearSessionItem(pendingSessionStorageKey(analysisStorageId));
+      setSessionId(null);
       setBusy(null);
       setCanceledNotice(true);
       stripPacketQueryParams();
@@ -325,6 +340,49 @@ function YearClosePacketPanelForAnalysis({
   }, [analysis, analysisId, analysisStorageId]);
 
   const handlePay = async () => {
+    if (sessionId) {
+      setBusy("confirm");
+      setError(null);
+      let retryableFailure = true;
+      try {
+        const headers = await authHeaders();
+        const response = await fetch(`${API_URL}/api/year-close-packet/confirm`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            analysis_id: canonicalAnalysisId,
+            packet_analysis: canonicalAnalysisId,
+            session_id: sessionId,
+            analysis: compactAnalysis(analysis),
+          }),
+        });
+        if (!response.ok) {
+          retryableFailure = response.status >= 500;
+          const errData = await response.json().catch(() => null);
+          throw new Error(errData?.detail || "Could not confirm packet payment.");
+        }
+        const data = await response.json();
+        const paidAnalysisId =
+          typeof data?.analysis_id === "string" ? data.analysis_id : canonicalAnalysisId;
+        setCanonicalAnalysisId(paidAnalysisId);
+        writeSessionItem(canonicalStorageKey(analysisStorageId), paidAnalysisId);
+        setPaid(true);
+        clearSessionItem(pendingSessionStorageKey(analysisStorageId));
+        writeSessionItem(paidStorageKey(paidAnalysisId), sessionId);
+        onPaidChange?.(true);
+        stripPacketQueryParams();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Could not confirm payment.");
+        if (!retryableFailure) {
+          setSessionId(null);
+          clearSessionItem(pendingSessionStorageKey(analysisStorageId));
+          stripPacketQueryParams();
+        }
+      } finally {
+        setBusy(null);
+      }
+      return;
+    }
     setBusy("pay");
     setError(null);
     setCanceledNotice(false);
@@ -363,6 +421,10 @@ function YearClosePacketPanelForAnalysis({
       if (typeof data?.analysis_id === "string" && data.analysis_id.length > 0) {
         setCanonicalAnalysisId(data.analysis_id);
         writeSessionItem(canonicalStorageKey(analysisStorageId), data.analysis_id);
+      }
+      if (typeof data?.session_id === "string" && data.session_id.startsWith("cs_")) {
+        setSessionId(data.session_id);
+        writeSessionItem(pendingSessionStorageKey(analysisStorageId), data.session_id);
       }
       try {
         globalThis.location.href = data.checkout_url;
@@ -459,14 +521,14 @@ function YearClosePacketPanelForAnalysis({
               )
             }
             onClick={handleDownload}
-            disabled={busy !== null}
+            disabled={busy !== null || missingAnalysisId}
           >
             Download
           </Button>
         </Stack>
         {missingAnalysisId && (
           <Typography role="status" variant="caption" color="text.secondary">
-            Re-run this analysis before purchasing so the packet is tied to its saved run.
+            Re-run this analysis to access its packet.
           </Typography>
         )}
         {canceledNotice && !error && (

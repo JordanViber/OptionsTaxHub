@@ -582,14 +582,13 @@ def get_packet_grant_for_tax_year(
     user_id: str,
     tax_year: int,
     client=None,
-) -> Optional[str]:
-    """Return a Stripe session id if this user already paid for this tax year."""
-    session_id, lookup_succeeded = lookup_packet_grant_for_tax_year(
+) -> tuple[Optional[str], bool]:
+    """Return a Stripe session id and whether its database lookup succeeded."""
+    return lookup_packet_grant_for_tax_year(
         user_id,
         tax_year,
         client=client,
     )
-    return session_id if lookup_succeeded else None
 
 
 def save_packet_snapshot(
@@ -635,7 +634,9 @@ def save_packet_snapshot(
                 return None
             paid_at = existing_row["paid_at"]
             effective_session_id = existing_row.get("packet_session_id")
-            packet_payload = existing_row.get("packet_payload")
+            stored_payload = existing_row.get("packet_payload")
+            if isinstance(stored_payload, dict) or not isinstance(packet_payload, dict):
+                packet_payload = stored_payload
             tax_year = existing_row["tax_year"]
             expires_at = None
     except Exception as e:

@@ -303,6 +303,7 @@ describe("YearClosePacketPanel", () => {
       json: () =>
         Promise.resolve({
           checkout_url: "https://checkout.stripe.com/c/pay/cs_test_packet",
+          session_id: "cs_test_packet",
         }),
     });
 
@@ -318,6 +319,7 @@ describe("YearClosePacketPanel", () => {
     const init = mockFetch.mock.calls[0][1];
     expect(JSON.parse(init.body).analysis_id).toBe("analysis-1");
     expect(mockFetch.mock.calls[0][0]).not.toContain("/api/tips/checkout");
+    expect(store["optionstaxhub-packet-pending:analysis-1"]).toBe("cs_test_packet");
   });
 
   it("keeps the canonical checkout ID through confirm and download for guest IDs", async () => {
@@ -425,13 +427,15 @@ describe("YearClosePacketPanel", () => {
     const first = render(<YearClosePacketPanel analysis={firstAnalysis} />);
     const firstPay = screen.getByRole("button", { name: /Pay \$49/i });
     expect(firstPay).toBeDisabled();
-    expect(screen.getByText(/Re-run this analysis before purchasing/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Download/i })).toBeDisabled();
+    expect(screen.getByText(/Re-run this analysis to access its packet/i)).toBeInTheDocument();
     fireEvent.click(firstPay);
     expect(mockFetch).not.toHaveBeenCalled();
     first.unmount();
 
     render(<YearClosePacketPanel analysis={secondAnalysis} />);
     expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Download/i })).toBeDisabled();
     expect(mockFetch).not.toHaveBeenCalled();
     expect(yearClosePacketStorageId(firstAnalysis)).not.toBe(
       yearClosePacketStorageId(secondAnalysis),
@@ -485,7 +489,7 @@ describe("YearClosePacketPanel", () => {
     expect(store[PACKET_CHECKOUT_INFLIGHT_KEY]).toBeUndefined();
   });
 
-  it("strips the Stripe session URL when confirmation fails", async () => {
+  it("retries the same Stripe session after a transient confirm failure", async () => {
     window.history.replaceState(
       null,
       "",
@@ -495,6 +499,9 @@ describe("YearClosePacketPanel", () => {
       ok: false,
       status: 503,
       json: () => Promise.resolve({ detail: "Confirmation temporarily failed." }),
+    }).mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ analysis_id: "analysis-1" }),
     });
 
     render(<YearClosePacketPanel analysis={analysis} />);
@@ -504,7 +511,32 @@ describe("YearClosePacketPanel", () => {
         "Confirmation temporarily failed.",
       );
     });
-    expect(window.location.search).not.toContain("packet_session");
+    expect(window.location.search).toContain("packet_session=cs_test_packet");
+    fireEvent.click(screen.getByRole("button", { name: /Pay \$49/i }));
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));
+    expect(mockFetch.mock.calls[1][0]).toContain("/api/year-close-packet/confirm");
+    expect(JSON.parse(mockFetch.mock.calls[1][1].body).session_id).toBe(
+      "cs_test_packet",
+    );
+    await waitFor(() => expect(window.location.search).not.toContain("packet_session"));
+  });
+
+  it("restores a pending Stripe session after refresh without starting another checkout", async () => {
+    store["optionstaxhub-packet-pending:analysis-1"] = "cs_test_pending";
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ analysis_id: "analysis-1" }),
+    });
+
+    render(<YearClosePacketPanel analysis={analysis} />);
+    fireEvent.click(screen.getByRole("button", { name: /Pay \$49/i }));
+
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+    expect(mockFetch.mock.calls[0][0]).toContain("/api/year-close-packet/confirm");
+    expect(JSON.parse(mockFetch.mock.calls[0][1].body).session_id).toBe(
+      "cs_test_pending",
+    );
+    expect(store["optionstaxhub-packet-pending:analysis-1"]).toBeUndefined();
   });
 
   it("does not confirm a return URL for a different analysis", async () => {
