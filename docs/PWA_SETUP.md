@@ -35,11 +35,20 @@ No additional setup needed! The following are already configured:
 - [x] Install prompt component
 - [x] Service worker registration
 
-## Backend Setup (TODO)
+## Backend Setup
 
 ### Push Notifications
 
-To enable server-triggered push notifications, add these endpoints to your FastAPI backend:
+The FastAPI backend persists subscriptions with their authenticated Supabase user ID.
+The subscribe, unsubscribe, list, and test routes require a bearer access token.
+Listing returns only subscription IDs and timestamps; endpoint URLs and encryption
+keys stay server-side. A test send targets one endpoint only when it belongs to
+the requesting user.
+
+`POST /push/send` is reserved for server-side broadcasts and requires the
+backend-only `PUSH_ADMIN_KEY` environment variable in the `X-Push-Admin-Key`
+header. Never place that secret in browser code or a `NEXT_PUBLIC_*` variable.
+Broadcasts stay disabled until the backend key is configured.
 
 #### 1. Generate VAPID Keys
 
@@ -58,69 +67,11 @@ VAPID_PRIVATE_KEY=your_private_key_here
 VAPID_CLAIM_EMAIL=your_email@example.com
 ```
 
-#### 2. Add Backend Endpoints
-
-Add to `server/main.py`:
+#### 2. Send a Tax Deadline Reminder
 
 ```python
-from pywebpush import webpush, WebPushException
-import json
-import os
-
-# Store subscriptions (use database in production)
-subscriptions = []
-
-@app.post("/push/subscribe")
-async def subscribe_to_push(subscription: dict):
-    """Store push notification subscription"""
-    subscriptions.append(subscription)
-    return {"message": "Subscription stored"}
-
-@app.post("/push/unsubscribe")
-async def unsubscribe_from_push(subscription: dict):
-    """Remove push notification subscription"""
-    subscriptions.remove(subscription)
-    return {"message": "Subscription removed"}
-
-@app.post("/push/send")
-async def send_push_notification(
-    title: str,
-    body: str,
-    tag: str = "default"
-):
-    """Send push notification to all subscribed users"""
-    notification_data = {
-        "title": title,
-        "body": body,
-        "icon": "/icons/icon-192x192.svg",
-        "tag": tag
-    }
-
-    for subscription in subscriptions:
-        try:
-            webpush(
-                subscription_info=subscription,
-                data=json.dumps(notification_data),
-                vapid_private_key=os.getenv("VAPID_PRIVATE_KEY"),
-                vapid_claims={
-                    "sub": f"mailto:{os.getenv('VAPID_CLAIM_EMAIL')}"
-                }
-            )
-        except WebPushException as e:
-            print(f"Push failed: {e}")
-
-    return {"message": f"Sent to {len(subscriptions)} subscribers"}
-```
-
-#### 3. Example: Send Tax Deadline Reminder
-
-```python
-# Trigger from your tax calculation logic
-await send_push_notification(
-    title="Tax Deadline Approaching",
-    body="Year-end tax-loss harvesting deadline in 7 days",
-    tag="tax-deadline"
-)
+# Call /push/send from a server-side job with X-Push-Admin-Key.
+# Do not call the broadcast endpoint directly from browser code.
 ```
 
 ## Testing
@@ -137,8 +88,9 @@ await send_push_notification(
 
 ### Test Push Notifications
 1. Grant notification permission when prompted
-2. From backend, call `/push/send` endpoint
-3. Should receive notification even when app is closed
+2. Sign in and use `/push/test` with the bearer token and one of that user's
+   subscription endpoint URLs
+3. Confirm the notification reaches only that device
 
 ## Icons
 
@@ -156,10 +108,14 @@ NEXT_PUBLIC_VAPID_PUBLIC_KEY=your_public_key_here
 NEXT_PUBLIC_API_URL=http://localhost:8011
 ```
 
+Set `PUSH_ADMIN_KEY` only in the backend environment (including Render) when
+server-side broadcasts are needed. It is never a frontend variable.
+
 ## Production Checklist
 
 - [ ] Generate production VAPID keys
-- [ ] Store push subscriptions in database (not in-memory)
+- [x] Store owner-scoped push subscriptions in the database
+- [ ] Configure a server-only `PUSH_ADMIN_KEY` before enabling broadcasts
 - [ ] Add HTTPS (required for service workers)
 - [ ] Replace placeholder icons with branded designs
 - [ ] Test on real iOS and Android devices

@@ -140,6 +140,64 @@ class TestGetSupabase:
             assert result is None
 
 
+class TestPushSubscriptions:
+    def test_inserts_subscription_with_owner_and_private_fields(self, monkeypatch):
+        client = _FakeClient(table_responses=[[], [{"id": "sub-1"}]])
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+
+        result = db.save_push_subscription(
+            "user-1",
+            {
+                "endpoint": "https://push.example/device",
+                "keys": {"p256dh": "public-key", "auth": "secret"},
+                "expirationTime": 1234,
+            },
+        )
+
+        assert result is True
+        calls = client.builders[-1].calls
+        inserted = next(args[0] for name, args, _kwargs in calls if name == "insert")
+        assert inserted["user_id"] == "user-1"
+        assert inserted["endpoint"] == "https://push.example/device"
+        assert inserted["keys"]["auth"] == "secret"
+        assert inserted["expiration_time_ms"] == 1234
+
+    def test_existing_endpoint_cannot_be_claimed_by_another_user(self, monkeypatch):
+        client = _FakeClient(
+            table_data=[{"id": "sub-1", "user_id": "user-A"}]
+        )
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+
+        result = db.save_push_subscription(
+            "user-B",
+            {"endpoint": "https://push.example/device", "keys": {"p256dh": "p", "auth": "a"}},
+        )
+
+        assert result is False
+        assert all(
+            name != "update"
+            for builder in client.builders
+            for name, _args, _kwargs in builder.calls
+        )
+
+    def test_listing_and_deletion_include_owner_filter(self, monkeypatch):
+        client = _FakeClient(
+            table_responses=[
+                [{"id": "sub-1", "user_id": "user-A"}],
+                [{"id": "sub-1"}],
+            ]
+        )
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+
+        listed = db.list_push_subscriptions("user-A")
+        deleted = db.delete_push_subscription("sub-1", user_id="user-A")
+
+        assert listed == [{"id": "sub-1", "user_id": "user-A"}]
+        assert deleted is True
+        assert ("eq", ("user_id", "user-A"), {}) in client.builders[0].calls
+        assert ("eq", ("user_id", "user-A"), {}) in client.builders[1].calls
+
+
 # --- save_analysis_history ---
 
 class TestSaveAnalysisHistory:

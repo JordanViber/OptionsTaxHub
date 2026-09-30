@@ -38,6 +38,8 @@ services:
         sync: false
       - key: VAPID_CLAIM_EMAIL
         value: jordankdog44@yahoo.com
+      - key: PUSH_ADMIN_KEY
+        sync: false
 
   # Production Frontend
   - type: web
@@ -101,6 +103,8 @@ services:
         sync: false
       - key: VAPID_CLAIM_EMAIL
         value: jordankdog44@yahoo.com
+      - key: PUSH_ADMIN_KEY
+        sync: false
 
   # Staging Frontend
   - type: web

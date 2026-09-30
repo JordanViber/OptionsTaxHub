@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { getSupabaseClient } from "@/lib/supabase";
 
 export interface NotificationPayload {
   title: string;
@@ -152,10 +153,13 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array {
 // Send subscription to backend
 async function sendSubscriptionToBackend(subscription: PushSubscription) {
   try {
+    const authorization = await getPushAuthorizationHeader();
+    if (!authorization) return;
     const response = await fetch(getPushEndpoint("/push/subscribe"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        Authorization: authorization,
       },
       body: JSON.stringify(subscription),
     });
@@ -174,10 +178,13 @@ async function sendSubscriptionToBackend(subscription: PushSubscription) {
 // Remove subscription from backend
 async function removeSubscriptionFromBackend(subscription: PushSubscription) {
   try {
+    const authorization = await getPushAuthorizationHeader();
+    if (!authorization) return;
     const response = await fetch(getPushEndpoint("/push/unsubscribe"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        Authorization: authorization,
       },
       body: JSON.stringify(subscription),
     });
@@ -191,4 +198,10 @@ async function removeSubscriptionFromBackend(subscription: PushSubscription) {
       // Log error for debugging but don't re-throw
     }
   }
+}
+
+async function getPushAuthorizationHeader(): Promise<string | null> {
+  const { data, error } = await getSupabaseClient().auth.getSession();
+  if (error || !data.session?.access_token) return null;
+  return `Bearer ${data.session.access_token}`;
 }
