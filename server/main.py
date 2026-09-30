@@ -1514,7 +1514,19 @@ async def persist_portfolio_history(
     )
     summary = analysis.get("summary") if isinstance(analysis.get("summary"), dict) else {}
     filename = Path(body.filename or "guest-run.csv").name.strip() or "guest-run.csv"
-    saved = save_analysis_history(
+    if guest_packet_payload and analysis_id:
+        existing_history, lookup_succeeded = lookup_analysis_for_entitlement(
+            analysis_id,
+            user_id,
+        )
+        if not lookup_succeeded:
+            raise HTTPException(
+                status_code=503,
+                detail="Could not check whether this analysis is already saved. Please retry.",
+            )
+    else:
+        existing_history = None
+    saved = existing_history or save_analysis_history(
         user_id=user_id,
         filename=filename[:255],
         summary=summary,

@@ -1192,6 +1192,7 @@ def test_persist_guest_analysis_claims_matching_private_packet_snapshot(monkeypa
             },
         },
     )
+    monkeypatch.setattr(main, "lookup_analysis_for_entitlement", lambda *_args: (None, True))
     monkeypatch.setattr(
         main,
         "save_packet_snapshot",
@@ -1216,6 +1217,53 @@ def test_persist_guest_analysis_claims_matching_private_packet_snapshot(monkeypa
         {"symbol": "NVDA", "quantity": 2}
     ]
     assert PACKET_STORE["guest-claim-1"]["user_id"] == "test-user-123"
+
+
+def test_guest_snapshot_retry_reuses_history_row_after_snapshot_write_failure(monkeypatch):
+    guest_analysis = {
+        "analysis_id": "guest-retry-1",
+        "tax_profile": {"tax_year": 2025, "filing_status": "single"},
+        "tax_lots": [],
+        "supplemental_1099": None,
+        "wash_sale_flags": [],
+        "suggestions": [],
+    }
+    main.remember_analysis("guest-retry-1", "", guest_analysis)
+    history_saves = []
+    history_row = {
+        "id": "history-retry-1",
+        "user_id": "test-user-123",
+        "result": {**guest_analysis},
+    }
+    lookups = iter([(None, True), (history_row, True)])
+    monkeypatch.setattr(
+        main,
+        "lookup_analysis_for_entitlement",
+        lambda *_args: next(lookups),
+    )
+    monkeypatch.setattr(
+        main,
+        "save_analysis_history",
+        lambda **kwargs: history_saves.append(kwargs) or history_row,
+    )
+    snapshot_writes = []
+    monkeypatch.setattr(
+        main,
+        "save_packet_snapshot",
+        lambda analysis_id, user_id, tax_year, payload, **_kwargs: (
+            snapshot_writes.append((analysis_id, user_id, tax_year, payload))
+            or (None if len(snapshot_writes) == 1 else {"analysis_id": analysis_id})
+        ),
+    )
+    request_body = {"filename": "guest.csv", "analysis": guest_analysis}
+
+    failed = client.post("/api/portfolio/history", json=request_body)
+    retried = client.post("/api/portfolio/history", json=request_body)
+
+    assert failed.status_code == 503
+    assert retried.status_code == 200
+    assert len(history_saves) == 1
+    assert len(snapshot_writes) == 2
 
 
 def test_persist_guest_analysis_requires_auth():
