@@ -1,3 +1,4 @@
+import hashlib
 import os
 import logging
 import re
@@ -6,6 +7,7 @@ import ipaddress
 from datetime import date, datetime, timezone
 from collections import defaultdict
 from pathlib import Path
+from urllib.parse import quote
 import uuid
 from typing import Annotated, Optional
 from contextlib import asynccontextmanager
@@ -44,7 +46,11 @@ from year_close_packet import (
     PACKET_AMOUNT_CENTS,
     PACKET_METADATA_PRODUCT,
     PACKET_PRODUCT_NAME,
+    adopt_guest_packet,
     build_packet_payload,
+    claimable_guest_packet_payload,
+    copy_packet_payload_to_id,
+    forget_packet_payload,
     get_payload,
     is_packet_paid,
     mark_paid,
@@ -52,13 +58,18 @@ from year_close_packet import (
     packet_checkout_custom_text,
     packet_checkout_line_items,
     packet_requires_test_stripe,
+    packet_user_id_from_session,
     packet_session_id,
+    packet_store_owner,
+    _session_metadata,
+    packet_store_belongs_to_user,
     paid_session_for_user_year,
     remember_analysis,
     render_packet_pdf,
     resolve_packet_stripe_secret_key,
     session_grants_packet,
-    upsert_payload,
+    session_is_settled_packet,
+    upsert_packet_payload,
 )
 from csv_parser import parse_csv, RealizedEvent, transactions_to_tax_lots
 from lot_matcher import match_1099b_lots
@@ -101,13 +112,21 @@ from db import (
     save_analysis_history,
     get_analysis_history,
     get_analysis_by_id,
+    get_analysis_by_result_analysis_id,
+    lookup_analysis_for_entitlement,
     delete_analyses_without_result,
     delete_analysis_by_id,
+    HistoryInsertConflict,
     save_tax_profile as db_save_tax_profile,
     get_tax_profile as db_get_tax_profile,
     get_supabase,
     get_latest_activity_book,
-    get_packet_grant_for_tax_year,
+    lookup_packet_grant_for_tax_year,
+    lookup_packet_entitlement_for_tax_year,
+    save_packet_entitlement,
+    save_packet_snapshot,
+    get_packet_snapshot,
+    mark_packet_snapshot_paid,
     patch_analysis_result,
 )
 
@@ -555,10 +574,10 @@ def _save_history_best_effort(
     filename: str,
     summary,
     result: PortfolioAnalysis,
-) -> None:
+) -> bool:
     """Save analysis to history (best-effort, non-blocking)."""
     if not user_id:
-        return
+        return False
     try:
         # Use mode="json" to convert date/datetime objects to ISO strings
         # so the dict is JSON-serializable for the JSONB column.
@@ -572,10 +591,15 @@ def _save_history_best_effort(
         )
         if saved:
             logger.info(f"History saved successfully: id={saved.get('id')}")
+            return True
         else:
             logger.warning("save_analysis_history returned None — check Supabase connection")
+    except HistoryInsertConflict:
+        # A concurrent insert already stored this run. The row exists.
+        return True
     except Exception as e:
         logger.warning(f"Failed to save analysis history: {e}", exc_info=True)
+    return False
 
 
 
@@ -1047,18 +1071,67 @@ def _public_analysis(
 
 def _apply_packet_year_grant(result: PortfolioAnalysis, user_id: str) -> PortfolioAnalysis:
     """Repeat uploads in a paid tax year stay unlocked — no second $49."""
+    # Never carry an authorization claim from history JSON into a fresh result.
+    result = result.model_copy(
+        update={"packet_unlocked": False, "packet_session_id": None}
+    )
     if not user_id or not result.analysis_id:
         return result
-    if result.packet_unlocked and result.packet_session_id:
-        mark_paid(result.analysis_id, result.packet_session_id, user_id=user_id)
-        return result
     tax_year = result.tax_profile.tax_year if result.tax_profile else None
-    session_id = get_packet_grant_for_tax_year(user_id, tax_year or 2026)
+    if tax_year is None:
+        return result
+    # History JSON may have been writable under legacy client RLS policies.
+    # Only service-role snapshots or verified Stripe receipts prove a grant.
+    session_id, lookup_succeeded = lookup_packet_grant_for_tax_year(
+        user_id,
+        tax_year,
+    )
+    if not lookup_succeeded:
+        logger.warning(
+            "Could not load durable packet grant for user=%s year=%s",
+            user_id,
+            tax_year,
+        )
+    if not session_id:
+        entitlement, entitlement_lookup_succeeded = (
+            lookup_packet_entitlement_for_tax_year(user_id, tax_year)
+        )
+        if not entitlement_lookup_succeeded:
+            logger.warning(
+                "Could not load packet entitlement for user=%s year=%s",
+                user_id,
+                tax_year,
+            )
+        elif entitlement:
+            try:
+                packet_api_key = _configure_packet_stripe()
+                prior_session = stripe.checkout.Session.retrieve(
+                    entitlement["packet_session_id"],
+                    api_key=packet_api_key,
+                )
+            except (HTTPException, stripe.StripeError) as exc:
+                logger.warning("Could not verify prior packet entitlement: %s", exc)
+                prior_session = None
+            metadata_year = _packet_result_tax_year(
+                {"analysis_tax_year": _session_metadata(prior_session).get("tax_year")}
+            )
+            if (
+                prior_session is not None
+                and packet_session_id(prior_session)
+                == entitlement.get("packet_session_id")
+                and packet_user_id_from_session(prior_session) == user_id
+                and packet_analysis_id_from_session(prior_session)
+                == entitlement.get("analysis_id")
+                and metadata_year == tax_year
+                and session_is_settled_packet(prior_session)
+            ):
+                session_id = packet_session_id(prior_session)
     if not session_id:
         session_id = paid_session_for_user_year(user_id, tax_year)
     if not session_id:
         return result
-    mark_paid(result.analysis_id, session_id, user_id=user_id)
+    if not packet_store_belongs_to_user(result.analysis_id, user_id):
+        return result
     return result.model_copy(
         update={"packet_unlocked": True, "packet_session_id": session_id}
     )
@@ -1363,9 +1436,84 @@ async def _run_portfolio_analysis(
     remember_analysis(analysis_id, user_id, full_dump)
     public_result = _public_analysis(result, keep_lot_rows=keep_lot_rows)
 
-    # History follows the public payload so unpaid restore cannot leak lot rows.
-    # Full rows remain in PACKET_STORE for the paid PDF.
-    _save_history_best_effort(user_id, filename, summary, public_result)
+    # History is always redacted. Lot rows stay in PACKET_STORE and the paid
+    # snapshot. Grant flags are patched on only after that snapshot commits,
+    # so a failed snapshot cannot leave private lots in the history JSON.
+    history_result = _public_analysis(
+        result.model_copy(update={"packet_unlocked": False, "packet_session_id": None}),
+        keep_lot_rows=keep_lot_rows,
+    )
+    history_saved = _save_history_best_effort(
+        user_id, filename, summary, history_result
+    )
+    if result.packet_unlocked and result.packet_session_id and not history_saved:
+        # Paid documents must remain attached to a deletable history row.
+        forget_packet_payload(result.analysis_id, user_id)
+        result = result.model_copy(
+            update={"packet_unlocked": False, "packet_session_id": None}
+        )
+        public_result = _public_analysis(result, keep_lot_rows=keep_lot_rows)
+        return public_result
+    if user_id and not (result.packet_unlocked and result.packet_session_id):
+        packet_payload = get_payload(result.analysis_id)
+        tax_year = _packet_result_tax_year(packet_payload)
+        if packet_payload and tax_year is not None:
+            if not save_packet_snapshot(
+                result.analysis_id,
+                user_id,
+                tax_year,
+                packet_payload,
+            ):
+                logger.warning(
+                    "Could not persist unpaid packet snapshot for analysis %s",
+                    result.analysis_id,
+                )
+    if result.packet_unlocked and result.packet_session_id:
+        packet_payload = get_payload(result.analysis_id)
+        tax_year = _packet_result_tax_year(packet_payload)
+        snapshot_saved = bool(
+            packet_payload
+            and tax_year is not None
+            and save_packet_snapshot(
+                result.analysis_id,
+                user_id,
+                tax_year,
+                packet_payload,
+                session_id=result.packet_session_id,
+                paid=True,
+            )
+        )
+        if snapshot_saved:
+            mark_paid(
+                result.analysis_id,
+                result.packet_session_id,
+                user_id=user_id,
+            )
+            if history_saved:
+                patched = patch_analysis_result(
+                    result.analysis_id,
+                    user_id,
+                    {
+                        "packet_unlocked": True,
+                        "packet_session_id": result.packet_session_id,
+                    },
+                )
+                if patched is not True:
+                    logger.warning(
+                        "Paid packet snapshot for %s has no history flag update",
+                        result.analysis_id,
+                    )
+            return public_result
+        if history_saved:
+            patch_analysis_result(
+                result.analysis_id,
+                user_id,
+                {"packet_unlocked": False, "packet_session_id": None},
+            )
+        result = result.model_copy(
+            update={"packet_unlocked": False, "packet_session_id": None}
+        )
+        public_result = _public_analysis(result, keep_lot_rows=keep_lot_rows)
 
     return public_result
 
@@ -1383,20 +1531,98 @@ async def persist_portfolio_history(
 ):
     """Save a guest (or restored) analysis into the signed-in user's history."""
     validate_user_id(user_id)
-    analysis = body.analysis or {}
+    analysis = dict(body.analysis or {})
+    # This endpoint stores browser-restored guest results. Never trust payment
+    # state supplied by the client; only verified server paths may set it.
+    analysis.pop("packet_unlocked", None)
+    analysis.pop("packet_session_id", None)
+    analysis_id = str(analysis.get("analysis_id") or "").strip()
+    guest_packet_payload = claimable_guest_packet_payload(
+        analysis_id,
+        user_id,
+        analysis,
+    )
     summary = analysis.get("summary") if isinstance(analysis.get("summary"), dict) else {}
     filename = Path(body.filename or "guest-run.csv").name.strip() or "guest-run.csv"
-    saved = save_analysis_history(
-        user_id=user_id,
-        filename=filename[:255],
-        summary=summary,
-        result_data=analysis,
-    )
+    if analysis_id:
+        existing_history, lookup_succeeded = lookup_analysis_for_entitlement(
+            analysis_id,
+            user_id,
+        )
+        if not lookup_succeeded:
+            raise HTTPException(
+                status_code=503,
+                detail="Could not check whether this analysis is already saved. Please retry.",
+            )
+    else:
+        existing_history = None
+    if existing_history and not guest_packet_payload:
+        durable_snapshot, snapshot_lookup_succeeded = get_packet_snapshot(
+            analysis_id,
+            user_id,
+        )
+        if not snapshot_lookup_succeeded:
+            raise HTTPException(
+                status_code=503,
+                detail="Could not restore this analysis snapshot. Please retry.",
+            )
+        if durable_snapshot and isinstance(durable_snapshot.get("packet_payload"), dict):
+            return existing_history
+        raise HTTPException(
+            status_code=503,
+            detail="This saved analysis is missing its private packet data. Please re-run the analysis.",
+        )
+    newly_inserted = False
+    if existing_history:
+        saved = existing_history
+    else:
+        try:
+            saved = save_analysis_history(
+                user_id=user_id,
+                filename=filename[:255],
+                summary=summary,
+                result_data=analysis,
+            )
+        except HistoryInsertConflict:
+            saved = None
+            if analysis_id:
+                raced, race_ok = lookup_analysis_for_entitlement(analysis_id, user_id)
+                if not race_ok:
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Could not check whether this analysis is already saved. Please retry.",
+                    )
+                saved = raced
+        else:
+            newly_inserted = bool(saved)
     if not saved:
         raise HTTPException(
             status_code=503,
             detail="Could not save analysis history",
         )
+    if guest_packet_payload:
+        tax_year = _packet_result_tax_year(guest_packet_payload)
+        if tax_year is None or not save_packet_snapshot(
+            analysis_id,
+            user_id,
+            tax_year,
+            guest_packet_payload,
+        ):
+            if newly_inserted:
+                _rollback_inserted_history(saved, user_id)
+            raise HTTPException(
+                status_code=503,
+                detail="Could not securely save this analysis. Please retry.",
+            )
+        # Claim the already-validated server snapshot only after its durable,
+        # owner-scoped copy has been saved successfully. Ownership moves only
+        # because claimable_guest_packet_payload matched exactly.
+        if not adopt_guest_packet(analysis_id, user_id, guest_packet_payload):
+            raise HTTPException(
+                status_code=503,
+                detail="Could not securely save this analysis. Please retry.",
+            )
+        upsert_packet_payload(analysis_id, user_id, guest_packet_payload)
     return saved
 
 
@@ -1504,9 +1730,19 @@ async def delete_portfolio_analysis(
     **Authentication Required**: Must provide valid Supabase JWT token.
     **Authorization**: User can only delete their own analyses.
     """
+    record = get_analysis_by_id(analysis_id, user_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+    result = record.get("result") if isinstance(record, dict) else None
+    packet_analysis_id = (
+        result.get("analysis_id") if isinstance(result, dict) else None
+    )
     deleted = delete_analysis_by_id(analysis_id, user_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Analysis not found")
+    if isinstance(packet_analysis_id, str) and packet_analysis_id:
+        forget_packet_payload(packet_analysis_id, user_id)
+    forget_packet_payload(analysis_id, user_id)
     return {"deleted": True}
 
 
@@ -1872,14 +2108,13 @@ async def create_tip_checkout(tip: TipRequest):
     if not STRIPE_SECRET_KEY:
         raise HTTPException(status_code=503, detail="Stripe is not configured")
 
-    stripe.api_key = STRIPE_SECRET_KEY
-
     try:
         session = stripe.checkout.Session.create(
             mode="payment",
             line_items=[{"price": tier["price_id"], "quantity": 1}],
             success_url=f"{FRONTEND_URL}/tips/success",
             cancel_url=f"{FRONTEND_URL}/tips/cancel",
+            api_key=STRIPE_SECRET_KEY,
         )
         return {"checkout_url": session.url}
     except stripe.StripeError as e:
@@ -1908,8 +2143,36 @@ class PacketDownloadRequest(BaseModel):
     analysis: Optional[dict] = None
 
 
+def _rollback_inserted_history(saved: dict, user_id: str) -> None:
+    """Drop a history row this request just inserted after a failed snapshot."""
+    row_id = str((saved or {}).get("id") or "").strip()
+    if not row_id:
+        return
+    try:
+        delete_analysis_by_id(row_id, user_id)
+    except Exception:
+        logger.warning(
+            "Could not roll back history row %s after packet snapshot failure",
+            row_id,
+            exc_info=True,
+        )
+
+
+def _packet_checkout_idempotency_key(
+    user_id: str,
+    analysis_id: str,
+    tax_year: int,
+) -> str:
+    """Stable Stripe idempotency key. Hashed when the raw key would exceed 255."""
+    raw = f"year-close-packet:{user_id}:{analysis_id}:{tax_year}"
+    if len(raw) <= 255:
+        return raw
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    return f"year-close-packet:{digest}"
+
+
 def _configure_packet_stripe() -> str:
-    """Set stripe.api_key for the year-close packet. Staging is TEST-only."""
+    """Return the request-scoped packet key. Staging is TEST-only."""
     key, reason = resolve_packet_stripe_secret_key(STRIPE_SECRET_KEY)
     if not key:
         if reason == "refused_live_key":
@@ -1922,15 +2185,219 @@ def _configure_packet_stripe() -> str:
                 ),
             )
         raise HTTPException(status_code=503, detail="Stripe is not configured")
-    stripe.api_key = key
     return key
 
 
-def _grant_packet_from_session(session, analysis_id: str, user_id: str = "") -> bool:
+PACKET_GRANT_MISSING_SOURCE = "missing_source"
+PACKET_MISSING_SOURCE_DETAIL = (
+    "Payment was received, but this analysis has no source document. "
+    "Run a new analysis for this tax year."
+)
+
+
+def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[bool | str]:
     if not session_grants_packet(session, analysis_id):
         return False
-    mark_paid(analysis_id, packet_session_id(session), user_id=user_id)
+    session_analysis_id = packet_analysis_id_from_session(session)
+    session_user_id = packet_user_id_from_session(session)
+    if not session_user_id or not user_id or session_user_id != user_id:
+        logger.warning("Rejecting packet grant with missing or mismatched checkout owner")
+        return False
+    cache_belongs_to_user = packet_store_belongs_to_user(session_analysis_id, user_id)
+    session_id = packet_session_id(session)
+    snapshot, snapshot_lookup_succeeded = get_packet_snapshot(
+        session_analysis_id,
+        session_user_id,
+    )
+    if not snapshot_lookup_succeeded:
+        return None
+    if snapshot:
+        tax_year = snapshot.get("tax_year")
+        packet_payload = snapshot.get("packet_payload")
+        if not isinstance(packet_payload, dict) and cache_belongs_to_user:
+            cached_payload = get_payload(session_analysis_id)
+            if isinstance(cached_payload, dict):
+                packet_payload = cached_payload
+    else:
+        # Compatibility for sessions created before private snapshots existed.
+        record, record_lookup_succeeded = lookup_analysis_for_entitlement(
+            session_analysis_id,
+            session_user_id,
+        )
+        if not record_lookup_succeeded:
+            return None
+        result = record.get("result") if isinstance(record, dict) else None
+        tax_year = _packet_result_tax_year(result)
+        metadata = _session_metadata(session)
+        try:
+            tax_year = int(metadata.get("tax_year") or tax_year)
+        except (TypeError, ValueError):
+            pass
+        packet_payload = (
+            get_payload(session_analysis_id) if cache_belongs_to_user else None
+        )
+        if tax_year is None:
+            logger.warning("Paid packet has no recoverable tax year: %s", session_analysis_id)
+            return False
+        # A deleted history row must not be replaced by a private snapshot
+        # rebuilt from process memory.
+        if not record:
+            packet_payload = None
+        elif isinstance(packet_payload, dict) and not save_packet_snapshot(
+            session_analysis_id,
+            session_user_id,
+            tax_year,
+            packet_payload,
+        ):
+            return None
+    try:
+        tax_year = int(tax_year)
+    except (TypeError, ValueError):
+        return False
+    metadata_year = _packet_result_tax_year(
+        {"analysis_tax_year": _session_metadata(session).get("tax_year")}
+    )
+    if metadata_year is not None and metadata_year != tax_year:
+        logger.warning(
+            "Rejecting packet session for mismatched tax year %s (snapshot %s)",
+            metadata_year,
+            tax_year,
+        )
+        return False
+    if (
+        snapshot
+        and not isinstance(snapshot.get("packet_payload"), dict)
+        and isinstance(packet_payload, dict)
+    ):
+        history_row, history_ok = lookup_analysis_for_entitlement(
+            session_analysis_id,
+            session_user_id,
+        )
+        if not history_ok:
+            return None
+        if not history_row:
+            packet_payload = None
+        elif not save_packet_snapshot(
+            session_analysis_id,
+            session_user_id,
+            tax_year,
+            packet_payload,
+            session_id=session_id,
+            paid=True,
+        ):
+            return None
+    if not isinstance(packet_payload, dict):
+        # Keep the settled session as a same-year entitlement, but do not tell
+        # confirm/webhook that a downloadable packet exists without its private
+        # source document. A fresh analysis can reuse this receipt.
+        saved_entitlement = save_packet_entitlement(
+            session_analysis_id,
+            session_user_id,
+            tax_year,
+            session_id,
+        )
+        if saved_entitlement is None:
+            return None
+        logger.error(
+            "Persisted paid packet entitlement without its source document: %s",
+            session_analysis_id,
+        )
+        return PACKET_GRANT_MISSING_SOURCE
+    history_ready = _ensure_packet_history_row(
+        session_analysis_id,
+        session_user_id,
+        tax_year,
+    )
+    if history_ready is None:
+        return None
+    if not history_ready:
+        saved_entitlement = save_packet_entitlement(
+            session_analysis_id,
+            session_user_id,
+            tax_year,
+            session_id,
+        )
+        if saved_entitlement is None:
+            return None
+        return PACKET_GRANT_MISSING_SOURCE
+    entitlement_saved = mark_packet_snapshot_paid(
+        session_analysis_id,
+        session_user_id,
+        tax_year,
+        session_id,
+    )
+    if entitlement_saved is None:
+        return None
+    if not entitlement_saved:
+        # The snapshot row disappeared (history delete, expiry). Do not INSERT
+        # a replacement private document; keep the purchase as a receipt.
+        latest_snapshot, latest_ok = get_packet_snapshot(
+            session_analysis_id,
+            session_user_id,
+        )
+        if not latest_ok:
+            return None
+        history_row, history_ok = lookup_analysis_for_entitlement(
+            session_analysis_id,
+            session_user_id,
+        )
+        if not history_ok:
+            return None
+        if not latest_snapshot or not history_row:
+            saved_entitlement = save_packet_entitlement(
+                session_analysis_id,
+                session_user_id,
+                tax_year,
+                session_id,
+            )
+            if saved_entitlement is None:
+                return None
+            return PACKET_GRANT_MISSING_SOURCE
+        repaired = save_packet_snapshot(
+            session_analysis_id,
+            session_user_id,
+            tax_year,
+            packet_payload,
+            session_id=session_id,
+            paid=True,
+        )
+        if not repaired:
+            return None
+    if not save_packet_entitlement(
+        session_analysis_id,
+        session_user_id,
+        tax_year,
+        session_id,
+    ):
+        return None
+    # The independent entitlement/snapshot row is authoritative. History flags
+    # help legacy clients but a deleted row or history outage cannot revoke a
+    # settled purchase.
+    history_patched = patch_analysis_result(
+        session_analysis_id,
+        session_user_id,
+        {"packet_unlocked": True, "packet_session_id": session_id},
+    )
+    if history_patched is not True:
+        logger.info("Packet entitlement saved without a history row: %s", session_analysis_id)
+    mark_paid(
+        session_analysis_id,
+        session_id,
+        user_id=session_user_id,
+    )
     return True
+
+
+def _grant_packet_from_session(session, analysis_id: str, user_id: str = "") -> bool:
+    granted = _persist_packet_grant(session, analysis_id, user_id)
+    if granted is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Payment was verified but could not be saved. Please retry.",
+        )
+    if granted == PACKET_GRANT_MISSING_SOURCE:
+        raise HTTPException(status_code=409, detail=PACKET_MISSING_SOURCE_DETAIL)
+    return granted
 
 
 def _analysis_with_history_suggestions(
@@ -1944,6 +2411,8 @@ def _analysis_with_history_suggestions(
     if not analysis_id or not user_id:
         return analysis
     record = get_analysis_by_id(analysis_id, user_id)
+    if not record:
+        record = get_analysis_by_result_analysis_id(analysis_id, user_id)
     result = record.get("result") if isinstance(record, dict) else None
     if not isinstance(result, dict) or not result.get("suggestions"):
         return analysis
@@ -1952,20 +2421,161 @@ def _analysis_with_history_suggestions(
     return merged
 
 
+def _packet_result_tax_year(result: Optional[dict]) -> Optional[int]:
+    if not isinstance(result, dict):
+        return None
+    year = result.get("analysis_tax_year")
+    profile = result.get("tax_profile")
+    if year is None and isinstance(profile, dict):
+        year = profile.get("tax_year")
+    try:
+        return int(year) if year is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _ensure_packet_history_row(
+    analysis_id: str,
+    user_id: str,
+    tax_year: int,
+) -> Optional[bool]:
+    """Create a deletable, redacted history stub without trusting checkout JSON.
+
+    True when a row is present, False when it cannot be created, None on outage.
+    """
+    record, lookup_succeeded = lookup_analysis_for_entitlement(analysis_id, user_id)
+    if not lookup_succeeded:
+        return None
+    if record:
+        return True
+    safe_result = {
+        "analysis_id": analysis_id,
+        "analysis_tax_year": int(tax_year),
+        "tax_profile": {"tax_year": int(tax_year)},
+        "packet_unlocked": False,
+        "packet_session_id": None,
+    }
+    try:
+        saved = save_analysis_history(
+            user_id,
+            "year-close-packet.csv",
+            {},
+            result_data=safe_result,
+        )
+    except HistoryInsertConflict:
+        raced, race_ok = lookup_analysis_for_entitlement(analysis_id, user_id)
+        if not race_ok:
+            return None
+        return bool(raced)
+    return True if saved else False
+
+
+def _is_persisted_same_year_packet_grant(
+    analysis_id: str,
+    session_id: str,
+    user_id: str,
+    session,
+) -> Optional[bool]:
+    """Accept a reused Checkout only when owner-scoped rows prove same-year entitlement."""
+    source_analysis_id = packet_analysis_id_from_session(session)
+    if (
+        not session_id
+        or not user_id
+        or packet_session_id(session) != session_id
+        or packet_user_id_from_session(session) != user_id
+        or not source_analysis_id
+        or source_analysis_id == "local-analysis"
+        or not session_is_settled_packet(session)
+    ):
+        return False
+
+    metadata = _session_metadata(session)
+    session_year = _packet_result_tax_year(
+        {"analysis_tax_year": metadata.get("tax_year")}
+    )
+    if session_year is None:
+        source_snapshot, source_snapshot_lookup_succeeded = get_packet_snapshot(
+            source_analysis_id,
+            user_id,
+        )
+        if not source_snapshot_lookup_succeeded:
+            return None
+        if isinstance(source_snapshot, dict):
+            session_year = _packet_result_tax_year(
+                {"analysis_tax_year": source_snapshot.get("tax_year")}
+            )
+        if session_year is None:
+            source, source_lookup_succeeded = lookup_analysis_for_entitlement(
+                source_analysis_id,
+                user_id,
+            )
+            if not source_lookup_succeeded:
+                return None
+            source_result = source.get("result") if isinstance(source, dict) else None
+            session_year = _packet_result_tax_year(source_result)
+    if session_year is None:
+        return False
+
+    packet_snapshot, snapshot_lookup_succeeded = get_packet_snapshot(
+        analysis_id,
+        user_id,
+    )
+    if not snapshot_lookup_succeeded:
+        return None
+    if isinstance(packet_snapshot, dict):
+        target_year = packet_snapshot.get("tax_year")
+        try:
+            target_year = int(target_year)
+        except (TypeError, ValueError):
+            target_year = None
+        if (
+            packet_snapshot.get("paid_at")
+            and packet_snapshot.get("packet_session_id") == session_id
+            and target_year == session_year
+            and isinstance(packet_snapshot.get("packet_payload"), dict)
+        ):
+            return True
+        return False
+
+    # History JSON is user-writable in older installations. Only the private,
+    # owner-scoped packet snapshot can prove a reused same-year grant.
+    return False
+
+
 def _payload_for_download(analysis_id: str, user_id: str, analysis: Optional[dict]):
-    analysis = _analysis_with_history_suggestions(analysis_id, user_id, analysis)
-    rec = upsert_payload(analysis_id, user_id, analysis)
-    payload = rec.get("payload") if rec else None
-    if payload:
-        return payload
-    if analysis:
-        return build_packet_payload(analysis, analysis_id=analysis_id)
-    stored = get_payload(analysis_id)
-    if stored:
-        return stored
+    if isinstance(analysis, dict):
+        supplied_id = str(analysis.get("analysis_id") or "").strip()
+        if supplied_id and supplied_id != "local-analysis" and supplied_id != analysis_id:
+            raise HTTPException(
+                status_code=400,
+                detail="The analysis ID does not match the paid packet.",
+            )
+    snapshot, lookup_succeeded = get_packet_snapshot(analysis_id, user_id)
+    if not lookup_succeeded:
+        raise HTTPException(
+            status_code=503,
+            detail="Could not load the saved packet snapshot. Please retry.",
+        )
+    if isinstance(snapshot, dict):
+        if isinstance(snapshot.get("packet_payload"), dict):
+            return snapshot["packet_payload"]
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "The private packet snapshot is unavailable. Re-run this analysis "
+                "to restore it, then download again."
+            ),
+        )
+    if packet_store_belongs_to_user(analysis_id, user_id):
+        stored = get_payload(analysis_id)
+        if stored:
+            return stored
     raise HTTPException(
-        status_code=404,
-        detail="No year-close packet snapshot found for this analysis.",
+        status_code=503,
+        detail=(
+            "The private packet snapshot is unavailable. Re-run the analysis "
+            "to restore it, then download again."
+        ),
     )
 
 
@@ -1986,22 +2596,274 @@ async def create_year_close_packet_checkout(
     Does not reuse /api/tips/checkout or TipJar price IDs.
     Staging / local always uses Stripe TEST keys (never live).
     """
-    analysis_id = (body.analysis_id or "").strip()
-    if not analysis_id:
+    requested_analysis_id = (body.analysis_id or "").strip()
+    if not requested_analysis_id:
         raise HTTPException(status_code=400, detail="analysis_id is required")
 
-    upsert_payload(
+    analysis = body.analysis
+    guest_packet_payload = None
+    if requested_analysis_id == "local-analysis":
+        if not isinstance(analysis, dict):
+            raise HTTPException(
+                status_code=400,
+                detail="This analysis has no stable ID. Reload it before starting checkout.",
+            )
+        analysis_id = str(uuid.uuid4())
+        if not copy_packet_payload_to_id(
+            requested_analysis_id,
+            analysis_id,
+            user_id,
+            analysis,
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="This analysis has no owner-scoped private snapshot. Re-run it before checkout.",
+            )
+        analysis = {**analysis, "analysis_id": analysis_id}
+    else:
+        record, lookup_succeeded = lookup_analysis_for_entitlement(
+            requested_analysis_id,
+            user_id,
+        )
+        if not lookup_succeeded:
+            raise HTTPException(
+                status_code=503,
+                detail="Could not verify this analysis before checkout. Please retry.",
+            )
+        analysis_id = requested_analysis_id
+        if record:
+            result = record.get("result")
+            if isinstance(result, dict):
+                stored_analysis_id = str(result.get("analysis_id") or "").strip()
+                if stored_analysis_id and stored_analysis_id != analysis_id:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="The analysis ID does not match the saved analysis.",
+                    )
+                if analysis is None:
+                    analysis = result
+        elif not isinstance(analysis, dict) or analysis.get("analysis_id") != analysis_id:
+            raise HTTPException(
+                status_code=400,
+                detail="This analysis has no matching stable ID. Reload it before checkout.",
+            )
+        if not isinstance(analysis, dict):
+            analysis = {"analysis_id": analysis_id}
+        elif not analysis.get("analysis_id"):
+            analysis = {**analysis, "analysis_id": analysis_id}
+        elif analysis.get("analysis_id") != analysis_id:
+            raise HTTPException(
+                status_code=400,
+                detail="The analysis ID does not match the checkout request.",
+            )
+        owner = packet_store_owner(analysis_id)
+        if owner == "":
+            # Blank guest rows are not owned by this caller. Adopt only after
+            # an exact payload match, and only once checkout commits below.
+            guest_packet_payload = claimable_guest_packet_payload(
+                analysis_id,
+                user_id,
+                analysis,
+            )
+            if guest_packet_payload is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="This guest snapshot must be restored from its matching analysis before checkout.",
+                )
+        elif not packet_store_belongs_to_user(analysis_id, user_id):
+            raise HTTPException(
+                status_code=409,
+                detail="This analysis snapshot belongs to another user.",
+            )
+
+    analysis = _analysis_with_history_suggestions(analysis_id, user_id, analysis)
+    packet_api_key = _configure_packet_stripe()
+    durable_snapshot, snapshot_lookup_succeeded = get_packet_snapshot(
         analysis_id,
         user_id,
-        _analysis_with_history_suggestions(analysis_id, user_id, body.analysis),
     )
-    _configure_packet_stripe()
+    if not snapshot_lookup_succeeded:
+        raise HTTPException(
+            status_code=503,
+            detail="Could not load the saved packet snapshot. Please retry.",
+        )
+    if (
+        isinstance(durable_snapshot, dict)
+        and durable_snapshot.get("paid_at")
+        and not isinstance(durable_snapshot.get("packet_payload"), dict)
+    ):
+        # A cleared paid row is a deleted source. Do not rebuild it from
+        # PACKET_STORE or the guest body and report already_paid.
+        raise HTTPException(status_code=409, detail=PACKET_MISSING_SOURCE_DETAIL)
+    packet_snapshot = (
+        durable_snapshot.get("packet_payload")
+        if isinstance(durable_snapshot, dict)
+        else None
+    )
+    if not isinstance(packet_snapshot, dict) and guest_packet_payload is not None:
+        packet_snapshot = guest_packet_payload
+    if not isinstance(packet_snapshot, dict) and packet_store_belongs_to_user(
+        analysis_id, user_id
+    ):
+        packet_snapshot = get_payload(analysis_id)
+    tax_year = (
+        _packet_result_tax_year(packet_snapshot)
+        if isinstance(packet_snapshot, dict)
+        else None
+    )
+    if tax_year is None and isinstance(durable_snapshot, dict):
+        try:
+            tax_year = int(durable_snapshot.get("tax_year"))
+        except (TypeError, ValueError):
+            tax_year = None
+    if tax_year is None:
+        raise HTTPException(
+            status_code=409,
+            detail="The private packet snapshot has expired. Re-run this analysis before checkout.",
+        )
+    if not _ensure_packet_history_row(
+        analysis_id,
+        user_id,
+        tax_year,
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail="Could not save this analysis before checkout. Please retry.",
+        )
+    existing_session_id, grant_lookup_succeeded = lookup_packet_grant_for_tax_year(
+        user_id,
+        tax_year,
+    )
+    if not grant_lookup_succeeded:
+        raise HTTPException(
+            status_code=503,
+            detail="Could not verify existing packet access. Please retry.",
+        )
+    if not existing_session_id:
+        entitlement, entitlement_lookup_succeeded = lookup_packet_entitlement_for_tax_year(
+            user_id,
+            tax_year,
+        )
+        if not entitlement_lookup_succeeded:
+            raise HTTPException(
+                status_code=503,
+                detail="Could not verify existing packet access. Please retry.",
+            )
+        if entitlement:
+            try:
+                prior_session = stripe.checkout.Session.retrieve(
+                    entitlement["packet_session_id"],
+                    api_key=packet_api_key,
+                )
+            except stripe.StripeError as e:
+                logger.error("Year-close packet entitlement retrieve error: %s", e)
+                raise HTTPException(
+                    status_code=503,
+                    detail="Could not verify the prior packet payment. Please retry.",
+                )
+            prior_metadata = _session_metadata(prior_session)
+            try:
+                prior_tax_year = int(prior_metadata.get("tax_year"))
+            except (TypeError, ValueError):
+                prior_tax_year = None
+            if (
+                not session_is_settled_packet(prior_session)
+                or packet_session_id(prior_session) != entitlement["packet_session_id"]
+                or packet_user_id_from_session(prior_session) != user_id
+                or prior_tax_year != tax_year
+                or packet_analysis_id_from_session(prior_session)
+                != entitlement.get("analysis_id")
+            ):
+                raise HTTPException(
+                    status_code=503,
+                    detail="The prior packet payment could not be verified for this tax year.",
+                )
+            existing_session_id = entitlement["packet_session_id"]
+    if existing_session_id:
+        if not isinstance(packet_snapshot, dict):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Payment was received, but this analysis has no source document. "
+                    "Run a new analysis for this tax year."
+                ),
+            )
+        saved = save_packet_snapshot(
+            analysis_id,
+            user_id,
+            tax_year,
+            packet_snapshot,
+            session_id=existing_session_id,
+            paid=True,
+        )
+        if not saved:
+            raise HTTPException(
+                status_code=503,
+                detail="Could not save the packet snapshot. Please retry.",
+            )
+        if not save_packet_entitlement(
+            analysis_id,
+            user_id,
+            tax_year,
+            existing_session_id,
+        ):
+            raise HTTPException(
+                status_code=503,
+                detail="Could not save the packet entitlement. Please retry.",
+            )
+        if guest_packet_payload is not None and not adopt_guest_packet(
+            analysis_id, user_id, guest_packet_payload
+        ):
+            raise HTTPException(
+                status_code=503,
+                detail="Could not save the packet snapshot. Please retry.",
+            )
+        upsert_packet_payload(analysis_id, user_id, packet_snapshot)
+        mark_paid(analysis_id, existing_session_id, user_id=user_id)
+        try:
+            patch_analysis_result(
+                analysis_id,
+                user_id,
+                {"packet_unlocked": True, "packet_session_id": existing_session_id},
+            )
+        except Exception as exc:
+            logger.warning("Could not update packet-unlocked history flags: %s", exc)
+        return {
+            "already_paid": True,
+            "session_id": existing_session_id,
+            "analysis_id": analysis_id,
+            "product": PACKET_PRODUCT_NAME,
+            "amount": PACKET_AMOUNT_CENTS,
+        }
+    if not isinstance(packet_snapshot, dict):
+        raise HTTPException(
+            status_code=409,
+            detail="The private packet snapshot has expired. Re-run this analysis before checkout.",
+        )
+    if not save_packet_snapshot(
+        analysis_id,
+        user_id,
+        tax_year,
+        packet_snapshot,
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail="Could not securely save the packet before checkout. Please retry.",
+        )
 
     success_url = (
         f"{FRONTEND_URL}/dashboard?packet_session={{CHECKOUT_SESSION_ID}}"
-        f"&packet_analysis={analysis_id}"
+        f"&packet_analysis={quote(str(analysis_id), safe='')}"
     )
     cancel_url = f"{FRONTEND_URL}/dashboard?packet_canceled=1"
+    # Idempotency key is the primary double-charge guard. Stripe returns the
+    # original Checkout Session when this user, analysis, and tax year are
+    # replayed. Packet calls pass api_key= and never assign stripe.api_key.
+    idempotency_key = _packet_checkout_idempotency_key(
+        user_id,
+        analysis_id,
+        int(tax_year),
+    )
 
     try:
         session = stripe.checkout.Session.create(
@@ -2014,11 +2876,23 @@ async def create_year_close_packet_checkout(
                 "product": PACKET_METADATA_PRODUCT,
                 "analysis_id": analysis_id,
                 "user_id": user_id,
+                "tax_year": str(tax_year),
             },
+            idempotency_key=idempotency_key,
+            api_key=packet_api_key,
         )
+        if guest_packet_payload is not None and not adopt_guest_packet(
+            analysis_id, user_id, guest_packet_payload
+        ):
+            raise HTTPException(
+                status_code=503,
+                detail="Could not save the packet snapshot. Please retry.",
+            )
+        upsert_packet_payload(analysis_id, user_id, packet_snapshot)
         return {
             "checkout_url": session.url,
             "session_id": session.id,
+            "analysis_id": analysis_id,
             "product": PACKET_PRODUCT_NAME,
             "amount": PACKET_AMOUNT_CENTS,
             "stripe_mode": "test" if packet_requires_test_stripe() else "live",
@@ -2038,29 +2912,73 @@ async def confirm_year_close_packet(
     if not session_id:
         raise HTTPException(status_code=400, detail="session_id is required")
 
-    _configure_packet_stripe()
+    packet_api_key = _configure_packet_stripe()
 
     try:
-        session = stripe.checkout.Session.retrieve(session_id)
+        session = stripe.checkout.Session.retrieve(session_id, api_key=packet_api_key)
     except stripe.StripeError as e:
         logger.error(f"Year-close packet session retrieve error: {e}")
         raise HTTPException(status_code=502, detail="Failed to verify checkout session")
 
-    # Session metadata is canonical. Client analysis_id is optional and may be
-    # local-analysis after reload; success URL packet_analysis is a fallback.
-    analysis_id = packet_analysis_id_from_session(
-        session,
-        body.packet_analysis or "",
-        body.analysis_id or "",
-    )
+    metadata = _session_metadata(session)
+    if metadata.get("product") != PACKET_METADATA_PRODUCT:
+        raise HTTPException(status_code=403, detail="Checkout session is not a year-close packet.")
+
+    # Checkout metadata is canonical. Client IDs may confirm that they are
+    # returning to the same run, but can never supply a missing server ID.
+    analysis_id = packet_analysis_id_from_session(session)
     if not analysis_id:
         raise HTTPException(status_code=400, detail="analysis_id is required")
+    if analysis_id == "local-analysis" or packet_user_id_from_session(session) != user_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Checkout session does not belong to this analysis.",
+        )
+    for supplied_id in (body.packet_analysis, body.analysis_id):
+        if supplied_id and supplied_id != "local-analysis" and supplied_id != analysis_id:
+            raise HTTPException(
+                status_code=400,
+                detail="The checkout session does not match this analysis.",
+            )
 
-    upsert_payload(
-        analysis_id,
-        user_id,
-        _analysis_with_history_suggestions(analysis_id, user_id, body.analysis),
+    status_value = (
+        session.get("status")
+        if isinstance(session, dict)
+        else getattr(session, "status", None)
     )
+    payment_status_value = (
+        session.get("payment_status")
+        if isinstance(session, dict)
+        else getattr(session, "payment_status", None)
+    )
+    status = str(status_value or "").lower()
+    payment_status = str(payment_status_value or "").lower()
+    if status == "expired":
+        raise HTTPException(
+            status_code=410,
+            detail="This checkout session expired. Start a new checkout.",
+        )
+    if status == "open" or (status == "complete" and payment_status != "paid"):
+        raise HTTPException(
+            status_code=409,
+            detail="This checkout session is still open. Resume it to finish payment.",
+        )
+
+    if isinstance(body.analysis, dict):
+        supplied_id = str(body.analysis.get("analysis_id") or "").strip()
+        if supplied_id and supplied_id != analysis_id:
+            raise HTTPException(
+                status_code=400,
+                detail="The analysis ID does not match the paid packet.",
+            )
+        if packet_store_owner(analysis_id) == "":
+            guest_payload = claimable_guest_packet_payload(
+                analysis_id,
+                user_id,
+                body.analysis,
+            )
+            if guest_payload is not None:
+                adopt_guest_packet(analysis_id, user_id, guest_payload)
 
     if not _grant_packet_from_session(session, analysis_id, user_id=user_id):
         logger.info(
@@ -2070,15 +2988,6 @@ async def confirm_year_close_packet(
         raise HTTPException(
             status_code=403,
             detail="Checkout session does not unlock the year-close packet.",
-        )
-    if user_id:
-        patch_analysis_result(
-            analysis_id,
-            user_id,
-            {
-                "packet_unlocked": True,
-                "packet_session_id": packet_session_id(session),
-            },
         )
     return {
         "paid": True,
@@ -2120,30 +3029,132 @@ async def year_close_packet_webhook(request: Request):
     if not analysis_id:
         return {"received": True, "granted": False}
 
-    granted = session_grants_packet(session_obj, analysis_id)
-    if granted:
-        mark_paid(analysis_id, packet_session_id(session_obj))
-    return {"received": True, "granted": granted}
+    granted = _persist_packet_grant(session_obj, analysis_id, packet_user_id_from_session(session_obj))
+    if granted is None:
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to persist packet payment; Stripe may retry this event.",
+        )
+    return {"received": True, "granted": granted is True}
 
 
-def _authorized_packet_download(analysis_id: str, session_id: Optional[str], user_id: str) -> None:
-    if is_packet_paid(analysis_id):
-        return
+def _authorized_packet_download(
+    analysis_id: str,
+    session_id: Optional[str],
+    user_id: str,
+) -> str:
+    if analysis_id == "local-analysis":
+        raise HTTPException(
+            status_code=400,
+            detail="Re-run this analysis to download its packet.",
+        )
+    snapshot, lookup_succeeded = get_packet_snapshot(analysis_id, user_id)
+    if not lookup_succeeded:
+        raise HTTPException(
+            status_code=503,
+            detail="Could not verify the saved packet entitlement. Please retry.",
+        )
+    if isinstance(snapshot, dict):
+        if not isinstance(snapshot.get("packet_payload"), dict):
+            if snapshot.get("paid_at"):
+                raise HTTPException(status_code=409, detail=PACKET_MISSING_SOURCE_DETAIL)
+        stored_session_id = snapshot.get("packet_session_id")
+        if snapshot.get("paid_at") and stored_session_id:
+            if session_id and session_id != stored_session_id:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Year-close packet download requires payment.",
+                )
+            if (
+                not session_id
+                and isinstance(snapshot.get("packet_payload"), dict)
+            ):
+                # No conflicting session was offered. The owner-scoped paid
+                # snapshot is enough during Stripe downtime.
+                return analysis_id
+            try:
+                packet_api_key = _configure_packet_stripe()
+                settled_session = stripe.checkout.Session.retrieve(
+                    stored_session_id,
+                    api_key=packet_api_key,
+                )
+            except (stripe.StripeError, HTTPException):
+                # The owner-scoped durable grant is enough during Stripe
+                # downtime when the caller echoed the stored session.
+                if isinstance(snapshot.get("packet_payload"), dict):
+                    return analysis_id
+                raise HTTPException(
+                    status_code=403,
+                    detail="Year-close packet download requires payment.",
+                )
+            metadata = _session_metadata(settled_session)
+            try:
+                settled_tax_year = int(metadata.get("tax_year"))
+            except (TypeError, ValueError):
+                settled_tax_year = None
+            if (
+                packet_session_id(settled_session) != stored_session_id
+                or not session_is_settled_packet(settled_session)
+                or packet_user_id_from_session(settled_session) != user_id
+                or metadata.get("product") != PACKET_METADATA_PRODUCT
+                or (
+                    settled_tax_year is not None
+                    and settled_tax_year != int(snapshot.get("tax_year"))
+                )
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Year-close packet download requires payment.",
+                )
+            return analysis_id
+    elif is_packet_paid(analysis_id, user_id=user_id):
+        # Legacy in-memory grants are usable only when no durable row exists.
+        # A durable row with a cleared payload above always wins over cache.
+        return analysis_id
     if not session_id:
         raise HTTPException(
             status_code=403,
             detail="Year-close packet download requires payment.",
         )
-    _configure_packet_stripe()
+    packet_api_key = _configure_packet_stripe()
     try:
-        session = stripe.checkout.Session.retrieve(session_id)
+        session = stripe.checkout.Session.retrieve(session_id, api_key=packet_api_key)
     except stripe.StripeError:
+        if (
+            isinstance(snapshot, dict)
+            and snapshot.get("paid_at")
+            and isinstance(snapshot.get("packet_payload"), dict)
+        ):
+            raise HTTPException(
+                status_code=503,
+                detail="Could not verify the supplied checkout session. Please retry.",
+            )
         raise HTTPException(status_code=403, detail="Year-close packet download requires payment.")
-    if not _grant_packet_from_session(session, analysis_id, user_id=user_id):
+    if _grant_packet_from_session(session, analysis_id, user_id=user_id):
+        return packet_analysis_id_from_session(session)
+    if not packet_store_belongs_to_user(analysis_id, user_id):
         raise HTTPException(
             status_code=403,
             detail="Year-close packet download requires payment.",
         )
+    same_year_grant = _is_persisted_same_year_packet_grant(
+        analysis_id,
+        session_id,
+        user_id,
+        session,
+    )
+    if same_year_grant is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Could not verify the saved packet entitlement. Please retry.",
+        )
+    if same_year_grant and packet_store_belongs_to_user(analysis_id, user_id):
+        if mark_paid(analysis_id, session_id, user_id=user_id):
+            return analysis_id
+    raise HTTPException(
+        status_code=403,
+        detail="Year-close packet download requires payment.",
+    )
 
 
 @app.get("/api/year-close-packet/download")
@@ -2156,13 +3167,8 @@ async def download_year_close_packet_get(
     analysis_id = (analysis_id or "").strip()
     if not analysis_id:
         raise HTTPException(status_code=400, detail="analysis_id is required")
-    _authorized_packet_download(analysis_id, session_id, user_id)
-    payload = get_payload(analysis_id)
-    if not payload:
-        raise HTTPException(
-            status_code=404,
-            detail="No year-close packet snapshot found for this analysis.",
-        )
+    analysis_id = _authorized_packet_download(analysis_id, session_id, user_id)
+    payload = _payload_for_download(analysis_id, user_id, None)
     pdf_bytes = render_packet_pdf(payload)
     return Response(
         content=pdf_bytes,
@@ -2182,7 +3188,7 @@ async def download_year_close_packet_post(
     analysis_id = (body.analysis_id or "").strip()
     if not analysis_id:
         raise HTTPException(status_code=400, detail="analysis_id is required")
-    _authorized_packet_download(analysis_id, body.session_id, user_id)
+    analysis_id = _authorized_packet_download(analysis_id, body.session_id, user_id)
     payload = _payload_for_download(analysis_id, user_id, body.analysis)
     pdf_bytes = render_packet_pdf(payload)
     return Response(

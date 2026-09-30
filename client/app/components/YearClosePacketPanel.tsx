@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Alert,
   Box,
@@ -40,8 +40,57 @@ function paidStorageKey(analysisId: string): string {
   return `optionstaxhub-packet-paid:${analysisId}`;
 }
 
+function canonicalStorageKey(analysisId: string): string {
+  return `optionstaxhub-packet-canonical:${analysisId}`;
+}
+
+function pendingSessionStorageKey(analysisId: string): string {
+  return `optionstaxhub-packet-pending:${analysisId}`;
+}
+
+function pendingCheckoutUrlStorageKey(analysisId: string): string {
+  return `optionstaxhub-packet-pending-url:${analysisId}`;
+}
+
+function pendingConfirmStorageKey(analysisId: string): string {
+  return `optionstaxhub-packet-pending-confirm:${analysisId}`;
+}
+
+function pendingOpenStorageKey(analysisId: string): string {
+  return `optionstaxhub-packet-pending-open:${analysisId}`;
+}
+
+function trustedCheckoutUrl(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname === "checkout.stripe.com"
+      ? value
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function localAnalysisIdentity(analysis: PortfolioAnalysis): string {
+  const source = JSON.stringify(compactAnalysis(analysis));
+  let first = 0x811c9dc5;
+  let second = 0x9e3779b9;
+  for (let index = 0; index < source.length; index += 1) {
+    const code = source.charCodeAt(index);
+    first = Math.imul(first ^ code, 0x01000193);
+    second = Math.imul(second ^ code, 0x85ebca6b);
+  }
+  return `local-${(first >>> 0).toString(16)}${(second >>> 0).toString(16)}`;
+}
+
+export function yearClosePacketStorageId(analysis: PortfolioAnalysis): string {
+  return analysis.analysis_id || localAnalysisIdentity(analysis);
+}
+
 export function isYearClosePacketPaid(analysisId: string): boolean {
-  const stored = readSessionItem(paidStorageKey(analysisId));
+  const canonicalId = readSessionItem(canonicalStorageKey(analysisId));
+  const stored = readSessionItem(paidStorageKey(canonicalId || analysisId));
   return Boolean(stored && stored.startsWith("cs_"));
 }
 
@@ -162,19 +211,48 @@ function triggerPdfDownload(blob: Blob): void {
   URL.revokeObjectURL(url);
 }
 
-export default function YearClosePacketPanel({
-  analysis,
-  onPaidChange,
-}: Readonly<{
+export default function YearClosePacketPanel(props: Readonly<{
   analysis: PortfolioAnalysis;
   onPaidChange?: (paid: boolean) => void;
 }>) {
+  const identity = yearClosePacketStorageId(props.analysis);
+  return (
+    <YearClosePacketPanelForAnalysis
+      key={identity}
+      analysis={props.analysis}
+      analysisStorageId={identity}
+      onPaidChange={props.onPaidChange}
+    />
+  );
+}
+
+function YearClosePacketPanelForAnalysis({
+  analysis,
+  analysisStorageId,
+  onPaidChange,
+}: Readonly<{
+  analysis: PortfolioAnalysis;
+  analysisStorageId: string;
+  onPaidChange?: (paid: boolean) => void;
+}>) {
   const analysisId = analysis.analysis_id || "local-analysis";
+  const [canonicalAnalysisId, setCanonicalAnalysisId] = useState(
+    () => readSessionItem(canonicalStorageKey(analysisStorageId)) || analysisId,
+  );
   const [busy, setBusy] = useState<"pay" | "download" | "confirm" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [canceledNotice, setCanceledNotice] = useState(false);
   const [paid, setPaid] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [checkoutUrl, setCheckoutUrl] = useState<string | null>(null);
+  const [confirmPending, setConfirmPending] = useState(
+    () => readSessionItem(pendingConfirmStorageKey(analysisStorageId)) === "1",
+  );
+  const [resumeOpenCheckout, setResumeOpenCheckout] = useState(
+    () => readSessionItem(pendingOpenStorageKey(analysisStorageId)) === "1",
+  );
+  const confirmAttempt = useRef(0);
+  const missingAnalysisId = canonicalAnalysisId === "local-analysis";
 
   // Same-tab Stripe redirect leaves this page in back-forward cache with
   // busy="pay". Closing checkout (or Back) restores that spinning button.
@@ -190,16 +268,136 @@ export default function YearClosePacketPanel({
     return () => window.removeEventListener("pageshow", onPageShow);
   }, []);
 
+  const persistConfirmFlag = (pending: boolean) => {
+    setConfirmPending(pending);
+    if (pending) {
+      writeSessionItem(pendingConfirmStorageKey(analysisStorageId), "1");
+    } else {
+      clearSessionItem(pendingConfirmStorageKey(analysisStorageId));
+    }
+  };
+
+  const persistResumeFlag = (open: boolean) => {
+    setResumeOpenCheckout(open);
+    if (open) {
+      writeSessionItem(pendingOpenStorageKey(analysisStorageId), "1");
+    } else {
+      clearSessionItem(pendingOpenStorageKey(analysisStorageId));
+    }
+  };
+
+  const confirmPacketSession = async (sid: string, confirmedAnalysisId: string) => {
+    const attempt = ++confirmAttempt.current;
+    if (sid.startsWith("cs_")) {
+      writeSessionItem(pendingSessionStorageKey(analysisStorageId), sid);
+    }
+    persistConfirmFlag(true);
+    persistResumeFlag(false);
+    setSessionId(sid);
+    setBusy("confirm");
+    setError(null);
+    let retryableFailure = true;
+    let checkoutStillOpen = false;
+    try {
+      const headers = await authHeaders();
+      const response = await fetch(`${API_URL}/api/year-close-packet/confirm`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          analysis_id: confirmedAnalysisId,
+          packet_analysis: confirmedAnalysisId,
+          session_id: sid,
+          analysis: compactAnalysis(analysis),
+        }),
+      });
+      if (attempt !== confirmAttempt.current) {
+        return;
+      }
+      if (!response.ok) {
+        const errData = await response.json().catch(() => null);
+        const detail = String(errData?.detail || "");
+        checkoutStillOpen = response.status === 409 && /still open/i.test(detail);
+        retryableFailure =
+          response.status >= 500 ||
+          checkoutStillOpen ||
+          (response.status === 409 && /payment was received/i.test(detail));
+        throw new Error(errData?.detail || "Could not confirm packet payment.");
+      }
+      const confirmData = await response.json();
+      const canonicalId =
+        typeof confirmData?.analysis_id === "string"
+          ? confirmData.analysis_id
+          : confirmedAnalysisId;
+      setCanonicalAnalysisId(canonicalId);
+      writeSessionItem(canonicalStorageKey(analysisStorageId), canonicalId);
+      setPaid(true);
+      persistConfirmFlag(false);
+      persistResumeFlag(false);
+      setCheckoutUrl(null);
+      clearSessionItem(pendingSessionStorageKey(analysisStorageId));
+      clearSessionItem(pendingCheckoutUrlStorageKey(analysisStorageId));
+      writeSessionItem(paidStorageKey(canonicalId), sid);
+      onPaidChange?.(true);
+      stripPacketQueryParams();
+    } catch (err) {
+      if (attempt !== confirmAttempt.current) {
+        return;
+      }
+      setError(err instanceof Error ? err.message : "Could not confirm payment.");
+      if (checkoutStillOpen) {
+        persistConfirmFlag(false);
+        persistResumeFlag(true);
+        stripPacketQueryParams();
+      } else if (retryableFailure) {
+        persistConfirmFlag(true);
+        persistResumeFlag(false);
+      } else {
+        persistConfirmFlag(false);
+        persistResumeFlag(false);
+        setSessionId(null);
+        setCheckoutUrl(null);
+        clearSessionItem(pendingSessionStorageKey(analysisStorageId));
+        clearSessionItem(pendingCheckoutUrlStorageKey(analysisStorageId));
+        stripPacketQueryParams();
+      }
+    } finally {
+      if (attempt === confirmAttempt.current) {
+        setBusy(null);
+      }
+    }
+  };
+
   useEffect(() => {
+    const savedCanonical = readSessionItem(canonicalStorageKey(analysisStorageId));
+    const savedCanonicalId = savedCanonical || analysisId;
+    setCanonicalAnalysisId(savedCanonicalId);
+    const pendingSessionId = readSessionItem(pendingSessionStorageKey(analysisStorageId));
+    const pendingCheckoutUrl = trustedCheckoutUrl(
+      readSessionItem(pendingCheckoutUrlStorageKey(analysisStorageId)),
+    );
+    if (pendingSessionId?.startsWith("cs_")) {
+      setSessionId(pendingSessionId);
+      setCheckoutUrl(pendingCheckoutUrl);
+      setConfirmPending(
+        readSessionItem(pendingConfirmStorageKey(analysisStorageId)) === "1",
+      );
+      setResumeOpenCheckout(
+        readSessionItem(pendingOpenStorageKey(analysisStorageId)) === "1",
+      );
+    }
     if (analysis.packet_unlocked) {
       setPaid(true);
       if (analysis.packet_session_id?.startsWith("cs_")) {
         setSessionId(analysis.packet_session_id);
-        writeSessionItem(paidStorageKey(analysisId), analysis.packet_session_id);
+        writeSessionItem(paidStorageKey(savedCanonicalId), analysis.packet_session_id);
       }
       onPaidChange?.(true);
     }
-    const stored = readSessionItem(paidStorageKey(analysisId));
+    const stored =
+      readSessionItem(paidStorageKey(savedCanonicalId)) ||
+      (!savedCanonical
+        ? readSessionItem(paidStorageKey(analysisStorageId))
+        : null);
     if (stored && stored.startsWith("cs_")) {
       setPaid(true);
       setSessionId(stored);
@@ -208,66 +406,66 @@ export default function YearClosePacketPanel({
 
     const params = new URLSearchParams(window.location.search);
     const sid = params.get("packet_session");
+    const packetAnalysisId = params.get("packet_analysis");
+    const confirmedAnalysisId = packetAnalysisId || savedCanonicalId;
     const canceled = params.get("packet_canceled") === "1";
-    const inflight = readSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY) === analysisId;
+    const inflight = readSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY) === analysisStorageId;
 
     if (sid) {
+      if (
+        (packetAnalysisId &&
+          packetAnalysisId !== savedCanonicalId &&
+          packetAnalysisId !== analysisId) ||
+        (!packetAnalysisId && !inflight)
+      ) {
+        return;
+      }
       clearSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY);
       setCanceledNotice(false);
-      setSessionId(sid);
-      setBusy("confirm");
-      setError(null);
-      void (async () => {
-        try {
-          const headers = await authHeaders();
-          const response = await fetch(`${API_URL}/api/year-close-packet/confirm`, {
-            method: "POST",
-            headers,
-            body: JSON.stringify({
-              analysis_id: analysisId,
-              session_id: sid,
-              analysis: compactAnalysis(analysis),
-            }),
-          });
-          if (!response.ok) {
-            const errData = await response.json().catch(() => null);
-            throw new Error(
-              errData?.detail || "Could not confirm packet payment.",
-            );
-          }
-          setPaid(true);
-          writeSessionItem(paidStorageKey(analysisId), sid);
-          onPaidChange?.(true);
-          stripPacketQueryParams();
-        } catch (err) {
-          setError(err instanceof Error ? err.message : "Could not confirm payment.");
-        } finally {
-          setBusy(null);
-        }
-      })();
+      void confirmPacketSession(sid, confirmedAnalysisId);
       return;
     }
 
-    if (canceled || inflight) {
+    if (canceled || (inflight && !pendingSessionId)) {
       clearSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY);
+      persistConfirmFlag(false);
+      persistResumeFlag(false);
       setBusy(null);
       setCanceledNotice(true);
       stripPacketQueryParams();
     }
-  }, [analysis, analysisId]);
+  }, [analysis, analysisId, analysisStorageId]);
 
   const handlePay = async () => {
+    if (sessionId && confirmPending) {
+      await confirmPacketSession(sessionId, canonicalAnalysisId);
+      return;
+    }
+    if (sessionId && resumeOpenCheckout && checkoutUrl) {
+      setBusy("pay");
+      setError(null);
+      try {
+        globalThis.location.href = checkoutUrl;
+      } catch {
+        setBusy(null);
+      }
+      return;
+    }
+    if (sessionId) {
+      await confirmPacketSession(sessionId, canonicalAnalysisId);
+      return;
+    }
     setBusy("pay");
     setError(null);
     setCanceledNotice(false);
-    writeSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY, analysisId);
+    writeSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY, analysisStorageId);
     try {
       const headers = await authHeaders();
       const response = await fetch(`${API_URL}/api/year-close-packet/checkout`, {
         method: "POST",
         headers,
         body: JSON.stringify({
-          analysis_id: analysisId,
+          analysis_id: canonicalAnalysisId,
           analysis: compactAnalysis(analysis),
         }),
       });
@@ -276,11 +474,45 @@ export default function YearClosePacketPanel({
         throw new Error(errData?.detail || "Failed to start checkout.");
       }
       const data = await response.json();
+      if (data?.already_paid === true && typeof data?.session_id === "string") {
+        clearSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY);
+        const paidAnalysisId =
+          typeof data.analysis_id === "string" ? data.analysis_id : canonicalAnalysisId;
+        setCanonicalAnalysisId(paidAnalysisId);
+        setSessionId(data.session_id);
+        persistConfirmFlag(false);
+        persistResumeFlag(false);
+        setCheckoutUrl(null);
+        setPaid(true);
+        clearSessionItem(pendingSessionStorageKey(analysisStorageId));
+        clearSessionItem(pendingCheckoutUrlStorageKey(analysisStorageId));
+        writeSessionItem(canonicalStorageKey(analysisStorageId), paidAnalysisId);
+        writeSessionItem(paidStorageKey(paidAnalysisId), data.session_id);
+        onPaidChange?.(true);
+        setBusy(null);
+        return;
+      }
       if (typeof data?.checkout_url !== "string" || data.checkout_url.length === 0) {
         throw new Error("Checkout did not return a payment link.");
       }
+      const safeCheckoutUrl = trustedCheckoutUrl(data.checkout_url);
+      if (!safeCheckoutUrl) {
+        throw new Error("Checkout returned an invalid payment link.");
+      }
+      if (typeof data?.analysis_id === "string" && data.analysis_id.length > 0) {
+        setCanonicalAnalysisId(data.analysis_id);
+        writeSessionItem(canonicalStorageKey(analysisStorageId), data.analysis_id);
+      }
+      if (typeof data?.session_id === "string" && data.session_id.startsWith("cs_")) {
+        setSessionId(data.session_id);
+        writeSessionItem(pendingSessionStorageKey(analysisStorageId), data.session_id);
+        setCheckoutUrl(safeCheckoutUrl);
+        persistConfirmFlag(false);
+        persistResumeFlag(false);
+        writeSessionItem(pendingCheckoutUrlStorageKey(analysisStorageId), safeCheckoutUrl);
+      }
       try {
-        globalThis.location.href = data.checkout_url;
+        globalThis.location.href = safeCheckoutUrl;
       } catch {
         // jsdom rejects in-page navigation. A real browser unloads this
         // page instead; busy stays "pay" until pageshow / remount.
@@ -301,7 +533,7 @@ export default function YearClosePacketPanel({
         method: "POST",
         headers,
         body: JSON.stringify({
-          analysis_id: analysisId,
+          analysis_id: canonicalAnalysisId,
           session_id: sessionId,
           analysis: compactAnalysis(analysis),
         }),
@@ -359,7 +591,7 @@ export default function YearClosePacketPanel({
               )
             }
             onClick={handlePay}
-            disabled={busy !== null || paid}
+            disabled={busy !== null || paid || missingAnalysisId}
           >
             Pay $49
           </Button>
@@ -374,11 +606,16 @@ export default function YearClosePacketPanel({
               )
             }
             onClick={handleDownload}
-            disabled={busy !== null}
+            disabled={busy !== null || missingAnalysisId}
           >
             Download
           </Button>
         </Stack>
+        {missingAnalysisId && (
+          <Typography role="status" variant="caption" color="text.secondary">
+            Re-run this analysis to access its packet.
+          </Typography>
+        )}
         {canceledNotice && !error && (
           <Alert
             severity="info"

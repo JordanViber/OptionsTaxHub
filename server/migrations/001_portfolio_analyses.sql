@@ -12,6 +12,9 @@ CREATE TABLE IF NOT EXISTS portfolio_analyses (
   summary JSONB NOT NULL DEFAULT '{}'::jsonb,
   positions_count INTEGER NOT NULL DEFAULT 0,
   total_market_value NUMERIC NOT NULL DEFAULT 0,
+  -- Public/redacted analysis only; full paid packet snapshots use the private
+  -- year_close_packet_snapshots table.
+  result JSONB,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -32,10 +35,20 @@ CREATE POLICY "Users can view own analyses"
 CREATE POLICY "Service role can insert analyses"
   ON portfolio_analyses
   FOR INSERT
+  TO service_role
+  WITH CHECK (true);
+
+-- Server-side owner-scoped history updates; clients receive read-only access.
+CREATE POLICY "Service role can update analyses"
+  ON portfolio_analyses
+  FOR UPDATE
+  TO service_role
+  USING (true)
   WITH CHECK (true);
 
 -- Allow service role to delete (cleanup)
 CREATE POLICY "Service role can delete analyses"
   ON portfolio_analyses
   FOR DELETE
+  TO service_role
   USING (true);

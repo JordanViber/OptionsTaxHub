@@ -91,6 +91,7 @@ import {
 import YearClosePacketPanel, {
   isYearClosePacketPaid,
   rememberYearClosePacketPaid,
+  yearClosePacketStorageId,
 } from "../components/YearClosePacketPanel";
 import {
   buildHarvestTeasers,
@@ -1303,11 +1304,11 @@ export default function DashboardPage() {
     getSkippedSuggestionSymbolsForAnalysis(displayedAnalysis);
 
   useEffect(() => {
-    const analysisId = displayedAnalysis?.analysis_id || "local-analysis";
     if (!displayedAnalysis) {
       setPacketPaid(false);
       return;
     }
+    const analysisId = yearClosePacketStorageId(displayedAnalysis);
     if (displayedAnalysis.packet_unlocked) {
       if (displayedAnalysis.packet_session_id) {
         rememberYearClosePacketPaid(
@@ -1409,7 +1410,7 @@ export default function DashboardPage() {
           }
           if (data.packet_unlocked && data.packet_session_id) {
             rememberYearClosePacketPaid(
-              data.analysis_id || "local-analysis",
+              yearClosePacketStorageId(normalized),
               data.packet_session_id,
             );
             setPacketPaid(true);

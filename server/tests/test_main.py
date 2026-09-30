@@ -394,7 +394,10 @@ def test_tip_checkout_creates_session(monkeypatch):
 
     import stripe as stripe_mod
 
-    def fake_create(**_kwargs):
+    captured = {}
+
+    def fake_create(**kwargs):
+        captured.update(kwargs)
         return FakeSession()
 
     monkeypatch.setattr(stripe_mod.checkout.Session, "create", fake_create)
@@ -403,6 +406,7 @@ def test_tip_checkout_creates_session(monkeypatch):
     assert response.status_code == 200
     data = response.json()
     assert data["checkout_url"] == "https://checkout.stripe.com/test_session"
+    assert captured["api_key"] == "sk_test_fake"
 
 
 def test_tip_checkout_stripe_error(monkeypatch):
@@ -458,9 +462,16 @@ def _stub_analyze_network(monkeypatch):
         lambda labels, fb=None, allow_network=True: ({}, []),
     )
     monkeypatch.setattr("main.prepare_positions_for_ai", lambda lots: [])
-    monkeypatch.setattr("main._save_history_best_effort", lambda *args, **kwargs: None)
+    monkeypatch.setattr("main._save_history_best_effort", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        "main.save_packet_snapshot",
+        lambda analysis_id, *_args, **_kwargs: {"analysis_id": analysis_id},
+    )
     monkeypatch.setattr("main.get_latest_activity_book", lambda uid, client=None: None)
-    monkeypatch.setattr("main.get_packet_grant_for_tax_year", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "main.lookup_packet_grant_for_tax_year",
+        lambda *args, **kwargs: (None, True),
+    )
 
 
 def _make_supplemental_1099_upload() -> tuple[str, bytes, str]:
@@ -619,8 +630,8 @@ def test_analyze_merges_new_activity_with_saved_book(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        "main.get_packet_grant_for_tax_year",
-        lambda uid, year, client=None: "cs_test_yeargrant",
+        "main.lookup_packet_grant_for_tax_year",
+        lambda uid, year, client=None: ("cs_test_yeargrant", True),
     )
 
     new_csv = _rh_csv(
@@ -645,6 +656,148 @@ def test_analyze_merges_new_activity_with_saved_book(monkeypatch):
     assert data["packet_session_id"] == "cs_test_yeargrant"
     assert data["summary"]["activity_transaction_count"] == 3
     assert any("Added 1 new trade" in w for w in data["warnings"])
+
+
+def test_inherited_packet_grant_is_not_returned_when_history_save_fails(monkeypatch):
+    from year_close_packet import PACKET_STORE
+
+    _stub_analyze_network(monkeypatch)
+    monkeypatch.setattr(
+        "main.lookup_packet_grant_for_tax_year",
+        lambda *_args, **_kwargs: ("cs_test_yeargrant", True),
+    )
+    monkeypatch.setattr("main._save_history_best_effort", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("main.save_packet_snapshot", lambda *_args, **_kwargs: None)
+    csv_data = _rh_csv(
+        "01/01/2026,01/01/2026,01/03/2026,AAPL,Apple,Buy,2,180.00,-360.00\n",
+    )
+
+    response = client.post(
+        "/api/portfolio/analyze?tax_year=2026",
+        files={"file": ("update.csv", csv_data, "text/csv")},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["packet_unlocked"] is False
+    assert body["packet_session_id"] is None
+    assert body["analysis_id"] not in PACKET_STORE
+
+
+def test_analyze_recovers_deleted_source_entitlement_after_stripe_verification(monkeypatch):
+    from year_close_packet import PACKET_AMOUNT_CENTS, PACKET_METADATA_PRODUCT
+
+    result = main.PortfolioAnalysis.model_validate(
+        {
+            "analysis_id": "followup-analysis",
+            "tax_profile": {"tax_year": 2026, "filing_status": "single"},
+        }
+    )
+    main.remember_analysis(
+        result.analysis_id,
+        "test-user-123",
+        {"analysis_id": result.analysis_id, "tax_profile": {"tax_year": 2026}},
+    )
+    session = {
+        "id": "cs_paid_for_deleted_analysis",
+        "status": "complete",
+        "payment_status": "paid",
+        "amount_total": PACKET_AMOUNT_CENTS,
+        "currency": "usd",
+        "mode": "payment",
+        "livemode": False,
+        "metadata": {
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": "original-analysis",
+            "user_id": "test-user-123",
+            "tax_year": "2026",
+        },
+    }
+    monkeypatch.setattr(
+        main,
+        "lookup_packet_grant_for_tax_year",
+        lambda *_args, **_kwargs: (None, True),
+    )
+    monkeypatch.setattr(
+        main,
+        "lookup_packet_entitlement_for_tax_year",
+        lambda *_args, **_kwargs: (
+            {
+                "analysis_id": "original-analysis",
+                "packet_session_id": "cs_paid_for_deleted_analysis",
+            },
+            True,
+        ),
+    )
+    monkeypatch.setattr(main, "_configure_packet_stripe", lambda: "sk_test")
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda *_args, **_kwargs: session,
+    )
+
+    granted = main._apply_packet_year_grant(result, "test-user-123")
+
+    assert granted.packet_unlocked is True
+    assert granted.packet_session_id == "cs_paid_for_deleted_analysis"
+
+
+def test_analyze_does_not_reuse_deleted_source_entitlement_for_wrong_year(monkeypatch):
+    from year_close_packet import PACKET_AMOUNT_CENTS, PACKET_METADATA_PRODUCT
+
+    result = main.PortfolioAnalysis.model_validate(
+        {
+            "analysis_id": "wrong-year-analysis",
+            "tax_profile": {"tax_year": 2025, "filing_status": "single"},
+        }
+    )
+    main.remember_analysis(
+        result.analysis_id,
+        "test-user-123",
+        {"analysis_id": result.analysis_id, "tax_profile": {"tax_year": 2025}},
+    )
+    session = {
+        "id": "cs_paid_for_2026",
+        "status": "complete",
+        "payment_status": "paid",
+        "amount_total": PACKET_AMOUNT_CENTS,
+        "currency": "usd",
+        "mode": "payment",
+        "livemode": False,
+        "metadata": {
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": "original-analysis",
+            "user_id": "test-user-123",
+            "tax_year": "2026",
+        },
+    }
+    monkeypatch.setattr(
+        main,
+        "lookup_packet_grant_for_tax_year",
+        lambda *_args, **_kwargs: (None, True),
+    )
+    monkeypatch.setattr(
+        main,
+        "lookup_packet_entitlement_for_tax_year",
+        lambda *_args, **_kwargs: (
+            {
+                "analysis_id": "original-analysis",
+                "packet_session_id": "cs_paid_for_2026",
+            },
+            True,
+        ),
+    )
+    monkeypatch.setattr(main, "_configure_packet_stripe", lambda: "sk_test")
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda *_args, **_kwargs: session,
+    )
+
+    granted = main._apply_packet_year_grant(result, "test-user-123")
+
+    assert granted.packet_unlocked is False
+    assert granted.packet_session_id is None
 
 
 def test_analyze_replace_mode_ignores_saved_book(monkeypatch):
@@ -975,6 +1128,11 @@ def test_persist_guest_analysis_saves_history(monkeypatch):
         return {"id": "hist-guest-1", "filename": kwargs["filename"]}
 
     monkeypatch.setattr("main.save_analysis_history", fake_save)
+    monkeypatch.setattr(
+        main,
+        "lookup_analysis_for_entitlement",
+        lambda *_args: (None, True),
+    )
     response = client.post(
         "/api/portfolio/history",
         json={
@@ -982,6 +1140,8 @@ def test_persist_guest_analysis_saves_history(monkeypatch):
             "analysis": {
                 "analysis_id": "guest-abc",
                 "summary": {"positions_count": 3, "total_market_value": 1000},
+                "packet_unlocked": True,
+                "packet_session_id": "cs_test_forged",
             },
         },
     )
@@ -990,6 +1150,192 @@ def test_persist_guest_analysis_saves_history(monkeypatch):
     assert saved["filename"] == "sample-robinhood-transactions.csv"
     assert saved["summary"]["positions_count"] == 3
     assert saved["result_data"]["analysis_id"] == "guest-abc"
+    assert "packet_unlocked" not in saved["result_data"]
+    assert "packet_session_id" not in saved["result_data"]
+
+
+def test_persist_guest_analysis_claims_matching_private_packet_snapshot(monkeypatch):
+    from year_close_packet import PACKET_STORE
+
+    guest_analysis = {
+        "analysis_id": "guest-claim-1",
+        "tax_profile": {"tax_year": 2025, "filing_status": "single"},
+        "tax_lots": [],
+        "supplemental_1099": None,
+        "wash_sale_flags": [],
+        "suggestions": [],
+        "lot_match_report": {
+            "matched": [{"symbol": "AAPL", "quantity": 10}],
+            "gap": [{"symbol": "NVDA", "quantity": 2}],
+            "unmatched": [],
+            "matched_count": 1,
+            "gap_count": 1,
+            "unmatched_count": 0,
+        },
+    }
+    main.remember_analysis("guest-claim-1", "", guest_analysis)
+    public_guest_analysis = {
+        **guest_analysis,
+        "lot_match_report": {
+            **guest_analysis["lot_match_report"],
+            "matched": [],
+            "gap": [],
+            "unmatched": [],
+        },
+    }
+    saved_snapshots = []
+    monkeypatch.setattr(
+        main,
+        "save_analysis_history",
+        lambda **kwargs: {
+            "id": "history-claim-1",
+            **kwargs,
+            "result": {
+                **kwargs["result_data"],
+                "lot_match_report": {
+                    **kwargs["result_data"]["lot_match_report"],
+                    "matched": [],
+                    "gap": [],
+                    "unmatched": [],
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(main, "lookup_analysis_for_entitlement", lambda *_args: (None, True))
+    monkeypatch.setattr(
+        main,
+        "save_packet_snapshot",
+        lambda analysis_id, user_id, tax_year, payload, **kwargs: (
+            saved_snapshots.append((analysis_id, user_id, tax_year, payload))
+            or {"analysis_id": analysis_id}
+        ),
+    )
+    claimed_payloads = []
+    original_upsert_packet_payload = main.upsert_packet_payload
+
+    def upsert_packet_payload_spy(analysis_id, user_id, payload):
+        claimed_payloads.append(payload)
+        return original_upsert_packet_payload(analysis_id, user_id, payload)
+
+    monkeypatch.setattr(
+        main,
+        "upsert_packet_payload",
+        upsert_packet_payload_spy,
+    )
+
+    response = client.post(
+        "/api/portfolio/history",
+        json={"filename": "guest.csv", "analysis": public_guest_analysis},
+    )
+
+    assert response.status_code == 200, response.text
+    assert saved_snapshots[0][0:3] == ("guest-claim-1", "test-user-123", 2025)
+    assert saved_snapshots[0][3] == PACKET_STORE["guest-claim-1"]["payload"]
+    assert saved_snapshots[0][3]["lot_match_report"]["matched"] == [
+        {"symbol": "AAPL", "quantity": 10}
+    ]
+    assert saved_snapshots[0][3]["lot_match_report"]["gap"] == [
+        {"symbol": "NVDA", "quantity": 2}
+    ]
+    assert claimed_payloads == [saved_snapshots[0][3]]
+    assert PACKET_STORE["guest-claim-1"]["user_id"] == "test-user-123"
+
+
+def test_apply_packet_year_grant_ignores_history_packet_flags(monkeypatch):
+    result = main.PortfolioAnalysis.model_validate(
+        {
+            "analysis_id": "forged-history-analysis",
+            "tax_profile": {"tax_year": 2025, "filing_status": "single"},
+            "packet_unlocked": True,
+            "packet_session_id": "cs_forged_history_value",
+        }
+    )
+    monkeypatch.setattr(main, "lookup_packet_grant_for_tax_year", lambda *_args: (None, True))
+    monkeypatch.setattr(main, "lookup_packet_entitlement_for_tax_year", lambda *_args: (None, True))
+    monkeypatch.setattr(main, "paid_session_for_user_year", lambda *_args: None)
+
+    result = main._apply_packet_year_grant(result, "test-user-123")
+
+    assert result.packet_unlocked is False
+    assert result.packet_session_id is None
+
+
+def test_guest_snapshot_retry_reuses_history_row_after_snapshot_write_failure(monkeypatch):
+    guest_analysis = {
+        "analysis_id": "guest-retry-1",
+        "tax_profile": {"tax_year": 2025, "filing_status": "single"},
+        "tax_lots": [],
+        "supplemental_1099": None,
+        "wash_sale_flags": [],
+        "suggestions": [],
+    }
+    main.remember_analysis("guest-retry-1", "", guest_analysis)
+    history_saves = []
+    history_row = {
+        "id": "history-retry-1",
+        "user_id": "test-user-123",
+        "result": {**guest_analysis},
+    }
+    lookups = iter([(None, True), (history_row, True)])
+    monkeypatch.setattr(
+        main,
+        "lookup_analysis_for_entitlement",
+        lambda *_args: next(lookups),
+    )
+    monkeypatch.setattr(
+        main,
+        "save_analysis_history",
+        lambda **kwargs: history_saves.append(kwargs) or history_row,
+    )
+    snapshot_writes = []
+    monkeypatch.setattr(
+        main,
+        "save_packet_snapshot",
+        lambda analysis_id, user_id, tax_year, payload, **_kwargs: (
+            snapshot_writes.append((analysis_id, user_id, tax_year, payload))
+            or (None if len(snapshot_writes) == 1 else {"analysis_id": analysis_id})
+        ),
+    )
+    request_body = {"filename": "guest.csv", "analysis": guest_analysis}
+
+    failed = client.post("/api/portfolio/history", json=request_body)
+    retried = client.post("/api/portfolio/history", json=request_body)
+
+    assert failed.status_code == 503
+    assert retried.status_code == 200
+    assert len(history_saves) == 1
+    assert len(snapshot_writes) == 2
+
+
+def test_guest_history_retry_after_cache_loss_does_not_insert_duplicate(monkeypatch):
+    analysis = {"analysis_id": "guest-cache-loss", "summary": {}}
+    existing = {"id": "history-cache-loss", "result": analysis}
+    lookups = []
+    inserts = []
+    monkeypatch.setattr(
+        main,
+        "lookup_analysis_for_entitlement",
+        lambda analysis_id, user_id: (lookups.append((analysis_id, user_id)) or (existing, True)),
+    )
+    monkeypatch.setattr(
+        main,
+        "get_packet_snapshot",
+        lambda *_args: (None, True),
+    )
+    monkeypatch.setattr(
+        main,
+        "save_analysis_history",
+        lambda **kwargs: inserts.append(kwargs),
+    )
+
+    response = client.post(
+        "/api/portfolio/history",
+        json={"filename": "guest.csv", "analysis": analysis},
+    )
+
+    assert response.status_code == 503
+    assert lookups == [("guest-cache-loss", "test-user-123")]
+    assert inserts == []
 
 
 def test_persist_guest_analysis_requires_auth():
@@ -1415,15 +1761,47 @@ def test_get_portfolio_analysis_not_found(monkeypatch):
 
 def test_delete_analysis_success(monkeypatch):
     """DELETE /api/portfolio/analysis/{id} returns success on deletion."""
+    monkeypatch.setattr(
+        "main.get_analysis_by_id",
+        lambda aid, uid: {"id": aid, "user_id": uid, "result": {"analysis_id": "packet-id"}},
+    )
     monkeypatch.setattr("main.delete_analysis_by_id", lambda aid, uid: True)
+    forgotten = []
+    monkeypatch.setattr(
+        "main.forget_packet_payload",
+        lambda aid, uid: forgotten.append((aid, uid)) or True,
+    )
 
     response = client.delete("/api/portfolio/analysis/abc-123")
     assert response.status_code == 200
     assert response.json()["deleted"] is True
+    assert forgotten == [
+        ("packet-id", "test-user-123"),
+        ("abc-123", "test-user-123"),
+    ]
+
+
+def test_delete_analysis_clears_packet_by_history_id_when_result_has_no_analysis_id(monkeypatch):
+    monkeypatch.setattr(
+        "main.get_analysis_by_id",
+        lambda aid, uid: {"id": aid, "user_id": uid, "result": None},
+    )
+    monkeypatch.setattr("main.delete_analysis_by_id", lambda aid, uid: True)
+    forgotten = []
+    monkeypatch.setattr(
+        "main.forget_packet_payload",
+        lambda aid, uid: forgotten.append((aid, uid)) or True,
+    )
+
+    response = client.delete("/api/portfolio/analysis/abc-123")
+
+    assert response.status_code == 200
+    assert forgotten == [("abc-123", "test-user-123")]
 
 
 def test_delete_analysis_not_found(monkeypatch):
     """DELETE /api/portfolio/analysis/{id} returns 404 when not found."""
+    monkeypatch.setattr("main.get_analysis_by_id", lambda *_args: None)
     monkeypatch.setattr("main.delete_analysis_by_id", lambda aid, uid: False)
 
     response = client.delete("/api/portfolio/analysis/nonexistent")
@@ -1724,7 +2102,7 @@ def test_analyze_portfolio_applies_live_option_prices(monkeypatch):
     monkeypatch.setattr("main.prepare_positions_for_ai", lambda l: [])
     monkeypatch.setattr("main.generate_suggestions", lambda **kw: [])
     monkeypatch.setattr("main.detect_wash_sales", lambda *args, **kwargs: [])
-    monkeypatch.setattr("main._save_history_best_effort", lambda *args, **kwargs: None)
+    monkeypatch.setattr("main._save_history_best_effort", lambda *args, **kwargs: True)
 
     response = client.post("/api/portfolio/analyze", files=_make_csv())
     assert response.status_code == 200
@@ -2423,7 +2801,10 @@ def test_trusted_in_app_sample_skips_yahoo_and_still_returns_positions(monkeypat
     monkeypatch.setattr("main.prepare_positions_for_ai", lambda lots: [])
     monkeypatch.setattr("main._save_history_best_effort", lambda *args, **kwargs: None)
     monkeypatch.setattr("main.get_latest_activity_book", lambda uid, client=None: None)
-    monkeypatch.setattr("main.get_packet_grant_for_tax_year", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "main.lookup_packet_grant_for_tax_year",
+        lambda *args, **kwargs: (None, True),
+    )
 
     def boom(*_args, **_kwargs):
         raise AssertionError("yfinance should not run for the in-app sample")
