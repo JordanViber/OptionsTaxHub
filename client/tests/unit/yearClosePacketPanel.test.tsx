@@ -524,20 +524,76 @@ describe("YearClosePacketPanel", () => {
     await waitFor(() => expect(window.location.search).not.toContain("packet_session"));
   });
 
-  it("resumes a pending Stripe Checkout after refresh instead of confirming or creating another", async () => {
+  it("confirms a restored pending session instead of resuming Checkout blindly", async () => {
     store["optionstaxhub-packet-pending:analysis-1"] = "cs_test_pending";
     store["optionstaxhub-packet-pending-url:analysis-1"] =
       "https://checkout.stripe.com/c/pay/cs_test_pending";
+    store["optionstaxhub-packet-pending-confirm:analysis-1"] = "1";
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 503,
+      json: () => Promise.resolve({ detail: "Confirmation temporarily failed." }),
+    });
+
+    render(<YearClosePacketPanel analysis={analysis} />);
+    fireEvent.click(screen.getByRole("button", { name: /Pay \$49/i }));
+
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+    expect(mockFetch.mock.calls[0][0]).toContain("/api/year-close-packet/confirm");
+    expect(JSON.parse(mockFetch.mock.calls[0][1].body).session_id).toBe(
+      "cs_test_pending",
+    );
+    expect(store["optionstaxhub-packet-pending:analysis-1"]).toBe("cs_test_pending");
+    expect(store["optionstaxhub-packet-pending-confirm:analysis-1"]).toBe("1");
+    expect(mockFetch.mock.calls[0][0]).not.toContain("/checkout");
+  });
+
+  it("keeps a pending checkout through confirm failures instead of opening another", async () => {
+    store["optionstaxhub-packet-pending:analysis-1"] = "cs_test_real";
+    window.history.replaceState(
+      null,
+      "",
+      "/dashboard?packet_session=cs_test_real&packet_analysis=analysis-1",
+    );
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 503,
+        json: () => Promise.resolve({ detail: "Confirmation temporarily failed." }),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 503,
+        json: () => Promise.resolve({ detail: "Confirmation temporarily failed." }),
+      });
+
+    render(<YearClosePacketPanel analysis={analysis} />);
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent(/temporarily failed/i),
+    );
+    expect(store["optionstaxhub-packet-pending:analysis-1"]).toBe("cs_test_real");
+    expect(store["optionstaxhub-packet-pending-confirm:analysis-1"]).toBe("1");
+
+    fireEvent.click(screen.getByRole("button", { name: /Pay \$49/i }));
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));
+    expect(String(mockFetch.mock.calls[1][0])).toContain("/api/year-close-packet/confirm");
+    expect(String(mockFetch.mock.calls[1][0])).not.toContain("/checkout");
+    expect(JSON.parse(mockFetch.mock.calls[1][1].body).session_id).toBe("cs_test_real");
+    expect(store["optionstaxhub-packet-pending:analysis-1"]).toBe("cs_test_real");
+  });
+
+  it("resumes Checkout after reload only once confirm reported the session still open", async () => {
+    store["optionstaxhub-packet-pending:analysis-1"] = "cs_test_open";
+    store["optionstaxhub-packet-pending-url:analysis-1"] =
+      "https://checkout.stripe.com/c/pay/cs_test_open";
+    store["optionstaxhub-packet-pending-open:analysis-1"] = "1";
 
     render(<YearClosePacketPanel analysis={analysis} />);
     fireEvent.click(screen.getByRole("button", { name: /Pay \$49/i }));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(mockFetch).not.toHaveBeenCalled();
-    expect(store["optionstaxhub-packet-pending:analysis-1"]).toBe("cs_test_pending");
-    expect(store["optionstaxhub-packet-pending-url:analysis-1"]).toContain(
-      "cs_test_pending",
-    );
+    expect(store["optionstaxhub-packet-pending:analysis-1"]).toBe("cs_test_open");
   });
 
   it("keeps and resumes the same checkout when Stripe returns an open session", async () => {

@@ -64,7 +64,12 @@ class _FakeQueryBuilder:
         self.calls.append(("contains", args, {}))
         return self
 
-    def is_(self, *args):
+    def is_(self, *args, **kwargs):
+        self.calls.append(("is_", args, kwargs))
+        return self
+
+    def filter(self, *args, **kwargs):
+        self.calls.append(("filter", args, kwargs))
         return self
 
     def gt(self, *args):
@@ -658,12 +663,101 @@ class TestPacketSnapshots:
             {"report": "restored"},
         )
 
-        upsert = next(call for call in client.builders[1].calls if call[0] == "upsert")
-        row = upsert[1][0]
+        update = next(call for call in client.builders[1].calls if call[0] == "update")
+        row = update[1][0]
         assert row["packet_payload"] == {"report": "restored"}
         assert row["packet_session_id"] == "cs_paid_2025"
         assert row["paid_at"] == existing["paid_at"]
+        assert ("filter", ("paid_at", "not.is", "null"), {}) in client.builders[1].calls
+        assert ("is_", ("packet_payload", "null"), {}) in client.builders[1].calls
+        assert not any(call[0] == "upsert" for call in client.builders[1].calls)
         assert saved["analysis_id"] == "analysis-a"
+
+    def test_conditional_repair_does_not_clobber_payload_written_after_read(self, monkeypatch):
+        stale = {
+            "analysis_id": "analysis-a",
+            "user_id": "user1",
+            "tax_year": 2025,
+            "packet_payload": None,
+            "packet_session_id": "cs_paid",
+            "paid_at": "2026-09-29T00:00:00+00:00",
+        }
+        fresh = {
+            **stale,
+            "packet_payload": {"lot_match_report": {"matched": [{"symbol": "AMD"}]}},
+        }
+
+        class _RepairClient:
+            def __init__(self):
+                self.reads = 0
+                self.updates = []
+                self.filters = []
+                self.mode = "read"
+
+            def table(self, _name):
+                self.mode = "read"
+                return self
+
+            def select(self, *_args):
+                return self
+
+            def eq(self, *_args):
+                return self
+
+            def limit(self, *_args):
+                return self
+
+            def filter(self, *args):
+                self.filters.append(args)
+                return self
+
+            def is_(self, *args):
+                self.filters.append(("is_", args))
+                return self
+
+            def update(self, row):
+                self.mode = "update"
+                self.updates.append(row)
+                return self
+
+            def insert(self, _row):
+                raise AssertionError("repair must not insert over a paid row")
+
+            def upsert(self, *_args, **_kwargs):
+                raise AssertionError("repair must not upsert over a paid row")
+
+            def execute(self):
+                if self.mode == "update":
+                    self.mode = "read"
+                    return _FakeExecuteResult([])
+                self.reads += 1
+                row = stale if self.reads == 1 else fresh
+                return _FakeExecuteResult([row])
+
+        client = _RepairClient()
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+
+        saved = db.save_packet_snapshot(
+            "analysis-a",
+            "user1",
+            2025,
+            {"lot_match_report": {"matched": [{"symbol": "CLOBBER"}]}},
+        )
+
+        assert saved == {
+            "analysis_id": "analysis-a",
+            "user_id": "user1",
+            "tax_year": 2025,
+        }
+        assert len(client.updates) == 1
+        assert client.updates[0]["packet_payload"]["lot_match_report"]["matched"] == [
+            {"symbol": "CLOBBER"}
+        ]
+        assert ("paid_at", "not.is", "null") in client.filters
+        assert ("is_", ("packet_payload", "null")) in client.filters
+        assert fresh["packet_payload"]["lot_match_report"]["matched"] == [
+            {"symbol": "AMD"}
+        ]
 
     def test_racing_unpaid_snapshot_write_cannot_downgrade_a_paid_row(self, monkeypatch):
         unpaid = {
@@ -927,9 +1021,86 @@ class TestPacketSnapshots:
         )
 
         assert saved["analysis_id"] == "original-analysis"
-        upsert = next(call for call in client.builders[0].calls if call[0] == "upsert")
-        assert upsert[1][0]["analysis_id"] == "followup-analysis"
-        assert upsert[2]["on_conflict"] == "user_id,tax_year,packet_session_id"
-        assert upsert[2]["ignore_duplicates"] is True
-        assert len(client.builders) == 2
-        assert ("eq", ("packet_session_id", "cs_original"), {}) in client.builders[1].calls
+        assert not any(
+            call[0] == "upsert"
+            for builder in client.builders
+            for call in builder.calls
+        )
+        insert = next(call for call in client.builders[1].calls if call[0] == "insert")
+        assert insert[1][0]["analysis_id"] == "followup-analysis"
+        assert ("eq", ("packet_session_id", "cs_original"), {}) in client.builders[0].calls
+        assert ("eq", ("packet_session_id", "cs_original"), {}) in client.builders[2].calls
+
+    def test_entitlement_insert_conflict_keeps_original_analysis_id(self, monkeypatch):
+        original = {
+            "analysis_id": "original-analysis",
+            "user_id": "user1",
+            "tax_year": 2026,
+            "packet_session_id": "cs_original",
+        }
+
+        class _ConflictClient:
+            def __init__(self):
+                self.inserts = []
+                self.reads = 0
+                self.mode = "read"
+
+            def table(self, _name):
+                self.mode = "read"
+                return self
+
+            def select(self, *_args):
+                return self
+
+            def eq(self, *_args):
+                return self
+
+            def limit(self, *_args):
+                return self
+
+            def insert(self, row):
+                self.mode = "insert"
+                self.inserts.append(row)
+                return self
+
+            def upsert(self, *_args, **_kwargs):
+                raise AssertionError("entitlement insert must not upsert analysis_id")
+
+            def execute(self):
+                if self.mode == "insert":
+                    self.mode = "read"
+                    error = Exception("duplicate key value violates unique constraint")
+                    error.code = "23505"
+                    raise error
+                self.reads += 1
+                if self.reads == 1:
+                    return _FakeExecuteResult([])
+                return _FakeExecuteResult([original])
+
+        client = _ConflictClient()
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+
+        saved = db.save_packet_entitlement(
+            "followup-analysis", "user1", 2026, "cs_original"
+        )
+
+        assert saved["analysis_id"] == "original-analysis"
+        assert len(client.inserts) == 1
+        assert client.inserts[0]["analysis_id"] == "followup-analysis"
+
+
+class TestHistoryInsertConflict:
+    def test_unique_violation_raises_conflict(self, monkeypatch):
+        client = MagicMock()
+        error = Exception("duplicate key value violates unique constraint")
+        error.code = "23505"
+        client.table.return_value.insert.return_value.select.return_value.execute.side_effect = error
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+
+        with pytest.raises(db.HistoryInsertConflict):
+            db.save_analysis_history(
+                "user1",
+                "guest.csv",
+                {},
+                result_data={"analysis_id": "analysis-1"},
+            )

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Alert,
   Box,
@@ -50,6 +50,14 @@ function pendingSessionStorageKey(analysisId: string): string {
 
 function pendingCheckoutUrlStorageKey(analysisId: string): string {
   return `optionstaxhub-packet-pending-url:${analysisId}`;
+}
+
+function pendingConfirmStorageKey(analysisId: string): string {
+  return `optionstaxhub-packet-pending-confirm:${analysisId}`;
+}
+
+function pendingOpenStorageKey(analysisId: string): string {
+  return `optionstaxhub-packet-pending-open:${analysisId}`;
 }
 
 function trustedCheckoutUrl(value: unknown): string | null {
@@ -237,7 +245,13 @@ function YearClosePacketPanelForAnalysis({
   const [paid, setPaid] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [checkoutUrl, setCheckoutUrl] = useState<string | null>(null);
-  const [confirmPending, setConfirmPending] = useState(false);
+  const [confirmPending, setConfirmPending] = useState(
+    () => readSessionItem(pendingConfirmStorageKey(analysisStorageId)) === "1",
+  );
+  const [resumeOpenCheckout, setResumeOpenCheckout] = useState(
+    () => readSessionItem(pendingOpenStorageKey(analysisStorageId)) === "1",
+  );
+  const confirmAttempt = useRef(0);
   const missingAnalysisId = canonicalAnalysisId === "local-analysis";
 
   // Same-tab Stripe redirect leaves this page in back-forward cache with
@@ -254,6 +268,105 @@ function YearClosePacketPanelForAnalysis({
     return () => window.removeEventListener("pageshow", onPageShow);
   }, []);
 
+  const persistConfirmFlag = (pending: boolean) => {
+    setConfirmPending(pending);
+    if (pending) {
+      writeSessionItem(pendingConfirmStorageKey(analysisStorageId), "1");
+    } else {
+      clearSessionItem(pendingConfirmStorageKey(analysisStorageId));
+    }
+  };
+
+  const persistResumeFlag = (open: boolean) => {
+    setResumeOpenCheckout(open);
+    if (open) {
+      writeSessionItem(pendingOpenStorageKey(analysisStorageId), "1");
+    } else {
+      clearSessionItem(pendingOpenStorageKey(analysisStorageId));
+    }
+  };
+
+  const confirmPacketSession = async (sid: string, confirmedAnalysisId: string) => {
+    const attempt = ++confirmAttempt.current;
+    if (sid.startsWith("cs_")) {
+      writeSessionItem(pendingSessionStorageKey(analysisStorageId), sid);
+    }
+    persistConfirmFlag(true);
+    persistResumeFlag(false);
+    setSessionId(sid);
+    setBusy("confirm");
+    setError(null);
+    let retryableFailure = true;
+    let checkoutStillOpen = false;
+    try {
+      const headers = await authHeaders();
+      const response = await fetch(`${API_URL}/api/year-close-packet/confirm`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          analysis_id: confirmedAnalysisId,
+          packet_analysis: confirmedAnalysisId,
+          session_id: sid,
+          analysis: compactAnalysis(analysis),
+        }),
+      });
+      if (attempt !== confirmAttempt.current) {
+        return;
+      }
+      if (!response.ok) {
+        const errData = await response.json().catch(() => null);
+        const detail = String(errData?.detail || "");
+        checkoutStillOpen = response.status === 409 && /still open/i.test(detail);
+        retryableFailure =
+          response.status >= 500 ||
+          checkoutStillOpen ||
+          (response.status === 409 && /payment was received/i.test(detail));
+        throw new Error(errData?.detail || "Could not confirm packet payment.");
+      }
+      const confirmData = await response.json();
+      const canonicalId =
+        typeof confirmData?.analysis_id === "string"
+          ? confirmData.analysis_id
+          : confirmedAnalysisId;
+      setCanonicalAnalysisId(canonicalId);
+      writeSessionItem(canonicalStorageKey(analysisStorageId), canonicalId);
+      setPaid(true);
+      persistConfirmFlag(false);
+      persistResumeFlag(false);
+      setCheckoutUrl(null);
+      clearSessionItem(pendingSessionStorageKey(analysisStorageId));
+      clearSessionItem(pendingCheckoutUrlStorageKey(analysisStorageId));
+      writeSessionItem(paidStorageKey(canonicalId), sid);
+      onPaidChange?.(true);
+      stripPacketQueryParams();
+    } catch (err) {
+      if (attempt !== confirmAttempt.current) {
+        return;
+      }
+      setError(err instanceof Error ? err.message : "Could not confirm payment.");
+      if (checkoutStillOpen) {
+        persistConfirmFlag(false);
+        persistResumeFlag(true);
+        stripPacketQueryParams();
+      } else if (retryableFailure) {
+        persistConfirmFlag(true);
+        persistResumeFlag(false);
+      } else {
+        persistConfirmFlag(false);
+        persistResumeFlag(false);
+        setSessionId(null);
+        setCheckoutUrl(null);
+        clearSessionItem(pendingSessionStorageKey(analysisStorageId));
+        clearSessionItem(pendingCheckoutUrlStorageKey(analysisStorageId));
+        stripPacketQueryParams();
+      }
+    } finally {
+      if (attempt === confirmAttempt.current) {
+        setBusy(null);
+      }
+    }
+  };
+
   useEffect(() => {
     const savedCanonical = readSessionItem(canonicalStorageKey(analysisStorageId));
     const savedCanonicalId = savedCanonical || analysisId;
@@ -265,7 +378,12 @@ function YearClosePacketPanelForAnalysis({
     if (pendingSessionId?.startsWith("cs_")) {
       setSessionId(pendingSessionId);
       setCheckoutUrl(pendingCheckoutUrl);
-      setConfirmPending(false);
+      setConfirmPending(
+        readSessionItem(pendingConfirmStorageKey(analysisStorageId)) === "1",
+      );
+      setResumeOpenCheckout(
+        readSessionItem(pendingOpenStorageKey(analysisStorageId)) === "1",
+      );
     }
     if (analysis.packet_unlocked) {
       setPaid(true);
@@ -304,77 +422,14 @@ function YearClosePacketPanelForAnalysis({
       }
       clearSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY);
       setCanceledNotice(false);
-      setSessionId(sid);
-      setConfirmPending(true);
-      setBusy("confirm");
-      setError(null);
-      let retryableFailure = true;
-      let checkoutStillOpen = false;
-      void (async () => {
-        try {
-          const headers = await authHeaders();
-          const response = await fetch(`${API_URL}/api/year-close-packet/confirm`, {
-            method: "POST",
-            headers,
-            body: JSON.stringify({
-              analysis_id: confirmedAnalysisId,
-              packet_analysis: confirmedAnalysisId,
-              session_id: sid,
-              analysis: compactAnalysis(analysis),
-            }),
-          });
-          if (!response.ok) {
-            const errData = await response.json().catch(() => null);
-            const detail = String(errData?.detail || "");
-            checkoutStillOpen = response.status === 409 && /still open/i.test(detail);
-            retryableFailure =
-              response.status >= 500 ||
-              checkoutStillOpen ||
-              (response.status === 409 && /payment was received/i.test(detail));
-            throw new Error(
-              errData?.detail || "Could not confirm packet payment.",
-            );
-          }
-          const confirmData = await response.json();
-          const canonicalId =
-            typeof confirmData?.analysis_id === "string"
-              ? confirmData.analysis_id
-              : confirmedAnalysisId;
-          setCanonicalAnalysisId(canonicalId);
-          writeSessionItem(canonicalStorageKey(analysisStorageId), canonicalId);
-          setPaid(true);
-          setConfirmPending(false);
-          setCheckoutUrl(null);
-          clearSessionItem(pendingSessionStorageKey(analysisStorageId));
-          clearSessionItem(pendingCheckoutUrlStorageKey(analysisStorageId));
-          writeSessionItem(paidStorageKey(canonicalId), sid);
-          onPaidChange?.(true);
-          stripPacketQueryParams();
-        } catch (err) {
-          setError(err instanceof Error ? err.message : "Could not confirm payment.");
-          if (checkoutStillOpen) {
-            setConfirmPending(false);
-            stripPacketQueryParams();
-          } else if (retryableFailure) {
-            setConfirmPending(true);
-          } else {
-            setConfirmPending(false);
-            setSessionId(null);
-            setCheckoutUrl(null);
-            clearSessionItem(pendingSessionStorageKey(analysisStorageId));
-            clearSessionItem(pendingCheckoutUrlStorageKey(analysisStorageId));
-            stripPacketQueryParams();
-          }
-        } finally {
-          setBusy(null);
-        }
-      })();
+      void confirmPacketSession(sid, confirmedAnalysisId);
       return;
     }
 
     if (canceled || (inflight && !pendingSessionId)) {
       clearSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY);
-      setConfirmPending(false);
+      persistConfirmFlag(false);
+      persistResumeFlag(false);
       setBusy(null);
       setCanceledNotice(true);
       stripPacketQueryParams();
@@ -382,7 +437,11 @@ function YearClosePacketPanelForAnalysis({
   }, [analysis, analysisId, analysisStorageId]);
 
   const handlePay = async () => {
-    if (sessionId && !confirmPending && checkoutUrl) {
+    if (sessionId && confirmPending) {
+      await confirmPacketSession(sessionId, canonicalAnalysisId);
+      return;
+    }
+    if (sessionId && resumeOpenCheckout && checkoutUrl) {
       setBusy("pay");
       setError(null);
       try {
@@ -393,63 +452,7 @@ function YearClosePacketPanelForAnalysis({
       return;
     }
     if (sessionId) {
-      setBusy("confirm");
-      setError(null);
-      let retryableFailure = true;
-      let checkoutStillOpen = false;
-      try {
-        const headers = await authHeaders();
-        const response = await fetch(`${API_URL}/api/year-close-packet/confirm`, {
-          method: "POST",
-          headers,
-          body: JSON.stringify({
-            analysis_id: canonicalAnalysisId,
-            packet_analysis: canonicalAnalysisId,
-            session_id: sessionId,
-            analysis: compactAnalysis(analysis),
-          }),
-        });
-        if (!response.ok) {
-          const errData = await response.json().catch(() => null);
-          const detail = String(errData?.detail || "");
-          checkoutStillOpen = response.status === 409 && /still open/i.test(detail);
-          retryableFailure =
-            response.status >= 500 ||
-            checkoutStillOpen ||
-            (response.status === 409 && /payment was received/i.test(detail));
-          throw new Error(errData?.detail || "Could not confirm packet payment.");
-        }
-        const data = await response.json();
-        const paidAnalysisId =
-          typeof data?.analysis_id === "string" ? data.analysis_id : canonicalAnalysisId;
-        setCanonicalAnalysisId(paidAnalysisId);
-        writeSessionItem(canonicalStorageKey(analysisStorageId), paidAnalysisId);
-        setPaid(true);
-        setConfirmPending(false);
-        setCheckoutUrl(null);
-        clearSessionItem(pendingSessionStorageKey(analysisStorageId));
-        clearSessionItem(pendingCheckoutUrlStorageKey(analysisStorageId));
-        writeSessionItem(paidStorageKey(paidAnalysisId), sessionId);
-        onPaidChange?.(true);
-        stripPacketQueryParams();
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Could not confirm payment.");
-        if (checkoutStillOpen) {
-          setConfirmPending(false);
-          stripPacketQueryParams();
-        } else if (retryableFailure) {
-          setConfirmPending(true);
-        } else {
-          setConfirmPending(false);
-          setSessionId(null);
-          setCheckoutUrl(null);
-          clearSessionItem(pendingSessionStorageKey(analysisStorageId));
-          clearSessionItem(pendingCheckoutUrlStorageKey(analysisStorageId));
-          stripPacketQueryParams();
-        }
-      } finally {
-        setBusy(null);
-      }
+      await confirmPacketSession(sessionId, canonicalAnalysisId);
       return;
     }
     setBusy("pay");
@@ -477,7 +480,8 @@ function YearClosePacketPanelForAnalysis({
           typeof data.analysis_id === "string" ? data.analysis_id : canonicalAnalysisId;
         setCanonicalAnalysisId(paidAnalysisId);
         setSessionId(data.session_id);
-        setConfirmPending(false);
+        persistConfirmFlag(false);
+        persistResumeFlag(false);
         setCheckoutUrl(null);
         setPaid(true);
         clearSessionItem(pendingSessionStorageKey(analysisStorageId));
@@ -503,7 +507,8 @@ function YearClosePacketPanelForAnalysis({
         setSessionId(data.session_id);
         writeSessionItem(pendingSessionStorageKey(analysisStorageId), data.session_id);
         setCheckoutUrl(safeCheckoutUrl);
-        setConfirmPending(false);
+        persistConfirmFlag(false);
+        persistResumeFlag(false);
         writeSessionItem(pendingCheckoutUrlStorageKey(analysisStorageId), safeCheckoutUrl);
       }
       try {

@@ -48,7 +48,10 @@ ALTER TABLE tax_profiles ENABLE ROW LEVEL SECURITY;
 #### Portfolio Analyses RLS Policies
 
 ```sql
--- Match the policy name in server/migrations/001_portfolio_analyses.sql.
+-- Match server/migrations/001_portfolio_analyses.sql and
+-- server/migrations/007_restrict_analysis_client_writes.sql.
+-- 007 drops legacy client write policies, including
+-- "Users can update their own analyses". Do not recreate them.
 -- Authenticated clients may read only their own history.
 CREATE POLICY "Users can view own analyses"
   ON portfolio_analyses FOR SELECT

@@ -21,6 +21,11 @@ load_dotenv(_SERVER_DIR / ".env")
 
 logger = logging.getLogger(__name__)
 
+
+class HistoryInsertConflict(Exception):
+    """Another request already inserted this user's analysis row."""
+
+
 # Lazy-initialized Supabase client
 _supabase_client = None
 
@@ -143,6 +148,10 @@ def save_analysis_history(
         logger.error("Analysis history insert returned no persisted row")
         return None
     except Exception as e:
+        if _is_unique_violation(e):
+            raise HistoryInsertConflict(
+                "portfolio analysis history already exists for this analysis"
+            ) from e
         logger.error(f"Failed to save analysis history: {e}")
         return None
 
@@ -339,12 +348,22 @@ def ensure_analysis_history(
     safe_analysis = dict(analysis)
     safe_analysis.pop("packet_unlocked", None)
     safe_analysis.pop("packet_session_id", None)
-    return save_analysis_history(
-        user_id,
-        filename,
-        summary,
-        result_data=safe_analysis,
-    )
+    try:
+        return save_analysis_history(
+            user_id,
+            filename,
+            summary,
+            result_data=safe_analysis,
+        )
+    except HistoryInsertConflict:
+        raced, race_ok = _lookup_analysis_for_entitlement(
+            analysis_id,
+            user_id,
+            client,
+        )
+        if not race_ok:
+            return None
+        return raced
 
 
 def delete_analyses_without_result(user_id: str) -> int:
@@ -524,6 +543,16 @@ def lookup_packet_entitlement_for_tax_year(
     return None, True
 
 
+def _is_unique_violation(exc: Exception) -> bool:
+    error_text = str(exc).lower()
+    error_code = getattr(exc, "code", None)
+    return (
+        error_code == "23505"
+        or "duplicate key" in error_text
+        or "unique constraint" in error_text
+    )
+
+
 def save_packet_entitlement(
     analysis_id: str,
     user_id: str,
@@ -531,36 +560,20 @@ def save_packet_entitlement(
     session_id: str,
     client=None,
 ) -> Optional[dict]:
-    """Persist a verified Stripe purchase separately from its private document."""
+    """Persist a verified Stripe purchase separately from its private document.
+
+    The receipt is immutable for (user, tax year, checkout session). A later
+    analysis in that paid year gets its own snapshot and must not rewrite the
+    original analysis id, or Stripe metadata checks 503.
+    """
     if not analysis_id or not user_id or tax_year is None or not session_id.startswith("cs_"):
         return None
     if client is None:
         client = get_supabase()
     if client is None:
         return None
-    try:
-        result = (
-            client.table("year_close_packet_entitlements")
-            .upsert(
-                {
-                    "analysis_id": analysis_id,
-                    "user_id": user_id,
-                    "tax_year": int(tax_year),
-                    "packet_session_id": session_id,
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                },
-                on_conflict="user_id,tax_year,packet_session_id",
-                ignore_duplicates=True,
-            )
-            .select("analysis_id, user_id, tax_year, packet_session_id")
-            .execute()
-        )
-        if result.data:
-            return dict(result.data[0])
-        # ignore_duplicates makes repeated verified webhooks idempotent, but
-        # PostgREST returns no representation for the conflict. Read back the
-        # exact receipt so callers can treat an already-saved entitlement as
-        # success without changing its original analysis id or timestamp.
+
+    def read_existing():
         existing = (
             client.table("year_close_packet_entitlements")
             .select("analysis_id, user_id, tax_year, packet_session_id")
@@ -571,6 +584,37 @@ def save_packet_entitlement(
             .execute()
         )
         return dict(existing.data[0]) if existing.data else None
+
+    try:
+        current = read_existing()
+        if current:
+            return current
+        row = {
+            "analysis_id": analysis_id,
+            "user_id": user_id,
+            "tax_year": int(tax_year),
+            "packet_session_id": session_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            # INSERT cannot rewrite an existing receipt. Upsert with a wiped
+            # ignore-duplicates preference would replace analysis_id.
+            result = (
+                client.table("year_close_packet_entitlements")
+                .insert(row)
+                .select("analysis_id, user_id, tax_year, packet_session_id")
+                .execute()
+            )
+        except Exception as insert_error:
+            if not _is_unique_violation(insert_error):
+                raise
+            return read_existing()
+        current = read_existing()
+        if current:
+            return current
+        if result.data:
+            return dict(result.data[0])
+        return None
     except Exception as e:
         logger.error("Failed to save packet entitlement for %s: %s", analysis_id, e)
         return None
@@ -658,15 +702,34 @@ def save_packet_snapshot(
                 "expires_at": None,
                 "updated_at": now.isoformat(),
             }
-            # This write can only preserve or repair a paid row. Unpaid writes
-            # below use conditional UPDATE/INSERT and cannot overwrite it.
-            result = (
+            # Repair only the null payload we just read. A concurrent delete or
+            # a payload written after this read must not be upserted over.
+            repair = (
                 client.table("year_close_packet_snapshots")
-                .upsert(row, on_conflict="user_id,analysis_id")
-                .select("analysis_id, user_id, tax_year")
-                .execute()
+                .update(row)
+                .eq("analysis_id", analysis_id)
+                .eq("user_id", user_id)
+                .filter("paid_at", "not.is", "null")
             )
-            return result_row(result, row)
+            if stored_payload is None:
+                repair = repair.is_("packet_payload", "null")
+            else:
+                repair = repair.eq("packet_payload", stored_payload)
+            result = repair.select("analysis_id, user_id, tax_year").execute()
+            if result.data:
+                return dict(result.data[0])
+            latest_row = read_existing()
+            if not latest_row:
+                return None
+            latest_payload = latest_row.get("packet_payload")
+            if latest_row.get("paid_at") and (
+                isinstance(latest_payload, dict) or not isinstance(packet_payload, dict)
+            ):
+                return {
+                    key: latest_row.get(key)
+                    for key in ("analysis_id", "user_id", "tax_year")
+                }
+            return None
 
         row = {
             "analysis_id": analysis_id,

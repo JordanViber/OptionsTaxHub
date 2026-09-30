@@ -99,16 +99,17 @@ PACKET_STORE: dict[str, dict[str, Any]] = {}
 
 
 def _same_packet_owner(stored: Any, user_id: str) -> bool:
-    """Blank guest ownership can be claimed; non-empty owners never transfer."""
-    if not user_id:
-        return False
-    current = stored or ""
-    return current in ("", user_id)
+    """True only when both sides are the same owner.
+
+    Blank guest state matches another blank caller. It does not match a
+    signed-in user; adopting that snapshot requires an exact payload match.
+    """
+    return (stored or "") == (user_id or "")
 
 
 def _claim_packet_owner(rec: dict[str, Any], user_id: str) -> None:
-    if user_id and not rec.get("user_id"):
-        rec["user_id"] = user_id
+    """No-op. Blank guest rows are adopted only by adopt_guest_packet."""
+    return None
 
 # Guest analyses are stored under an empty user_id. Without TTL + a cap this
 # dict grows without bound on every unauthenticated POST /analyze.
@@ -919,7 +920,6 @@ def remember_analysis(analysis_id: str, user_id: str, analysis: dict[str, Any]) 
     if existing and not _same_packet_owner(existing.get("user_id"), user_id):
         logger.warning("Refusing to replace packet snapshot owned by another user")
         return
-    _claim_packet_owner(existing, user_id)
     existing_payload = existing.get("payload")
     if not isinstance(existing_payload, dict):
         existing_payload = None
@@ -950,7 +950,6 @@ def upsert_payload(analysis_id: str, user_id: str, analysis: dict[str, Any] | No
             session_ids=set(),
         )
     if rec and rec.get("payload"):
-        _claim_packet_owner(rec, user_id)
         purge_packet_store()
         return PACKET_STORE.get(analysis_id) or rec
     if analysis:
@@ -981,7 +980,6 @@ def upsert_packet_payload(
     if rec and not _same_packet_owner(rec.get("user_id"), user_id):
         return False
     if rec and isinstance(rec.get("payload"), dict):
-        _claim_packet_owner(rec, user_id)
         return True
     PACKET_STORE[analysis_id] = _new_packet_record(
         user_id,
@@ -995,7 +993,11 @@ def upsert_packet_payload(
 
 
 def packet_store_belongs_to_user(analysis_id: str, user_id: str) -> bool:
-    """Return false when a globally keyed memory record belongs to another owner."""
+    """Return false when a globally keyed memory record belongs to another owner.
+
+    A blank guest row is not this caller's document. Checkout may still adopt
+    it after claimable_guest_packet_payload matches.
+    """
     rec = PACKET_STORE.get(analysis_id)
     return rec is None or _same_packet_owner(rec.get("user_id"), user_id)
 
@@ -1008,6 +1010,30 @@ def packet_store_owner(analysis_id: str) -> str | None:
     return str(rec.get("user_id") or "")
 
 
+_PACKET_LOT_LIST_KEYS = ("matched", "gap", "unmatched")
+
+
+def _public_packet_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Compare shape shared by a private snapshot and a redacted client body.
+
+    Unpaid analyze JSON drops lot row lists (counts and totals stay) and may
+    also clear supplemental lots and activity transactions. Those row lists are
+    not required for a same-run match, so both sides are redacted before compare.
+    """
+    public = deepcopy(payload)
+    report = public.get("lot_match_report")
+    if isinstance(report, dict):
+        for key in _PACKET_LOT_LIST_KEYS:
+            report[key] = []
+    supplemental = public.get("supplemental_1099")
+    if isinstance(supplemental, dict) and "lots" in supplemental:
+        supplemental["lots"] = []
+    book = public.get("activity_book")
+    if isinstance(book, dict) and "transactions" in book:
+        book["transactions"] = []
+    return public
+
+
 def claimable_guest_packet_payload(
     analysis_id: str,
     user_id: str,
@@ -1017,20 +1043,37 @@ def claimable_guest_packet_payload(
     if not analysis_id or not user_id or not isinstance(analysis, dict):
         return None
     record = PACKET_STORE.get(analysis_id)
-    if not record or not _same_packet_owner(record.get("user_id"), user_id):
+    if not record:
+        return None
+    owner = str(record.get("user_id") or "")
+    # Blank guest rows are claimable only when the caller's analysis matches.
+    # A non-empty owner never transfers. An id alone is not a match.
+    if owner and owner != user_id:
         return None
     payload = record.get("payload")
     if not isinstance(payload, dict):
         return None
     expected = build_packet_payload(analysis, analysis_id=analysis_id)
-    public_payload = deepcopy(payload)
-    private_report = public_payload.get("lot_match_report")
-    if isinstance(private_report, dict):
-        for key in ("matched", "gap", "unmatched"):
-            private_report[key] = []
-    if expected != public_payload:
+    if _public_packet_payload(payload) != _public_packet_payload(expected):
         return None
     return deepcopy(payload)
+
+
+def adopt_guest_packet(analysis_id: str, user_id: str, payload: dict[str, Any]) -> bool:
+    """Transfer a blank-owner snapshot only when payload is the exact stored document."""
+    if not analysis_id or not user_id or not isinstance(payload, dict):
+        return False
+    record = PACKET_STORE.get(analysis_id)
+    if not record:
+        return False
+    owner = str(record.get("user_id") or "")
+    if owner and owner != user_id:
+        return False
+    stored = record.get("payload")
+    if not isinstance(stored, dict) or stored != payload:
+        return False
+    record["user_id"] = user_id
+    return True
 
 
 def mark_paid(analysis_id: str, session_id: str, user_id: str = "") -> bool:
@@ -1048,7 +1091,6 @@ def mark_paid(analysis_id: str, session_id: str, user_id: str = "") -> bool:
         return True
     if not _same_packet_owner(rec.get("user_id"), user_id):
         return False
-    _claim_packet_owner(rec, user_id)
     rec["paid"] = True
     if session_id:
         rec.setdefault("session_ids", set()).add(session_id)
