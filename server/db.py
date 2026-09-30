@@ -7,8 +7,11 @@ portfolio analysis history and tax profile storage.
 NOTE: Requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in .env.local.
 """
 
+import base64
+import binascii
 import os
 import logging
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -551,6 +554,193 @@ def _is_unique_violation(exc: Exception) -> bool:
         or "duplicate key" in error_text
         or "unique constraint" in error_text
     )
+
+
+def _read_push_subscription(endpoint: str, client) -> Optional[dict]:
+    result = (
+        client.table("push_subscriptions")
+        .select("id, user_id, endpoint, keys, expiration_time_ms, created_at")
+        .eq("endpoint", endpoint)
+        .limit(1)
+        .execute()
+    )
+    return dict(result.data[0]) if result.data else None
+
+
+def _valid_push_subscription_keys(keys: object) -> bool:
+    """Require decodable Web Push keys with their expected wire-format sizes."""
+    if not isinstance(keys, dict):
+        return False
+
+    decoded = {}
+    for name in ("p256dh", "auth"):
+        value = keys.get(name)
+        if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", value):
+            return False
+        try:
+            decoded[name] = base64.b64decode(
+                value + "=" * (-len(value) % 4), altchars=b"-_", validate=True
+            )
+        except (binascii.Error, ValueError):
+            return False
+
+    return (
+        len(decoded["p256dh"]) == 65
+        and decoded["p256dh"].startswith(b"\x04")
+        and len(decoded["auth"]) == 16
+    )
+
+
+def save_push_subscription(
+    user_id: str,
+    subscription: dict,
+    client=None,
+) -> Optional[bool]:
+    """Save an endpoint for its authenticated owner; never transfer endpoints."""
+    endpoint = str(subscription.get("endpoint") or "").strip()
+    keys = subscription.get("keys")
+    if not user_id or not endpoint.startswith("https://") or not _valid_push_subscription_keys(keys):
+        return False
+    if client is None:
+        client = get_supabase()
+    if client is None:
+        return None
+
+    expiration_time_ms = subscription.get("expirationTime")
+    if not isinstance(expiration_time_ms, (int, float)):
+        expiration_time_ms = None
+    values = {
+        "keys": keys,
+        "expiration_time_ms": expiration_time_ms,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    def update_owned(existing: dict) -> bool:
+        if existing.get("user_id") != user_id:
+            return False
+        result = (
+            client.table("push_subscriptions")
+            .update(values)
+            .eq("id", existing.get("id"))
+            .eq("user_id", user_id)
+            .select("id")
+            .execute()
+        )
+        return bool(result.data)
+
+    try:
+        existing = _read_push_subscription(endpoint, client)
+        if existing:
+            return update_owned(existing)
+        row = {
+            **values,
+            "user_id": user_id,
+            "endpoint": endpoint,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            result = (
+                client.table("push_subscriptions")
+                .insert(row)
+                .select("id")
+                .execute()
+            )
+            return bool(result.data)
+        except Exception as insert_error:
+            if not _is_unique_violation(insert_error):
+                raise
+            # A simultaneous insert won the unique endpoint constraint. Only
+            # refresh it when it belongs to this same authenticated user.
+            existing = _read_push_subscription(endpoint, client)
+            return update_owned(existing) if existing else False
+    except Exception as e:
+        logger.error("Failed to save push subscription: %s", e)
+        return None
+
+
+def list_push_subscriptions(user_id: Optional[str] = None, client=None) -> Optional[list[dict]]:
+    """List subscriptions for one owner, or all rows for a server admin path."""
+    if client is None:
+        client = get_supabase()
+    if client is None:
+        return None
+    try:
+        if user_id is not None and not user_id:
+            return None
+        subscriptions = []
+        page_size = 500
+        for offset in range(0, 1_000_000_000, page_size):
+            query = client.table("push_subscriptions").select(
+                "id, user_id, endpoint, keys, expiration_time_ms, created_at"
+            )
+            if user_id is not None:
+                query = query.eq("user_id", user_id)
+            result = (
+                query.order("created_at", desc=True)
+                .order("id")
+                .range(offset, offset + page_size - 1)
+                .execute()
+            )
+            page = [row for row in result.data or [] if isinstance(row, dict)]
+            subscriptions.extend(dict(row) for row in page)
+            if len(page) < page_size:
+                return subscriptions
+        logger.error("Stopped loading push subscriptions at the pagination safety limit")
+        return None
+    except Exception as e:
+        logger.error("Failed to list push subscriptions: %s", e)
+        return None
+
+
+def get_push_subscription_for_user(
+    user_id: str,
+    endpoint: str,
+    client=None,
+) -> tuple[Optional[dict], bool]:
+    if not user_id or not endpoint:
+        return None, False
+    if client is None:
+        client = get_supabase()
+    if client is None:
+        return None, False
+    try:
+        result = (
+            client.table("push_subscriptions")
+            .select("id, user_id, endpoint, keys, expiration_time_ms, created_at")
+            .eq("user_id", user_id)
+            .eq("endpoint", endpoint)
+            .limit(1)
+            .execute()
+        )
+        return (dict(result.data[0]) if result.data else None), True
+    except Exception as e:
+        logger.error("Failed to look up user's push subscription: %s", e)
+        return None, False
+
+
+def delete_push_subscription(
+    subscription_id: str,
+    user_id: Optional[str] = None,
+    client=None,
+) -> Optional[bool]:
+    """Delete a subscription, optionally restricted to its owner."""
+    if not subscription_id:
+        return False
+    if client is None:
+        client = get_supabase()
+    if client is None:
+        return None
+    try:
+        query = client.table("push_subscriptions").delete().eq("id", subscription_id)
+        if user_id is not None:
+            if not user_id:
+                return False
+            query = query.eq("user_id", user_id)
+        result = query.select("id").execute()
+        return bool(result.data)
+    except Exception as e:
+        logger.error("Failed to delete push subscription: %s", e)
+        return None
 
 
 def save_packet_entitlement(

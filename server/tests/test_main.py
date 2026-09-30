@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 from pathlib import Path
 from types import SimpleNamespace
+import pytest
 
 import main
 from auth import get_current_user, get_current_user_with_token, get_optional_user
@@ -24,8 +25,53 @@ main.app.dependency_overrides[get_current_user_with_token] = mock_get_current_us
 client = TestClient(main.app)
 
 
+@pytest.fixture
+def push_store(monkeypatch):
+    rows = {}
+
+    def save(user_id, subscription):
+        endpoint = subscription["endpoint"]
+        existing = rows.get(endpoint)
+        if existing and existing["user_id"] != user_id:
+            return False
+        rows[endpoint] = {
+            "id": existing["id"] if existing else f"sub-{len(rows) + 1}",
+            "user_id": user_id,
+            "endpoint": endpoint,
+            "keys": subscription["keys"],
+            "expiration_time_ms": subscription.get("expirationTime"),
+            "created_at": "2026-09-30T00:00:00Z",
+        }
+        return True
+
+    def list_for_owner(user_id=None):
+        return [
+            dict(row)
+            for row in rows.values()
+            if user_id is None or row["user_id"] == user_id
+        ]
+
+    def get_for_owner(user_id, endpoint):
+        row = rows.get(endpoint)
+        return (dict(row) if row and row["user_id"] == user_id else None), True
+
+    def delete(subscription_id, user_id=None):
+        for endpoint, row in list(rows.items()):
+            if row["id"] == subscription_id and (
+                user_id is None or row["user_id"] == user_id
+            ):
+                del rows[endpoint]
+                return True
+        return False
+
+    monkeypatch.setattr(main, "db_save_push_subscription", save)
+    monkeypatch.setattr(main, "db_list_push_subscriptions", list_for_owner)
+    monkeypatch.setattr(main, "db_get_push_subscription_for_user", get_for_owner)
+    monkeypatch.setattr(main, "db_delete_push_subscription", delete)
+    return rows
+
+
 def setup_function():
-    main.push_subscriptions.clear()
     main.reset_guest_analyze_quota()
     main.reset_guest_leap_rank_quota()
     from year_close_packet import reset_packet_store
@@ -59,63 +105,111 @@ NVDA,4,450
     assert data[-1] == {"symbol": "GOOGL", "qty": 3, "price": 140}
 
 
-def test_push_subscribe_and_list():
+def test_push_endpoints_require_authentication(monkeypatch, push_store):
+    monkeypatch.delitem(main.app.dependency_overrides, get_current_user)
     subscription = {
         "endpoint": "https://example.com/endpoint",
         "keys": {"p256dh": "key", "auth": "auth"},
     }
+    assert client.post("/push/subscribe", json=subscription).status_code == 401
+    assert client.post("/push/unsubscribe", json=subscription).status_code == 401
+    assert client.get("/push/subscriptions").status_code == 401
+    assert client.post("/push/test", json={"endpoint": subscription["endpoint"]}).status_code == 401
+    assert push_store == {}
 
-    response = client.post("/push/subscribe", json=subscription)
-    assert response.status_code == 200
-    assert response.json() == {"message": "Subscription stored", "count": 1}
 
-    response = client.post("/push/subscribe", json=subscription)
-    assert response.status_code == 200
-    assert response.json() == {"message": "Subscription already exists", "count": 1}
+def test_push_subscriptions_are_owner_scoped_and_hide_endpoint_secrets(monkeypatch, push_store):
+    user_a = {"endpoint": "https://example.com/a", "keys": {"p256dh": "a", "auth": "a"}}
+    user_b = {"endpoint": "https://example.com/b", "keys": {"p256dh": "b", "auth": "b"}}
+    assert client.post("/push/subscribe", json=user_a).status_code == 200
+    assert client.post("/push/subscribe", json=user_a).status_code == 200
 
+    monkeypatch.setitem(main.app.dependency_overrides, get_current_user, lambda: "user-B")
+    assert client.post("/push/subscribe", json=user_b).status_code == 200
     response = client.get("/push/subscriptions")
     assert response.status_code == 200
-    payload = response.json()
-    assert payload["count"] == 1
-    assert payload["subscriptions"][0]["endpoint"] == "https://example.com/endpoint"
+    assert response.json()["count"] == 1
+    assert response.json()["subscriptions"][0]["id"] == "sub-2"
+    assert "endpoint" not in response.json()["subscriptions"][0]
+    assert "keys" not in response.json()["subscriptions"][0]
 
-
-def test_push_unsubscribe_flow():
-    subscription = {
-        "endpoint": "https://example.com/endpoint",
-        "keys": {"p256dh": "key", "auth": "auth"},
-    }
-
-    client.post("/push/subscribe", json=subscription)
-
-    response = client.post("/push/unsubscribe", json=subscription)
+    monkeypatch.setitem(
+        main.app.dependency_overrides, get_current_user, lambda: "test-user-123"
+    )
+    response = client.get("/push/subscriptions")
     assert response.status_code == 200
-    assert response.json() == {"message": "Subscription removed", "count": 0}
+    assert response.json()["count"] == 1
+    assert response.json()["subscriptions"][0]["id"] == "sub-1"
+    assert len(push_store) == 2
 
-    response = client.post("/push/unsubscribe", json=subscription)
+
+def test_push_unsubscribe_cannot_delete_another_users_device(monkeypatch, push_store):
+    user_a = {"endpoint": "https://example.com/a", "keys": {"p256dh": "a", "auth": "a"}}
+    user_b = {"endpoint": "https://example.com/b", "keys": {"p256dh": "b", "auth": "b"}}
+    client.post("/push/subscribe", json=user_a)
+    monkeypatch.setitem(main.app.dependency_overrides, get_current_user, lambda: "user-B")
+    client.post("/push/subscribe", json=user_b)
+    response = client.post("/push/unsubscribe", json=user_a)
     assert response.status_code == 200
-    assert response.json() == {"message": "Subscription not found", "count": 0}
+    assert response.json()["message"] == "Subscription not found"
+    assert set(push_store) == {user_a["endpoint"], user_b["endpoint"]}
+    response = client.post("/push/unsubscribe", json=user_b)
+    assert response.status_code == 200
+    assert response.json()["message"] == "Subscription removed"
+    assert set(push_store) == {user_a["endpoint"]}
 
 
-def test_send_push_notification_missing_vapid_keys():
-    original_private = main.VAPID_PRIVATE_KEY
-    original_public = main.VAPID_PUBLIC_KEY
-    main.VAPID_PRIVATE_KEY = None
-    main.VAPID_PUBLIC_KEY = None
+def test_user_push_test_targets_only_the_requesting_users_selected_device(
+    monkeypatch, push_store
+):
+    user_a_1 = {"endpoint": "https://example.com/a1", "keys": {"p256dh": "a", "auth": "a"}}
+    user_a_2 = {"endpoint": "https://example.com/a2", "keys": {"p256dh": "a", "auth": "a"}}
+    user_b = {"endpoint": "https://example.com/b", "keys": {"p256dh": "b", "auth": "b"}}
+    client.post("/push/subscribe", json=user_a_1)
+    client.post("/push/subscribe", json=user_a_2)
+    monkeypatch.setitem(main.app.dependency_overrides, get_current_user, lambda: "user-B")
+    client.post("/push/subscribe", json=user_b)
+    sent_to = []
+    monkeypatch.setattr(main, "VAPID_PRIVATE_KEY", "private")
+    monkeypatch.setattr(main, "VAPID_PUBLIC_KEY", "public")
+    monkeypatch.setattr(
+        main,
+        "webpush",
+        lambda subscription_info, **_kwargs: sent_to.append(subscription_info["endpoint"]),
+    )
+    response = client.post("/push/test", json={"endpoint": user_b["endpoint"]})
+    assert response.status_code == 200
+    assert response.json()["sent"] == 1
+    assert sent_to == [user_b["endpoint"]]
+    response = client.post("/push/test", json={"endpoint": user_a_2["endpoint"]})
+    assert response.status_code == 404
+    assert sent_to == [user_b["endpoint"]]
 
+
+def test_push_broadcast_requires_explicit_server_admin_key(monkeypatch, push_store):
+    monkeypatch.delenv("PUSH_ADMIN_KEY", raising=False)
+    payload = {"title": "Test", "body": "Body"}
+    assert client.post("/push/send", json=payload).status_code == 503
+    monkeypatch.setenv("PUSH_ADMIN_KEY", "server-only")
+    assert client.post("/push/send", json=payload).status_code == 403
+    assert client.post(
+        "/push/send", json=payload, headers={"X-Push-Admin-Key": "wrong"}
+    ).status_code == 403
+
+
+def test_send_push_notification_missing_vapid_keys(monkeypatch, push_store):
+    monkeypatch.setattr(main, "VAPID_PRIVATE_KEY", None)
+    monkeypatch.setattr(main, "VAPID_PUBLIC_KEY", None)
+    monkeypatch.setenv("PUSH_ADMIN_KEY", "server-only")
     response = client.post(
         "/push/send",
         json={"title": "Test", "body": "Body"},
+        headers={"X-Push-Admin-Key": "server-only"},
     )
-
-    assert response.status_code == 200
-    assert response.json()["error"] == "VAPID keys not configured"
-
-    main.VAPID_PRIVATE_KEY = original_private
-    main.VAPID_PUBLIC_KEY = original_public
+    assert response.status_code == 503
 
 
-def test_send_push_notification_success_and_expired_cleanup():
+def test_send_push_notification_success_and_expired_cleanup(monkeypatch, push_store):
     class DummyResponse:
         status_code = 410
 
@@ -123,70 +217,68 @@ def test_send_push_notification_success_and_expired_cleanup():
         def __init__(self):
             self.response = DummyResponse()
 
-    original_private = main.VAPID_PRIVATE_KEY
-    original_public = main.VAPID_PUBLIC_KEY
-    original_webpush = main.webpush
-    original_exception = main.WebPushException
-
-    main.VAPID_PRIVATE_KEY = "private"
-    main.VAPID_PUBLIC_KEY = "public"
+    monkeypatch.setattr(main, "VAPID_PRIVATE_KEY", "private")
+    monkeypatch.setattr(main, "VAPID_PUBLIC_KEY", "public")
+    monkeypatch.setattr(main, "WebPushException", DummyWebPushException)
 
     def fake_webpush(subscription_info, **_kwargs):
         if subscription_info["endpoint"] == "https://example.com/gone":
             raise DummyWebPushException()
 
-    main.webpush = fake_webpush
-    main.WebPushException = DummyWebPushException
-
-    main.push_subscriptions.extend(
-        [
-            {"endpoint": "https://example.com/ok", "keys": {"p256dh": "k", "auth": "a"}},
-            {"endpoint": "https://example.com/gone", "keys": {"p256dh": "k", "auth": "a"}},
-        ]
-    )
-
+    monkeypatch.setattr(main, "webpush", fake_webpush)
+    monkeypatch.setenv("PUSH_ADMIN_KEY", "server-only")
+    push_store.update({
+        "https://example.com/ok": {"id": "ok", "user_id": "user-A", "endpoint": "https://example.com/ok", "keys": {"p256dh": "k", "auth": "a"}},
+        "https://example.com/gone": {"id": "gone", "user_id": "user-B", "endpoint": "https://example.com/gone", "keys": {"p256dh": "k", "auth": "a"}},
+    })
     response = client.post(
         "/push/send",
         json={"title": "Test", "body": "Body"},
+        headers={"X-Push-Admin-Key": "server-only"},
+    )
+    assert response.status_code == 200
+    assert response.json()["sent"] == 1
+    assert response.json()["failed"] == 1
+    assert response.json()["total_subscriptions"] == 2
+    assert set(push_store) == {"https://example.com/ok"}
+
+
+def test_push_broadcast_continues_after_unexpected_delivery_failure(monkeypatch, push_store):
+    monkeypatch.setattr(main, "VAPID_PRIVATE_KEY", "private")
+    monkeypatch.setattr(main, "VAPID_PUBLIC_KEY", "public")
+    monkeypatch.setenv("PUSH_ADMIN_KEY", "server-only")
+    push_store.update({
+        "https://example.com/bad": {
+            "id": "bad",
+            "user_id": "user-A",
+            "endpoint": "https://example.com/bad",
+            "keys": {"p256dh": "malformed", "auth": "malformed"},
+        },
+        "https://example.com/good": {
+            "id": "good",
+            "user_id": "user-B",
+            "endpoint": "https://example.com/good",
+            "keys": {"p256dh": "valid", "auth": "valid"},
+        },
+    })
+    sent_to = []
+
+    def fake_webpush(subscription_info, **_kwargs):
+        if subscription_info["endpoint"].endswith("/bad"):
+            raise ValueError("malformed subscription")
+        sent_to.append(subscription_info["endpoint"])
+
+    monkeypatch.setattr(main, "webpush", fake_webpush)
+    response = client.post(
+        "/push/send",
+        json={"title": "Test", "body": "Body"},
+        headers={"X-Push-Admin-Key": "server-only"},
     )
 
     assert response.status_code == 200
-    payload = response.json()
-    assert payload["sent"] == 1
-    assert payload["failed"] == 1
-    assert payload["total_subscriptions"] == 1
-
-    main.VAPID_PRIVATE_KEY = original_private
-    main.VAPID_PUBLIC_KEY = original_public
-    main.webpush = original_webpush
-    main.WebPushException = original_exception
-
-
-def test_push_test_endpoint():
-    original_private = main.VAPID_PRIVATE_KEY
-    original_public = main.VAPID_PUBLIC_KEY
-    original_webpush = main.webpush
-
-    main.VAPID_PRIVATE_KEY = "private"
-    main.VAPID_PUBLIC_KEY = "public"
-
-    def fake_webpush(**_kwargs):
-        return None
-
-    main.webpush = fake_webpush
-
-    main.push_subscriptions.append(
-        {"endpoint": "https://example.com/ok", "keys": {"p256dh": "k", "auth": "a"}}
-    )
-
-    response = client.post("/push/test")
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["sent"] == 1
-
-    main.VAPID_PRIVATE_KEY = original_private
-    main.VAPID_PUBLIC_KEY = original_public
-    main.webpush = original_webpush
+    assert response.json()["sent"] == 1
+    assert response.json()["failed"] == 1
+    assert sent_to == ["https://example.com/good"]
 
 
 def test_run_invokes_uvicorn(monkeypatch):
