@@ -557,7 +557,22 @@ def save_packet_entitlement(
             .select("analysis_id, user_id, tax_year, packet_session_id")
             .execute()
         )
-        return dict(result.data[0]) if result.data else None
+        if result.data:
+            return dict(result.data[0])
+        # ignore_duplicates makes repeated verified webhooks idempotent, but
+        # PostgREST returns no representation for the conflict. Read back the
+        # exact receipt so callers can treat an already-saved entitlement as
+        # success without changing its original analysis id or timestamp.
+        existing = (
+            client.table("year_close_packet_entitlements")
+            .select("analysis_id, user_id, tax_year, packet_session_id")
+            .eq("user_id", user_id)
+            .eq("tax_year", int(tax_year))
+            .eq("packet_session_id", session_id)
+            .limit(1)
+            .execute()
+        )
+        return dict(existing.data[0]) if existing.data else None
     except Exception as e:
         logger.error("Failed to save packet entitlement for %s: %s", analysis_id, e)
         return None

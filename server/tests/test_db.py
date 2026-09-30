@@ -792,16 +792,23 @@ class TestPacketSnapshots:
         assert db.lookup_packet_grant_for_tax_year("user1", 2026) == (None, False)
 
     def test_reused_entitlement_does_not_overwrite_original_checkout_analysis(self, monkeypatch):
-        client = _FakeClient(
-            table_data=[
-                {
-                    "analysis_id": "original-analysis",
-                    "user_id": "user1",
-                    "tax_year": 2026,
-                    "packet_session_id": "cs_original",
-                }
-            ]
-        )
+        original = {
+            "analysis_id": "original-analysis",
+            "user_id": "user1",
+            "tax_year": 2026,
+            "packet_session_id": "cs_original",
+        }
+
+        class _DuplicateEntitlementClient(_FakeClient):
+            def table(self, name):
+                # Simulate ON CONFLICT DO NOTHING returning no representation,
+                # followed by the exact-row read in save_packet_entitlement.
+                data = [] if not self.builders else [original]
+                builder = _FakeQueryBuilder(data)
+                self.builders.append(builder)
+                return builder
+
+        client = _DuplicateEntitlementClient()
         monkeypatch.setattr(db, "get_supabase", lambda: client)
 
         saved = db.save_packet_entitlement(
@@ -813,3 +820,5 @@ class TestPacketSnapshots:
         assert upsert[1][0]["analysis_id"] == "followup-analysis"
         assert upsert[2]["on_conflict"] == "user_id,tax_year,packet_session_id"
         assert upsert[2]["ignore_duplicates"] is True
+        assert len(client.builders) == 2
+        assert ("eq", ("packet_session_id", "cs_original"), {}) in client.builders[1].calls
