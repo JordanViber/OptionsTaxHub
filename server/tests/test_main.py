@@ -243,6 +243,44 @@ def test_send_push_notification_success_and_expired_cleanup(monkeypatch, push_st
     assert set(push_store) == {"https://example.com/ok"}
 
 
+def test_push_broadcast_continues_after_unexpected_delivery_failure(monkeypatch, push_store):
+    monkeypatch.setattr(main, "VAPID_PRIVATE_KEY", "private")
+    monkeypatch.setattr(main, "VAPID_PUBLIC_KEY", "public")
+    monkeypatch.setenv("PUSH_ADMIN_KEY", "server-only")
+    push_store.update({
+        "https://example.com/bad": {
+            "id": "bad",
+            "user_id": "user-A",
+            "endpoint": "https://example.com/bad",
+            "keys": {"p256dh": "malformed", "auth": "malformed"},
+        },
+        "https://example.com/good": {
+            "id": "good",
+            "user_id": "user-B",
+            "endpoint": "https://example.com/good",
+            "keys": {"p256dh": "valid", "auth": "valid"},
+        },
+    })
+    sent_to = []
+
+    def fake_webpush(subscription_info, **_kwargs):
+        if subscription_info["endpoint"].endswith("/bad"):
+            raise ValueError("malformed subscription")
+        sent_to.append(subscription_info["endpoint"])
+
+    monkeypatch.setattr(main, "webpush", fake_webpush)
+    response = client.post(
+        "/push/send",
+        json={"title": "Test", "body": "Body"},
+        headers={"X-Push-Admin-Key": "server-only"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["sent"] == 1
+    assert response.json()["failed"] == 1
+    assert sent_to == ["https://example.com/good"]
+
+
 def test_run_invokes_uvicorn(monkeypatch):
     import uvicorn
 

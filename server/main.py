@@ -3288,10 +3288,16 @@ def _deliver_push_notification(
                 vapid_claims={"sub": f"mailto:{VAPID_CLAIM_EMAIL}"},
             )
             sent_count += 1
-        except WebPushException as e:
+        except Exception as e:
             failed_count += 1
             logger.error("Push notification failed: %s", e)
-            if e.response and e.response.status_code == 410 and row.get("id"):
+            response = getattr(e, "response", None)
+            if (
+                isinstance(e, WebPushException)
+                and response
+                and response.status_code == 410
+                and row.get("id")
+            ):
                 db_delete_push_subscription(row["id"], user_id=row.get("user_id"))
 
     return {

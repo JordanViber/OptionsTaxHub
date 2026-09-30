@@ -7,6 +7,7 @@ Covers save/get/delete operations for portfolio analyses and tax profiles.
 
 import sys
 import os
+import base64
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -83,6 +84,10 @@ class _FakeQueryBuilder:
     def limit(self, *args):
         return self
 
+    def range(self, *args):
+        self.calls.append(("range", args, {}))
+        return self
+
     def execute(self):
         return _FakeExecuteResult(self._data)
 
@@ -140,6 +145,14 @@ class TestGetSupabase:
             assert result is None
 
 
+def _valid_push_keys():
+    p256dh = b"\x04" + bytes(range(64))
+    return {
+        "p256dh": base64.urlsafe_b64encode(p256dh).rstrip(b"=").decode(),
+        "auth": base64.urlsafe_b64encode(bytes(range(16))).rstrip(b"=").decode(),
+    }
+
+
 class TestPushSubscriptions:
     def test_inserts_subscription_with_owner_and_private_fields(self, monkeypatch):
         client = _FakeClient(table_responses=[[], [{"id": "sub-1"}]])
@@ -149,7 +162,7 @@ class TestPushSubscriptions:
             "user-1",
             {
                 "endpoint": "https://push.example/device",
-                "keys": {"p256dh": "public-key", "auth": "secret"},
+                "keys": _valid_push_keys(),
                 "expirationTime": 1234,
             },
         )
@@ -159,7 +172,7 @@ class TestPushSubscriptions:
         inserted = next(args[0] for name, args, _kwargs in calls if name == "insert")
         assert inserted["user_id"] == "user-1"
         assert inserted["endpoint"] == "https://push.example/device"
-        assert inserted["keys"]["auth"] == "secret"
+        assert inserted["keys"]["auth"] == _valid_push_keys()["auth"]
         assert inserted["expiration_time_ms"] == 1234
 
     def test_existing_endpoint_cannot_be_claimed_by_another_user(self, monkeypatch):
@@ -170,7 +183,7 @@ class TestPushSubscriptions:
 
         result = db.save_push_subscription(
             "user-B",
-            {"endpoint": "https://push.example/device", "keys": {"p256dh": "p", "auth": "a"}},
+            {"endpoint": "https://push.example/device", "keys": _valid_push_keys()},
         )
 
         assert result is False
@@ -179,6 +192,18 @@ class TestPushSubscriptions:
             for builder in client.builders
             for name, _args, _kwargs in builder.calls
         )
+
+    def test_rejects_malformed_push_keys_before_database_access(self, monkeypatch):
+        client = _FakeClient()
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+
+        result = db.save_push_subscription(
+            "user-1",
+            {"endpoint": "https://push.example/device", "keys": {"p256dh": "!!!", "auth": "!!!"}},
+        )
+
+        assert result is False
+        assert client.builders == []
 
     def test_listing_and_deletion_include_owner_filter(self, monkeypatch):
         client = _FakeClient(
@@ -196,6 +221,22 @@ class TestPushSubscriptions:
         assert deleted is True
         assert ("eq", ("user_id", "user-A"), {}) in client.builders[0].calls
         assert ("eq", ("user_id", "user-A"), {}) in client.builders[1].calls
+
+    def test_lists_all_pages_of_push_subscriptions(self, monkeypatch):
+        first_page = [{"id": f"sub-{i}", "user_id": "user-A"} for i in range(500)]
+        second_page = [{"id": "sub-500", "user_id": "user-A"}]
+        client = _FakeClient(table_responses=[first_page, second_page])
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+
+        result = db.list_push_subscriptions()
+
+        assert len(result) == 501
+        assert [call for call in client.builders[0].calls if call[0] == "range"] == [
+            ("range", (0, 499), {})
+        ]
+        assert [call for call in client.builders[1].calls if call[0] == "range"] == [
+            ("range", (500, 999), {})
+        ]
 
 
 # --- save_analysis_history ---

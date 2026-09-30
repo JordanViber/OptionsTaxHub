@@ -7,8 +7,11 @@ portfolio analysis history and tax profile storage.
 NOTE: Requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in .env.local.
 """
 
+import base64
+import binascii
 import os
 import logging
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -564,6 +567,30 @@ def _read_push_subscription(endpoint: str, client) -> Optional[dict]:
     return dict(result.data[0]) if result.data else None
 
 
+def _valid_push_subscription_keys(keys: object) -> bool:
+    """Require decodable Web Push keys with their expected wire-format sizes."""
+    if not isinstance(keys, dict):
+        return False
+
+    decoded = {}
+    for name in ("p256dh", "auth"):
+        value = keys.get(name)
+        if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", value):
+            return False
+        try:
+            decoded[name] = base64.b64decode(
+                value + "=" * (-len(value) % 4), altchars=b"-_", validate=True
+            )
+        except (binascii.Error, ValueError):
+            return False
+
+    return (
+        len(decoded["p256dh"]) == 65
+        and decoded["p256dh"].startswith(b"\x04")
+        and len(decoded["auth"]) == 16
+    )
+
+
 def save_push_subscription(
     user_id: str,
     subscription: dict,
@@ -572,7 +599,7 @@ def save_push_subscription(
     """Save an endpoint for its authenticated owner; never transfer endpoints."""
     endpoint = str(subscription.get("endpoint") or "").strip()
     keys = subscription.get("keys")
-    if not user_id or not endpoint.startswith("https://") or not isinstance(keys, dict):
+    if not user_id or not endpoint.startswith("https://") or not _valid_push_subscription_keys(keys):
         return False
     if client is None:
         client = get_supabase()
@@ -638,15 +665,28 @@ def list_push_subscriptions(user_id: Optional[str] = None, client=None) -> Optio
     if client is None:
         return None
     try:
-        query = client.table("push_subscriptions").select(
-            "id, user_id, endpoint, keys, expiration_time_ms, created_at"
-        )
-        if user_id is not None:
-            if not user_id:
-                return None
-            query = query.eq("user_id", user_id)
-        result = query.order("created_at", desc=True).execute()
-        return [dict(row) for row in result.data or [] if isinstance(row, dict)]
+        if user_id is not None and not user_id:
+            return None
+        subscriptions = []
+        page_size = 500
+        for offset in range(0, 1_000_000_000, page_size):
+            query = client.table("push_subscriptions").select(
+                "id, user_id, endpoint, keys, expiration_time_ms, created_at"
+            )
+            if user_id is not None:
+                query = query.eq("user_id", user_id)
+            result = (
+                query.order("created_at", desc=True)
+                .order("id")
+                .range(offset, offset + page_size - 1)
+                .execute()
+            )
+            page = [row for row in result.data or [] if isinstance(row, dict)]
+            subscriptions.extend(dict(row) for row in page)
+            if len(page) < page_size:
+                return subscriptions
+        logger.error("Stopped loading push subscriptions at the pagination safety limit")
+        return None
     except Exception as e:
         logger.error("Failed to list push subscriptions: %s", e)
         return None
