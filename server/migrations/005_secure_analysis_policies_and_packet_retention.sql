@@ -2,10 +2,18 @@
 -- snapshots until the user's source analysis is deleted.
 DROP POLICY IF EXISTS "Service role can insert analyses" ON public.portfolio_analyses;
 DROP POLICY IF EXISTS "Users can create analyses" ON public.portfolio_analyses;
+DROP POLICY IF EXISTS "Service role can update analyses" ON public.portfolio_analyses;
 CREATE POLICY "Service role can insert analyses"
   ON public.portfolio_analyses
   FOR INSERT
   TO service_role
+  WITH CHECK (true);
+
+CREATE POLICY "Service role can update analyses"
+  ON public.portfolio_analyses
+  FOR UPDATE
+  TO service_role
+  USING (true)
   WITH CHECK (true);
 
 DROP POLICY IF EXISTS "Service role can delete analyses" ON public.portfolio_analyses;

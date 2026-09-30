@@ -408,8 +408,9 @@ def get_latest_activity_book(user_id: str, client=None) -> Optional[dict]:
     """
     Newest saved analysis that includes a parsed trade book.
 
-    Returns analysis_id, filename, raw transactions, and packet grant fields
-    so a later CSV can merge instead of replacing the whole history.
+    Returns analysis_id, filename, and raw transactions so a later CSV can
+    merge instead of replacing the whole history. Packet grants are resolved
+    from the private owner-scoped entitlement tables, never history JSON.
     """
     if not user_id:
         return None
@@ -446,8 +447,6 @@ def get_latest_activity_book(user_id: str, client=None) -> Optional[dict]:
             "analysis_id": row.get("id"),
             "filename": row.get("filename") or "",
             "transactions": transactions,
-            "packet_unlocked": bool(payload.get("packet_unlocked")),
-            "packet_session_id": payload.get("packet_session_id") or "",
             "tax_year": tax_profile.get("tax_year") if isinstance(tax_profile, dict) else None,
         }
     return None
@@ -481,7 +480,6 @@ def lookup_packet_grant_for_tax_year(
             if (
                 isinstance(row, dict)
                 and row.get("paid_at")
-                and isinstance(row.get("packet_payload"), dict)
                 and isinstance(session_id, str)
                 and session_id.startswith("cs_")
             ):

@@ -542,7 +542,8 @@ class TestLatestActivityBook:
         monkeypatch.setattr(db, "get_supabase", lambda: client)
         book = db.get_latest_activity_book("user1")
         assert book["analysis_id"] == "book-1"
-        assert book["packet_session_id"] == "cs_abc"
+        assert "packet_unlocked" not in book
+        assert "packet_session_id" not in book
         assert len(book["transactions"]) == 1
 
 
@@ -751,7 +752,7 @@ class TestPacketSnapshots:
         assert ("eq", ("tax_year", 2026), {}) in calls
         assert not any(call[0] == "contains" for call in calls)
 
-    def test_packet_grant_does_not_treat_deleted_document_as_downloadable(self, monkeypatch):
+    def test_packet_grant_keeps_receipt_when_source_document_is_missing(self, monkeypatch):
         client = _FakeClient(table_data=[{
             "analysis_id": "analysis-a",
             "packet_session_id": "cs_paid_year",
@@ -760,7 +761,10 @@ class TestPacketSnapshots:
         }])
         monkeypatch.setattr(db, "get_supabase", lambda: client)
 
-        assert db.lookup_packet_grant_for_tax_year("user1", 2026) == (None, True)
+        assert db.lookup_packet_grant_for_tax_year("user1", 2026) == (
+            "cs_paid_year",
+            True,
+        )
 
     def test_separate_year_entitlement_survives_deleted_document(self, monkeypatch):
         row = {

@@ -38,6 +38,14 @@ CREATE POLICY "Service role can insert analyses"
   TO service_role
   WITH CHECK (true);
 
+-- Server-side owner-scoped history updates; clients receive read-only access.
+CREATE POLICY "Service role can update analyses"
+  ON portfolio_analyses
+  FOR UPDATE
+  TO service_role
+  USING (true)
+  WITH CHECK (true);
+
 -- Allow service role to delete (cleanup)
 CREATE POLICY "Service role can delete analyses"
   ON portfolio_analyses

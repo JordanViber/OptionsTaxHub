@@ -320,6 +320,9 @@ describe("YearClosePacketPanel", () => {
     expect(JSON.parse(init.body).analysis_id).toBe("analysis-1");
     expect(mockFetch.mock.calls[0][0]).not.toContain("/api/tips/checkout");
     expect(store["optionstaxhub-packet-pending:analysis-1"]).toBe("cs_test_packet");
+    expect(store["optionstaxhub-packet-pending-url:analysis-1"]).toBe(
+      "https://checkout.stripe.com/c/pay/cs_test_packet",
+    );
   });
 
   it("keeps the canonical checkout ID through confirm and download for guest IDs", async () => {
@@ -521,22 +524,73 @@ describe("YearClosePacketPanel", () => {
     await waitFor(() => expect(window.location.search).not.toContain("packet_session"));
   });
 
-  it("restores a pending Stripe session after refresh without starting another checkout", async () => {
+  it("resumes a pending Stripe Checkout after refresh instead of confirming or creating another", async () => {
     store["optionstaxhub-packet-pending:analysis-1"] = "cs_test_pending";
-    mockFetch.mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve({ analysis_id: "analysis-1" }),
-    });
+    store["optionstaxhub-packet-pending-url:analysis-1"] =
+      "https://checkout.stripe.com/c/pay/cs_test_pending";
 
     render(<YearClosePacketPanel analysis={analysis} />);
     fireEvent.click(screen.getByRole("button", { name: /Pay \$49/i }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
-    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
-    expect(mockFetch.mock.calls[0][0]).toContain("/api/year-close-packet/confirm");
-    expect(JSON.parse(mockFetch.mock.calls[0][1].body).session_id).toBe(
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(store["optionstaxhub-packet-pending:analysis-1"]).toBe("cs_test_pending");
+    expect(store["optionstaxhub-packet-pending-url:analysis-1"]).toContain(
       "cs_test_pending",
     );
-    expect(store["optionstaxhub-packet-pending:analysis-1"]).toBeUndefined();
+  });
+
+  it("keeps and resumes the same checkout when Stripe returns an open session", async () => {
+    store["optionstaxhub-packet-pending:analysis-1"] = "cs_test_open";
+    store["optionstaxhub-packet-pending-url:analysis-1"] =
+      "https://checkout.stripe.com/c/pay/cs_test_open";
+    window.history.replaceState(
+      null,
+      "",
+      "/dashboard?packet_session=cs_test_open&packet_analysis=analysis-1",
+    );
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      json: () => Promise.resolve({ detail: "This checkout session is still open." }),
+    });
+
+    render(<YearClosePacketPanel analysis={analysis} />);
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(/still open/i));
+    expect(window.location.search).not.toContain("packet_session");
+    fireEvent.click(screen.getByRole("button", { name: /Pay \$49/i }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(store["optionstaxhub-packet-pending:analysis-1"]).toBe("cs_test_open");
+  });
+
+  it("retains the paid checkout receipt when its source document is missing", async () => {
+    store["optionstaxhub-packet-pending:analysis-1"] = "cs_test_paid_missing_source";
+    window.history.replaceState(
+      null,
+      "",
+      "/dashboard?packet_session=cs_test_paid_missing_source&packet_analysis=analysis-1",
+    );
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      json: () =>
+        Promise.resolve({
+          detail:
+            "Payment was received, but this analysis has no source document.",
+        }),
+    });
+
+    render(<YearClosePacketPanel analysis={analysis} />);
+
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent("source document"),
+    );
+    expect(window.location.search).toContain("packet_session=cs_test_paid_missing_source");
+    expect(store["optionstaxhub-packet-pending:analysis-1"]).toBe(
+      "cs_test_paid_missing_source",
+    );
   });
 
   it("does not confirm a return URL for a different analysis", async () => {

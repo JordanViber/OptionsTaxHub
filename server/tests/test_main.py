@@ -394,7 +394,10 @@ def test_tip_checkout_creates_session(monkeypatch):
 
     import stripe as stripe_mod
 
-    def fake_create(**_kwargs):
+    captured = {}
+
+    def fake_create(**kwargs):
+        captured.update(kwargs)
         return FakeSession()
 
     monkeypatch.setattr(stripe_mod.checkout.Session, "create", fake_create)
@@ -403,6 +406,7 @@ def test_tip_checkout_creates_session(monkeypatch):
     assert response.status_code == 200
     data = response.json()
     assert data["checkout_url"] == "https://checkout.stripe.com/test_session"
+    assert captured["api_key"] == "sk_test_fake"
 
 
 def test_tip_checkout_stripe_error(monkeypatch):
@@ -1124,6 +1128,11 @@ def test_persist_guest_analysis_saves_history(monkeypatch):
         return {"id": "hist-guest-1", "filename": kwargs["filename"]}
 
     monkeypatch.setattr("main.save_analysis_history", fake_save)
+    monkeypatch.setattr(
+        main,
+        "lookup_analysis_for_entitlement",
+        lambda *_args: (None, True),
+    )
     response = client.post(
         "/api/portfolio/history",
         json={
@@ -1201,6 +1210,18 @@ def test_persist_guest_analysis_claims_matching_private_packet_snapshot(monkeypa
             or {"analysis_id": analysis_id}
         ),
     )
+    claimed_payloads = []
+    original_upsert_packet_payload = main.upsert_packet_payload
+
+    def upsert_packet_payload_spy(analysis_id, user_id, payload):
+        claimed_payloads.append(payload)
+        return original_upsert_packet_payload(analysis_id, user_id, payload)
+
+    monkeypatch.setattr(
+        main,
+        "upsert_packet_payload",
+        upsert_packet_payload_spy,
+    )
 
     response = client.post(
         "/api/portfolio/history",
@@ -1216,7 +1237,27 @@ def test_persist_guest_analysis_claims_matching_private_packet_snapshot(monkeypa
     assert saved_snapshots[0][3]["lot_match_report"]["gap"] == [
         {"symbol": "NVDA", "quantity": 2}
     ]
+    assert claimed_payloads == [saved_snapshots[0][3]]
     assert PACKET_STORE["guest-claim-1"]["user_id"] == "test-user-123"
+
+
+def test_apply_packet_year_grant_ignores_history_packet_flags(monkeypatch):
+    result = main.PortfolioAnalysis.model_validate(
+        {
+            "analysis_id": "forged-history-analysis",
+            "tax_profile": {"tax_year": 2025, "filing_status": "single"},
+            "packet_unlocked": True,
+            "packet_session_id": "cs_forged_history_value",
+        }
+    )
+    monkeypatch.setattr(main, "lookup_packet_grant_for_tax_year", lambda *_args: (None, True))
+    monkeypatch.setattr(main, "lookup_packet_entitlement_for_tax_year", lambda *_args: (None, True))
+    monkeypatch.setattr(main, "paid_session_for_user_year", lambda *_args: None)
+
+    result = main._apply_packet_year_grant(result, "test-user-123")
+
+    assert result.packet_unlocked is False
+    assert result.packet_session_id is None
 
 
 def test_guest_snapshot_retry_reuses_history_row_after_snapshot_write_failure(monkeypatch):
@@ -1264,6 +1305,37 @@ def test_guest_snapshot_retry_reuses_history_row_after_snapshot_write_failure(mo
     assert retried.status_code == 200
     assert len(history_saves) == 1
     assert len(snapshot_writes) == 2
+
+
+def test_guest_history_retry_after_cache_loss_does_not_insert_duplicate(monkeypatch):
+    analysis = {"analysis_id": "guest-cache-loss", "summary": {}}
+    existing = {"id": "history-cache-loss", "result": analysis}
+    lookups = []
+    inserts = []
+    monkeypatch.setattr(
+        main,
+        "lookup_analysis_for_entitlement",
+        lambda analysis_id, user_id: (lookups.append((analysis_id, user_id)) or (existing, True)),
+    )
+    monkeypatch.setattr(
+        main,
+        "get_packet_snapshot",
+        lambda *_args: (None, True),
+    )
+    monkeypatch.setattr(
+        main,
+        "save_analysis_history",
+        lambda **kwargs: inserts.append(kwargs),
+    )
+
+    response = client.post(
+        "/api/portfolio/history",
+        json={"filename": "guest.csv", "analysis": analysis},
+    )
+
+    assert response.status_code == 503
+    assert lookups == [("guest-cache-loss", "test-user-123")]
+    assert inserts == []
 
 
 def test_persist_guest_analysis_requires_auth():

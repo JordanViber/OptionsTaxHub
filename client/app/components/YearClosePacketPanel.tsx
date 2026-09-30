@@ -48,6 +48,22 @@ function pendingSessionStorageKey(analysisId: string): string {
   return `optionstaxhub-packet-pending:${analysisId}`;
 }
 
+function pendingCheckoutUrlStorageKey(analysisId: string): string {
+  return `optionstaxhub-packet-pending-url:${analysisId}`;
+}
+
+function trustedCheckoutUrl(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname === "checkout.stripe.com"
+      ? value
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 function localAnalysisIdentity(analysis: PortfolioAnalysis): string {
   const source = JSON.stringify(compactAnalysis(analysis));
   let first = 0x811c9dc5;
@@ -220,6 +236,8 @@ function YearClosePacketPanelForAnalysis({
   const [canceledNotice, setCanceledNotice] = useState(false);
   const [paid, setPaid] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [checkoutUrl, setCheckoutUrl] = useState<string | null>(null);
+  const [confirmPending, setConfirmPending] = useState(false);
   const missingAnalysisId = canonicalAnalysisId === "local-analysis";
 
   // Same-tab Stripe redirect leaves this page in back-forward cache with
@@ -241,7 +259,14 @@ function YearClosePacketPanelForAnalysis({
     const savedCanonicalId = savedCanonical || analysisId;
     setCanonicalAnalysisId(savedCanonicalId);
     const pendingSessionId = readSessionItem(pendingSessionStorageKey(analysisStorageId));
-    if (pendingSessionId?.startsWith("cs_")) setSessionId(pendingSessionId);
+    const pendingCheckoutUrl = trustedCheckoutUrl(
+      readSessionItem(pendingCheckoutUrlStorageKey(analysisStorageId)),
+    );
+    if (pendingSessionId?.startsWith("cs_")) {
+      setSessionId(pendingSessionId);
+      setCheckoutUrl(pendingCheckoutUrl);
+      setConfirmPending(false);
+    }
     if (analysis.packet_unlocked) {
       setPaid(true);
       if (analysis.packet_session_id?.startsWith("cs_")) {
@@ -280,9 +305,11 @@ function YearClosePacketPanelForAnalysis({
       clearSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY);
       setCanceledNotice(false);
       setSessionId(sid);
+      setConfirmPending(true);
       setBusy("confirm");
       setError(null);
       let retryableFailure = true;
+      let checkoutStillOpen = false;
       void (async () => {
         try {
           const headers = await authHeaders();
@@ -297,8 +324,13 @@ function YearClosePacketPanelForAnalysis({
             }),
           });
           if (!response.ok) {
-            retryableFailure = response.status >= 500;
             const errData = await response.json().catch(() => null);
+            const detail = String(errData?.detail || "");
+            checkoutStillOpen = response.status === 409 && /still open/i.test(detail);
+            retryableFailure =
+              response.status >= 500 ||
+              checkoutStillOpen ||
+              (response.status === 409 && /payment was received/i.test(detail));
             throw new Error(
               errData?.detail || "Could not confirm packet payment.",
             );
@@ -311,15 +343,26 @@ function YearClosePacketPanelForAnalysis({
           setCanonicalAnalysisId(canonicalId);
           writeSessionItem(canonicalStorageKey(analysisStorageId), canonicalId);
           setPaid(true);
+          setConfirmPending(false);
+          setCheckoutUrl(null);
           clearSessionItem(pendingSessionStorageKey(analysisStorageId));
+          clearSessionItem(pendingCheckoutUrlStorageKey(analysisStorageId));
           writeSessionItem(paidStorageKey(canonicalId), sid);
           onPaidChange?.(true);
           stripPacketQueryParams();
         } catch (err) {
           setError(err instanceof Error ? err.message : "Could not confirm payment.");
-          if (!retryableFailure) {
+          if (checkoutStillOpen) {
+            setConfirmPending(false);
+            stripPacketQueryParams();
+          } else if (retryableFailure) {
+            setConfirmPending(true);
+          } else {
+            setConfirmPending(false);
             setSessionId(null);
+            setCheckoutUrl(null);
             clearSessionItem(pendingSessionStorageKey(analysisStorageId));
+            clearSessionItem(pendingCheckoutUrlStorageKey(analysisStorageId));
             stripPacketQueryParams();
           }
         } finally {
@@ -331,8 +374,7 @@ function YearClosePacketPanelForAnalysis({
 
     if (canceled || (inflight && !pendingSessionId)) {
       clearSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY);
-      clearSessionItem(pendingSessionStorageKey(analysisStorageId));
-      setSessionId(null);
+      setConfirmPending(false);
       setBusy(null);
       setCanceledNotice(true);
       stripPacketQueryParams();
@@ -340,10 +382,21 @@ function YearClosePacketPanelForAnalysis({
   }, [analysis, analysisId, analysisStorageId]);
 
   const handlePay = async () => {
+    if (sessionId && !confirmPending && checkoutUrl) {
+      setBusy("pay");
+      setError(null);
+      try {
+        globalThis.location.href = checkoutUrl;
+      } catch {
+        setBusy(null);
+      }
+      return;
+    }
     if (sessionId) {
       setBusy("confirm");
       setError(null);
       let retryableFailure = true;
+      let checkoutStillOpen = false;
       try {
         const headers = await authHeaders();
         const response = await fetch(`${API_URL}/api/year-close-packet/confirm`, {
@@ -357,8 +410,13 @@ function YearClosePacketPanelForAnalysis({
           }),
         });
         if (!response.ok) {
-          retryableFailure = response.status >= 500;
           const errData = await response.json().catch(() => null);
+          const detail = String(errData?.detail || "");
+          checkoutStillOpen = response.status === 409 && /still open/i.test(detail);
+          retryableFailure =
+            response.status >= 500 ||
+            checkoutStillOpen ||
+            (response.status === 409 && /payment was received/i.test(detail));
           throw new Error(errData?.detail || "Could not confirm packet payment.");
         }
         const data = await response.json();
@@ -367,15 +425,26 @@ function YearClosePacketPanelForAnalysis({
         setCanonicalAnalysisId(paidAnalysisId);
         writeSessionItem(canonicalStorageKey(analysisStorageId), paidAnalysisId);
         setPaid(true);
+        setConfirmPending(false);
+        setCheckoutUrl(null);
         clearSessionItem(pendingSessionStorageKey(analysisStorageId));
+        clearSessionItem(pendingCheckoutUrlStorageKey(analysisStorageId));
         writeSessionItem(paidStorageKey(paidAnalysisId), sessionId);
         onPaidChange?.(true);
         stripPacketQueryParams();
       } catch (err) {
         setError(err instanceof Error ? err.message : "Could not confirm payment.");
-        if (!retryableFailure) {
+        if (checkoutStillOpen) {
+          setConfirmPending(false);
+          stripPacketQueryParams();
+        } else if (retryableFailure) {
+          setConfirmPending(true);
+        } else {
+          setConfirmPending(false);
           setSessionId(null);
+          setCheckoutUrl(null);
           clearSessionItem(pendingSessionStorageKey(analysisStorageId));
+          clearSessionItem(pendingCheckoutUrlStorageKey(analysisStorageId));
           stripPacketQueryParams();
         }
       } finally {
@@ -408,7 +477,11 @@ function YearClosePacketPanelForAnalysis({
           typeof data.analysis_id === "string" ? data.analysis_id : canonicalAnalysisId;
         setCanonicalAnalysisId(paidAnalysisId);
         setSessionId(data.session_id);
+        setConfirmPending(false);
+        setCheckoutUrl(null);
         setPaid(true);
+        clearSessionItem(pendingSessionStorageKey(analysisStorageId));
+        clearSessionItem(pendingCheckoutUrlStorageKey(analysisStorageId));
         writeSessionItem(canonicalStorageKey(analysisStorageId), paidAnalysisId);
         writeSessionItem(paidStorageKey(paidAnalysisId), data.session_id);
         onPaidChange?.(true);
@@ -418,6 +491,10 @@ function YearClosePacketPanelForAnalysis({
       if (typeof data?.checkout_url !== "string" || data.checkout_url.length === 0) {
         throw new Error("Checkout did not return a payment link.");
       }
+      const safeCheckoutUrl = trustedCheckoutUrl(data.checkout_url);
+      if (!safeCheckoutUrl) {
+        throw new Error("Checkout returned an invalid payment link.");
+      }
       if (typeof data?.analysis_id === "string" && data.analysis_id.length > 0) {
         setCanonicalAnalysisId(data.analysis_id);
         writeSessionItem(canonicalStorageKey(analysisStorageId), data.analysis_id);
@@ -425,9 +502,12 @@ function YearClosePacketPanelForAnalysis({
       if (typeof data?.session_id === "string" && data.session_id.startsWith("cs_")) {
         setSessionId(data.session_id);
         writeSessionItem(pendingSessionStorageKey(analysisStorageId), data.session_id);
+        setCheckoutUrl(safeCheckoutUrl);
+        setConfirmPending(false);
+        writeSessionItem(pendingCheckoutUrlStorageKey(analysisStorageId), safeCheckoutUrl);
       }
       try {
-        globalThis.location.href = data.checkout_url;
+        globalThis.location.href = safeCheckoutUrl;
       } catch {
         // jsdom rejects in-page navigation. A real browser unloads this
         // page instead; busy stays "pay" until pageshow / remount.

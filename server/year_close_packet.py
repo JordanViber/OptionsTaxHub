@@ -1000,6 +1000,14 @@ def packet_store_belongs_to_user(analysis_id: str, user_id: str) -> bool:
     return rec is None or _same_packet_owner(rec.get("user_id"), user_id)
 
 
+def packet_store_owner(analysis_id: str) -> str | None:
+    """Return the cached record owner; an empty string denotes guest state."""
+    rec = PACKET_STORE.get(analysis_id)
+    if rec is None:
+        return None
+    return str(rec.get("user_id") or "")
+
+
 def claimable_guest_packet_payload(
     analysis_id: str,
     user_id: str,
