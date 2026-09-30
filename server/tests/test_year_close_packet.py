@@ -232,6 +232,17 @@ def _clean_store(monkeypatch):
     monkeypatch.setattr(main, "mark_packet_snapshot_paid", mark_snapshot_paid)
     monkeypatch.setattr(main, "lookup_packet_grant_for_tax_year", lambda *_args, **_kwargs: (None, True))
     monkeypatch.setattr(main, "lookup_analysis_for_entitlement", lookup_analysis)
+    monkeypatch.setattr(
+        main,
+        "save_analysis_history",
+        lambda user_id, filename, summary, *, result_data: {
+            "id": result_data["analysis_id"],
+            "user_id": user_id,
+            "filename": filename,
+            "summary": summary,
+            "result": result_data,
+        },
+    )
     yield
     _FAKE_PACKET_SNAPSHOTS.clear()
     _FAKE_PACKET_ENTITLEMENTS.clear()
@@ -667,6 +678,31 @@ def test_checkout_rejects_deleted_document_entitlement_for_wrong_tax_year(monkey
     assert created == []
 
 
+def test_download_does_not_serve_cached_packet_after_durable_payload_delete(monkeypatch):
+    remember_analysis("analysis-deleted-document", "test-user-123", SAMPLE_ANALYSIS)
+    assert mark_paid(
+        "analysis-deleted-document",
+        "cs_test_deleted_document",
+        user_id="test-user-123",
+    )
+    _FAKE_PACKET_SNAPSHOTS[("test-user-123", "analysis-deleted-document")] = {
+        "analysis_id": "analysis-deleted-document",
+        "user_id": "test-user-123",
+        "tax_year": 2025,
+        "packet_payload": None,
+        "packet_session_id": "cs_test_deleted_document",
+        "paid_at": "now",
+    }
+
+    response = client.get(
+        "/api/year-close-packet/download",
+        params={"analysis_id": "analysis-deleted-document"},
+    )
+
+    assert response.status_code == 503
+    assert "unavailable" in response.json()["detail"]
+
+
 def test_checkout_does_not_insert_history_for_idless_analysis_key(monkeypatch):
     _test_stripe_env(monkeypatch)
     inserted = []
@@ -793,6 +829,55 @@ def test_checkout_copies_same_users_local_snapshot_to_canonical_id(monkeypatch):
     assert PACKET_STORE["local-analysis"]["paid"] is False
     saved_snapshot = _FAKE_PACKET_SNAPSHOTS[("test-user-123", canonical_id)]
     assert saved_snapshot["packet_payload"]["lot_match_report"] == report
+
+
+def test_checkout_rejects_local_alias_when_analysis_does_not_match_snapshot(monkeypatch):
+    _test_stripe_env(monkeypatch)
+    remember_analysis("local-analysis", "test-user-123", LOT_MATCH_ANALYSIS)
+    created = []
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "create",
+        lambda **kwargs: created.append(kwargs),
+    )
+    mismatched_analysis = {
+        key: value for key, value in LOT_MATCH_ANALYSIS.items() if key != "analysis_id"
+    }
+    mismatched_analysis["tax_profile"] = {
+        **mismatched_analysis["tax_profile"],
+        "tax_year": 2025,
+    }
+
+    response = client.post(
+        "/api/year-close-packet/checkout",
+        json={"analysis_id": "local-analysis", "analysis": mismatched_analysis},
+    )
+
+    assert response.status_code == 409
+    assert created == []
+    assert "local-analysis" not in PACKET_STORE or not PACKET_STORE["local-analysis"].get("paid")
+
+
+def test_checkout_does_not_create_paid_checkout_without_deletable_history(monkeypatch):
+    _test_stripe_env(monkeypatch)
+    remember_analysis("analysis-sample-1", "test-user-123", SAMPLE_ANALYSIS)
+    monkeypatch.setattr(main, "lookup_analysis_for_entitlement", lambda *_args: (None, True))
+    monkeypatch.setattr(main, "save_analysis_history", lambda *_args, **_kwargs: None)
+    created = []
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "create",
+        lambda **kwargs: created.append(kwargs),
+    )
+
+    response = client.post(
+        "/api/year-close-packet/checkout",
+        json={"analysis_id": "analysis-sample-1", "analysis": SAMPLE_ANALYSIS},
+    )
+
+    assert response.status_code == 503
+    assert created == []
+    assert _FAKE_PACKET_SNAPSHOTS == {}
 
 
 def test_checkout_refuses_to_adopt_unowned_local_snapshot(monkeypatch):
@@ -1113,6 +1198,7 @@ def test_reused_same_year_checkout_survives_packet_store_restart(monkeypatch):
     assert "csv_only META" in restored_pdf_text
     assert PACKET_STORE["analysis-followup"]["user_id"] == "test-user-123"
     assert PACKET_STORE["analysis-followup"]["paid"] is True
+    assert PACKET_STORE["analysis-followup"]["payload"] is None
 
 
 def test_reused_session_does_not_unlock_snapshot_stamped_for_another_year(monkeypatch):
@@ -3203,10 +3289,8 @@ def test_paid_download_reloads_suggestions_from_history_on_store_miss(monkeypatc
             True,
         ),
     )
-    paid_session = SimpleNamespace(
+    paid_session = _stripe_object_session(
         id="cs_test_hist_harvest",
-        payment_status="paid",
-        amount_total=PACKET_AMOUNT_CENTS,
         metadata={
             "product": PACKET_METADATA_PRODUCT,
             "analysis_id": analysis_id,

@@ -1000,6 +1000,26 @@ def packet_store_belongs_to_user(analysis_id: str, user_id: str) -> bool:
     return rec is None or _same_packet_owner(rec.get("user_id"), user_id)
 
 
+def claimable_guest_packet_payload(
+    analysis_id: str,
+    user_id: str,
+    analysis: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Return an exact server snapshot match without transferring its owner yet."""
+    if not analysis_id or not user_id or not isinstance(analysis, dict):
+        return None
+    record = PACKET_STORE.get(analysis_id)
+    if not record or not _same_packet_owner(record.get("user_id"), user_id):
+        return None
+    payload = record.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    expected = build_packet_payload(analysis, analysis_id=analysis_id)
+    if expected != payload:
+        return None
+    return deepcopy(payload)
+
+
 def mark_paid(analysis_id: str, session_id: str, user_id: str = "") -> bool:
     if not user_id:
         return False
@@ -1077,6 +1097,7 @@ def copy_packet_payload_to_id(
     source_analysis_id: str,
     target_analysis_id: str,
     user_id: str,
+    analysis: dict[str, Any] | None = None,
 ) -> bool:
     """Copy an owner-validated local snapshot onto a fresh canonical ID."""
     if not source_analysis_id or not target_analysis_id or not user_id:
@@ -1089,6 +1110,13 @@ def copy_packet_payload_to_id(
     payload = source.get("payload")
     if not isinstance(payload, dict):
         return False
+    if analysis is not None:
+        expected = build_packet_payload(
+            analysis,
+            analysis_id=str(payload.get("analysis_id") or source_analysis_id),
+        )
+        if expected != payload:
+            return False
     existing_target = PACKET_STORE.get(target_analysis_id)
     if existing_target and not _same_packet_owner(
         existing_target.get("user_id"), user_id

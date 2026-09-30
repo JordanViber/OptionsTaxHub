@@ -552,6 +552,7 @@ def save_packet_entitlement(
                     "created_at": datetime.now(timezone.utc).isoformat(),
                 },
                 on_conflict="user_id,tax_year,packet_session_id",
+                ignore_duplicates=True,
             )
             .select("analysis_id, user_id, tax_year, packet_session_id")
             .execute()

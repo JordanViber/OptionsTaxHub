@@ -790,3 +790,26 @@ class TestPacketSnapshots:
         client.table.return_value.select.return_value.eq.return_value.eq.return_value.order.return_value.execute.side_effect = RuntimeError("offline")
         monkeypatch.setattr(db, "get_supabase", lambda: client)
         assert db.lookup_packet_grant_for_tax_year("user1", 2026) == (None, False)
+
+    def test_reused_entitlement_does_not_overwrite_original_checkout_analysis(self, monkeypatch):
+        client = _FakeClient(
+            table_data=[
+                {
+                    "analysis_id": "original-analysis",
+                    "user_id": "user1",
+                    "tax_year": 2026,
+                    "packet_session_id": "cs_original",
+                }
+            ]
+        )
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+
+        saved = db.save_packet_entitlement(
+            "followup-analysis", "user1", 2026, "cs_original"
+        )
+
+        assert saved["analysis_id"] == "original-analysis"
+        upsert = next(call for call in client.builders[0].calls if call[0] == "upsert")
+        assert upsert[1][0]["analysis_id"] == "followup-analysis"
+        assert upsert[2]["on_conflict"] == "user_id,tax_year,packet_session_id"
+        assert upsert[2]["ignore_duplicates"] is True

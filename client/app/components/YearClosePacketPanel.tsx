@@ -216,6 +216,7 @@ function YearClosePacketPanelForAnalysis({
   const [canceledNotice, setCanceledNotice] = useState(false);
   const [paid, setPaid] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const missingAnalysisId = canonicalAnalysisId === "local-analysis";
 
   // Same-tab Stripe redirect leaves this page in back-forward cache with
   // busy="pay". Closing checkout (or Back) restores that spinning button.
@@ -263,9 +264,10 @@ function YearClosePacketPanelForAnalysis({
 
     if (sid) {
       if (
-        !inflight &&
-        packetAnalysisId !== savedCanonicalId &&
-        packetAnalysisId !== analysisId
+        (packetAnalysisId &&
+          packetAnalysisId !== savedCanonicalId &&
+          packetAnalysisId !== analysisId) ||
+        (!packetAnalysisId && !inflight)
       ) {
         return;
       }
@@ -306,6 +308,7 @@ function YearClosePacketPanelForAnalysis({
           stripPacketQueryParams();
         } catch (err) {
           setError(err instanceof Error ? err.message : "Could not confirm payment.");
+          stripPacketQueryParams();
         } finally {
           setBusy(null);
         }
@@ -332,10 +335,7 @@ function YearClosePacketPanelForAnalysis({
         method: "POST",
         headers,
         body: JSON.stringify({
-          analysis_id:
-            canonicalAnalysisId === "local-analysis"
-              ? analysisStorageId
-              : canonicalAnalysisId,
+          analysis_id: canonicalAnalysisId,
           analysis: compactAnalysis(analysis),
         }),
       });
@@ -444,7 +444,7 @@ function YearClosePacketPanelForAnalysis({
               )
             }
             onClick={handlePay}
-            disabled={busy !== null || paid}
+            disabled={busy !== null || paid || missingAnalysisId}
           >
             Pay $49
           </Button>
@@ -464,6 +464,11 @@ function YearClosePacketPanelForAnalysis({
             Download
           </Button>
         </Stack>
+        {missingAnalysisId && (
+          <Typography role="status" variant="caption" color="text.secondary">
+            Re-run this analysis before purchasing so the packet is tied to its saved run.
+          </Typography>
+        )}
         {canceledNotice && !error && (
           <Alert
             severity="info"

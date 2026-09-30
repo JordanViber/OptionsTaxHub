@@ -415,45 +415,27 @@ describe("YearClosePacketPanel", () => {
     expect(store[PACKET_CHECKOUT_INFLIGHT_KEY]).toBeUndefined();
   });
 
-  it("sends a stable analysis-specific key for each ID-less checkout", async () => {
+  it("requires a saved analysis ID before checkout while isolating local state", () => {
     const firstAnalysis = { ...analysis, analysis_id: undefined };
     const secondAnalysis = {
       ...analysis,
       analysis_id: undefined,
       tax_profile: { ...analysis.tax_profile!, tax_year: 2026 },
     };
-    mockFetch
-      .mockResolvedValueOnce({
-        ok: true,
-        json: () =>
-          Promise.resolve({
-            checkout_url: "https://checkout.stripe.com/c/pay/first",
-            analysis_id: "canonical-first",
-          }),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        json: () =>
-          Promise.resolve({
-            checkout_url: "https://checkout.stripe.com/c/pay/second",
-            analysis_id: "canonical-second",
-          }),
-      });
-
     const first = render(<YearClosePacketPanel analysis={firstAnalysis} />);
-    fireEvent.click(screen.getByRole("button", { name: /Pay \$49/i }));
-    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
-    const firstBody = JSON.parse(mockFetch.mock.calls[0][1].body);
-    expect(firstBody.analysis_id).toBe(yearClosePacketStorageId(firstAnalysis));
+    const firstPay = screen.getByRole("button", { name: /Pay \$49/i });
+    expect(firstPay).toBeDisabled();
+    expect(screen.getByText(/Re-run this analysis before purchasing/i)).toBeInTheDocument();
+    fireEvent.click(firstPay);
+    expect(mockFetch).not.toHaveBeenCalled();
     first.unmount();
 
     render(<YearClosePacketPanel analysis={secondAnalysis} />);
-    fireEvent.click(screen.getByRole("button", { name: /Pay \$49/i }));
-    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));
-    const secondBody = JSON.parse(mockFetch.mock.calls[1][1].body);
-    expect(secondBody.analysis_id).toBe(yearClosePacketStorageId(secondAnalysis));
-    expect(secondBody.analysis_id).not.toBe(firstBody.analysis_id);
-    expect(secondBody.analysis.tax_profile.tax_year).toBe(2026);
+    expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeDisabled();
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(yearClosePacketStorageId(firstAnalysis)).not.toBe(
+      yearClosePacketStorageId(secondAnalysis),
+    );
   });
 
   it("uses an existing paid-year entitlement without opening another Checkout", async () => {
@@ -503,7 +485,7 @@ describe("YearClosePacketPanel", () => {
     expect(store[PACKET_CHECKOUT_INFLIGHT_KEY]).toBeUndefined();
   });
 
-  it("preserves the Stripe session URL when confirmation fails", async () => {
+  it("strips the Stripe session URL when confirmation fails", async () => {
     window.history.replaceState(
       null,
       "",
@@ -522,7 +504,7 @@ describe("YearClosePacketPanel", () => {
         "Confirmation temporarily failed.",
       );
     });
-    expect(window.location.search).toContain("packet_session=cs_test_packet");
+    expect(window.location.search).not.toContain("packet_session");
   });
 
   it("does not confirm a return URL for a different analysis", async () => {
