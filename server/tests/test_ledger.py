@@ -129,14 +129,19 @@ class TestHelpers:
             SAMPLE_1099_SHA256,
             SAMPLE_CSV_SHA256,
             is_trusted_in_app_sample,
+            is_trusted_sample_csv_bytes,
             sha256_hex,
         )
 
         repo = Path(__file__).resolve().parents[2]
         csv = (repo / "client" / "public" / "sample-robinhood-transactions.csv").read_bytes()
         pdf = (repo / "client" / "public" / "sample-robinhood-1099-2026.pdf").read_bytes()
-        assert sha256_hex(csv) == SAMPLE_CSV_SHA256
+        assert sha256_hex(csv.replace(b"\r\n", b"\n")) == SAMPLE_CSV_SHA256
         assert sha256_hex(pdf) == SAMPLE_1099_SHA256
+        assert is_trusted_sample_csv_bytes(csv)
+        canonical_csv = csv.replace(b"\r\n", b"\n")
+        assert is_trusted_sample_csv_bytes(canonical_csv.replace(b"\n", b"\r\n"))
+        assert not is_trusted_sample_csv_bytes(csv + b"modified")
         assert is_trusted_in_app_sample(csv, pdf)
         assert not is_trusted_in_app_sample(csv, b"%PDF-1.4 not-the-fixture")
         assert not is_trusted_in_app_sample(b"Activity Date,not-sample\n", pdf)

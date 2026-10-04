@@ -53,6 +53,16 @@ python main.py
 
 Server runs at: `http://localhost:8011`
 
+#### Apply database migrations
+
+Portfolio history needs the versioned schema in `server/migrations/`. A fresh Supabase project does not include those tables, and it does not need any SQL that is not in that directory. Apply the files in filename order:
+
+```bash
+DATABASE_URL="postgresql://..." sh server/scripts/apply_migrations.sh
+```
+
+`DATABASE_URL` is the direct Postgres URI. Details, including how an older summary-only `portfolio_analyses` table gains nullable `result` without losing rows, are in [Supabase setup](SUPABASE_SETUP.md). If `result` or the table is missing, saving an analysis fails with `AnalysisSchemaError` instead of being dropped.
+
 ---
 
 ### 4. Frontend Setup (Next.js)

@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from copy import deepcopy
 from datetime import date, datetime
 from io import BytesIO
 from typing import Any, Optional
@@ -95,6 +96,20 @@ COMPARE_GAP_COPY = (
 # (pay then immediately download) and unit tests. Download can also rebuild
 # from a client-supplied packet payload after Stripe session verification.
 PACKET_STORE: dict[str, dict[str, Any]] = {}
+
+
+def _same_packet_owner(stored: Any, user_id: str) -> bool:
+    """True only when both sides are the same owner.
+
+    Blank guest state matches another blank caller. It does not match a
+    signed-in user; adopting that snapshot requires an exact payload match.
+    """
+    return (stored or "") == (user_id or "")
+
+
+def _claim_packet_owner(rec: dict[str, Any], user_id: str) -> None:
+    """No-op. Blank guest rows are adopted only by adopt_guest_packet."""
+    return None
 
 # Guest analyses are stored under an empty user_id. Without TTL + a cap this
 # dict grows without bound on every unauthenticated POST /analyze.
@@ -902,6 +917,9 @@ def _payload_preserving_harvest(
 
 def remember_analysis(analysis_id: str, user_id: str, analysis: dict[str, Any]) -> None:
     existing = PACKET_STORE.get(analysis_id) or {}
+    if existing and not _same_packet_owner(existing.get("user_id"), user_id):
+        logger.warning("Refusing to replace packet snapshot owned by another user")
+        return
     existing_payload = existing.get("payload")
     if not isinstance(existing_payload, dict):
         existing_payload = None
@@ -922,9 +940,16 @@ def remember_analysis(analysis_id: str, user_id: str, analysis: dict[str, Any]) 
 
 def upsert_payload(analysis_id: str, user_id: str, analysis: dict[str, Any] | None) -> dict[str, Any]:
     rec = PACKET_STORE.get(analysis_id)
+    if rec and not _same_packet_owner(rec.get("user_id"), user_id):
+        logger.warning("Refusing to reuse packet snapshot owned by another user")
+        payload = build_packet_payload(analysis, analysis_id=analysis_id) if analysis else None
+        return _new_packet_record(
+            user_id,
+            payload=payload,
+            paid=False,
+            session_ids=set(),
+        )
     if rec and rec.get("payload"):
-        if user_id and rec.get("user_id") in ("", None):
-            rec["user_id"] = user_id
         purge_packet_store()
         return PACKET_STORE.get(analysis_id) or rec
     if analysis:
@@ -943,7 +968,117 @@ def upsert_payload(analysis_id: str, user_id: str, analysis: dict[str, Any] | No
     return PACKET_STORE[analysis_id]
 
 
-def mark_paid(analysis_id: str, session_id: str, user_id: str = "") -> None:
+def upsert_packet_payload(
+    analysis_id: str,
+    user_id: str,
+    payload: dict[str, Any],
+) -> bool:
+    """Cache a packet built from server-owned data without rebuilding client JSON."""
+    if not analysis_id or not user_id or not isinstance(payload, dict):
+        return False
+    rec = PACKET_STORE.get(analysis_id)
+    if rec and not _same_packet_owner(rec.get("user_id"), user_id):
+        return False
+    if rec and isinstance(rec.get("payload"), dict):
+        return True
+    PACKET_STORE[analysis_id] = _new_packet_record(
+        user_id,
+        payload=deepcopy(payload),
+        paid=bool(rec and rec.get("paid")),
+        session_ids=set(rec.get("session_ids") or []) if rec else set(),
+        created_at=rec.get("created_at") if rec else None,
+    )
+    purge_packet_store()
+    return True
+
+
+def packet_store_belongs_to_user(analysis_id: str, user_id: str) -> bool:
+    """Return false when a globally keyed memory record belongs to another owner.
+
+    A blank guest row is not this caller's document. Checkout may still adopt
+    it after claimable_guest_packet_payload matches.
+    """
+    rec = PACKET_STORE.get(analysis_id)
+    return rec is None or _same_packet_owner(rec.get("user_id"), user_id)
+
+
+def packet_store_owner(analysis_id: str) -> str | None:
+    """Return the cached record owner; an empty string denotes guest state."""
+    rec = PACKET_STORE.get(analysis_id)
+    if rec is None:
+        return None
+    return str(rec.get("user_id") or "")
+
+
+_PACKET_LOT_LIST_KEYS = ("matched", "gap", "unmatched")
+
+
+def _public_packet_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Compare shape shared by a private snapshot and a redacted client body.
+
+    Unpaid analyze JSON drops lot row lists (counts and totals stay) and may
+    also clear supplemental lots and activity transactions. Those row lists are
+    not required for a same-run match, so both sides are redacted before compare.
+    """
+    public = deepcopy(payload)
+    report = public.get("lot_match_report")
+    if isinstance(report, dict):
+        for key in _PACKET_LOT_LIST_KEYS:
+            report[key] = []
+    supplemental = public.get("supplemental_1099")
+    if isinstance(supplemental, dict) and "lots" in supplemental:
+        supplemental["lots"] = []
+    book = public.get("activity_book")
+    if isinstance(book, dict) and "transactions" in book:
+        book["transactions"] = []
+    return public
+
+
+def claimable_guest_packet_payload(
+    analysis_id: str,
+    user_id: str,
+    analysis: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Return an exact server snapshot match without transferring its owner yet."""
+    if not analysis_id or not user_id or not isinstance(analysis, dict):
+        return None
+    record = PACKET_STORE.get(analysis_id)
+    if not record:
+        return None
+    owner = str(record.get("user_id") or "")
+    # Blank guest rows are claimable only when the caller's analysis matches.
+    # A non-empty owner never transfers. An id alone is not a match.
+    if owner and owner != user_id:
+        return None
+    payload = record.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    expected = build_packet_payload(analysis, analysis_id=analysis_id)
+    if _public_packet_payload(payload) != _public_packet_payload(expected):
+        return None
+    return deepcopy(payload)
+
+
+def adopt_guest_packet(analysis_id: str, user_id: str, payload: dict[str, Any]) -> bool:
+    """Transfer a blank-owner snapshot only when payload is the exact stored document."""
+    if not analysis_id or not user_id or not isinstance(payload, dict):
+        return False
+    record = PACKET_STORE.get(analysis_id)
+    if not record:
+        return False
+    owner = str(record.get("user_id") or "")
+    if owner and owner != user_id:
+        return False
+    stored = record.get("payload")
+    if not isinstance(stored, dict) or stored != payload:
+        return False
+    record["user_id"] = user_id
+    return True
+
+
+def mark_paid(analysis_id: str, session_id: str, user_id: str = "") -> bool:
+    if not user_id:
+        return False
     rec = PACKET_STORE.get(analysis_id)
     if rec is None:
         PACKET_STORE[analysis_id] = _new_packet_record(
@@ -953,19 +1088,22 @@ def mark_paid(analysis_id: str, session_id: str, user_id: str = "") -> None:
             session_ids={session_id} if session_id else set(),
         )
         purge_packet_store()
-        return
+        return True
+    if not _same_packet_owner(rec.get("user_id"), user_id):
+        return False
     rec["paid"] = True
     if session_id:
         rec.setdefault("session_ids", set()).add(session_id)
-    if user_id and not rec.get("user_id"):
-        rec["user_id"] = user_id
     purge_packet_store()
+    return True
 
 
-def is_packet_paid(analysis_id: str) -> bool:
+def is_packet_paid(analysis_id: str, user_id: str | None = None) -> bool:
     purge_packet_store()
     rec = PACKET_STORE.get(analysis_id)
-    return bool(rec and rec.get("paid"))
+    if not rec or not rec.get("paid"):
+        return False
+    return bool(user_id) and rec.get("user_id") == user_id
 
 
 def paid_session_for_user_year(user_id: str, tax_year: int | None = None) -> str | None:
@@ -976,6 +1114,10 @@ def paid_session_for_user_year(user_id: str, tax_year: int | None = None) -> str
     for rec in PACKET_STORE.values():
         if rec.get("user_id") != user_id or not rec.get("paid"):
             continue
+        # A cache entry with no year-bound analysis is not evidence that this
+        # user paid for every tax year.
+        if tax_year is None:
+            continue
         payload = rec.get("payload") or {}
         year = None
         if isinstance(payload, dict):
@@ -983,7 +1125,12 @@ def paid_session_for_user_year(user_id: str, tax_year: int | None = None) -> str
             profile = payload.get("tax_profile")
             if year is None and isinstance(profile, dict):
                 year = profile.get("tax_year")
-        if tax_year is not None and year is not None and int(year) != int(tax_year):
+        if year is None:
+            continue
+        try:
+            if int(year) != int(tax_year):
+                continue
+        except (TypeError, ValueError):
             continue
         session_ids = rec.get("session_ids") or set()
         for session_id in session_ids:
@@ -999,6 +1146,62 @@ def get_payload(analysis_id: str) -> dict[str, Any] | None:
         return None
     payload = rec.get("payload")
     return payload if isinstance(payload, dict) else None
+
+
+def copy_packet_payload_to_id(
+    source_analysis_id: str,
+    target_analysis_id: str,
+    user_id: str,
+    analysis: dict[str, Any] | None = None,
+) -> bool:
+    """Copy an owner-validated local snapshot onto a fresh canonical ID."""
+    if not source_analysis_id or not target_analysis_id or not user_id:
+        return False
+    source = PACKET_STORE.get(source_analysis_id)
+    # A blank owner is shared guest state, not proof that this signed-in caller
+    # owns it. Never let a caller adopt a process-global guest alias.
+    if not source or source.get("user_id") != user_id:
+        return False
+    payload = source.get("payload")
+    if not isinstance(payload, dict):
+        return False
+    if analysis is not None:
+        expected = build_packet_payload(
+            analysis,
+            analysis_id=str(payload.get("analysis_id") or source_analysis_id),
+        )
+        if expected != payload:
+            return False
+    existing_target = PACKET_STORE.get(target_analysis_id)
+    if existing_target and not _same_packet_owner(
+        existing_target.get("user_id"), user_id
+    ):
+        return False
+    if existing_target and isinstance(existing_target.get("payload"), dict):
+        return True
+
+    canonical_payload = deepcopy(payload)
+    canonical_payload["analysis_id"] = target_analysis_id
+    PACKET_STORE[target_analysis_id] = _new_packet_record(
+        user_id,
+        payload=canonical_payload,
+        paid=False,
+        session_ids=set(),
+    )
+    purge_packet_store()
+    return True
+
+
+def forget_packet_payload(analysis_id: str, user_id: str) -> bool:
+    """Erase private in-memory packet data while retaining any paid year grant."""
+    record = PACKET_STORE.get(analysis_id)
+    if not record or record.get("user_id") != user_id:
+        return False
+    if record.get("paid"):
+        record["payload"] = None
+    else:
+        PACKET_STORE.pop(analysis_id, None)
+    return True
 
 
 def _env_flag(name: str) -> bool:
@@ -1101,7 +1304,13 @@ def _session_metadata(session: Any) -> dict[str, str]:
     mapping = _plain_mapping(raw)
     if mapping is None and raw is not None:
         out: dict[str, str] = {}
-        for key in ("product", "analysis_id", "packet_analysis", "user_id"):
+        for key in (
+            "product",
+            "analysis_id",
+            "packet_analysis",
+            "user_id",
+            "tax_year",
+        ):
             val = getattr(raw, key, None)
             if val is not None:
                 out[key] = str(val)
@@ -1113,6 +1322,11 @@ def _session_metadata(session: Any) -> dict[str, str]:
 
 def packet_session_id(session: Any) -> str:
     return str(_session_attr(session, "id") or "")
+
+
+def packet_user_id_from_session(session: Any) -> str:
+    """Authenticated owner recorded in signed Stripe Checkout metadata."""
+    return str(_session_metadata(session).get("user_id") or "").strip()
 
 
 def packet_analysis_id_from_session(session: Any, *fallbacks: str) -> str:
@@ -1139,19 +1353,12 @@ def _coerce_amount_cents(amount: Any) -> Optional[int]:
         return None
 
 
-def session_grants_packet(session: Any, analysis_id: str = "") -> bool:
-    """True only for a paid Year-close packet session.
-
-    TipJar sessions (Coffee/Lunch/Generous, $3/$10/$25) never grant this.
-
-    Session metadata.analysis_id (or packet_analysis) is canonical; a client
-    analysis_id of local-analysis / missing must not 403 a paid TEST session.
-    """
+def session_is_settled_packet(session: Any) -> bool:
+    """Validate paid packet attributes without deciding which analysis it unlocks."""
     if session is None:
         return False
     metadata = _session_metadata(session)
     product = str(metadata.get("product") or "")
-    session_analysis = packet_analysis_id_from_session(session, analysis_id)
     payment_status = str(_session_attr(session, "payment_status") or "").lower()
     status = str(_session_attr(session, "status") or "").lower()
     amount = _session_attr(session, "amount_total")
@@ -1163,9 +1370,8 @@ def session_grants_packet(session: Any, analysis_id: str = "") -> bool:
     expected_livemode = not packet_requires_test_stripe()
     paid_ok = payment_status == "paid"
     amount_is_packet = amount_cents == PACKET_AMOUNT_CENTS
-    granted = (
+    return (
         product == PACKET_METADATA_PRODUCT
-        and bool(session_analysis)
         and paid_ok
         and status == "complete"
         and amount_is_packet
@@ -1174,14 +1380,29 @@ def session_grants_packet(session: Any, analysis_id: str = "") -> bool:
         and isinstance(livemode, bool)
         and livemode == expected_livemode
     )
+
+
+def session_grants_packet(session: Any, analysis_id: str = "") -> bool:
+    """True only for a settled packet session bound to the requested analysis."""
+    session_analysis = packet_analysis_id_from_session(session)
+    requested_analysis = str(analysis_id or "").strip()
+    analysis_matches = (
+        bool(requested_analysis)
+        and bool(session_analysis)
+        and session_analysis != "local-analysis"
+        and requested_analysis != "local-analysis"
+        and requested_analysis == session_analysis
+    )
+    granted = analysis_matches and session_is_settled_packet(session)
     if not granted:
+        metadata = _session_metadata(session)
         logger.info(
             "year-close packet session rejected product=%s payment_status=%s "
             "status=%s amount=%s analysis_id=%s",
-            product or "-",
-            payment_status or "-",
-            status or "-",
-            amount_cents if amount_cents is not None else "-",
+            str(metadata.get("product") or "-"),
+            str(_session_attr(session, "payment_status") or "-"),
+            str(_session_attr(session, "status") or "-"),
+            _coerce_amount_cents(_session_attr(session, "amount_total")) or "-",
             session_analysis or "-",
         )
     return granted

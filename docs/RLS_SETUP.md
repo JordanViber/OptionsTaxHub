@@ -9,7 +9,7 @@ in Supabase to enforce database-level access control.
 RLS ensures that:
 1. Users can only access their own data at the database level (not just application level)
 2. Even if someone bypasses the backend, they cannot access other users' data
-3. Service role keys cannot bypass RLS policies when properly configured
+3. Service role keys bypass RLS and must stay on the backend
 
 ## Current Implementation
 
@@ -18,124 +18,51 @@ The app now:
 - Uses Supabase Auth for user authentication
 - Enforces ownership checks at the API layer
 
-The next step is enabling RLS policies to enforce ownership at the database level.
+Portfolio history is read-only to authenticated clients. The backend uses its
+service-role key for history inserts, updates, and deletes, with explicit
+`user_id` filters in application code. Do not create client INSERT, UPDATE, or
+DELETE policies on `portfolio_analyses`: its `result` JSON must not be writable
+from a browser because it can contain packet access flags.
 
 ## Steps to Enable RLS
+
+RLS and the history policies are already in `server/migrations/`. Apply those files in order (see [Supabase setup](SUPABASE_SETUP.md)). Do not paste a second copy of this schema into the SQL Editor.
 
 ### Step 1: Access Supabase Dashboard
 1. Go to https://app.supabase.com
 2. Select your project "OptionsTaxHub"
-3. Go to "Authentication" > "Policies" or "SQL Editor"
+3. Apply `server/migrations/` if you have not already (SQL Editor or `server/scripts/apply_migrations.sh`)
 
-### Step 2: Enable RLS on Tables
+### Step 2: What the migrations enable
 
-Run this SQL in the SQL Editor for each table that stores user data:
+`001_portfolio_analyses.sql` enables RLS on `portfolio_analyses` and lets authenticated users read their own rows (`user_id = auth.uid()::text`). Inserts, updates, and deletes are granted to `service_role` only. `007_restrict_analysis_client_writes.sql` drops legacy client write policies, including "Users can update their own analyses". Do not recreate them. `result` must not be writable from a browser because it can contain packet access flags.
 
-```sql
--- Enable RLS on portfolio_analyses table
-ALTER TABLE portfolio_analyses ENABLE ROW LEVEL SECURITY;
+`002_tax_profiles.sql` enables RLS on `tax_profiles`.
 
--- Enable RLS on tax_profiles table
-ALTER TABLE tax_profiles ENABLE ROW LEVEL SECURITY;
-```
+### Step 3: Keep History Writes on the Backend
 
-### Step 3: Create RLS Policies
+Do not switch `portfolio_analyses` writes to a browser-token client. The server
+uses the service-role key for history writes and must scope each write by the
+authenticated `user_id`. Never expose the service-role key to the frontend.
 
-#### Portfolio Analyses RLS Policies
+Tax-profile policies may allow authenticated users to manage their own profile.
+They do not authorize or establish packet access.
 
-```sql
--- Policy: Users can view their own analyses
-CREATE POLICY "Users can view their own analyses"
-  ON portfolio_analyses FOR SELECT
-  USING (auth.uid() = user_id);
+### Step 4: Test RLS Policies
 
--- Policy: Users can create analyses
-CREATE POLICY "Users can create analyses"
-  ON portfolio_analyses FOR INSERT
-  WITH CHECK (auth.uid() = user_id);
-
--- Policy: Users can delete their own analyses
-CREATE POLICY "Users can delete their own analyses"
-  ON portfolio_analyses FOR DELETE
-  USING (auth.uid() = user_id);
-
--- Policy: Users can update their own analyses
-CREATE POLICY "Users can update their own analyses"
-  ON portfolio_analyses FOR UPDATE
-  USING (auth.uid() = user_id)
-  WITH CHECK (auth.uid() = user_id);
-```
-
-#### Tax Profiles RLS Policies
-
-```sql
--- Policy: Users can view their own tax profile
-CREATE POLICY "Users can view their own tax profile"
-  ON tax_profiles FOR SELECT
-  USING (auth.uid() = user_id);
-
--- Policy: Users can create their own tax profile
-CREATE POLICY "Users can create their own tax profile"
-  ON tax_profiles FOR INSERT
-  WITH CHECK (auth.uid() = user_id);
-
--- Policy: Users can update their own tax profile
-CREATE POLICY "Users can update their own tax profile"
-  ON tax_profiles FOR UPDATE
-  USING (auth.uid() = user_id)
-  WITH CHECK (auth.uid() = user_id);
-
--- Policy: Users can delete their own tax profile
-CREATE POLICY "Users can delete their own tax profile"
-  ON tax_profiles FOR DELETE
-  USING (auth.uid() = user_id);
-```
-
-### Step 4: Update Backend to Use Authenticated Client
-
-Update `db.py` to use the user's JWT token instead of the service role key:
-
-Currently, the backend uses:
-```python
-client = get_supabase()  # Uses service role (bypasses RLS)
-```
-
-For production with RLS enabled, you should:
-1. Pass the user's access token to database functions
-2. Create authenticated Supabase client with the token
-3. Let RLS policies enforce access control
-
-Example:
-```python
-from supabase import create_client, Client
-
-def get_supabase_with_token(access_token: str) -> Client:
-    """Create Supabase client authenticated with user's JWT token."""
-    return create_client(
-        SUPABASE_URL,
-        SUPABASE_ANON_KEY,
-        options={
-            "headers": {
-                "Authorization": f"Bearer {access_token}"
-            }
-        }
-    )
-```
-
-### Step 5: Test RLS Policies
-
-1. Sign in as User A and create a portfolio analysis
-2. Sign in as User B and verify you CANNOT see User A's analysis
-3. Verify User A can still see their own analysis
-4. Delete policies and verify access is restricted correctly
+1. Sign in as User A and verify they can read their own portfolio history
+2. Sign in as User B and verify they cannot read User A's history
+3. Verify authenticated clients cannot insert, update, or delete portfolio history
+4. Verify backend history writes use the service role and filter by `user_id`
 
 ## Verification Checklist
 
 - [ ] RLS enabled on portfolio_analyses table
 - [ ] RLS enabled on tax_profiles table
-- [ ] All SELECT/INSERT/UPDATE/DELETE policies created
+- [ ] Authenticated users have SELECT only on `portfolio_analyses`
+- [ ] Service role can INSERT/UPDATE/DELETE portfolio history
 - [ ] User A cannot access User B's data
-- [ ] Users can only create/update/delete their own records
+- [ ] No authenticated client write policies exist on `portfolio_analyses`
 - [ ] Backend properly extracts user_id from JWT token
 - [ ] Frontend sends JWT token in Authorization header
 
@@ -145,11 +72,11 @@ def get_supabase_with_token(access_token: str) -> Client:
 Check that:
 1. Your user is authenticated (JWT token valid)
 2. The auth.uid() in RLS policies matches your user ID
-3. The table actually has the auth.uid() = user_id condition
+3. Reads use the authenticated role and writes use the backend service role
 
-### Service role key still bypasses RLS
-This is expected - service role keys bypass RLS for admin operations.
-In production, use the authenticated client with user tokens instead.
+### Service role key bypasses RLS
+This is expected. Keep it on the backend, and scope history writes by the
+authenticated user's ID in application code.
 
 ## Security Benefits
 

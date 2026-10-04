@@ -29,7 +29,43 @@
    NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key-here
    ```
 
-### 4. Test Locally
+### 4. Apply versioned migrations
+
+A new Supabase project has Auth and no OptionsTaxHub tables. The schema is the SQL files in `server/migrations/`, applied once, in filename order. That set is complete: it creates `portfolio_analyses` with nullable `result` JSONB (the analysis object `server/db.py` already saves, including `analysis_id`) and the unique index on `(user_id, (result->>'analysis_id'))`. Do not paste extra `CREATE TABLE` or `ALTER TABLE` statements that are not in those files.
+
+Use the project's direct Postgres URI (Supabase Dashboard → Project Settings → Database). That URI is not the REST URL or the service-role key. Run this only against the database you intend to migrate.
+
+```bash
+DATABASE_URL="postgresql://postgres.[ref]:[password]@aws-0-[region].pooler.supabase.com:5432/postgres" \
+  sh server/scripts/apply_migrations.sh
+```
+
+The Supabase SQL Editor is the same path: run each file from `001_portfolio_analyses.sql` through `008_portfolio_analyses_one_analysis_id.sql` in order, one file at a time.
+
+`001` adds `result` only when it creates the table. `CREATE TABLE IF NOT EXISTS` does not alter an older summary-only `portfolio_analyses`. Do not re-run `001` on that database: its `CREATE POLICY` statements are not repeatable, and re-running it still leaves the column missing. Apply the later files that are not on the database yet. `004_year_close_packet_snapshots.sql` runs `ADD COLUMN IF NOT EXISTS result JSONB`, keeps every existing row, and leaves `result` null until a new save. Continue through `008`, which adds the unique index the history helpers use.
+
+```bash
+DATABASE_URL="postgresql://postgres.[ref]:[password]@aws-0-[region].pooler.supabase.com:5432/postgres" \
+  APPLY_FROM=004_year_close_packet_snapshots.sql \
+  sh server/scripts/apply_migrations.sh
+```
+
+`002_tax_profiles.sql` adds a unique constraint without `IF NOT EXISTS`, so the full script is for a fresh database or for files that have not been applied yet. Running it a second time on a database that already finished `002` stops there.
+
+If `portfolio_analyses` or `result` is missing, `save_analysis_history` raises `AnalysisSchemaError` and the API returns 503 with that message. A server with no Supabase client configured still skips history instead of crashing.
+
+Check the committed files against an empty local Postgres. Do not point this at Supabase, Render, or any hosted database:
+
+```bash
+cd server
+pip install 'psycopg[binary]'
+OPTAX_TEST_DATABASE_URL="postgresql:///postgres" \
+  pytest tests/test_analysis_result_migration.py -q
+```
+
+The test needs local Postgres and `psql`. It applies every migration, checks save, list, restore, and delete, and upgrades a summary-only table without deleting the historical row.
+
+### 5. Test Locally
 1. Start the dev server: `npm run dev` (client directory)
 2. Navigate to http://localhost:3000
 3. You'll be redirected to `/auth/signin`
@@ -81,10 +117,9 @@
 
 ## Next Steps
 
-1. Once Supabase is configured, users can create accounts
-2. Build out user preferences table for tax settings
-3. Add portfolio storage linked to user accounts
-4. Implement real-time sync with Supabase Realtime
+1. Apply `server/migrations/` (step 4). That creates portfolio history and tax profiles.
+2. Once Supabase Auth is configured, users can create accounts.
+3. Signed-in analyses are stored on `portfolio_analyses.result`. No extra table is required for that payload.
 
 ## Troubleshooting
 

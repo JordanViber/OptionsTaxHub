@@ -69,6 +69,8 @@ jest.mock("../../app/components/YearClosePacketPanel", () => {
     default: Mock,
     isYearClosePacketPaid: jest.fn(() => false),
     rememberYearClosePacketPaid: jest.fn(),
+    yearClosePacketStorageId: (analysis: { analysis_id?: string }) =>
+      analysis.analysis_id || "local-test-analysis",
   };
 });
 
