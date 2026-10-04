@@ -9,8 +9,14 @@ a libpq host or hostaddr that is not localhost, 127.0.0.1, or ::1, including
 libpq would still apply that variable: both, when the URL has no host and no
 hostaddr, and PGHOSTADDR when the URL names a host but does not set hostaddr.
 A URL that already names a host is not refused for PGHOST. A URL that already
-sets hostaddr is not refused for PGHOSTADDR. It also refuses project ref
-vgrlucxqncajjdoaoctq.
+sets hostaddr is not refused for PGHOSTADDR. It refuses a service-based
+connection before connecting and before any DROP DATABASE. A non-empty libpq
+service parameter, including a URI query service=, is refused. A non-empty
+PGSERVICE environment variable is refused when the connection string does
+not already set service. A socket URL such as postgresql:///postgres has no
+host and no hostaddr, so PGSERVICE can still point pg_service.conf at a
+hosted database and is refused. The service file is not read. It also
+refuses project ref vgrlucxqncajjdoaoctq.
 
     cd server
     pip install 'psycopg[binary]'
@@ -139,19 +145,49 @@ def _refuse_remote_env(name: str) -> None:
             )
 
 
+def _refuse_service(url: str) -> None:
+    """Refuse a service-based connection before connecting.
+
+    conninfo_to_dict does not apply PGSERVICE and does not read
+    pg_service.conf. A non-empty service parameter, including a URI query
+    service=, is refused. A non-empty PGSERVICE is refused when the
+    connection string does not already set service. An empty service= is
+    set, so libpq ignores PGSERVICE.
+    """
+    info = _libpq_conninfo(url)
+    if "service" in info:
+        service = info.get("service") or ""
+    else:
+        service = os.environ.get("PGSERVICE")
+    if service is not None and str(service).strip():
+        pytest.fail(
+            "Refusing service-based database connection. "
+            "Use an empty local Postgres, not Supabase or Render."
+        )
+
+
 def _assert_local(url: str) -> None:
     """Refuse non-local libpq targets before any DROP DATABASE.
+
+    Service-based connections are refused before connecting. A non-empty
+    libpq service parameter, including a URI query service=, is refused. A
+    non-empty PGSERVICE is refused when the connection string does not
+    already set service. A socket URL such as postgresql:///postgres has no
+    host and no hostaddr, so PGSERVICE can still select a hosted
+    pg_service.conf entry. The service file is not read.
 
     When the URL omits host, libpq uses PGHOST. When it omits hostaddr,
     libpq uses PGHOSTADDR even if host is already local. An empty hostaddr
     is still set, so libpq ignores PGHOSTADDR, but it names no address:
-    PGHOST remains the target when host is omitted too.
+    PGHOST remains the target when host is omitted too. Those PGHOST and
+    PGHOSTADDR checks are unchanged.
     """
     if "vgrlucxqncajjdoaoctq" in url.lower():
         pytest.fail(
             "Refusing hosted Supabase project ref vgrlucxqncajjdoaoctq. "
             "Use an empty local Postgres, not Supabase or Render."
         )
+    _refuse_service(url)
     for host in _connection_targets(url):
         if not _is_local_host(host):
             pytest.fail(
@@ -995,6 +1031,31 @@ def test_url_host_ignores_remote_pghost(monkeypatch):
     pytest.importorskip("psycopg.conninfo")
     monkeypatch.setenv("PGHOST", "db.example.com")
     _assert_local("postgresql://127.0.0.1/postgres")
+
+
+def test_refuses_service_based_socket_url_before_connect(monkeypatch):
+    """Fail closed before connect. PGSERVICE and service= must not skip."""
+    monkeypatch.delenv("PGHOST", raising=False)
+    monkeypatch.delenv("PGHOSTADDR", raising=False)
+    monkeypatch.setenv("PGSERVICE", "hosted")
+
+    def _refuse_connect(*_args, **_kwargs):
+        raise AssertionError("connection attempted")
+
+    monkeypatch.setattr(subprocess, "run", _refuse_connect)
+    try:
+        import psycopg
+    except Exception:
+        psycopg = None
+    else:
+        monkeypatch.setattr(psycopg, "connect", _refuse_connect)
+
+    with pytest.raises(pytest.fail.Exception, match="Refusing service-based"):
+        _assert_local("postgresql:///postgres")
+
+    monkeypatch.delenv("PGSERVICE", raising=False)
+    with pytest.raises(pytest.fail.Exception, match="Refusing service-based"):
+        _assert_local("postgresql:///postgres?service=hosted")
 
 
 def test_fresh_migrations_policy_shape_and_access(postgres):
