@@ -1,8 +1,12 @@
 -- Portfolio Analysis History table
--- Run this in the Supabase SQL Editor to create the table.
+-- Apply with the other files in server/migrations/, in filename order.
+-- See docs/SUPABASE_SETUP.md. Do not add columns by hand.
 --
--- Stores a summary of each portfolio analysis upload per user.
--- Full position data is NOT persisted (processed in-memory per the security policy).
+-- `summary` feeds the history sidebar. `result` is the JSON object
+-- server/db.py already inserts and reads (including analysis_id). It is
+-- nullable so rows saved before the column existed stay valid.
+-- CREATE TABLE IF NOT EXISTS does not add `result` to a table created by
+-- an older copy of this file. 004_year_close_packet_snapshots.sql does.
 
 CREATE TABLE IF NOT EXISTS portfolio_analyses (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

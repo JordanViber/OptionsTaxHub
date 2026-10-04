@@ -26,78 +26,20 @@ from a browser because it can contain packet access flags.
 
 ## Steps to Enable RLS
 
+RLS and the history policies are already in `server/migrations/`. Apply those files in order (see [Supabase setup](SUPABASE_SETUP.md)). Do not paste a second copy of this schema into the SQL Editor.
+
 ### Step 1: Access Supabase Dashboard
 1. Go to https://app.supabase.com
 2. Select your project "OptionsTaxHub"
-3. Go to "Authentication" > "Policies" or "SQL Editor"
+3. Apply `server/migrations/` if you have not already (SQL Editor or `server/scripts/apply_migrations.sh`)
 
-### Step 2: Enable RLS on Tables
+### Step 2: What the migrations enable
 
-Run this SQL in the SQL Editor for each table that stores user data:
+`001_portfolio_analyses.sql` enables RLS on `portfolio_analyses` and lets authenticated users read their own rows (`user_id = auth.uid()::text`). Inserts, updates, and deletes are granted to `service_role` only. `007_restrict_analysis_client_writes.sql` drops legacy client write policies, including "Users can update their own analyses". Do not recreate them. `result` must not be writable from a browser because it can contain packet access flags.
 
-```sql
--- Enable RLS on portfolio_analyses table
-ALTER TABLE portfolio_analyses ENABLE ROW LEVEL SECURITY;
+`002_tax_profiles.sql` enables RLS on `tax_profiles`.
 
--- Enable RLS on tax_profiles table
-ALTER TABLE tax_profiles ENABLE ROW LEVEL SECURITY;
-```
-
-### Step 3: Create RLS Policies
-
-#### Portfolio Analyses RLS Policies
-
-```sql
--- Match server/migrations/001_portfolio_analyses.sql and
--- server/migrations/007_restrict_analysis_client_writes.sql.
--- 007 drops legacy client write policies, including
--- "Users can update their own analyses". Do not recreate them.
--- Authenticated clients may read only their own history.
-CREATE POLICY "Users can view own analyses"
-  ON portfolio_analyses FOR SELECT
-  USING (auth.uid() = user_id);
-
--- History writes are backend-only. The service key bypasses RLS; these
--- policies also document the intended role grants explicitly.
-CREATE POLICY "Service role can insert analyses"
-  ON portfolio_analyses FOR INSERT TO service_role
-  WITH CHECK (true);
-
-CREATE POLICY "Service role can update analyses"
-  ON portfolio_analyses FOR UPDATE TO service_role
-  USING (true) WITH CHECK (true);
-
-CREATE POLICY "Service role can delete analyses"
-  ON portfolio_analyses FOR DELETE TO service_role
-  USING (true);
-```
-
-#### Tax Profiles RLS Policies
-
-```sql
--- Policy: Users can view their own tax profile
-CREATE POLICY "Users can view their own tax profile"
-  ON tax_profiles FOR SELECT
-  USING (auth.uid() = user_id);
-
--- Policy: Users can create their own tax profile
-CREATE POLICY "Users can create their own tax profile"
-  ON tax_profiles FOR INSERT
-  WITH CHECK (auth.uid() = user_id);
-
--- Policy: Users can update their own tax profile
-CREATE POLICY "Users can update their own tax profile"
-  ON tax_profiles FOR UPDATE
-  USING (auth.uid() = user_id)
-  WITH CHECK (auth.uid() = user_id);
-
--- Policy: Users can delete their own tax profile
-CREATE POLICY "Users can delete their own tax profile"
-  ON tax_profiles FOR DELETE
-  USING (auth.uid() = user_id);
-```
-
-### Step 4: Keep History Writes on the Backend
+### Step 3: Keep History Writes on the Backend
 
 Do not switch `portfolio_analyses` writes to a browser-token client. The server
 uses the service-role key for history writes and must scope each write by the
@@ -106,7 +48,7 @@ authenticated `user_id`. Never expose the service-role key to the frontend.
 Tax-profile policies may allow authenticated users to manage their own profile.
 They do not authorize or establish packet access.
 
-### Step 5: Test RLS Policies
+### Step 4: Test RLS Policies
 
 1. Sign in as User A and verify they can read their own portfolio history
 2. Sign in as User B and verify they cannot read User A's history
