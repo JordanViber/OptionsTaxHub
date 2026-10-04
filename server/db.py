@@ -26,6 +26,23 @@ class HistoryInsertConflict(Exception):
     """Another request already inserted this user's analysis row."""
 
 
+class AnalysisSchemaError(Exception):
+    """portfolio_analyses is missing the result column or the table itself.
+
+    save_analysis_history raises this so a fresh deploy with an incomplete
+    schema fails visibly. A missing Supabase client still returns None.
+    """
+
+
+_ANALYSIS_SCHEMA_ERROR = (
+    "Cannot save analysis history because portfolio_analyses is missing "
+    "the result column or the table. Apply the versioned SQL files in "
+    "server/migrations/ in filename order. Those files add nullable result "
+    "JSONB and the unique index on (user_id, result->>'analysis_id'). "
+    "No other manual schema SQL is required."
+)
+
+
 # Lazy-initialized Supabase client
 _supabase_client = None
 
@@ -124,7 +141,9 @@ def save_analysis_history(
     Also persists the full analysis result (positions, suggestions, etc.)
     so that past reports can be re-loaded from the history sidebar.
 
-    Returns the inserted row or None if Supabase is unavailable.
+    Returns the inserted row, or None when Supabase is not configured.
+    Raises HistoryInsertConflict when this analysis row already exists.
+    Raises AnalysisSchemaError when the result column or table is missing.
     """
     client = get_supabase()
     if client is None:
@@ -147,10 +166,17 @@ def save_analysis_history(
         # representation is not proof that the insert committed.
         logger.error("Analysis history insert returned no persisted row")
         return None
+    except (HistoryInsertConflict, AnalysisSchemaError):
+        raise
     except Exception as e:
         if _is_unique_violation(e):
             raise HistoryInsertConflict(
                 "portfolio analysis history already exists for this analysis"
+            ) from e
+        if _is_missing_analysis_schema(e):
+            logger.error("Analysis history schema prerequisite is missing: %s", e)
+            raise AnalysisSchemaError(
+                f"{_ANALYSIS_SCHEMA_ERROR} Database reported: {e}"
             ) from e
         logger.error(f"Failed to save analysis history: {e}")
         return None
@@ -543,13 +569,59 @@ def lookup_packet_entitlement_for_tax_year(
     return None, True
 
 
+def _exception_code(exc: Exception) -> str:
+    for attr in ("code", "sqlstate", "pgcode"):
+        value = getattr(exc, attr, None)
+        if value:
+            return str(value).strip()
+    return ""
+
+
+def _exception_text(exc: Exception) -> str:
+    parts = [str(exc)]
+    for attr in ("message", "details", "hint"):
+        value = getattr(exc, attr, None)
+        if value:
+            parts.append(str(value))
+    if exc.args and isinstance(exc.args[0], dict):
+        parts.append(str(exc.args[0]))
+    return " ".join(parts).lower()
+
+
 def _is_unique_violation(exc: Exception) -> bool:
-    error_text = str(exc).lower()
-    error_code = getattr(exc, "code", None)
+    code = _exception_code(exc)
+    text = _exception_text(exc)
     return (
-        error_code == "23505"
-        or "duplicate key" in error_text
-        or "unique constraint" in error_text
+        code == "23505"
+        or "duplicate key" in text
+        or "unique constraint" in text
+    )
+
+
+# Undefined column/table from Postgres, and PostgREST schema-cache misses.
+_MISSING_ANALYSIS_SCHEMA_CODES = {"42703", "42P01", "PGRST204", "PGRST205"}
+
+
+def _is_missing_analysis_schema(exc: Exception) -> bool:
+    """True when portfolio_analyses or its result column is not in the database."""
+    code = _exception_code(exc).upper()
+    if code in _MISSING_ANALYSIS_SCHEMA_CODES:
+        return True
+    text = _exception_text(exc)
+    if any(token in text for token in ("42703", "42p01", "pgrst204", "pgrst205")):
+        return True
+    if "schema cache" in text and any(
+        token in text for token in ("column", "table", "relation")
+    ):
+        return True
+    if any(
+        phrase in text
+        for phrase in ("undefined column", "undefined table", "undefined relation")
+    ):
+        return True
+    return (
+        "does not exist" in text
+        and any(token in text for token in ("column", "relation", "table"))
     )
 
 

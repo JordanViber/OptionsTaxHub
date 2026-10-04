@@ -179,6 +179,58 @@ class TestSaveAnalysisHistory:
         result = db.save_analysis_history("user1", "test.csv", {})
         assert result is None
 
+    def test_returns_none_on_permission_error(self, monkeypatch):
+        mock_client = MagicMock()
+        error = Exception("permission denied for table portfolio_analyses")
+        error.code = "42501"
+        mock_client.table.return_value.insert.return_value.select.return_value.execute.side_effect = error
+        monkeypatch.setattr(db, "get_supabase", lambda: mock_client)
+        result = db.save_analysis_history(
+            "user1", "test.csv", {}, result_data={"analysis_id": "analysis-1"}
+        )
+        assert result is None
+
+    def test_raises_when_result_column_is_missing(self, monkeypatch):
+        mock_client = MagicMock()
+        error = Exception(
+            'column "result" of relation "portfolio_analyses" does not exist'
+        )
+        error.code = "42703"
+        mock_client.table.return_value.insert.return_value.select.return_value.execute.side_effect = error
+        monkeypatch.setattr(db, "get_supabase", lambda: mock_client)
+        with pytest.raises(db.AnalysisSchemaError, match="server/migrations"):
+            db.save_analysis_history(
+                "user1",
+                "test.csv",
+                {"positions_count": 1},
+                result_data={"analysis_id": "analysis-1"},
+            )
+
+    def test_raises_when_table_is_missing(self, monkeypatch):
+        mock_client = MagicMock()
+        error = Exception('relation "portfolio_analyses" does not exist')
+        error.sqlstate = "42P01"
+        mock_client.table.return_value.insert.return_value.select.return_value.execute.side_effect = error
+        monkeypatch.setattr(db, "get_supabase", lambda: mock_client)
+        with pytest.raises(db.AnalysisSchemaError, match="server/migrations"):
+            db.save_analysis_history("user1", "test.csv", {})
+
+    def test_raises_when_postgrest_schema_cache_misses_result(self, monkeypatch):
+        mock_client = MagicMock()
+        error = Exception(
+            "Could not find the 'result' column of 'portfolio_analyses' in the schema cache"
+        )
+        error.code = "PGRST204"
+        mock_client.table.return_value.insert.return_value.select.return_value.execute.side_effect = error
+        monkeypatch.setattr(db, "get_supabase", lambda: mock_client)
+        with pytest.raises(db.AnalysisSchemaError, match="result"):
+            db.save_analysis_history(
+                "user1",
+                "test.csv",
+                {},
+                result_data={"analysis_id": "analysis-1"},
+            )
+
 
 # --- get_analysis_history ---
 

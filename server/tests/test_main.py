@@ -3155,6 +3155,74 @@ def test_save_history_best_effort_exception():
         )
 
 
+def test_save_history_best_effort_reraises_missing_schema():
+    """A missing result column is not swallowed as a soft history failure."""
+    from unittest.mock import patch, MagicMock
+    import pytest
+
+    result_obj = MagicMock()
+    result_obj.model_dump = MagicMock(return_value={"analysis_id": "analysis-1"})
+    summary_obj = MagicMock()
+    summary_obj.model_dump = MagicMock(return_value={"positions_count": 1})
+
+    with patch(
+        "main.save_analysis_history",
+        side_effect=main.AnalysisSchemaError(
+            "missing result column; apply server/migrations"
+        ),
+    ):
+        with pytest.raises(main.AnalysisSchemaError, match="server/migrations"):
+            main._save_history_best_effort(
+                user_id="user1",
+                filename="test.csv",
+                result=result_obj,
+                summary=summary_obj,
+            )
+
+
+def test_analyze_reports_missing_schema(monkeypatch):
+    """Signed-in analyze fails with the schema message instead of a generic 500."""
+
+    async def missing_schema(*_args, **_kwargs):
+        raise main.AnalysisSchemaError(
+            "Cannot save analysis history because portfolio_analyses is missing "
+            "the result column. Apply server/migrations in filename order."
+        )
+
+    monkeypatch.setattr(main, "_run_portfolio_analysis", missing_schema)
+    response = client.post(
+        "/api/portfolio/analyze",
+        files={"file": ("t.csv", "symbol,qty\nAAPL,1\n", "text/csv")},
+    )
+    assert response.status_code == 503
+    assert "server/migrations" in response.json()["detail"]
+    assert "result" in response.json()["detail"]
+
+
+def test_persist_guest_analysis_reports_missing_schema(monkeypatch):
+    """POST /api/portfolio/history surfaces a missing result column."""
+
+    def missing_schema(**_kwargs):
+        raise main.AnalysisSchemaError(
+            "Cannot save analysis history because portfolio_analyses is missing "
+            "the result column. Apply server/migrations in filename order."
+        )
+
+    monkeypatch.setattr(main, "lookup_analysis_for_entitlement", lambda *_args: (None, True))
+    monkeypatch.setattr(main, "save_analysis_history", missing_schema)
+    response = client.post(
+        "/api/portfolio/history",
+        json={
+            "filename": "guest.csv",
+            "analysis": {"analysis_id": "guest-schema", "summary": {}},
+        },
+    )
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert "server/migrations" in detail
+    assert "result" in detail
+
+
 def test_validate_user_id_invalid_format():
     """validate_user_id raises HTTPException 400 for unsafe input (line 141)."""
     import pytest

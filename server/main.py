@@ -20,7 +20,7 @@ load_dotenv(SERVER_DIR / ".env.local")
 load_dotenv(SERVER_DIR / ".env")
 
 from fastapi import FastAPI, File, UploadFile, Query, HTTPException, Depends, Request
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
 import io
@@ -116,6 +116,7 @@ from db import (
     lookup_analysis_for_entitlement,
     delete_analyses_without_result,
     delete_analysis_by_id,
+    AnalysisSchemaError,
     HistoryInsertConflict,
     save_tax_profile as db_save_tax_profile,
     get_tax_profile as db_get_tax_profile,
@@ -184,6 +185,13 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down...")
 
 app = FastAPI(lifespan=lifespan)
+
+
+@app.exception_handler(AnalysisSchemaError)
+async def analysis_schema_missing(_request: Request, exc: AnalysisSchemaError):
+    """Surface a missing result column instead of a generic server error."""
+    logger.error("Analysis history schema prerequisite is missing: %s", exc)
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
 
 # In-memory storage for push subscriptions
 # NOTE: This is temporary storage for development/MVP. Production implementation
@@ -597,6 +605,10 @@ def _save_history_best_effort(
     except HistoryInsertConflict:
         # A concurrent insert already stored this run. The row exists.
         return True
+    except AnalysisSchemaError:
+        # A missing result column is a deploy error, not a transient outage.
+        logger.error("Analysis history schema prerequisite is missing", exc_info=True)
+        raise
     except Exception as e:
         logger.warning(f"Failed to save analysis history: {e}", exc_info=True)
     return False
@@ -1269,6 +1281,9 @@ async def analyze_portfolio(
             user_id=user_id,
             merge_mode=merge_mode,
         )
+    except AnalysisSchemaError as exc:
+        logger.error("Cannot save portfolio analysis history: %s", exc)
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except HTTPException:
         raise
     except Exception as exc:
