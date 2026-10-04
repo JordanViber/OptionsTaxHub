@@ -31,7 +31,7 @@ entitlement tables stay server-only.
 
 ## Steps to Enable RLS
 
-RLS is defined only by `server/migrations/`. Apply those files in filename order, including `009_rls_owner_select_service_role_writes.sql` after `008_portfolio_analyses_one_analysis_id.sql` (see [Supabase setup](SUPABASE_SETUP.md)). The SQL editor is for running those files one at a time. There is no separate RLS script.
+RLS is defined only by `server/migrations/`. Apply those files in filename order, including `009_rls_owner_select_service_role_writes.sql` after `008_portfolio_analyses_one_analysis_id.sql` (see [Supabase setup](SUPABASE_SETUP.md)). `010_enable_rls_revoke_unused_service_role_privileges.sql` is the next file after `009_rls_owner_select_service_role_writes.sql`. 010 enables row level security on the four tables 009 touches: `portfolio_analyses`, `tax_profiles`, `year_close_packet_snapshots`, and `year_close_packet_entitlements`. It revokes `TRUNCATE`, `REFERENCES`, and `TRIGGER` from `service_role`. Packet tables still rely on hosted `service_role` BYPASSRLS. No policy change for that. 009 and 010 must be applied together in one transaction, the same way `server/scripts/apply_migrations.sh` does (one `psql --single-transaction` around those two files). The Supabase SQL editor must not stop at 009 and must not run 009 and 010 as separate commits. Other migration files may still be applied one file at a time. If someone runs 009 without 010, authenticated SELECT on those tables is unrestricted wherever RLS is off. There is no separate RLS script.
 
 ### Step 1: Access Supabase Dashboard
 1. Go to https://app.supabase.com
@@ -42,13 +42,15 @@ RLS is defined only by `server/migrations/`. Apply those files in filename order
 
 `001_portfolio_analyses.sql` creates `portfolio_analyses` and enables RLS. `002_tax_profiles.sql` creates `tax_profiles` and enables RLS. `007_restrict_analysis_client_writes.sql` drops legacy client write policies on history, including "Users can update their own analyses".
 
-`009_rls_owner_select_service_role_writes.sql` is the next step after `008_portfolio_analyses_one_analysis_id.sql`. It drops the older permissive policies and the duplicate live policy names, then leaves this end state:
+`009_rls_owner_select_service_role_writes.sql` is the next step after `008_portfolio_analyses_one_analysis_id.sql`. `010_enable_rls_revoke_unused_service_role_privileges.sql` is the next file after `009_rls_owner_select_service_role_writes.sql`. 009 drops the older permissive policies and the duplicate live policy names, then leaves this end state:
 
 - `portfolio_analyses`: one client `SELECT` policy, `TO authenticated`, `USING ((auth.uid())::text = user_id)`, named "Users can view own analyses". `SELECT`, `INSERT`, `UPDATE`, and `DELETE` for the server are `TO service_role`.
 - `tax_profiles`: one client `SELECT` policy, `TO authenticated`, `USING ((auth.uid())::text = user_id)`, named "Users can view own tax profile". `SELECT`, `INSERT`, and `UPDATE` for the server are `TO service_role` so the upsert can read and write the existing row. There is no client insert or update policy.
 - `year_close_packet_snapshots` and `year_close_packet_entitlements`: RLS stays enabled. `009` adds no policies and no grants for `anon` or `authenticated`.
 
 Service-role writes use `TO service_role` with `USING` / `WITH CHECK` true. They are not a public policy that checks `auth.role() = 'service_role'`.
+
+`010_enable_rls_revoke_unused_service_role_privileges.sql` is the next file after `009_rls_owner_select_service_role_writes.sql`. 010 enables row level security on the four tables 009 touches: `portfolio_analyses`, `tax_profiles`, `year_close_packet_snapshots`, and `year_close_packet_entitlements`. It revokes `TRUNCATE`, `REFERENCES`, and `TRIGGER` from `service_role`. Packet tables still rely on hosted `service_role` BYPASSRLS. No policy change for that. 009 and 010 must be applied together in one transaction, the same way `server/scripts/apply_migrations.sh` does (one `psql --single-transaction` around those two files). The Supabase SQL editor must not stop at 009 and must not run 009 and 010 as separate commits. Other migration files may still be applied one file at a time. If someone runs 009 without 010, authenticated SELECT on those tables is unrestricted wherever RLS is off.
 
 ### Step 3: Keep History and Tax-Profile Writes on the Backend
 
