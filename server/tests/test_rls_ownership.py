@@ -5,7 +5,12 @@ database. This module never reads DATABASE_URL from the environment or from
 .env. The connection is OPTAX_TEST_DATABASE_URL, or a local socket when that
 variable is unset. _assert_local runs before every DROP DATABASE and refuses
 a libpq host or hostaddr that is not localhost, 127.0.0.1, or ::1, including
-?host= and ?hostaddr=. It also refuses project ref vgrlucxqncajjdoaoctq.
+?host= and ?hostaddr=. It also refuses a non-local PGHOST or PGHOSTADDR when
+libpq would still apply that variable: both, when the URL has no host and no
+hostaddr, and PGHOSTADDR when the URL names a host but does not set hostaddr.
+A URL that already names a host is not refused for PGHOST. A URL that already
+sets hostaddr is not refused for PGHOSTADDR. It also refuses project ref
+vgrlucxqncajjdoaoctq.
 
     cd server
     pip install 'psycopg[binary]'
@@ -118,8 +123,30 @@ def _connection_targets(url: str) -> list[str]:
     return _csv_targets(info.get("host")) + _csv_targets(info.get("hostaddr"))
 
 
+def _refuse_remote_env(name: str) -> None:
+    """Refuse a non-local PGHOST or PGHOSTADDR. Unset variables are allowed.
+
+    conninfo_to_dict does not apply these variables. Read os.environ and do
+    not delete them. Every non-empty comma-separated entry must be local.
+    """
+    if name not in os.environ:
+        return
+    for host in _csv_targets(os.environ[name]):
+        if not _is_local_host(host):
+            pytest.fail(
+                f"Refusing non-local {name} {host}. "
+                "Use an empty local Postgres, not Supabase or Render."
+            )
+
+
 def _assert_local(url: str) -> None:
-    """Refuse non-local libpq targets before any DROP DATABASE."""
+    """Refuse non-local libpq targets before any DROP DATABASE.
+
+    When the URL omits host, libpq uses PGHOST. When it omits hostaddr,
+    libpq uses PGHOSTADDR even if host is already local. An empty hostaddr
+    is still set, so libpq ignores PGHOSTADDR, but it names no address:
+    PGHOST remains the target when host is omitted too.
+    """
     if "vgrlucxqncajjdoaoctq" in url.lower():
         pytest.fail(
             "Refusing hosted Supabase project ref vgrlucxqncajjdoaoctq. "
@@ -131,6 +158,13 @@ def _assert_local(url: str) -> None:
                 f"Refusing non-local database host {host}. "
                 "Use an empty local Postgres, not Supabase or Render."
             )
+    info = _libpq_conninfo(url)
+    host_specified = "host" in info
+    hostaddr_specified = "hostaddr" in info
+    if not host_specified and not _csv_targets(info.get("hostaddr")):
+        _refuse_remote_env("PGHOST")
+    if not hostaddr_specified:
+        _refuse_remote_env("PGHOSTADDR")
 
 
 def _url_for_database(admin_url: str, name: str) -> str:
@@ -926,6 +960,40 @@ def test_refuses_hosted_supabase_and_remote_hosts():
         with pytest.raises(pytest.fail.Exception, match="Refusing"):
             _assert_local(url)
     _assert_local("postgresql:///postgres")
+    _assert_local("postgresql://127.0.0.1/postgres")
+
+
+def test_refuses_pghost_when_url_omits_host(monkeypatch):
+    pytest.importorskip("psycopg.conninfo")
+    monkeypatch.setenv("PGHOST", "db.example.com")
+    with pytest.raises(pytest.fail.Exception, match="Refusing"):
+        _assert_local("postgresql:///postgres")
+
+
+def test_refuses_pghostaddr_when_url_omits_host(monkeypatch):
+    pytest.importorskip("psycopg.conninfo")
+    monkeypatch.setenv("PGHOSTADDR", "10.0.0.1")
+    with pytest.raises(pytest.fail.Exception, match="Refusing"):
+        _assert_local("postgresql:///postgres")
+
+
+def test_documented_socket_url_passes_when_pghost_and_pghostaddr_unset(monkeypatch):
+    pytest.importorskip("psycopg.conninfo")
+    monkeypatch.delenv("PGHOST", raising=False)
+    monkeypatch.delenv("PGHOSTADDR", raising=False)
+    _assert_local("postgresql:///postgres")
+
+
+def test_url_host_refuses_remote_pghostaddr(monkeypatch):
+    pytest.importorskip("psycopg.conninfo")
+    monkeypatch.setenv("PGHOSTADDR", "10.0.0.1")
+    with pytest.raises(pytest.fail.Exception, match="Refusing"):
+        _assert_local("postgresql://127.0.0.1/postgres")
+
+
+def test_url_host_ignores_remote_pghost(monkeypatch):
+    pytest.importorskip("psycopg.conninfo")
+    monkeypatch.setenv("PGHOST", "db.example.com")
     _assert_local("postgresql://127.0.0.1/postgres")
 
 
