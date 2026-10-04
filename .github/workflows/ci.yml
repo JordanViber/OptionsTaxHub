@@ -10,6 +10,20 @@ jobs:
     name: Backend Tests & Quality
     runs-on: ubuntu-latest
 
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - uses: actions/checkout@v6
         with:
@@ -24,10 +38,13 @@ jobs:
 
       - name: Install dependencies
         run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
           cd server
           python -m pip install --upgrade pip setuptools wheel
           pip install -r requirements.txt
           pip install pytest pytest-cov flake8 bandit
+          pip install 'psycopg[binary]'
 
       - name: Lint with flake8 (critical errors only)
         run: |
@@ -49,6 +66,7 @@ jobs:
       - name: Run tests with coverage
         env:
           PYTHONPATH: ${{ github.workspace }}/server
+          OPTAX_TEST_DATABASE_URL: postgresql://postgres@127.0.0.1:5432/postgres
         run: |
           cd server
           pytest --cov=. --cov-report=xml --cov-report=term-missing --tb=short
