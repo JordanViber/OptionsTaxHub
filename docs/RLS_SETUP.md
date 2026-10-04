@@ -18,15 +18,20 @@ The app now:
 - Uses Supabase Auth for user authentication
 - Enforces ownership checks at the API layer
 
-Portfolio history is read-only to authenticated clients. The backend uses its
-service-role key for history inserts, updates, and deletes, with explicit
-`user_id` filters in application code. Do not create client INSERT, UPDATE, or
-DELETE policies on `portfolio_analyses`: its `result` JSON must not be writable
-from a browser because it can contain packet access flags.
+`user_id` is `text` on `portfolio_analyses`, `tax_profiles`,
+`year_close_packet_snapshots`, and `year_close_packet_entitlements`. An owner
+check is `(auth.uid())::text = user_id`.
+
+Portfolio history and tax profiles are read-only to authenticated clients. The
+backend uses its service-role key for those writes, with explicit `user_id`
+filters in application code. `portfolio_analyses.result` can contain packet
+access flags, so that JSON is not writable from a browser. `save_tax_profile`
+upserts `tax_profiles` with the same service-role client. Packet snapshot and
+entitlement tables stay server-only.
 
 ## Steps to Enable RLS
 
-RLS and the history policies are already in `server/migrations/`. Apply those files in order (see [Supabase setup](SUPABASE_SETUP.md)). Do not paste a second copy of this schema into the SQL Editor.
+RLS is defined only by `server/migrations/`. Apply those files in filename order, including `009_rls_owner_select_service_role_writes.sql` after `008_portfolio_analyses_one_analysis_id.sql` (see [Supabase setup](SUPABASE_SETUP.md)). The SQL editor is for running those files one at a time. There is no separate RLS script.
 
 ### Step 1: Access Supabase Dashboard
 1. Go to https://app.supabase.com
@@ -35,34 +40,42 @@ RLS and the history policies are already in `server/migrations/`. Apply those fi
 
 ### Step 2: What the migrations enable
 
-`001_portfolio_analyses.sql` enables RLS on `portfolio_analyses` and lets authenticated users read their own rows (`user_id = auth.uid()::text`). Inserts, updates, and deletes are granted to `service_role` only. `007_restrict_analysis_client_writes.sql` drops legacy client write policies, including "Users can update their own analyses". Do not recreate them. `result` must not be writable from a browser because it can contain packet access flags.
+`001_portfolio_analyses.sql` creates `portfolio_analyses` and enables RLS. `002_tax_profiles.sql` creates `tax_profiles` and enables RLS. `007_restrict_analysis_client_writes.sql` drops legacy client write policies on history, including "Users can update their own analyses".
 
-`002_tax_profiles.sql` enables RLS on `tax_profiles`.
+`009_rls_owner_select_service_role_writes.sql` is the next step after `008_portfolio_analyses_one_analysis_id.sql`. It drops the older permissive policies and the duplicate live policy names, then leaves this end state:
 
-### Step 3: Keep History Writes on the Backend
+- `portfolio_analyses`: one client `SELECT` policy, `TO authenticated`, `USING ((auth.uid())::text = user_id)`, named "Users can view own analyses". `SELECT`, `INSERT`, `UPDATE`, and `DELETE` for the server are `TO service_role`.
+- `tax_profiles`: one client `SELECT` policy, `TO authenticated`, `USING ((auth.uid())::text = user_id)`, named "Users can view own tax profile". `SELECT`, `INSERT`, and `UPDATE` for the server are `TO service_role` so the upsert can read and write the existing row. There is no client insert or update policy.
+- `year_close_packet_snapshots` and `year_close_packet_entitlements`: RLS stays enabled. `009` adds no policies and no grants for `anon` or `authenticated`.
 
-Do not switch `portfolio_analyses` writes to a browser-token client. The server
-uses the service-role key for history writes and must scope each write by the
-authenticated `user_id`. Never expose the service-role key to the frontend.
+Service-role writes use `TO service_role` with `USING` / `WITH CHECK` true. They are not a public policy that checks `auth.role() = 'service_role'`.
 
-Tax-profile policies may allow authenticated users to manage their own profile.
-They do not authorize or establish packet access.
+### Step 3: Keep History and Tax-Profile Writes on the Backend
+
+`server/db.py` uses `get_supabase()` (the service-role key) for `portfolio_analyses` and `tax_profiles`. Scope each write by the authenticated `user_id`. Keep the service-role key on the backend.
+
+Packet tables are reached the same way. A browser token does not read or write them.
 
 ### Step 4: Test RLS Policies
 
-1. Sign in as User A and verify they can read their own portfolio history
-2. Sign in as User B and verify they cannot read User A's history
-3. Verify authenticated clients cannot insert, update, or delete portfolio history
-4. Verify backend history writes use the service role and filter by `user_id`
+1. Sign in as User A and verify they can read their own portfolio history and tax profile
+2. Sign in as User B and verify they cannot read User A's rows
+3. Verify authenticated clients cannot insert, update, or delete portfolio history or tax profiles
+4. Verify an authenticated user cannot insert a history or tax-profile row owned by someone else
+5. Verify backend writes use the service role and filter by `user_id`
+
+Local Postgres coverage is `server/tests/test_rls_ownership.py` (see [Supabase setup](SUPABASE_SETUP.md)).
 
 ## Verification Checklist
 
-- [ ] RLS enabled on portfolio_analyses table
-- [ ] RLS enabled on tax_profiles table
-- [ ] Authenticated users have SELECT only on `portfolio_analyses`
-- [ ] Service role can INSERT/UPDATE/DELETE portfolio history
+- [ ] RLS enabled on portfolio_analyses, tax_profiles, and both packet tables
+- [ ] `user_id` is text, and owner SELECT uses `(auth.uid())::text = user_id`
+- [ ] Authenticated users have one SELECT policy each on `portfolio_analyses` and `tax_profiles`
+- [ ] Service role can SELECT/INSERT/UPDATE/DELETE portfolio history, `TO service_role`
+- [ ] Service role can SELECT/INSERT/UPDATE tax profiles, `TO service_role`
 - [ ] User A cannot access User B's data
-- [ ] No authenticated client write policies exist on `portfolio_analyses`
+- [ ] No authenticated client write policies exist on `portfolio_analyses` or `tax_profiles`
+- [ ] Packet tables have no anon/authenticated policies or grants
 - [ ] Backend properly extracts user_id from JWT token
 - [ ] Frontend sends JWT token in Authorization header
 
@@ -71,8 +84,8 @@ They do not authorize or establish packet access.
 ### "Permission denied" errors after enabling RLS
 Check that:
 1. Your user is authenticated (JWT token valid)
-2. The auth.uid() in RLS policies matches your user ID
-3. Reads use the authenticated role and writes use the backend service role
+2. The policy expression is `(auth.uid())::text = user_id` (`user_id` is text)
+3. Reads use the authenticated role and writes use the backend service role (`TO service_role`)
 
 ### Service role key bypasses RLS
 This is expected. Keep it on the backend, and scope history writes by the

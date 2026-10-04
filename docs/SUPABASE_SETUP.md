@@ -31,7 +31,7 @@
 
 ### 4. Apply versioned migrations
 
-A new Supabase project has Auth and no OptionsTaxHub tables. The schema is the SQL files in `server/migrations/`, applied once, in filename order. That set is complete: it creates `portfolio_analyses` with nullable `result` JSONB (the analysis object `server/db.py` already saves, including `analysis_id`) and the unique index on `(user_id, (result->>'analysis_id'))`. Do not paste extra `CREATE TABLE` or `ALTER TABLE` statements that are not in those files.
+A new Supabase project has Auth and no OptionsTaxHub tables. The schema is the SQL files in `server/migrations/`, applied once, in filename order. That set creates `portfolio_analyses` with nullable `result` JSONB (the analysis object `server/db.py` already saves, including `analysis_id`) and the unique index on `(user_id, (result->>'analysis_id'))`. `009_rls_owner_select_service_role_writes.sql` is the next step after `008_portfolio_analyses_one_analysis_id.sql`. It does not add tables. Apply the migration files in order. There is no separate RLS script to paste into the SQL editor.
 
 Use the project's direct Postgres URI (Supabase Dashboard → Project Settings → Database). That URI is not the REST URL or the service-role key. Run this only against the database you intend to migrate.
 
@@ -40,9 +40,11 @@ DATABASE_URL="postgresql://postgres.[ref]:[password]@aws-0-[region].pooler.supab
   sh server/scripts/apply_migrations.sh
 ```
 
-The Supabase SQL Editor is the same path: run each file from `001_portfolio_analyses.sql` through `008_portfolio_analyses_one_analysis_id.sql` in order, one file at a time.
+The Supabase SQL Editor is the same path: run each file from `001_portfolio_analyses.sql` through `009_rls_owner_select_service_role_writes.sql` in order, one file at a time.
 
-`001` adds `result` only when it creates the table. `CREATE TABLE IF NOT EXISTS` does not alter an older summary-only `portfolio_analyses`. Do not re-run `001` on that database: its `CREATE POLICY` statements are not repeatable, and re-running it still leaves the column missing. Apply the later files that are not on the database yet. `004_year_close_packet_snapshots.sql` runs `ADD COLUMN IF NOT EXISTS result JSONB`, keeps every existing row, and leaves `result` null until a new save. Continue through `008`, which adds the unique index the history helpers use.
+`001` adds `result` only when it creates the table. `CREATE TABLE IF NOT EXISTS` does not alter an older summary-only `portfolio_analyses`. Do not re-run `001` on that database: its `CREATE POLICY` statements are not repeatable, and re-running it still leaves the column missing. Apply the later files that are not on the database yet. `004_year_close_packet_snapshots.sql` runs `ADD COLUMN IF NOT EXISTS result JSONB`, keeps every existing row, and leaves `result` null until a new save. Continue through `008`, which adds the unique index the history helpers use, and then `009_rls_owner_select_service_role_writes.sql`.
+
+`user_id` is `text` on `portfolio_analyses`, `tax_profiles`, and both year-close packet tables. `009` leaves one authenticated `SELECT` policy on `portfolio_analyses` and one on `tax_profiles`, each with `USING ((auth.uid())::text = user_id)`. The server's `SELECT`, history `INSERT`/`UPDATE`/`DELETE`, and tax-profile `INSERT`/`UPDATE` policies are `TO service_role`. Packet tables stay server-only: `009` does not grant them to `anon` or `authenticated` and does not add policies. Run `009` from `server/migrations/` with the other files. Do not add those policies again by hand.
 
 ```bash
 DATABASE_URL="postgresql://postgres.[ref]:[password]@aws-0-[region].pooler.supabase.com:5432/postgres" \
@@ -60,10 +62,10 @@ Check the committed files against an empty local Postgres. Do not point this at 
 cd server
 pip install 'psycopg[binary]'
 OPTAX_TEST_DATABASE_URL="postgresql:///postgres" \
-  pytest tests/test_analysis_result_migration.py -q
+  pytest tests/test_analysis_result_migration.py tests/test_rls_ownership.py -q
 ```
 
-The test needs local Postgres and `psql`. It applies every migration, checks save, list, restore, and delete, and upgrades a summary-only table without deleting the historical row.
+The tests need local Postgres and `psql`. `test_analysis_result_migration.py` applies every migration, checks save, list, restore, and delete, and upgrades a summary-only table without deleting the historical row. `test_rls_ownership.py` checks anonymous, user A, user B, and service-role access after a fresh `001`–`009` apply and after `009` alone cleans the older duplicate policies. Point `OPTAX_TEST_DATABASE_URL` at local Postgres only.
 
 ### 5. Test Locally
 1. Start the dev server: `npm run dev` (client directory)
