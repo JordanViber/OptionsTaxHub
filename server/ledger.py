@@ -210,6 +210,17 @@ def merge_transaction_books(
     )
 
 
+HISTORICAL_BOOK_UNRECOVERABLE_WARNING = (
+    "Earlier uploads were saved without their trade rows, so this file was "
+    "analyzed on its own and was not merged with that history. Upload a full "
+    "Robinhood activity export to rebuild the book."
+)
+ACTIVITY_BOOK_LOAD_FAILED_WARNING = (
+    "Your saved trade book could not be loaded, so this file was analyzed on "
+    "its own and was not saved over that book. Try the upload again."
+)
+
+
 def merge_warning(result: MergeResult, prior_filename: str = "") -> str | None:
     """Human copy for the dashboard. None when there is nothing to say."""
     if result.gap_days > 0:

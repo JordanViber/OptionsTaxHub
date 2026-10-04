@@ -33,6 +33,8 @@ entitlement tables stay server-only.
 
 RLS is defined only by `server/migrations/`. Apply those files in filename order, including `009_rls_owner_select_service_role_writes.sql` after `008_portfolio_analyses_one_analysis_id.sql` (see [Supabase setup](SUPABASE_SETUP.md)). `010_enable_rls_revoke_unused_service_role_privileges.sql` is the next file after `009_rls_owner_select_service_role_writes.sql`. 010 enables row level security on the four tables 009 touches: `portfolio_analyses`, `tax_profiles`, `year_close_packet_snapshots`, and `year_close_packet_entitlements`. It revokes `TRUNCATE`, `REFERENCES`, and `TRIGGER` from `service_role`. Packet tables still rely on hosted `service_role` BYPASSRLS. No policy change for that. 009 and 010 must be applied together in one transaction, the same way `server/scripts/apply_migrations.sh` does (one `psql --single-transaction` around those two files). The Supabase SQL editor must not stop at 009 and must not run 009 and 010 as separate commits. Other migration files may still be applied one file at a time. If someone runs 009 without 010, authenticated SELECT on those tables is unrestricted wherever RLS is off. There is no separate RLS script.
 
+`011_private_activity_books.sql` is the next file after `010_enable_rls_revoke_unused_service_role_privileges.sql`. Apply it on its own, not inside the 009 and 010 transaction. It creates server-only `portfolio_activity_books`, one private trade book per account. It grants nothing to `anon` or `authenticated` and adds no client policy. Hosted `service_role` has BYPASSRLS. This change does not apply 011 to Supabase project ref `vgrlucxqncajjdoaoctq`.
+
 ### Step 1: Access Supabase Dashboard
 1. Go to https://app.supabase.com
 2. Select your project "OptionsTaxHub"

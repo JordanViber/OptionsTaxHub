@@ -2,6 +2,9 @@ from fastapi.testclient import TestClient
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+import db
 import main
 from auth import get_current_user, get_current_user_with_token, get_optional_user
 
@@ -22,6 +25,13 @@ main.app.dependency_overrides[get_optional_user] = mock_get_current_user
 main.app.dependency_overrides[get_current_user_with_token] = mock_get_current_user_with_token
 
 client = TestClient(main.app)
+
+
+@pytest.fixture(autouse=True)
+def _no_live_supabase(monkeypatch):
+    """Keep analyze tests off the hosted Supabase project in server/.env.local."""
+    monkeypatch.setattr(db, "get_supabase", lambda: None)
+    monkeypatch.setattr(main, "get_supabase", lambda: None)
 
 
 def setup_function():
@@ -469,6 +479,11 @@ def _stub_analyze_network(monkeypatch):
     )
     monkeypatch.setattr("main.get_latest_activity_book", lambda uid, client=None: None)
     monkeypatch.setattr(
+        "main.load_activity_book_for_merge",
+        lambda user_id, client=None: db.ActivityBookLookup(),
+    )
+    monkeypatch.setattr("main.upsert_activity_book", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
         "main.lookup_packet_grant_for_tax_year",
         lambda *args, **kwargs: (None, True),
     )
@@ -619,15 +634,15 @@ def test_analyze_merges_new_activity_with_saved_book(monkeypatch):
     )
     _prior_lots, prior_txns, _errs, _real = parse_csv(prior_csv.decode())
     monkeypatch.setattr(
-        "main.get_latest_activity_book",
-        lambda uid, client=None: {
-            "analysis_id": "book-2023",
-            "filename": "full-history.csv",
-            "transactions": [t.model_dump(mode="json") for t in prior_txns],
-            "packet_unlocked": True,
-            "packet_session_id": "cs_test_yeargrant",
-            "tax_year": 2026,
-        },
+        "main.load_activity_book_for_merge",
+        lambda uid, client=None: db.ActivityBookLookup(
+            book={
+                "analysis_id": "book-2023",
+                "filename": "full-history.csv",
+                "transactions": [t.model_dump(mode="json") for t in prior_txns],
+                "tax_year": 2026,
+            },
+        ),
     )
     monkeypatch.setattr(
         "main.lookup_packet_grant_for_tax_year",
@@ -810,12 +825,14 @@ def test_analyze_replace_mode_ignores_saved_book(monkeypatch):
     )
     _lots, prior_txns, _e, _r = parse_csv(prior_csv.decode())
     monkeypatch.setattr(
-        "main.get_latest_activity_book",
-        lambda uid, client=None: {
-            "analysis_id": "book-2023",
-            "filename": "full-history.csv",
-            "transactions": [t.model_dump(mode="json") for t in prior_txns],
-        },
+        "main.load_activity_book_for_merge",
+        lambda uid, client=None: db.ActivityBookLookup(
+            book={
+                "analysis_id": "book-2023",
+                "filename": "full-history.csv",
+                "transactions": [t.model_dump(mode="json") for t in prior_txns],
+            },
+        ),
     )
     new_csv = _rh_csv(
         "03/01/2026,03/01/2026,03/03/2026,AAPL,Apple,Buy,5,150.00,-750.00\n",
@@ -2802,6 +2819,11 @@ def test_trusted_in_app_sample_skips_yahoo_and_still_returns_positions(monkeypat
     monkeypatch.setattr("main._save_history_best_effort", lambda *args, **kwargs: None)
     monkeypatch.setattr("main.get_latest_activity_book", lambda uid, client=None: None)
     monkeypatch.setattr(
+        "main.load_activity_book_for_merge",
+        lambda user_id, client=None: db.ActivityBookLookup(),
+    )
+    monkeypatch.setattr("main.upsert_activity_book", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
         "main.lookup_packet_grant_for_tax_year",
         lambda *args, **kwargs: (None, True),
     )
@@ -3264,3 +3286,607 @@ def test_lifespan_startup_with_stripe(monkeypatch):
     with TestClient(main.app) as temp_client:
         resp = temp_client.get("/health")
         assert resp.status_code == 200
+
+
+class _ApiBookQuery:
+    def __init__(self, client, table):
+        self.client = client
+        self.table = table
+        self.op = "select"
+        self.filters = []
+        self.order_col = None
+        self.order_desc = False
+        self.range_bounds = None
+        self.limit_n = None
+        self.payload = None
+        self.on_conflict = None
+
+    def select(self, *_args, **_kwargs):
+        return self
+
+    def insert(self, row):
+        self.op = "insert"
+        self.payload = row
+        return self
+
+    def upsert(self, row, on_conflict=None, **_kwargs):
+        self.op = "upsert"
+        self.payload = row
+        self.on_conflict = on_conflict
+        return self
+
+    def eq(self, col, val):
+        self.filters.append((col, val))
+        return self
+
+    def order(self, col, desc=False, **_kwargs):
+        self.order_col = col
+        self.order_desc = bool(desc)
+        return self
+
+    def limit(self, n):
+        self.limit_n = n
+        return self
+
+    def range(self, start, end):
+        self.range_bounds = (start, end)
+        return self
+
+    def execute(self):
+        if (
+            self.op == "select"
+            and self.table == "portfolio_activity_books"
+            and self.client.select_error is not None
+        ):
+            raise self.client.select_error
+        self.client.queries.append(
+            {"table": self.table, "op": self.op, "filters": list(self.filters)}
+        )
+        rows = self.client.tables.setdefault(self.table, [])
+        if self.op in {"upsert", "insert"}:
+            stored = dict(self.payload or {})
+            if self.op == "upsert":
+                key = self.on_conflict or "user_id"
+                match = stored.get(key)
+                replaced = False
+                for index, row in enumerate(rows):
+                    if row.get(key) == match:
+                        rows[index] = stored
+                        replaced = True
+                        break
+                if not replaced:
+                    rows.append(stored)
+                self.client.upserts.append(stored)
+            else:
+                rows.append(stored)
+            return SimpleNamespace(data=[dict(stored)])
+        filtered = list(rows)
+        if self.filters:
+            for col, val in self.filters:
+                filtered = [row for row in filtered if row.get(col) == val]
+        if self.order_col:
+            filtered.sort(
+                key=lambda row: row.get(self.order_col) or "",
+                reverse=self.order_desc,
+            )
+        if self.range_bounds is not None:
+            start, end = self.range_bounds
+            filtered = filtered[start:end + 1]
+        elif self.limit_n is not None:
+            filtered = filtered[: self.limit_n]
+        return SimpleNamespace(data=filtered)
+
+
+class _ApiBookClient:
+    def __init__(self):
+        self.tables = {
+            "portfolio_activity_books": [],
+            "portfolio_analyses": [],
+        }
+        self.queries = []
+        self.upserts = []
+        self.select_error = None
+
+    def table(self, name):
+        return _ApiBookQuery(self, name)
+
+
+def _use_memory_book(monkeypatch, memory=None):
+    memory = memory or _ApiBookClient()
+    monkeypatch.setattr(db, "get_supabase", lambda: memory)
+    monkeypatch.setattr(main, "get_supabase", lambda: memory)
+    monkeypatch.setattr(main, "load_activity_book_for_merge", db.load_activity_book_for_merge)
+    monkeypatch.setattr(main, "upsert_activity_book", db.upsert_activity_book)
+    return memory
+
+
+def _forget_process_memory():
+    from year_close_packet import PACKET_STORE
+
+    PACKET_STORE.clear()
+
+
+def _post_book(filename, content, *, merge_mode=None):
+    url = "/api/portfolio/analyze?tax_year=2026"
+    if merge_mode:
+        url += f"&merge_mode={merge_mode}"
+    return client.post(url, files={"file": (filename, content, "text/csv")})
+
+
+def _stored_books(memory, user_id="test-user-123"):
+    return [
+        row
+        for row in memory.tables["portfolio_activity_books"]
+        if row.get("user_id") == user_id
+    ]
+
+
+def _aapl_buy_bytes():
+    return _rh_csv(
+        "01/15/2024,01/15/2024,01/17/2024,AAPL,Apple,Buy,10,100.00,-1000.00\n"
+    )
+
+
+def _aapl_sell_bytes():
+    return _rh_csv(
+        "06/01/2026,06/01/2026,06/03/2026,AAPL,Apple,Sell,4,150.00,600.00\n"
+    )
+
+
+def test_buy_then_sell_merges_from_the_private_book(monkeypatch):
+    """A later sell rebuilds the lot from the private book after memory is cleared."""
+    _stub_analyze_network(monkeypatch)
+    memory = _use_memory_book(monkeypatch)
+    captured = []
+
+    def capture(user_id, filename, summary, result):
+        payload = result.model_dump(mode="json") if hasattr(result, "model_dump") else dict(result)
+        captured.append(payload)
+        return True
+
+    monkeypatch.setattr(main, "_save_history_best_effort", capture)
+
+    first = _post_book("buy.csv", _aapl_buy_bytes())
+    assert first.status_code == 200, first.text
+    assert first.json()["activity_book"]["transactions"] == []
+    assert "trans_code" not in first.text
+    assert len(_stored_books(memory)[0]["transactions"]) == 1
+    _forget_process_memory()
+
+    second = _post_book("sell.csv", _aapl_sell_bytes())
+    assert second.status_code == 200, second.text
+    body = second.json()
+    assert "trans_code" not in second.text
+    assert body["activity_book"]["transactions"] == []
+    aapl = next(position for position in body["positions"] if position["symbol"] == "AAPL")
+    assert aapl["quantity"] == 6
+    realized = body["summary"]["realized_summary"]
+    assert realized["tax_year"] == 2026
+    assert realized["lt_gains"] == 200
+    assert realized["st_gains"] == 0
+    assert realized["total_net"] == 200
+    assert realized["transactions_count"] == 1
+    stored = _stored_books(memory)[0]["transactions"]
+    assert len(stored) == 2
+    assert captured
+    for payload in captured:
+        assert payload["activity_book"]["transactions"] == []
+        assert "transactions" not in payload or payload.get("transactions") in (None, [])
+        assert "trans_code" not in str(payload["activity_book"]["transactions"])
+
+
+def test_overlapping_upload_is_idempotent(monkeypatch):
+    _stub_analyze_network(monkeypatch)
+    memory = _use_memory_book(monkeypatch)
+    buy = _aapl_buy_bytes()
+    assert _post_book("buy.csv", buy).status_code == 200
+    _forget_process_memory()
+    second = _post_book("buy-again.csv", buy)
+    assert second.status_code == 200, second.text
+    body = second.json()
+    book = body["activity_book"]
+    assert book["added_from_this_upload"] == 0
+    assert book["already_in_book"] == 1
+    assert book["transaction_count"] == 1
+    assert book["replaced"] is False
+    assert book["transactions"] == []
+    aapl = next(position for position in body["positions"] if position["symbol"] == "AAPL")
+    assert aapl["quantity"] == 10
+    stored = _stored_books(memory)[0]["transactions"]
+    assert len(stored) == 1
+    assert stored[0]["instrument"] == "AAPL"
+    assert stored[0]["quantity"] == 10
+
+
+def test_replace_mode_replaces_the_private_book(monkeypatch):
+    _stub_analyze_network(monkeypatch)
+    memory = _use_memory_book(monkeypatch)
+    assert _post_book("buy.csv", _aapl_buy_bytes()).status_code == 200
+    _forget_process_memory()
+    replacement = _rh_csv(
+        "03/01/2026,03/01/2026,03/03/2026,AAPL,Apple,Buy,5,150.00,-750.00\n"
+    )
+    replaced = _post_book("fresh.csv", replacement, merge_mode="replace")
+    assert replaced.status_code == 200, replaced.text
+    assert replaced.json()["activity_book"]["replaced"] is True
+    assert replaced.json()["activity_book"]["transaction_count"] == 1
+    stored = _stored_books(memory)[0]["transactions"]
+    assert len(stored) == 1
+    assert stored[0]["quantity"] == 5
+    assert stored[0]["price"] == 150
+    _forget_process_memory()
+
+    sell = _rh_csv(
+        "06/01/2026,06/01/2026,06/03/2026,AAPL,Apple,Sell,5,180.00,900.00\n"
+    )
+    closed = _post_book("sell.csv", sell)
+    assert closed.status_code == 200, closed.text
+    body = closed.json()
+    realized = body["summary"]["realized_summary"]
+    assert realized["st_gains"] == 150
+    assert realized["lt_gains"] == 0
+    assert realized["total_net"] == 150
+    aapl = [position for position in body["positions"] if position["symbol"] == "AAPL"]
+    assert not aapl or aapl[0]["quantity"] == 0
+
+
+def test_sample_upload_does_not_replace_the_private_book(monkeypatch):
+    _stub_analyze_network(monkeypatch)
+    memory = _use_memory_book(monkeypatch)
+    assert _post_book("aapl-buy.csv", _aapl_buy_bytes()).status_code == 200
+    sample_bytes = SAMPLE_CSV_PATH.read_bytes()
+
+    _forget_process_memory()
+    official = _post_book("sample-robinhood-transactions.csv", sample_bytes)
+    assert official.status_code == 200, official.text
+    _assert_original_buy(memory)
+
+    _forget_process_memory()
+    replaced = _post_book(
+        "sample-robinhood-transactions.csv",
+        sample_bytes,
+        merge_mode="replace",
+    )
+    assert replaced.status_code == 200, replaced.text
+    _assert_original_buy(memory)
+
+    _forget_process_memory()
+    renamed = _post_book("renamed-sample.csv", sample_bytes, merge_mode="auto")
+    assert renamed.status_code == 200, renamed.text
+    _assert_original_buy(memory)
+
+    _forget_process_memory()
+    sold = _post_book("sell.csv", _aapl_sell_bytes())
+    assert sold.status_code == 200, sold.text
+    body = sold.json()
+    aapl = next(position for position in body["positions"] if position["symbol"] == "AAPL")
+    assert aapl["quantity"] == 6
+    assert body["summary"]["realized_summary"]["lt_gains"] == 200
+    assert body["summary"]["realized_summary"]["total_net"] == 200
+
+
+def _assert_original_buy(memory):
+    stored = _stored_books(memory)[0]["transactions"]
+    assert len(stored) == 1
+    assert stored[0]["instrument"] == "AAPL"
+    assert stored[0]["quantity"] == 10
+    assert stored[0]["trans_code"] == "Buy"
+
+
+def test_history_persist_strips_client_transactions(monkeypatch):
+    saved = {}
+
+    def fake_save(**kwargs):
+        saved.update(kwargs)
+        return {
+            "id": "hist-1",
+            "user_id": kwargs["user_id"],
+            "filename": kwargs["filename"],
+            "result": kwargs["result_data"],
+        }
+
+    monkeypatch.setattr("main.save_analysis_history", fake_save)
+    monkeypatch.setattr(main, "lookup_analysis_for_entitlement", lambda *_args: (None, True))
+    upserts = []
+    monkeypatch.setattr(
+        main,
+        "upsert_activity_book",
+        lambda *args, **kwargs: upserts.append((args, kwargs)),
+    )
+    response = client.post(
+        "/api/portfolio/history",
+        json={
+            "filename": "book.csv",
+            "analysis": {
+                "analysis_id": "guest-trades",
+                "summary": {"positions_count": 1},
+                "transactions": [{"instrument": "AAPL", "trans_code": "Buy"}],
+                "activity_book": {
+                    "transaction_count": 1,
+                    "transactions": [{"instrument": "AAPL", "trans_code": "Buy"}],
+                },
+            },
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert saved["result_data"]["activity_book"]["transactions"] == []
+    assert saved["result_data"]["activity_book"]["transaction_count"] == 1
+    assert "transactions" not in saved["result_data"]
+    assert upserts == []
+
+    monkeypatch.setattr(main, "get_supabase", lambda: object())
+    monkeypatch.setattr(
+        main,
+        "get_analysis_by_id",
+        lambda analysis_id, user_id, client=None: {
+            "id": analysis_id,
+            "user_id": user_id,
+            "result": saved["result_data"],
+        },
+    )
+    loaded = client.get("/api/portfolio/analysis/hist-1")
+    assert loaded.status_code == 200, loaded.text
+    assert loaded.json()["result"]["activity_book"]["transactions"] == []
+    assert "trans_code" not in loaded.text
+
+
+def test_stripped_history_warns_and_starts_a_new_book(monkeypatch):
+    from ledger import HISTORICAL_BOOK_UNRECOVERABLE_WARNING
+
+    _stub_analyze_network(monkeypatch)
+    memory = _use_memory_book(monkeypatch)
+    memory.tables["portfolio_analyses"].append(
+        {
+            "id": "stripped",
+            "user_id": "test-user-123",
+            "filename": "recent.csv",
+            "uploaded_at": "2026-08-01T00:00:00+00:00",
+            "summary": {"activity_transaction_count": 4},
+            "result": {
+                "activity_book": {"transactions": [], "transaction_count": 4},
+                "summary": {"activity_transaction_count": 4},
+            },
+        }
+    )
+    first = _post_book("buy.csv", _aapl_buy_bytes())
+    assert first.status_code == 200, first.text
+    assert HISTORICAL_BOOK_UNRECOVERABLE_WARNING in first.json()["warnings"]
+    assert first.json()["activity_book"]["transactions"] == []
+    stored = _stored_books(memory)[0]["transactions"]
+    assert len(stored) == 1
+    assert stored[0]["quantity"] == 10
+
+    _forget_process_memory()
+    second = _post_book(
+        "more.csv",
+        _rh_csv("03/01/2026,03/01/2026,03/03/2026,AAPL,Apple,Buy,5,150.00,-750.00\n"),
+    )
+    assert second.status_code == 200, second.text
+    assert HISTORICAL_BOOK_UNRECOVERABLE_WARNING not in second.json()["warnings"]
+    assert second.json()["activity_book"]["transaction_count"] == 2
+    assert len(_stored_books(memory)[0]["transactions"]) == 2
+
+    replace_memory = _use_memory_book(monkeypatch)
+    replace_memory.tables["portfolio_analyses"].append(
+        {
+            "id": "stripped",
+            "user_id": "test-user-123",
+            "filename": "recent.csv",
+            "uploaded_at": "2026-08-01T00:00:00+00:00",
+            "summary": {"activity_transaction_count": 4},
+            "result": {"activity_book": {"transactions": [], "transaction_count": 4}},
+        }
+    )
+    _forget_process_memory()
+    replaced = _post_book("fresh.csv", _aapl_buy_bytes(), merge_mode="replace")
+    assert replaced.status_code == 200, replaced.text
+    assert HISTORICAL_BOOK_UNRECOVERABLE_WARNING not in replaced.json()["warnings"]
+
+
+def test_empty_private_row_wins_over_history(monkeypatch):
+    _stub_analyze_network(monkeypatch)
+    memory = _use_memory_book(monkeypatch)
+    memory.tables["portfolio_activity_books"].append(
+        {
+            "user_id": "test-user-123",
+            "analysis_id": "empty-book",
+            "filename": "cleared.csv",
+            "transactions": [],
+        }
+    )
+    memory.tables["portfolio_analyses"].append(
+        {
+            "id": "older-buy",
+            "user_id": "test-user-123",
+            "filename": "full.csv",
+            "uploaded_at": "2024-01-20T00:00:00+00:00",
+            "summary": {},
+            "result": {
+                "activity_book": {
+                    "transactions": [
+                        {
+                            "activity_date": "2024-01-15",
+                            "instrument": "AAPL",
+                            "description": "Apple",
+                            "trans_code": "Buy",
+                            "quantity": 10,
+                            "price": 100,
+                            "amount": -1000,
+                        }
+                    ],
+                    "transaction_count": 1,
+                }
+            },
+        }
+    )
+    response = _post_book("sell.csv", _aapl_sell_bytes())
+    assert response.status_code == 200, response.text
+    realized = response.json()["summary"]["realized_summary"]
+    assert realized["lt_gains"] == 0
+    assert realized["transactions_count"] == 0
+    assert not any(query["table"] == "portfolio_analyses" for query in memory.queries)
+    stored = _stored_books(memory)[0]["transactions"]
+    assert len(stored) == 1
+    assert stored[0]["trans_code"] == "Sell"
+
+
+def test_incomplete_history_scan_does_not_warn_or_upsert(monkeypatch):
+    from ledger import (
+        ACTIVITY_BOOK_LOAD_FAILED_WARNING,
+        HISTORICAL_BOOK_UNRECOVERABLE_WARNING,
+    )
+
+    _stub_analyze_network(monkeypatch)
+    memory = _use_memory_book(monkeypatch)
+    monkeypatch.setattr(db, "ACTIVITY_BOOK_HISTORY_PAGE", 1)
+    monkeypatch.setattr(db, "ACTIVITY_BOOK_HISTORY_MAX_PAGES", 1)
+    memory.tables["portfolio_analyses"].extend(
+        [
+            {
+                "id": "stripped-new",
+                "user_id": "test-user-123",
+                "filename": "recent.csv",
+                "uploaded_at": "2026-08-01T00:00:00+00:00",
+                "summary": {"activity_transaction_count": 4},
+                "result": {"activity_book": {"transactions": [], "transaction_count": 4}},
+            },
+            {
+                "id": "older-full",
+                "user_id": "test-user-123",
+                "filename": "old.csv",
+                "uploaded_at": "2024-01-01T00:00:00+00:00",
+                "summary": {},
+                "result": {
+                    "activity_book": {
+                        "transactions": [
+                            {
+                                "activity_date": "2024-01-15",
+                                "instrument": "AAPL",
+                                "description": "Apple",
+                                "trans_code": "Buy",
+                                "quantity": 10,
+                                "price": 100,
+                                "amount": -1000,
+                            }
+                        ],
+                        "transaction_count": 1,
+                    }
+                },
+            },
+        ]
+    )
+    response = _post_book("sell.csv", _aapl_sell_bytes())
+    assert response.status_code == 200, response.text
+    warnings = response.json()["warnings"]
+    assert HISTORICAL_BOOK_UNRECOVERABLE_WARNING not in warnings
+    assert ACTIVITY_BOOK_LOAD_FAILED_WARNING not in warnings
+    assert response.json()["summary"]["realized_summary"]["lt_gains"] == 0
+    assert memory.tables["portfolio_activity_books"] == []
+    assert memory.upserts == []
+
+
+def test_snapshot_with_no_new_trades_does_not_blank_the_book(monkeypatch):
+    _stub_analyze_network(monkeypatch)
+    memory = _use_memory_book(monkeypatch)
+    assert _post_book("buy.csv", _aapl_buy_bytes()).status_code == 200
+    _forget_process_memory()
+    snapshot = (
+        "symbol,quantity,purchase_price,current_price\n"
+        "AAPL,3,50,60\n"
+    ).encode()
+    response = _post_book("positions.csv", snapshot)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert any("position snapshot" in warning for warning in body["warnings"])
+    assert body["activity_book"]["transactions"] == []
+    assert body["activity_book"]["transaction_count"] == 1
+    aapl = next(position for position in body["positions"] if position["symbol"] == "AAPL")
+    assert aapl["quantity"] == 3
+    stored = _stored_books(memory)[0]["transactions"]
+    assert len(stored) == 1
+    assert stored[0]["quantity"] == 10
+    assert stored[0]["trans_code"] == "Buy"
+    assert all(row["transactions"] for row in memory.upserts)
+
+
+def test_activity_book_read_error_does_not_overwrite(monkeypatch):
+    from ledger import (
+        ACTIVITY_BOOK_LOAD_FAILED_WARNING,
+        HISTORICAL_BOOK_UNRECOVERABLE_WARNING,
+    )
+
+    _stub_analyze_network(monkeypatch)
+    memory = _use_memory_book(monkeypatch)
+    original = [{"instrument": "AAPL", "trans_code": "Buy", "quantity": 10}]
+    memory.tables["portfolio_activity_books"].append(
+        {
+            "user_id": "test-user-123",
+            "analysis_id": "kept",
+            "filename": "kept.csv",
+            "transactions": list(original),
+        }
+    )
+    memory.select_error = RuntimeError("connection reset")
+    failed = _post_book("sell.csv", _aapl_sell_bytes())
+    assert failed.status_code == 200, failed.text
+    assert ACTIVITY_BOOK_LOAD_FAILED_WARNING in failed.json()["warnings"]
+    assert memory.upserts == []
+    assert memory.tables["portfolio_activity_books"][0]["transactions"] == original
+
+    missing = _ApiBookClient()
+    _use_memory_book(monkeypatch, missing)
+    missing.tables["portfolio_activity_books"].append(
+        {
+            "user_id": "test-user-123",
+            "analysis_id": "kept",
+            "filename": "kept.csv",
+            "transactions": list(original),
+        }
+    )
+
+    class _MissingTable(Exception):
+        code = "42P01"
+
+        def __str__(self):
+            return 'relation "public.portfolio_activity_books" does not exist'
+
+    missing.select_error = _MissingTable()
+    _forget_process_memory()
+    response = _post_book("sell.csv", _aapl_sell_bytes())
+    assert response.status_code == 200, response.text
+    warnings = response.json()["warnings"]
+    assert ACTIVITY_BOOK_LOAD_FAILED_WARNING not in warnings
+    assert HISTORICAL_BOOK_UNRECOVERABLE_WARNING not in warnings
+    assert missing.upserts == []
+    assert missing.tables["portfolio_activity_books"][0]["transactions"] == original
+
+
+def test_activity_book_is_not_visible_across_accounts(monkeypatch):
+    _stub_analyze_network(monkeypatch)
+    memory = _use_memory_book(monkeypatch)
+    main.app.dependency_overrides[get_optional_user] = lambda: "user-a"
+    try:
+        first = _post_book("a.csv", _aapl_buy_bytes())
+        assert first.status_code == 200, first.text
+        _forget_process_memory()
+        main.app.dependency_overrides[get_optional_user] = lambda: "user-b"
+        second = _post_book("b.csv", _aapl_sell_bytes())
+        assert second.status_code == 200, second.text
+        realized = second.json()["summary"]["realized_summary"]
+        assert realized["lt_gains"] == 0
+        assert realized["transactions_count"] == 0
+        books = {
+            row["user_id"]: row for row in memory.tables["portfolio_activity_books"]
+        }
+        assert len(books["user-a"]["transactions"]) == 1
+        assert books["user-a"]["transactions"][0]["trans_code"] == "Buy"
+        assert len(books["user-b"]["transactions"]) == 1
+        assert books["user-b"]["transactions"][0]["trans_code"] == "Sell"
+        private_selects = [
+            query
+            for query in memory.queries
+            if query["table"] == "portfolio_activity_books" and query["op"] == "select"
+        ]
+        assert any(query["filters"] == [("user_id", "user-b")] for query in private_selects)
+    finally:
+        main.app.dependency_overrides[get_optional_user] = mock_get_current_user

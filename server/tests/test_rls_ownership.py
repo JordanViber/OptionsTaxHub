@@ -45,12 +45,14 @@ MIGRATIONS = SERVER_DIR / "migrations"
 APPLY_SCRIPT = SERVER_DIR / "scripts" / "apply_migrations.sh"
 MIGRATION_009 = "009_rls_owner_select_service_role_writes.sql"
 MIGRATION_010 = "010_enable_rls_revoke_unused_service_role_privileges.sql"
+MIGRATION_011 = "011_private_activity_books.sql"
 _UNUSED_SERVICE_PRIVS = frozenset({"TRUNCATE", "REFERENCES", "TRIGGER"})
 _SERVICE_DML = {
     "portfolio_analyses": frozenset({"SELECT", "INSERT", "UPDATE", "DELETE"}),
     "tax_profiles": frozenset({"SELECT", "INSERT", "UPDATE"}),
     "year_close_packet_snapshots": frozenset({"SELECT", "INSERT", "UPDATE", "DELETE"}),
     "year_close_packet_entitlements": frozenset({"SELECT", "INSERT", "UPDATE", "DELETE"}),
+    "portfolio_activity_books": frozenset({"SELECT", "INSERT", "UPDATE", "DELETE"}),
 }
 
 USER_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
@@ -61,6 +63,8 @@ PACKET_TABLES = (
     "year_close_packet_snapshots",
     "year_close_packet_entitlements",
 )
+# Not part of PACKET_TABLES: migration 010's SQL text does not mention this table.
+PRIVATE_BOOK_TABLES = ("portfolio_activity_books",)
 CLIENT_TABLES = ("portfolio_analyses", "tax_profiles")
 
 LIVE_DUPLICATE_NAMES = (
@@ -402,7 +406,7 @@ def _expect_denied(conn, sql: str, params=None) -> Exception:
 
 
 def _policies(conn, tables: tuple[str, ...] | None = None) -> list[dict]:
-    names = list(tables or CLIENT_TABLES + PACKET_TABLES)
+    names = list(tables or CLIENT_TABLES + PACKET_TABLES + PRIVATE_BOOK_TABLES)
     rows = conn.execute(
         """
         SELECT c.relname AS table_name,
@@ -496,7 +500,9 @@ def _assert_policy_shape(conn) -> None:
     by_key = {(row["table"], row["name"]): row for row in rows}
     client_rows = [row for row in rows if row["table"] in CLIENT_TABLES]
     packet_rows = [row for row in rows if row["table"] in PACKET_TABLES]
+    private_rows = [row for row in rows if row["table"] in PRIVATE_BOOK_TABLES]
     assert packet_rows == []
+    assert private_rows == []
     assert len(client_rows) == len(by_key)
     expected = {
         ("portfolio_analyses", "Users can view own analyses"),
@@ -579,7 +585,7 @@ def _assert_policy_shape(conn) -> None:
 
 
 def _assert_grants(conn) -> None:
-    privs = _privileges(conn, CLIENT_TABLES + PACKET_TABLES)
+    privs = _privileges(conn, CLIENT_TABLES + PACKET_TABLES + PRIVATE_BOOK_TABLES)
     for table in CLIENT_TABLES:
         assert privs[table].get("anon", set()) == set()
         assert privs[table].get("public", set()) == set()
@@ -588,7 +594,7 @@ def _assert_grants(conn) -> None:
         assert write_privs.isdisjoint(privs[table].get("authenticated", set()))
         assert write_privs.isdisjoint(privs[table].get("anon", set()))
 
-    for table in PACKET_TABLES:
+    for table in PACKET_TABLES + PRIVATE_BOOK_TABLES:
         assert privs[table].get("anon", set()) == set()
         assert privs[table].get("authenticated", set()) == set()
         assert privs[table].get("public", set()) == set()
@@ -613,10 +619,10 @@ def _assert_rls_enabled(conn) -> None:
         WHERE n.nspname = 'public'
           AND c.relname = ANY (%s)
         """,
-        (list(CLIENT_TABLES + PACKET_TABLES),),
+        (list(CLIENT_TABLES + PACKET_TABLES + PRIVATE_BOOK_TABLES),),
     ).fetchall()
     found = {row[0]: (bool(row[1]), bool(row[2])) for row in rows}
-    for table in CLIENT_TABLES + PACKET_TABLES:
+    for table in CLIENT_TABLES + PACKET_TABLES + PRIVATE_BOOK_TABLES:
         assert table in found, table
         enabled, forced = found[table]
         assert enabled, table
@@ -625,6 +631,7 @@ def _assert_rls_enabled(conn) -> None:
 
 def _seed(conn) -> None:
     _reset_role(conn)
+    conn.execute("DELETE FROM public.portfolio_activity_books")
     conn.execute("DELETE FROM public.year_close_packet_entitlements")
     conn.execute("DELETE FROM public.year_close_packet_snapshots")
     conn.execute("DELETE FROM public.portfolio_analyses")
@@ -657,6 +664,33 @@ def _seed(conn) -> None:
         ) VALUES (%s, 2025, 'cs_test', 'packet-a')
         """,
         (USER_A,),
+    )
+    conn.execute(
+        """
+        INSERT INTO public.portfolio_activity_books (user_id, analysis_id, filename, transactions)
+        VALUES (%s, 'analysis-a', 'a.csv', '[{"instrument": "AAPL"}]'::jsonb)
+        """,
+        (USER_A,),
+    )
+
+
+def _expect_private_book_denied(conn, user_id: str) -> None:
+    _expect_denied(conn, "SELECT user_id FROM public.portfolio_activity_books")
+    _expect_denied(
+        conn,
+        "INSERT INTO public.portfolio_activity_books (user_id, analysis_id, transactions) "
+        "VALUES (%s, 'forged', '[]'::jsonb)",
+        (user_id,),
+    )
+    _expect_denied(
+        conn,
+        "UPDATE public.portfolio_activity_books SET filename = 'hacked.csv' WHERE user_id = %s",
+        (user_id,),
+    )
+    _expect_denied(
+        conn,
+        "DELETE FROM public.portfolio_activity_books WHERE user_id = %s",
+        (user_id,),
     )
 
 
@@ -694,6 +728,7 @@ def _exercise_access(conn) -> None:
         ),
     ):
         _expect_denied(conn, sql, params)
+    _expect_private_book_denied(conn, USER_B)
 
     _as_user(conn, USER_A)
     assert conn.execute("SELECT auth.uid()::text").fetchone()[0] == USER_A
@@ -726,6 +761,7 @@ def _exercise_access(conn) -> None:
         "UPDATE public.tax_profiles SET filing_status = 'married' WHERE user_id = %s",
         (USER_B,),
     )
+    _expect_private_book_denied(conn, USER_A)
 
     _as_user(conn, USER_B)
     assert conn.execute("SELECT auth.uid()::text").fetchone()[0] == USER_B
@@ -736,6 +772,7 @@ def _exercise_access(conn) -> None:
         "INSERT INTO public.portfolio_analyses (user_id, filename) VALUES (%s, 'forged.csv')",
         (USER_A,),
     )
+    _expect_private_book_denied(conn, USER_B)
 
     # Grants alone must not let an authenticated user write another user's row.
     _reset_role(conn)
@@ -802,6 +839,16 @@ def _exercise_access(conn) -> None:
         (USER_B,),
     ).fetchone()[0]
     assert b_status == "single"
+
+    # A SELECT grant still hides the owner's private book: RLS is on and there
+    # is no policy. Local service_role also lacks BYPASSRLS, so this test does
+    # not require a successful service_role read of the private book.
+    _reset_role(conn)
+    conn.execute("GRANT SELECT ON public.portfolio_activity_books TO authenticated")
+    _as_user(conn, USER_A)
+    assert conn.execute("SELECT user_id FROM public.portfolio_activity_books").fetchall() == []
+    _reset_role(conn)
+    conn.execute("REVOKE SELECT ON public.portfolio_activity_books FROM authenticated")
 
     _as_service(conn)
     conn.execute(
@@ -1101,6 +1148,7 @@ def test_fresh_migrations_policy_shape_and_access(postgres):
         output = _apply_migrations(url)
         assert f"Applying {MIGRATION_009}" in output
         assert f"Applying {MIGRATION_010}" in output
+        assert f"Applying {MIGRATION_011}" in output
         assert "Applying 008_portfolio_analyses_one_analysis_id.sql" in output
         _assert_policy_shape(conn)
         _assert_grants(conn)
@@ -1142,13 +1190,16 @@ def test_live_duplicates_removed_by_009_only(postgres):
         output = _apply_migrations(url, apply_from=MIGRATION_009)
         assert f"Applying {MIGRATION_009}" in output
         assert f"Applying {MIGRATION_010}" in output
+        assert f"Applying {MIGRATION_011}" in output
         assert "Applying 001_portfolio_analyses.sql" not in output
         assert "Applying 008_portfolio_analyses_one_analysis_id.sql" not in output
 
         _assert_policy_shape(conn)
         _assert_grants(conn)
-        service_privs = _privileges(conn, ("portfolio_analyses",) + PACKET_TABLES)
-        for table in ("portfolio_analyses",) + PACKET_TABLES:
+        service_privs = _privileges(
+            conn, ("portfolio_analyses",) + PACKET_TABLES + PRIVATE_BOOK_TABLES
+        )
+        for table in ("portfolio_analyses",) + PACKET_TABLES + PRIVATE_BOOK_TABLES:
             role_privs = service_privs[table].get("service_role", set())
             assert "TRUNCATE" not in role_privs
             assert "REFERENCES" not in role_privs
@@ -1171,6 +1222,7 @@ def test_old_public_check_true_policies_replaced_by_009(postgres):
         }
         output = _apply_migrations(url, apply_from=MIGRATION_009)
         assert f"Applying {MIGRATION_010}" in output
+        assert f"Applying {MIGRATION_011}" in output
         assert _public_true_writes(conn) == []
         _assert_policy_shape(conn)
         _assert_grants(conn)
