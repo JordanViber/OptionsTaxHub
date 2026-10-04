@@ -10,10 +10,13 @@ NOTE: Requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in .env.local.
 import os
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 from dotenv import load_dotenv
+
+from ledger import is_sample_csv_filename, strip_book_transactions_dict
 
 _SERVER_DIR = Path(__file__).resolve().parent
 load_dotenv(_SERVER_DIR / ".env.local")
@@ -371,9 +374,10 @@ def ensure_analysis_history(
     filename = str(analysis.get("filename") or "year-close-packet.csv")[:255]
     # Checkout receives this value from the browser. Grant fields are written
     # only after a settled Stripe session is verified server-side.
-    safe_analysis = dict(analysis)
+    safe_analysis = strip_book_transactions_dict(dict(analysis))
     safe_analysis.pop("packet_unlocked", None)
     safe_analysis.pop("packet_session_id", None)
+    safe_analysis.pop("transactions", None)
     try:
         return save_analysis_history(
             user_id,
@@ -449,52 +453,251 @@ def delete_analysis_by_id(analysis_id: str, user_id: str) -> bool:
         return False
 
 
+# History pages are inclusive PostgREST ranges. A short page means the rows
+# ran out. Stopping at ACTIVITY_BOOK_HISTORY_MAX_PAGES is an unfinished scan.
+ACTIVITY_BOOK_HISTORY_PAGE = 100
+ACTIVITY_BOOK_HISTORY_MAX_PAGES = 10000
+_PRIVATE_ACTIVITY_BOOKS = "portfolio_activity_books"
+
+
+@dataclass
+class ActivityBookLookup:
+    """Result of reading the account's trade book.
+
+    ``ok`` is false only when the private-table read failed. An empty
+    ``transactions`` list on ``book`` is still that account's book. An
+    unfinished history scan sets ``scan_incomplete`` and is not unrecoverable.
+    """
+
+    book: Optional[dict] = None
+    ok: bool = True
+    missing_schema: bool = False
+    unrecoverable: bool = False
+    scan_incomplete: bool = False
+
+
+def _positive_count(value) -> bool:
+    if isinstance(value, bool) or value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return value > 0
+    if isinstance(value, str):
+        try:
+            return float(value) > 0
+        except ValueError:
+            return False
+    return False
+
+
+def _book_from_private_row(row: dict) -> dict:
+    raw = row.get("transactions")
+    transactions = raw if isinstance(raw, list) else []
+    return {
+        "analysis_id": row.get("analysis_id"),
+        "filename": row.get("filename") or "",
+        "transactions": transactions,
+        "tax_year": None,
+    }
+
+
+def _history_payload(row: dict) -> dict:
+    payload = row.get("result")
+    return payload if isinstance(payload, dict) else {}
+
+
+def _nonempty_transaction_list(row: dict) -> Optional[list]:
+    payload = _history_payload(row)
+    book = payload.get("activity_book")
+    book = book if isinstance(book, dict) else {}
+    for candidate in (book.get("transactions"), payload.get("transactions")):
+        if isinstance(candidate, list) and candidate:
+            return candidate
+    return None
+
+
+def _history_summary(row: dict, payload: dict) -> dict:
+    summary = row.get("summary")
+    if isinstance(summary, dict):
+        return summary
+    nested = payload.get("summary")
+    return nested if isinstance(nested, dict) else {}
+
+
+def _history_row_is_stripped(row: dict) -> bool:
+    """True when a non-sample row once had trades and no longer stores them."""
+    payload = _history_payload(row)
+    book = payload.get("activity_book")
+    if not isinstance(book, dict):
+        return False
+    if _nonempty_transaction_list(row) is not None:
+        return False
+    summary = _history_summary(row, payload)
+    return _positive_count(book.get("transaction_count")) or _positive_count(
+        summary.get("activity_transaction_count")
+    )
+
+
+def _book_from_history_row(row: dict, transactions: list) -> dict:
+    payload = _history_payload(row)
+    tax_profile = payload.get("tax_profile")
+    tax_profile = tax_profile if isinstance(tax_profile, dict) else {}
+    return {
+        "analysis_id": row.get("id"),
+        "filename": row.get("filename") or "",
+        "transactions": transactions,
+        "tax_year": tax_profile.get("tax_year"),
+    }
+
+
+def _query_rows(result) -> Optional[list]:
+    rows = getattr(result, "data", None) or []
+    if not isinstance(rows, list):
+        return None
+    return rows
+
+
+def _scan_history_for_activity_book(client, user_id: str) -> ActivityBookLookup:
+    """Page this user's history until a non-empty trade list or the rows end."""
+    page_size = max(1, int(ACTIVITY_BOOK_HISTORY_PAGE))
+    max_pages = max(0, int(ACTIVITY_BOOK_HISTORY_MAX_PAGES))
+    saw_marker = False
+    offset = 0
+    exhausted = False
+    for _page in range(max_pages):
+        try:
+            result = (
+                client.table("portfolio_analyses")
+                .select("id, filename, uploaded_at, summary, result")
+                .eq("user_id", user_id)
+                .order("uploaded_at", desc=True)
+                .range(offset, offset + page_size - 1)
+                .execute()
+            )
+        except Exception as exc:
+            logger.error("Failed to scan history for a trade book: %s", exc)
+            return ActivityBookLookup(scan_incomplete=True)
+        rows = _query_rows(result)
+        if rows is None:
+            logger.error("History scan returned a non-list")
+            return ActivityBookLookup(scan_incomplete=True)
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if is_sample_csv_filename(row.get("filename") or ""):
+                continue
+            transactions = _nonempty_transaction_list(row)
+            if transactions is not None:
+                return ActivityBookLookup(
+                    book=_book_from_history_row(row, transactions)
+                )
+            if _history_row_is_stripped(row):
+                saw_marker = True
+        if len(rows) < page_size:
+            exhausted = True
+            break
+        offset += page_size
+    if not exhausted:
+        logger.warning(
+            "Stopped scanning portfolio history for user %s before the rows ran out",
+            user_id,
+        )
+        return ActivityBookLookup(scan_incomplete=True)
+    return ActivityBookLookup(unrecoverable=saw_marker)
+
+
+def load_activity_book_for_merge(user_id: str, client=None) -> ActivityBookLookup:
+    """Read the account book. A private row wins, even when it has no trades.
+
+    No private row pages this user's portfolio_analyses until a non-empty
+    activity_book.transactions or top-level transactions list, or until the
+    rows run out. Sample filenames are skipped. A cap hit before the rows run
+    out is an unfinished scan, not an unrecoverable book.
+    """
+    if not user_id:
+        return ActivityBookLookup()
+    if client is None:
+        client = get_supabase()
+    if client is None:
+        return ActivityBookLookup()
+
+    try:
+        result = (
+            client.table(_PRIVATE_ACTIVITY_BOOKS)
+            .select("user_id, analysis_id, filename, transactions, updated_at")
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception as exc:
+        if _is_missing_analysis_schema(exc):
+            logger.error("Private activity book table is unavailable: %s", exc)
+            return ActivityBookLookup(ok=False, missing_schema=True)
+        logger.error("Failed to load private activity book: %s", exc)
+        return ActivityBookLookup(ok=False)
+
+    rows = _query_rows(result)
+    if rows is None:
+        logger.error("Private activity book query returned a non-list")
+        return ActivityBookLookup(ok=False)
+    if rows:
+        row = rows[0] if isinstance(rows[0], dict) else {}
+        return ActivityBookLookup(book=_book_from_private_row(row))
+    return _scan_history_for_activity_book(client, user_id)
+
+
 def get_latest_activity_book(user_id: str, client=None) -> Optional[dict]:
     """
-    Newest saved analysis that includes a parsed trade book.
+    The account's trade book, including an empty transactions list.
 
     Returns analysis_id, filename, and raw transactions so a later CSV can
     merge instead of replacing the whole history. Packet grants are resolved
     from the private owner-scoped entitlement tables, never history JSON.
+    A failed private read and an unfinished history scan return None.
     """
     if not user_id:
+        return None
+    lookup = load_activity_book_for_merge(user_id, client=client)
+    if not lookup.ok or lookup.scan_incomplete:
+        return None
+    return lookup.book
+
+
+def upsert_activity_book(
+    user_id: str,
+    analysis_id: str,
+    filename: str,
+    transactions: list,
+    client=None,
+) -> Optional[dict]:
+    """Store the full in-memory trade list for this account. Best-effort."""
+    if not user_id or not analysis_id:
         return None
     if client is None:
         client = get_supabase()
     if client is None:
         return None
-
+    if not isinstance(transactions, list):
+        transactions = []
+    row = {
+        "user_id": user_id,
+        "analysis_id": analysis_id,
+        "filename": (filename or "")[:255],
+        "transactions": transactions,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
     try:
         result = (
-            client.table("portfolio_analyses")
-            .select("id, filename, uploaded_at, result")
-            .eq("user_id", user_id)
-            .order("uploaded_at", desc=True)
-            .limit(10)
+            client.table(_PRIVATE_ACTIVITY_BOOKS)
+            .upsert(row, on_conflict="user_id")
             .execute()
         )
-    except Exception as e:
-        logger.error(f"Failed to fetch latest activity book: {e}")
+    except Exception as exc:
+        logger.error("Failed to save private activity book: %s", exc)
         return None
-
-    for row in result.data or []:
-        payload = row.get("result") if isinstance(row, dict) else None
-        if not isinstance(payload, dict):
-            continue
-        book = payload.get("activity_book") or {}
-        transactions = book.get("transactions") if isinstance(book, dict) else None
-        if not transactions:
-            transactions = payload.get("transactions")
-        if not transactions:
-            continue
-        tax_profile = payload.get("tax_profile") or {}
-        return {
-            "analysis_id": row.get("id"),
-            "filename": row.get("filename") or "",
-            "transactions": transactions,
-            "tax_year": tax_profile.get("tax_year") if isinstance(tax_profile, dict) else None,
-        }
-    return None
+    data = getattr(result, "data", None) or []
+    if data and isinstance(data[0], dict):
+        return dict(data[0])
+    return row
 
 
 def lookup_packet_grant_for_tax_year(

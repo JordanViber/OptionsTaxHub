@@ -150,3 +150,18 @@ class TestHelpers:
         prior = [_txn("2026-01-01")]
         incoming = [_txn("2026-01-02")]
         assert gap_days_between(prior, incoming) == 0
+
+    def test_book_warnings_pass_through_summary(self):
+        from ledger import (
+            ACTIVITY_BOOK_LOAD_FAILED_WARNING,
+            HISTORICAL_BOOK_UNRECOVERABLE_WARNING,
+        )
+        from main import _summarize_warnings
+
+        summarized = _summarize_warnings([
+            HISTORICAL_BOOK_UNRECOVERABLE_WARNING,
+            ACTIVITY_BOOK_LOAD_FAILED_WARNING,
+            "Row 2: bad quantity",
+        ])
+        assert HISTORICAL_BOOK_UNRECOVERABLE_WARNING in summarized
+        assert ACTIVITY_BOOK_LOAD_FAILED_WARNING in summarized

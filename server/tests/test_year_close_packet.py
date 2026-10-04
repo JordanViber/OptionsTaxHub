@@ -196,6 +196,8 @@ def _clean_store(monkeypatch):
     reset_packet_store()
     _FAKE_PACKET_SNAPSHOTS.clear()
     _FAKE_PACKET_ENTITLEMENTS.clear()
+    monkeypatch.setattr(db, "get_supabase", lambda: None)
+    monkeypatch.setattr(main, "get_supabase", lambda: None)
 
     def save_snapshot(analysis_id, user_id, tax_year, payload, *, session_id=None, paid=False):
         key = (user_id, analysis_id)
@@ -3953,6 +3955,11 @@ def _stub_signed_in_analyze(monkeypatch, *, history_row, snapshot_result):
     )
     monkeypatch.setattr("main.prepare_positions_for_ai", lambda lots: [])
     monkeypatch.setattr("main.get_latest_activity_book", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "main.load_activity_book_for_merge",
+        lambda *args, **kwargs: db.ActivityBookLookup(),
+    )
+    monkeypatch.setattr("main.upsert_activity_book", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         "main.lookup_packet_grant_for_tax_year",
         lambda *args, **kwargs: ("cs_test_yeargrant", True),

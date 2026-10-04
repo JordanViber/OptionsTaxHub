@@ -83,6 +83,9 @@ class _FakeQueryBuilder:
     def limit(self, *args):
         return self
 
+    def range(self, *args):
+        return self
+
     def execute(self):
         return _FakeExecuteResult(self._data)
 
@@ -405,6 +408,37 @@ class TestEnsureAnalysisHistory:
             },
         }
 
+    def test_drops_client_transactions_before_insert(self, monkeypatch):
+        inserted = {"id": "history-row", "user_id": "user1"}
+        client = MagicMock()
+        builder = client.table.return_value
+        builder.select.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value.data = []
+        builder.select.return_value.eq.return_value.contains.return_value.order.return_value.limit.return_value.execute.return_value.data = []
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+        saved = {}
+
+        def save(user_id, filename, summary, result_data=None):
+            saved["result"] = result_data
+            return inserted
+
+        monkeypatch.setattr(db, "save_analysis_history", save)
+        analysis = {
+            "analysis_id": "analysis-uuid",
+            "summary": {"positions_count": 1},
+            "transactions": [{"instrument": "AAPL", "trans_code": "Buy"}],
+            "activity_book": {
+                "transaction_count": 1,
+                "transactions": [{"instrument": "AAPL", "trans_code": "Buy"}],
+            },
+            "packet_unlocked": True,
+        }
+
+        assert db.ensure_analysis_history("analysis-uuid", "user1", analysis) == inserted
+        assert saved["result"]["activity_book"]["transactions"] == []
+        assert saved["result"]["activity_book"]["transaction_count"] == 1
+        assert "transactions" not in saved["result"]
+        assert "packet_unlocked" not in saved["result"]
+
     def test_refuses_to_insert_mismatched_analysis(self, monkeypatch):
         client = MagicMock()
         builder = client.table.return_value
@@ -602,7 +636,7 @@ class TestLatestActivityBook:
                 },
             },
         ]
-        client = _FakeClient(table_data=rows)
+        client = _FakeClient(table_responses=[[], rows])
         monkeypatch.setattr(db, "get_supabase", lambda: client)
         book = db.get_latest_activity_book("user1")
         assert book["analysis_id"] == "book-1"
@@ -1156,3 +1190,301 @@ class TestHistoryInsertConflict:
                 {},
                 result_data={"analysis_id": "analysis-1"},
             )
+
+
+class _PagedBookClient:
+    """In-memory client that honors eq, order, and inclusive range."""
+
+    def __init__(self, books=None, history=None):
+        self.books = list(books or [])
+        self.history = list(history or [])
+        self.history_queries = 0
+        self.private_queries = 0
+        self.select_error = None
+
+    def table(self, name):
+        return _PagedBookQuery(self, name)
+
+
+class _PagedBookQuery:
+    def __init__(self, client, name):
+        self.client = client
+        self.name = name
+        self.op = "select"
+        self.filters = []
+        self.order_col = None
+        self.order_desc = False
+        self.range_bounds = None
+        self.limit_n = None
+        self.payload = None
+        self.on_conflict = None
+
+    def select(self, *_args, **_kwargs):
+        return self
+
+    def upsert(self, row, on_conflict=None, **_kwargs):
+        self.op = "upsert"
+        self.payload = row
+        self.on_conflict = on_conflict
+        return self
+
+    def eq(self, col, val):
+        self.filters.append((col, val))
+        return self
+
+    def order(self, col, desc=False, **_kwargs):
+        self.order_col = col
+        self.order_desc = bool(desc)
+        return self
+
+    def limit(self, n):
+        self.limit_n = n
+        return self
+
+    def range(self, start, end):
+        self.range_bounds = (start, end)
+        return self
+
+    def execute(self):
+        if (
+            self.op == "select"
+            and self.name == "portfolio_activity_books"
+            and self.client.select_error is not None
+        ):
+            raise self.client.select_error
+        if self.name == "portfolio_activity_books":
+            self.client.private_queries += 1
+            rows = list(self.client.books)
+        else:
+            self.client.history_queries += 1
+            rows = list(self.client.history)
+        if self.filters:
+            for col, val in self.filters:
+                rows = [row for row in rows if row.get(col) == val]
+        if self.order_col:
+            rows.sort(
+                key=lambda row: row.get(self.order_col) or "",
+                reverse=self.order_desc,
+            )
+        if self.range_bounds is not None:
+            start, end = self.range_bounds
+            rows = rows[start:end + 1]
+        elif self.limit_n is not None:
+            rows = rows[: self.limit_n]
+        if self.op == "upsert":
+            stored = dict(self.payload or {})
+            key = self.on_conflict or "user_id"
+            match = stored.get(key)
+            replaced = False
+            target = self.client.books if self.name == "portfolio_activity_books" else rows
+            for index, row in enumerate(target):
+                if row.get(key) == match:
+                    target[index] = stored
+                    replaced = True
+                    break
+            if not replaced:
+                target.append(stored)
+            return _FakeExecuteResult([stored])
+        return _FakeExecuteResult(rows)
+
+
+def _history_row(row_id, filename, uploaded_at, transactions=None, count=0, user_id="user1"):
+    book = {"transaction_count": count}
+    if transactions is not None:
+        book["transactions"] = transactions
+    return {
+        "id": row_id,
+        "user_id": user_id,
+        "filename": filename,
+        "uploaded_at": uploaded_at,
+        "summary": {"activity_transaction_count": count},
+        "result": {
+            "activity_book": book,
+            "summary": {"activity_transaction_count": count},
+            "tax_profile": {"tax_year": 2024},
+        },
+    }
+
+
+class TestPrivateActivityBook:
+    def test_empty_private_row_wins_and_skips_history(self):
+        client = _PagedBookClient(
+            books=[{
+                "user_id": "user1",
+                "analysis_id": "empty-book",
+                "filename": "cleared.csv",
+                "transactions": [],
+            }],
+            history=[
+                _history_row(
+                    "full",
+                    "full.csv",
+                    "2026-01-01T00:00:00Z",
+                    transactions=[{"instrument": "AAPL", "trans_code": "Buy"}],
+                    count=1,
+                )
+            ],
+        )
+        lookup = db.load_activity_book_for_merge("user1", client=client)
+        assert lookup.ok is True
+        assert lookup.unrecoverable is False
+        assert lookup.book["analysis_id"] == "empty-book"
+        assert lookup.book["transactions"] == []
+        assert "packet_unlocked" not in lookup.book
+        assert client.history_queries == 0
+
+    def test_non_list_private_transactions_are_an_empty_book(self):
+        client = _PagedBookClient(
+            books=[{
+                "user_id": "user1",
+                "analysis_id": "blank",
+                "filename": "blank.csv",
+                "transactions": None,
+            }],
+            history=[
+                _history_row(
+                    "full",
+                    "full.csv",
+                    "2026-01-01T00:00:00Z",
+                    transactions=[{"instrument": "AAPL"}],
+                    count=1,
+                )
+            ],
+        )
+        book = db.get_latest_activity_book("user1", client=client)
+        assert book["transactions"] == []
+        assert client.history_queries == 0
+
+    def test_pages_past_the_first_page_and_skips_sample_filenames(self, monkeypatch):
+        monkeypatch.setattr(db, "ACTIVITY_BOOK_HISTORY_PAGE", 10)
+        sample = _history_row(
+            "sample",
+            "sample-robinhood-transactions.csv",
+            "2026-06-01T00:00:00Z",
+            transactions=[{"instrument": "SAMPLE", "trans_code": "Buy"}],
+            count=1,
+        )
+        noise = [
+            _history_row(f"n{index}", f"n{index}.csv", f"2026-05-{index:02d}T00:00:00Z", transactions=[], count=0)
+            for index in range(1, 22)
+        ]
+        real = _history_row(
+            "real",
+            "old.csv",
+            "2024-01-01T00:00:00Z",
+            transactions=[{"instrument": "AAPL", "trans_code": "Buy"}],
+            count=1,
+        )
+        top_level = {
+            "id": "top",
+            "user_id": "user1",
+            "filename": "legacy.csv",
+            "uploaded_at": "2023-01-01T00:00:00Z",
+            "summary": {},
+            "result": {"transactions": [{"instrument": "MSFT", "trans_code": "Buy"}]},
+        }
+        client = _PagedBookClient(history=[sample, *noise, real, top_level])
+        lookup = db.load_activity_book_for_merge("user1", client=client)
+        assert lookup.book["analysis_id"] == "real"
+        assert lookup.book["transactions"][0]["instrument"] == "AAPL"
+        assert lookup.book["tax_year"] == 2024
+        assert lookup.unrecoverable is False
+        assert client.history_queries >= 3
+
+    def test_top_level_transactions_are_a_usable_list(self):
+        client = _PagedBookClient(
+            history=[{
+                "id": "legacy",
+                "user_id": "user1",
+                "filename": "legacy.csv",
+                "uploaded_at": "2024-02-01T00:00:00Z",
+                "summary": {},
+                "result": {"transactions": [{"instrument": "MSFT", "trans_code": "Buy"}]},
+            }]
+        )
+        book = db.get_latest_activity_book("user1", client=client)
+        assert book["analysis_id"] == "legacy"
+        assert book["transactions"][0]["instrument"] == "MSFT"
+
+    def test_finished_stripped_history_is_unrecoverable(self):
+        client = _PagedBookClient(
+            history=[_history_row("stripped", "recent.csv", "2026-08-01T00:00:00Z", transactions=[], count=4)]
+        )
+        lookup = db.load_activity_book_for_merge("user1", client=client)
+        assert lookup.ok is True
+        assert lookup.book is None
+        assert lookup.unrecoverable is True
+        assert lookup.scan_incomplete is False
+
+    def test_page_cap_is_incomplete_not_unrecoverable(self, monkeypatch):
+        monkeypatch.setattr(db, "ACTIVITY_BOOK_HISTORY_PAGE", 1)
+        monkeypatch.setattr(db, "ACTIVITY_BOOK_HISTORY_MAX_PAGES", 1)
+        client = _PagedBookClient(
+            history=[
+                _history_row("stripped", "recent.csv", "2026-08-01T00:00:00Z", transactions=[], count=4),
+                _history_row(
+                    "real",
+                    "old.csv",
+                    "2024-01-01T00:00:00Z",
+                    transactions=[{"instrument": "AAPL", "trans_code": "Buy"}],
+                    count=1,
+                ),
+            ]
+        )
+        lookup = db.load_activity_book_for_merge("user1", client=client)
+        assert lookup.scan_incomplete is True
+        assert lookup.unrecoverable is False
+        assert lookup.book is None
+        assert db.get_latest_activity_book("user1", client=client) is None
+
+    def test_missing_table_does_not_scan_history(self):
+        class _Missing(Exception):
+            code = "42P01"
+
+            def __str__(self):
+                return 'relation "public.portfolio_activity_books" does not exist'
+
+        client = _PagedBookClient(
+            history=[_history_row("real", "old.csv", "2024-01-01T00:00:00Z", transactions=[{"instrument": "AAPL"}], count=1)]
+        )
+        client.select_error = _Missing()
+        lookup = db.load_activity_book_for_merge("user1", client=client)
+        assert lookup.ok is False
+        assert lookup.missing_schema is True
+        assert lookup.book is None
+        assert client.history_queries == 0
+
+    def test_private_read_error_does_not_scan_history(self):
+        client = _PagedBookClient(
+            history=[_history_row("real", "old.csv", "2024-01-01T00:00:00Z", transactions=[{"instrument": "AAPL"}], count=1)]
+        )
+        client.select_error = RuntimeError("connection reset")
+        lookup = db.load_activity_book_for_merge("user1", client=client)
+        assert lookup.ok is False
+        assert lookup.missing_schema is False
+        assert client.history_queries == 0
+
+    def test_upsert_writes_the_full_list(self, monkeypatch):
+        client = _FakeClient(table_data=[{"user_id": "user1"}])
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+        txns = [{"instrument": "AAPL", "trans_code": "Buy", "quantity": 10}]
+        saved = db.upsert_activity_book("user1", "analysis-1", "book.csv", txns)
+        assert saved["user_id"] == "user1"
+        upsert = next(call for call in client.builders[0].calls if call[0] == "upsert")
+        assert upsert[1][0]["transactions"] == txns
+        assert upsert[1][0]["analysis_id"] == "analysis-1"
+        assert upsert[2]["on_conflict"] == "user_id"
+
+    def test_upsert_failure_returns_none(self, monkeypatch):
+        client = MagicMock()
+        client.table.return_value.upsert.return_value.execute.side_effect = RuntimeError("down")
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+        assert db.upsert_activity_book("user1", "analysis-1", "book.csv", [{"instrument": "AAPL"}]) is None
+
+    def test_no_client_is_an_empty_ok_lookup(self, monkeypatch):
+        monkeypatch.setattr(db, "get_supabase", lambda: None)
+        lookup = db.load_activity_book_for_merge("user1")
+        assert lookup.ok is True
+        assert lookup.book is None
+        assert lookup.unrecoverable is False
+        assert db.upsert_activity_book("user1", "analysis-1", "a.csv", [{"instrument": "AAPL"}]) is None
