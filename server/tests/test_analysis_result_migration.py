@@ -3,6 +3,9 @@
 Local Postgres only. Do not point this at Supabase, Render, or any hosted
 database. db.py loads .env files; this test ignores DATABASE_URL and uses
 OPTAX_TEST_DATABASE_URL, or a local socket when that variable is unset.
+_assert_local runs before every DROP DATABASE and refuses a libpq host or
+hostaddr that is not localhost, 127.0.0.1, or ::1, including ?host= and
+?hostaddr=. No host at all is a unix socket and is local.
 
     cd server
     pip install 'psycopg[binary]'
@@ -15,6 +18,7 @@ with analysis_id plus the fields the history helpers read.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -107,15 +111,66 @@ def _admin_url() -> str:
     return os.environ.get("OPTAX_TEST_DATABASE_URL", "postgresql:///postgres")
 
 
-def _assert_local(url: str) -> None:
-    host = urlsplit(url).hostname
-    if host is None:
-        return
-    if host not in {"localhost", "127.0.0.1", "::1"}:
+# Connection targets that may receive DROP DATABASE. Anything else is refused.
+_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _libpq_conninfo(url: str) -> dict:
+    """Parse a libpq URI or keyword conninfo without connecting."""
+    try:
+        from psycopg.conninfo import conninfo_to_dict
+    except Exception as exc:
         pytest.fail(
-            f"Refusing non-local database host {host}. "
+            "Refusing database URL because libpq conninfo could not be parsed "
+            f"({exc.__class__.__name__}). "
             "Use an empty local Postgres, not Supabase or Render."
         )
+    try:
+        return conninfo_to_dict(url)
+    except Exception as exc:
+        pytest.fail(
+            "Refusing database URL that libpq could not parse "
+            f"({exc.__class__.__name__}). "
+            "Use an empty local Postgres, not Supabase or Render."
+        )
+
+
+def _csv_targets(value: str | None) -> list[str]:
+    if value is None or not value.strip():
+        return []
+    return [part.strip() for part in value.split(",") if part.strip()]
+
+
+def _is_local_host(host: str) -> bool:
+    text = host.strip().lower()
+    if len(text) >= 2 and text[0] == "[" and text[-1] == "]":
+        text = text[1:-1].strip()
+    return text in _LOCAL_HOSTS
+
+
+def _connection_targets(url: str) -> list[str]:
+    """Hosts libpq will use. Query host replaces the URI authority host.
+
+    hostaddr is a separate TCP target and is not ignored when host is local.
+    Each comma-separated entry is its own target. Repeated host or hostaddr
+    parameters use the last value, which is what libpq connects to.
+    """
+    info = _libpq_conninfo(url)
+    return _csv_targets(info.get("host")) + _csv_targets(info.get("hostaddr"))
+
+
+def _assert_local(url: str) -> None:
+    """Refuse non-local libpq targets before any DROP DATABASE.
+
+    urlsplit().hostname is None for postgresql:///postgres?host=db.example.com,
+    but libpq still opens that query host. An empty host list is a unix socket.
+    """
+    for host in _connection_targets(url):
+        if not _is_local_host(host):
+            pytest.fail(
+                f"Refusing non-local database host {host}. "
+                "Use an empty local Postgres, not Supabase or Render."
+            )
 
 
 def _url_for_database(admin_url: str, name: str) -> str:
@@ -189,8 +244,13 @@ def _bootstrap_supabase_compat(conn) -> None:
             conn.execute(f"CREATE ROLE {role} NOLOGIN")
 
 
-def _recreate_database(admin, name: str) -> None:
+def _drop_database(admin, name: str, admin_url: str) -> None:
+    _assert_local(admin_url)
     admin.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+
+
+def _recreate_database(admin, name: str, admin_url: str) -> None:
+    _drop_database(admin, name, admin_url)
     admin.execute(f'CREATE DATABASE "{name}"')
 
 
@@ -209,9 +269,10 @@ def postgres():
     created = []
 
     def open_database(name: str):
-        _recreate_database(admin, name)
+        _recreate_database(admin, name, admin_url)
         created.append(name)
         url = _url_for_database(admin_url, name)
+        _assert_local(url)
         conn = psycopg.connect(url, autocommit=True, connect_timeout=3)
         _bootstrap_supabase_compat(conn)
         return url, conn
@@ -219,7 +280,7 @@ def postgres():
     yield open_database
 
     for name in created:
-        admin.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+        _drop_database(admin, name, admin_url)
     admin.close()
 
 
@@ -484,4 +545,194 @@ def test_summary_only_upgrade_keeps_historical_row(postgres):
         ).fetchall()
         assert rows == [(historical_id, True), (new_id, False)]
     finally:
+        conn.close()
+
+
+class _SqlLog:
+    def __init__(self):
+        self.statements = []
+
+    def execute(self, statement, *args, **kwargs):
+        self.statements.append(statement)
+
+
+_LOCAL_DATABASE_URLS = [
+    "postgresql:///postgres",
+    "postgres:///postgres",
+    "postgresql://localhost/postgres",
+    "postgresql://127.0.0.1/postgres",
+    "postgresql://[::1]/postgres",
+    "postgresql://localhost:5432/postgres",
+    "postgresql:///postgres?host=localhost",
+    "postgresql:///postgres?host=127.0.0.1",
+    "postgresql:///postgres?host=::1",
+    "postgresql:///postgres?host=LocalHost",
+    "postgresql:///postgres?hostaddr=127.0.0.1",
+    "postgresql:///postgres?hostaddr=::1",
+    "postgresql:///postgres?hostaddr=[::1]",
+    "postgresql://localhost/postgres?hostaddr=127.0.0.1",
+    "postgresql:///postgres?host=localhost,127.0.0.1,::1",
+    "postgresql://db.example.com/postgres?host=localhost",
+    "postgresql:///postgres?host=db.example.com&host=localhost",
+    "dbname=postgres",
+    "host=localhost dbname=postgres",
+    "host=127.0.0.1 hostaddr=::1 dbname=postgres",
+]
+
+_REMOTE_DATABASE_URLS = [
+    "postgresql:///postgres?host=db.example.com",
+    "postgresql://localhost/postgres?host=db.example.com",
+    "postgresql:///postgres?host=localhost,db.example.com",
+    "postgresql:///postgres?host=%3A%3A1,db.example.com",
+    "postgresql:///postgres?host=localhost&host=db.example.com",
+    "postgresql:///postgres?hostaddr=8.8.8.8",
+    "postgresql:///postgres?hostaddr=127.0.0.1,8.8.8.8",
+    "postgresql://localhost/postgres?hostaddr=8.8.8.8",
+    "postgresql://127.0.0.1/postgres?hostaddr=10.0.0.1",
+    "postgresql:///postgres?host=localhost&hostaddr=10.0.0.1",
+    "postgresql:///postgres?host=db.example.com&hostaddr=127.0.0.1",
+    "postgresql://db.example.com/postgres?hostaddr=127.0.0.1",
+    "postgresql://db.example.com/postgres",
+    "postgresql://localhost,db.example.com/postgres",
+    "postgresql://[2001:db8::1]/postgres",
+    "host=db.example.com dbname=postgres",
+    "host=localhost hostaddr=8.8.8.8 dbname=postgres",
+]
+
+
+def test_query_string_remote_host_is_rejected_before_drop():
+    pytest.importorskip("psycopg.conninfo")
+    url = "postgresql:///postgres?host=db.example.com"
+    admin = _SqlLog()
+    with pytest.raises(pytest.fail.Exception, match="db.example.com"):
+        _recreate_database(admin, EMPTY_DB, url)
+    assert admin.statements == []
+    assert not any("DROP DATABASE" in statement for statement in admin.statements)
+
+
+@pytest.mark.parametrize("url", _LOCAL_DATABASE_URLS)
+def test_local_database_urls_are_allowed(url):
+    pytest.importorskip("psycopg.conninfo")
+    _assert_local(url)
+
+
+@pytest.mark.parametrize("url", _REMOTE_DATABASE_URLS)
+def test_nonlocal_database_urls_are_rejected(url):
+    pytest.importorskip("psycopg.conninfo")
+    admin = _SqlLog()
+    with pytest.raises(pytest.fail.Exception, match="Refusing non-local database host"):
+        _drop_database(admin, EMPTY_DB, url)
+    assert admin.statements == []
+
+
+def test_local_socket_url_drops_only_after_the_guard():
+    pytest.importorskip("psycopg.conninfo")
+    admin = _SqlLog()
+    _recreate_database(admin, EMPTY_DB, "postgresql:///postgres")
+    assert admin.statements[0].startswith('DROP DATABASE IF EXISTS "oth_jor34_empty"')
+    assert admin.statements[1].startswith('CREATE DATABASE "oth_jor34_empty"')
+
+
+def _tax_profile_insert_policies(sql: str) -> list[tuple[str, str]]:
+    policies = []
+    pattern = re.compile(
+        r"CREATE POLICY\s+\"(?P<name>[^\"]+)\"\s+ON\s+tax_profiles\b(?P<body>.*?);",
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    for match in pattern.finditer(sql):
+        body = match.group("body")
+        command = re.search(
+            r"\bFOR\s+(SELECT|INSERT|UPDATE|DELETE|ALL)\b",
+            body,
+            flags=re.IGNORECASE,
+        )
+        cmd = command.group(1).upper() if command else "ALL"
+        if cmd in {"INSERT", "ALL"}:
+            policies.append((match.group("name"), body))
+    return policies
+
+
+def _policy_role_set(body: str) -> set[str]:
+    to_clause = re.search(
+        r"\bTO\s+(?P<roles>.+?)(?:\bUSING\b|\bWITH\s+CHECK\b|$)",
+        body,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if to_clause is None:
+        return {"public"}
+    roles = set()
+    for role in re.split(r"\s*,\s*", to_clause.group("roles").strip()):
+        cleaned = role.strip().strip('"').lower()
+        if cleaned:
+            roles.add(cleaned)
+    return roles
+
+
+def test_tax_profile_insert_policy_sql_is_not_public():
+    sql = (SERVER_DIR / "migrations" / "002_tax_profiles.sql").read_text()
+    policies = _tax_profile_insert_policies(sql)
+    assert policies, "tax_profiles INSERT policy is missing"
+    for name, body in policies:
+        roles = _policy_role_set(body)
+        assert "public" not in roles, f"{name} applies to PUBLIC"
+        assert "anon" not in roles
+        assert "authenticated" not in roles
+        assert roles == {"service_role"}
+
+
+def test_tax_profile_insert_policy_is_not_public(postgres):
+    url, conn = postgres("oth_jor34_tax_policy")
+    try:
+        _apply_migrations(url)
+        rows = conn.execute(
+            """
+            SELECT policyname, cmd, roles
+            FROM pg_policies
+            WHERE schemaname = 'public'
+              AND tablename = 'tax_profiles'
+              AND cmd IN ('INSERT', 'ALL')
+            """
+        ).fetchall()
+        assert rows, "tax_profiles INSERT policy is missing"
+        for policyname, cmd, roles in rows:
+            role_set = {str(role).lower() for role in roles}
+            assert "public" not in role_set, f"{policyname} applies to PUBLIC ({roles})"
+            assert "anon" not in role_set
+            assert "authenticated" not in role_set
+            assert role_set == {"service_role"}
+            assert cmd == "INSERT"
+
+        conn.execute("GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role")
+        conn.execute(
+            """
+            GRANT INSERT ON TABLE public.tax_profiles
+            TO anon, authenticated, service_role
+            """
+        )
+        for role in ("anon", "authenticated"):
+            conn.execute(f"SET ROLE {role}")
+            denied = None
+            try:
+                conn.execute(
+                    "INSERT INTO public.tax_profiles (user_id) VALUES (%s)",
+                    ("someone-else",),
+                )
+            except Exception as exc:
+                denied = exc
+            conn.execute("RESET ROLE")
+            assert denied is not None, f"{role} inserted an arbitrary tax profile"
+            assert getattr(denied, "sqlstate", None) == "42501"
+
+        conn.execute("SET ROLE service_role")
+        conn.execute(
+            "INSERT INTO public.tax_profiles (user_id) VALUES (%s)",
+            ("backend-user",),
+        )
+        conn.execute("RESET ROLE")
+        stored = conn.execute(
+            "SELECT user_id FROM public.tax_profiles ORDER BY user_id"
+        ).fetchall()
+        assert stored == [("backend-user",)]
+    finally:
+        conn.execute("RESET ROLE")
         conn.close()

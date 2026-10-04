@@ -31,8 +31,11 @@ CREATE POLICY "Users can update own tax profile"
   ON tax_profiles FOR UPDATE
   USING (user_id = auth.uid()::text);
 
+-- Inserts are service_role only. Without TO, this WITH CHECK (true) policy
+-- applies to PUBLIC, so anon or authenticated could insert any user_id.
 CREATE POLICY "Service role can upsert tax profiles"
   ON tax_profiles FOR INSERT
+  TO service_role
   WITH CHECK (true);
 
 -- Auto-update updated_at trigger
