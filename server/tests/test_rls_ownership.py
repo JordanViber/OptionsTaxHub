@@ -12,6 +12,12 @@ A URL that already names a host is not refused for PGHOST. A URL that already
 sets hostaddr is not refused for PGHOSTADDR. It also refuses project ref
 vgrlucxqncajjdoaoctq.
 
+Migration 010 enables row level security on every table 009 touches and
+revokes TRUNCATE, REFERENCES, and TRIGGER from service_role. The apply
+script refuses a DATABASE_URL that contains that project ref unless
+OPTAX_ALLOW_LIVE_SUPABASE_REF is a non-empty value. Guard tests use a
+stub psql and do not open a connection.
+
     cd server
     pip install 'psycopg[binary]'
     OPTAX_TEST_DATABASE_URL=postgresql:///postgres \\
@@ -32,6 +38,14 @@ SERVER_DIR = Path(__file__).resolve().parents[1]
 MIGRATIONS = SERVER_DIR / "migrations"
 APPLY_SCRIPT = SERVER_DIR / "scripts" / "apply_migrations.sh"
 MIGRATION_009 = "009_rls_owner_select_service_role_writes.sql"
+MIGRATION_010 = "010_enable_rls_revoke_unused_service_role_privileges.sql"
+_UNUSED_SERVICE_PRIVS = frozenset({"TRUNCATE", "REFERENCES", "TRIGGER"})
+_SERVICE_DML = {
+    "portfolio_analyses": frozenset({"SELECT", "INSERT", "UPDATE", "DELETE"}),
+    "tax_profiles": frozenset({"SELECT", "INSERT", "UPDATE"}),
+    "year_close_packet_snapshots": frozenset({"SELECT", "INSERT", "UPDATE", "DELETE"}),
+    "year_close_packet_entitlements": frozenset({"SELECT", "INSERT", "UPDATE", "DELETE"}),
+}
 
 USER_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 USER_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
@@ -538,16 +552,39 @@ def _assert_grants(conn) -> None:
         assert write_privs.isdisjoint(privs[table].get("authenticated", set()))
         assert write_privs.isdisjoint(privs[table].get("anon", set()))
 
-    analyses = privs["portfolio_analyses"].get("service_role", set())
-    assert {"SELECT", "INSERT", "UPDATE", "DELETE"} <= analyses
-    profiles = privs["tax_profiles"].get("service_role", set())
-    assert {"SELECT", "INSERT", "UPDATE"} <= profiles
-
     for table in PACKET_TABLES:
         assert privs[table].get("anon", set()) == set()
         assert privs[table].get("authenticated", set()) == set()
         assert privs[table].get("public", set()) == set()
-        assert "SELECT" in privs[table].get("service_role", set())
+
+    for table, required in _SERVICE_DML.items():
+        role_privs = privs[table].get("service_role", set())
+        missing = required - role_privs
+        assert not missing, (table, sorted(missing), sorted(role_privs))
+        unused = _UNUSED_SERVICE_PRIVS & role_privs
+        assert not unused, (table, sorted(unused), sorted(role_privs))
+
+    _assert_rls_enabled(conn)
+
+
+def _assert_rls_enabled(conn) -> None:
+    """RLS is on for every table 009 touches, and it is not forced."""
+    rows = conn.execute(
+        """
+        SELECT c.relname, c.relrowsecurity, c.relforcerowsecurity
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public'
+          AND c.relname = ANY (%s)
+        """,
+        (list(CLIENT_TABLES + PACKET_TABLES),),
+    ).fetchall()
+    found = {row[0]: (bool(row[1]), bool(row[2])) for row in rows}
+    for table in CLIENT_TABLES + PACKET_TABLES:
+        assert table in found, table
+        enabled, forced = found[table]
+        assert enabled, table
+        assert not forced, table
 
 
 def _seed(conn) -> None:
@@ -1002,6 +1039,7 @@ def test_fresh_migrations_policy_shape_and_access(postgres):
     try:
         output = _apply_migrations(url)
         assert f"Applying {MIGRATION_009}" in output
+        assert f"Applying {MIGRATION_010}" in output
         assert "Applying 008_portfolio_analyses_one_analysis_id.sql" in output
         _assert_policy_shape(conn)
         _assert_grants(conn)
@@ -1039,15 +1077,22 @@ def test_live_duplicates_removed_by_009_only(postgres):
         assert full_access["cmd"] == "ALL"
         assert "auth.role()" in (full_access["qual"] or "").lower()
 
+        # APPLY_FROM=009 applies every later file, including 010.
         output = _apply_migrations(url, apply_from=MIGRATION_009)
         assert f"Applying {MIGRATION_009}" in output
+        assert f"Applying {MIGRATION_010}" in output
         assert "Applying 001_portfolio_analyses.sql" not in output
         assert "Applying 008_portfolio_analyses_one_analysis_id.sql" not in output
 
         _assert_policy_shape(conn)
         _assert_grants(conn)
-        service_privs = _privileges(conn, ("portfolio_analyses",))
-        assert "TRUNCATE" in service_privs["portfolio_analyses"].get("service_role", set())
+        service_privs = _privileges(conn, ("portfolio_analyses",) + PACKET_TABLES)
+        for table in ("portfolio_analyses",) + PACKET_TABLES:
+            role_privs = service_privs[table].get("service_role", set())
+            assert "TRUNCATE" not in role_privs
+            assert "REFERENCES" not in role_privs
+            assert "TRIGGER" not in role_privs
+            assert {"SELECT", "INSERT", "UPDATE", "DELETE"} <= role_privs
         _exercise_access(conn)
     finally:
         _finish(conn)
@@ -1063,10 +1108,185 @@ def test_old_public_check_true_policies_replaced_by_009(postgres):
             "Service role can insert analyses",
             "Service role can update analyses",
         }
-        _apply_migrations(url, apply_from=MIGRATION_009)
+        output = _apply_migrations(url, apply_from=MIGRATION_009)
+        assert f"Applying {MIGRATION_010}" in output
         assert _public_true_writes(conn) == []
         _assert_policy_shape(conn)
         _assert_grants(conn)
         _exercise_access(conn)
     finally:
         _finish(conn)
+
+
+def _sql_without_line_comments(sql: str) -> str:
+    lines = []
+    for line in sql.splitlines():
+        if "--" in line:
+            line = line[: line.index("--")]
+        lines.append(line)
+    return "\n".join(lines).lower()
+
+
+def test_migration_010_enables_rls_and_revokes_unused_privileges():
+    sql = (MIGRATIONS / MIGRATION_010).read_text()
+    lowered = sql.lower()
+    assert "bypassrls" in lowered
+    assert "packet tables rely on hosted service_role bypassrls" in lowered
+    assert "no policy change for that" in lowered
+    body = _sql_without_line_comments(sql)
+    assert "create policy" not in body
+    assert "force row level security" not in body
+    assert "grant " not in body
+    for table in CLIENT_TABLES + PACKET_TABLES:
+        assert f"alter table public.{table} enable row level security" in body
+        revoke = (
+            "revoke truncate, references, trigger on table "
+            f"public.{table} from service_role"
+        )
+        assert revoke in body
+
+
+_LIVE_REF = "vgrlucxqncajjdoaoctq"
+# The ref is only in application_name. The host is loopback, and the stub
+# psql below never connects, so this cannot reach Supabase.
+_REF_IN_LOCAL_URL = (
+    "postgresql://postgres@127.0.0.1:9/postgres?application_name=" + _LIVE_REF
+)
+_LOCAL_STUB_URL = "postgresql://postgres@127.0.0.1:5432/postgres"
+
+
+def _run_apply_script(tmp_path, database_url, extra_env=None, apply_from=None):
+    """Run apply_migrations.sh against a stub psql that records argv and exits.
+
+    The stub does not open a socket. Guard and transaction-grouping tests use
+    it so a URL that contains the live project ref is never contacted.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    log_path = tmp_path / "psql-invocations.log"
+    if log_path.exists():
+        log_path.unlink()
+    fake = bin_dir / "psql"
+    fake.write_text(
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$*" >> "$PSQL_LOG"\n'
+        "exit 0\n"
+    )
+    fake.chmod(0o755)
+    env = os.environ.copy()
+    env["PATH"] = str(bin_dir) + os.pathsep + env.get("PATH", "")
+    env["DATABASE_URL"] = database_url
+    env["PSQL_LOG"] = str(log_path)
+    env.pop("OPTAX_ALLOW_LIVE_SUPABASE_REF", None)
+    env.pop("APPLY_FROM", None)
+    if extra_env:
+        env.update(extra_env)
+    if apply_from is not None:
+        env["APPLY_FROM"] = apply_from
+    completed = subprocess.run(
+        ["sh", str(APPLY_SCRIPT)],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    text = log_path.read_text() if log_path.exists() else ""
+    invocations = [line for line in text.splitlines() if line.strip()]
+    return completed, invocations
+
+
+def test_apply_migrations_refuses_live_ref_before_psql(tmp_path):
+    header = APPLY_SCRIPT.read_text().split("set -eu", 1)[0]
+    assert "OPTAX_ALLOW_LIVE_SUPABASE_REF" in header
+    assert _LIVE_REF in header
+    cases = (
+        (_REF_IN_LOCAL_URL, None),
+        (_REF_IN_LOCAL_URL, {"OPTAX_ALLOW_LIVE_SUPABASE_REF": ""}),
+        (_REF_IN_LOCAL_URL.replace(_LIVE_REF, _LIVE_REF.upper()), None),
+    )
+    for url, extra in cases:
+        completed, invocations = _run_apply_script(tmp_path, url, extra)
+        assert completed.returncode != 0
+        assert invocations == []
+        assert _LIVE_REF in completed.stderr
+        assert "OPTAX_ALLOW_LIVE_SUPABASE_REF" in completed.stderr
+        assert "before psql" in completed.stderr
+
+
+def test_apply_migrations_override_does_not_refuse(tmp_path):
+    """A non-empty override passes the guard. The stub psql does not connect."""
+    completed, invocations = _run_apply_script(
+        tmp_path,
+        _REF_IN_LOCAL_URL,
+        {"OPTAX_ALLOW_LIVE_SUPABASE_REF": "yes"},
+    )
+    assert completed.returncode == 0
+    assert "Refusing" not in completed.stderr
+    assert invocations
+    assert all("127.0.0.1" in line for line in invocations)
+    assert all(_LIVE_REF in line for line in invocations)
+
+
+def test_apply_migrations_wraps_009_and_010_in_one_transaction(tmp_path):
+    names = sorted(path.name for path in MIGRATIONS.glob("*.sql"))
+    assert names[names.index(MIGRATION_009) + 1] == MIGRATION_010
+    completed, invocations = _run_apply_script(tmp_path, _LOCAL_STUB_URL)
+    assert completed.returncode == 0
+    assert len(invocations) == len(names) - 1
+    paired = [line for line in invocations if "--single-transaction" in line]
+    assert len(paired) == 1
+    assert MIGRATION_009 in paired[0]
+    assert MIGRATION_010 in paired[0]
+    assert paired[0].index(MIGRATION_009) < paired[0].index(MIGRATION_010)
+    for line in invocations:
+        if line == paired[0]:
+            continue
+        assert "--single-transaction" not in line
+        assert MIGRATION_009 not in line
+        assert MIGRATION_010 not in line
+    for name in names:
+        assert f"Applying {name}" in completed.stdout
+
+
+def test_apply_from_009_pairs_only_with_010(tmp_path):
+    names = sorted(path.name for path in MIGRATIONS.glob("*.sql"))
+    later = [name for name in names if name >= MIGRATION_009]
+    assert later[:2] == [MIGRATION_009, MIGRATION_010]
+    completed, invocations = _run_apply_script(
+        tmp_path,
+        _LOCAL_STUB_URL,
+        apply_from=MIGRATION_009,
+    )
+    assert completed.returncode == 0
+    rest = later[2:]
+    assert len(invocations) == 1 + len(rest)
+    paired = invocations[0]
+    assert "--single-transaction" in paired
+    assert paired.index(MIGRATION_009) < paired.index(MIGRATION_010)
+    for line, name in zip(invocations[1:], rest):
+        assert "--single-transaction" not in line
+        assert name in line
+        assert MIGRATION_009 not in line
+    assert "Applying 001_portfolio_analyses.sql" not in completed.stdout
+    assert f"Applying {MIGRATION_009}" in completed.stdout
+    assert f"Applying {MIGRATION_010}" in completed.stdout
+
+
+def test_apply_from_010_is_its_own_psql(tmp_path):
+    later = sorted(
+        path.name for path in MIGRATIONS.glob("*.sql") if path.name >= MIGRATION_010
+    )
+    assert later[0] == MIGRATION_010
+    completed, invocations = _run_apply_script(
+        tmp_path,
+        _LOCAL_STUB_URL,
+        apply_from=MIGRATION_010,
+    )
+    assert completed.returncode == 0
+    assert len(invocations) == len(later)
+    joined = "\n".join(invocations)
+    assert "--single-transaction" not in joined
+    assert MIGRATION_009 not in joined
+    assert MIGRATION_010 in invocations[0]
+    assert f"Applying {MIGRATION_009}" not in completed.stdout
+    assert f"Applying {MIGRATION_010}" in completed.stdout
