@@ -482,7 +482,11 @@ def _stub_analyze_network(monkeypatch):
         "main.load_activity_book_for_merge",
         lambda user_id, client=None: db.ActivityBookLookup(),
     )
-    monkeypatch.setattr("main.upsert_activity_book", lambda *args, **kwargs: None)
+    # None means the private ledger write failed. Happy-path doubles must succeed.
+    monkeypatch.setattr(
+        "main.upsert_activity_book",
+        lambda *args, **kwargs: {"ok": True},
+    )
     monkeypatch.setattr(
         "main.lookup_packet_grant_for_tax_year",
         lambda *args, **kwargs: (None, True),
@@ -3473,6 +3477,69 @@ def test_buy_then_sell_merges_from_the_private_book(monkeypatch):
         assert payload["activity_book"]["transactions"] == []
         assert "transactions" not in payload or payload.get("transactions") in (None, [])
         assert "trans_code" not in str(payload["activity_book"]["transactions"])
+
+
+def test_failed_activity_book_upsert_keeps_the_previous_book(monkeypatch):
+    """A None upsert must not claim the new trades landed, and the next auto merge uses the old row."""
+    import copy
+
+    from ledger import ACTIVITY_BOOK_SAVE_FAILED_WARNING
+
+    _stub_analyze_network(monkeypatch)
+    memory = _use_memory_book(monkeypatch)
+    real = db.upsert_activity_book
+    results = []
+
+    def flaky(user_id, analysis_id, filename, transactions, client=None):
+        if len(results) == 1:
+            results.append(None)
+            return None
+        saved = real(user_id, analysis_id, filename, transactions, client=client)
+        results.append(saved)
+        return saved
+
+    monkeypatch.setattr(main, "upsert_activity_book", flaky)
+
+    first = _post_book("buy.csv", _aapl_buy_bytes())
+    assert first.status_code == 200, first.text
+    assert len(results) == 1
+    assert results[0] is not None
+    previous = copy.deepcopy(_stored_books(memory)[0])
+    assert len(previous["transactions"]) == 1
+
+    _forget_process_memory()
+    extra = _rh_csv(
+        "01/15/2024,01/15/2024,01/17/2024,AAPL,Apple,Buy,5,150.00,-750.00\n"
+    )
+    failed = _post_book("more.csv", extra)
+    assert failed.status_code == 200, failed.text
+    body = failed.json()
+    assert results[1] is None
+    assert _stored_books(memory) == [previous]
+    assert ACTIVITY_BOOK_SAVE_FAILED_WARNING in body["warnings"]
+    assert body["activity_book"]["added_from_this_upload"] == 0
+    assert body["activity_book"]["replaced"] is False
+    assert "Added 1 new trade" not in failed.text
+    assert "to your book" not in failed.text
+
+    _forget_process_memory()
+    sold = _post_book("sell.csv", _aapl_sell_bytes())
+    assert sold.status_code == 200, sold.text
+    assert results[2] is not None
+    sold_body = sold.json()
+    aapl = next(position for position in sold_body["positions"] if position["symbol"] == "AAPL")
+    assert aapl["quantity"] == 6
+    realized = sold_body["summary"]["realized_summary"]
+    assert realized["lt_gains"] == 200
+    assert realized["st_gains"] == 0
+    assert realized["total_net"] == 200
+    stored = _stored_books(memory)[0]["transactions"]
+    assert len(stored) == 2
+    buys = [txn for txn in stored if txn.get("trans_code") == "Buy"]
+    assert len(buys) == 1
+    assert buys[0]["quantity"] == 10
+    assert buys[0]["price"] == 100
+    assert not any(txn.get("quantity") == 5 for txn in stored)
 
 
 def test_overlapping_upload_is_idempotent(monkeypatch):
