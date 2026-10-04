@@ -154,6 +154,7 @@ class TestHelpers:
     def test_book_warnings_pass_through_summary(self):
         from ledger import (
             ACTIVITY_BOOK_LOAD_FAILED_WARNING,
+            ACTIVITY_BOOK_SAVE_FAILED_WARNING,
             HISTORICAL_BOOK_UNRECOVERABLE_WARNING,
         )
         from main import _summarize_warnings
@@ -161,7 +162,9 @@ class TestHelpers:
         summarized = _summarize_warnings([
             HISTORICAL_BOOK_UNRECOVERABLE_WARNING,
             ACTIVITY_BOOK_LOAD_FAILED_WARNING,
+            ACTIVITY_BOOK_SAVE_FAILED_WARNING,
             "Row 2: bad quantity",
         ])
         assert HISTORICAL_BOOK_UNRECOVERABLE_WARNING in summarized
         assert ACTIVITY_BOOK_LOAD_FAILED_WARNING in summarized
+        assert ACTIVITY_BOOK_SAVE_FAILED_WARNING in summarized

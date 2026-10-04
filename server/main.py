@@ -75,6 +75,7 @@ from csv_parser import parse_csv, RealizedEvent, transactions_to_tax_lots
 from lot_matcher import match_1099b_lots
 from ledger import (
     ACTIVITY_BOOK_LOAD_FAILED_WARNING,
+    ACTIVITY_BOOK_SAVE_FAILED_WARNING,
     HISTORICAL_BOOK_UNRECOVERABLE_WARNING,
     SAMPLE_FIXTURE_PRICES,
     is_sample_csv_filename,
@@ -1187,6 +1188,27 @@ def _private_rows_to_save(
     return rows
 
 
+def _claims_trades_added_to_saved_book(warning: str) -> bool:
+    return warning.startswith("Added ") and "to your book" in warning
+
+
+def _activity_book_not_saved(result: PortfolioAnalysis) -> PortfolioAnalysis:
+    """The private ledger write failed. Do not describe this file as saved."""
+    book = result.activity_book
+    if book is not None:
+        book = book.model_copy(
+            update={"added_from_this_upload": 0, "replaced": False}
+        )
+    warnings = [
+        warning
+        for warning in (result.warnings or [])
+        if not _claims_trades_added_to_saved_book(warning)
+    ]
+    if ACTIVITY_BOOK_SAVE_FAILED_WARNING not in warnings:
+        warnings.append(ACTIVITY_BOOK_SAVE_FAILED_WARNING)
+    return result.model_copy(update={"activity_book": book, "warnings": warnings})
+
+
 def _redacted_stored_analysis(analysis: dict) -> dict:
     """Copy saved to portfolio_analyses.result. Trades stay out of that JSON."""
     redacted = strip_book_transactions_dict(analysis if isinstance(analysis, dict) else {})
@@ -1528,7 +1550,15 @@ async def _run_portfolio_analysis(
     )
     result = _apply_packet_year_grant(result, user_id)
     if private_rows is not None:
-        upsert_activity_book(user_id, analysis_id, filename, private_rows)
+        saved_book = upsert_activity_book(
+            user_id, analysis_id, filename, private_rows
+        )
+        if saved_book is None:
+            logger.error(
+                "Private activity book was not saved for analysis %s",
+                analysis_id,
+            )
+            result = _activity_book_not_saved(result)
     keep_lot_rows = trusted_sample
     if keep_lot_rows:
         result = result.model_copy(update={"sample_run": True})

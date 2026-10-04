@@ -3959,7 +3959,10 @@ def _stub_signed_in_analyze(monkeypatch, *, history_row, snapshot_result):
         "main.load_activity_book_for_merge",
         lambda *args, **kwargs: db.ActivityBookLookup(),
     )
-    monkeypatch.setattr("main.upsert_activity_book", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "main.upsert_activity_book",
+        lambda *args, **kwargs: {"ok": True},
+    )
     monkeypatch.setattr(
         "main.lookup_packet_grant_for_tax_year",
         lambda *args, **kwargs: ("cs_test_yeargrant", True),

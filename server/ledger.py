@@ -219,6 +219,10 @@ ACTIVITY_BOOK_LOAD_FAILED_WARNING = (
     "Your saved trade book could not be loaded, so this file was analyzed on "
     "its own and was not saved over that book. Try the upload again."
 )
+ACTIVITY_BOOK_SAVE_FAILED_WARNING = (
+    "This upload could not be saved onto your trade book, so its trades were "
+    "not added. Your saved book is unchanged. Try the upload again."
+)
 
 
 def merge_warning(result: MergeResult, prior_filename: str = "") -> str | None:
