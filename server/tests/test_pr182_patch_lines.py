@@ -465,21 +465,27 @@ def test_save_packet_snapshot_insert_reread_paid_other_year(monkeypatch):
 
 
 def test_save_packet_snapshot_insert_reread_paid_same_year(monkeypatch):
-    # result_row(None) raises AttributeError. The outer handler returns None.
     client = _install(
         monkeypatch,
         [],
         [],
         [_snap(paid_at="2024-01-01T00:00:00+00:00")],
     )
-    assert db.save_packet_snapshot(ANALYSIS_ID, USER_ID, TAX_YEAR, {"lots": [1]}) is None
+    assert db.save_packet_snapshot(ANALYSIS_ID, USER_ID, TAX_YEAR, {"lots": [1]}) == {
+        "analysis_id": ANALYSIS_ID,
+        "user_id": USER_ID,
+        "tax_year": TAX_YEAR,
+    }
     _assert_consumed(client)
 
 
 def test_save_packet_snapshot_insert_reread_unpaid(monkeypatch):
-    # result_row(None) raises AttributeError. The outer handler returns None.
     client = _install(monkeypatch, [], [], [_snap(paid_at=None)])
-    assert db.save_packet_snapshot(ANALYSIS_ID, USER_ID, TAX_YEAR, {"lots": [1]}) is None
+    assert db.save_packet_snapshot(ANALYSIS_ID, USER_ID, TAX_YEAR, {"lots": [1]}) == {
+        "analysis_id": ANALYSIS_ID,
+        "user_id": USER_ID,
+        "tax_year": TAX_YEAR,
+    }
     _assert_consumed(client)
 
 
@@ -517,7 +523,6 @@ def test_save_packet_snapshot_unique_conflict_promote_returns_row(monkeypatch):
 
 
 def test_save_packet_snapshot_unique_conflict_promote_reread_paid(monkeypatch):
-    # promoted.data is empty, then result_row(None) raises and the inner handler returns None.
     client = _paid_insert_conflict(
         monkeypatch,
         [_snap(paid_at=None)],
@@ -531,7 +536,11 @@ def test_save_packet_snapshot_unique_conflict_promote_reread_paid(monkeypatch):
         {"lots": [1]},
         session_id="cs_promote",
         paid=True,
-    ) is None
+    ) == {
+        "analysis_id": ANALYSIS_ID,
+        "user_id": USER_ID,
+        "tax_year": TAX_YEAR,
+    }
     _assert_consumed(client)
 
 
@@ -554,7 +563,6 @@ def test_save_packet_snapshot_unique_conflict_promote_reread_raises(monkeypatch)
 
 
 def test_save_packet_snapshot_unique_conflict_same_year_paid_row(monkeypatch):
-    # Same-year paid reread calls result_row(None), which raises into the inner handler.
     client = _install(
         monkeypatch,
         [],
@@ -568,7 +576,11 @@ def test_save_packet_snapshot_unique_conflict_same_year_paid_row(monkeypatch):
         {"lots": [1]},
         session_id="cs_promote",
         paid=True,
-    ) is None
+    ) == {
+        "analysis_id": ANALYSIS_ID,
+        "user_id": USER_ID,
+        "tax_year": TAX_YEAR,
+    }
     _assert_consumed(client)
 
 

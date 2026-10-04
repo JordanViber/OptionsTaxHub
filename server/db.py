@@ -739,7 +739,10 @@ def save_packet_snapshot(
         return dict(result.data[0]) if result.data else None
 
     def result_row(result, fallback):
-        return dict(result.data[0]) if result.data else {
+        data = getattr(result, "data", None)
+        if data:
+            return dict(data[0])
+        return {
             key: fallback.get(key)
             for key in ("analysis_id", "user_id", "tax_year")
         }
