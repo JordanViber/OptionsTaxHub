@@ -10,9 +10,13 @@ export default defineConfig({
     serviceWorkers: "block",
   },
   webServer: {
-    command: "npm run dev",
+    command: process.env.CI
+      ? "bash -c 'set -o pipefail; npm run start 2>&1 | tee /tmp/frontend.log'"
+      : "npm run dev",
     url: "http://localhost:3000",
-    reuseExistingServer: true,
+    reuseExistingServer: !process.env.CI,
+    stdout: "pipe",
+    stderr: "pipe",
     timeout: 120000,
   },
   projects: [
