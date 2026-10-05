@@ -2514,10 +2514,7 @@ def test_download_rejects_paid_session_for_another_analysis(monkeypatch):
         "/api/year-close-packet/download",
         params={"analysis_id": "another-analysis", "session_id": paid_session.id},
     )
-    # No history, entitlement, or snapshot names a year, and the session
-    # metadata has none. That is a retryable miss, and it must not unlock
-    # the other analysis.
-    assert response.status_code == 503
+    assert response.status_code == 403
     assert not response.content.startswith(b"%PDF")
     assert PACKET_STORE["another-analysis"]["paid"] is False
     assert PACKET_STORE["another-analysis"]["session_ids"] == set()
@@ -2536,10 +2533,45 @@ def test_download_does_not_reuse_another_users_in_memory_grant(monkeypatch):
         "/api/year-close-packet/download",
         params={"analysis_id": "private-analysis"},
     )
-    # The caller does not own a history row, so no year can be chosen.
-    # Retryable 503 still must not return the other user's PDF.
-    assert response.status_code == 503
+    assert response.status_code == 403
     assert not response.content.startswith(b"%PDF")
+
+
+def test_authorized_download_unresolvable_year_is_503(monkeypatch):
+    """A paid session for this user and analysis still 503s when no year exists."""
+    _test_stripe_env(monkeypatch)
+    analysis_id = "analysis-unresolvable-year"
+    remember_analysis(analysis_id, "test-user-123", {"analysis_id": analysis_id})
+    monkeypatch.setattr(main, "lookup_analysis_for_entitlement", lambda *_args: (None, True))
+    monkeypatch.setattr(
+        main,
+        "lookup_packet_entitlements_for_analysis",
+        lambda *_args, **_kwargs: ([], True),
+    )
+    paid_session = _stripe_object_session(
+        id="cs_test_authorized_no_year",
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": analysis_id,
+            "user_id": "test-user-123",
+        },
+    )
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda *_args, **_kwargs: paid_session,
+    )
+
+    response = client.get(
+        "/api/year-close-packet/download",
+        params={"analysis_id": analysis_id, "session_id": paid_session.id},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Could not determine the packet tax year. Please retry."
+    assert not response.content.startswith(b"%PDF")
+    assert PACKET_STORE[analysis_id]["paid"] is False
+    assert PACKET_STORE[analysis_id]["session_ids"] == set()
 
 
 def test_mark_paid_refuses_to_change_another_users_packet_record():
@@ -3189,6 +3221,238 @@ def test_checkout_reyears_unpaid_same_spelling_and_blocks_paid_other_year(monkey
     assert paid["analysis_id"] == aid
 
 
+def test_legacy_session_without_metadata_year_grants_history_year(monkeypatch):
+    """No Stripe tax_year: history names the year, and that year is what gets granted."""
+    _test_stripe_env(monkeypatch)
+    user = "test-user-123"
+    stored = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
+    other = stored.lower()
+    history_payload = {
+        "analysis_id": other,
+        "tax_profile": {"tax_year": 2026, "filing_status": "single"},
+        "marker": "history-2026",
+    }
+    remember_analysis(other, user, history_payload)
+    _FAKE_PACKET_SNAPSHOTS[(user, stored)] = {
+        "analysis_id": stored,
+        "user_id": user,
+        "tax_year": 2025,
+        "packet_payload": {"analysis_id": stored, "marker": "paid-2025"},
+        "packet_session_id": "cs_paid_2025",
+        "paid_at": "2026-01-01T00:00:00+00:00",
+    }
+    monkeypatch.setattr(main, "patch_analysis_result", lambda *_args, **_kwargs: True)
+    session = _stripe_object_session(
+        id="cs_legacy_history_year",
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": other,
+            "user_id": user,
+        },
+    )
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda *_args, **_kwargs: session,
+    )
+
+    response = client.post(
+        "/api/year-close-packet/confirm",
+        json={"session_id": session.id, "analysis_id": other},
+    )
+
+    assert response.status_code == 200, response.text
+    granted_row = _FAKE_PACKET_SNAPSHOTS[(user, other)]
+    assert granted_row["analysis_id"] == other
+    assert int(granted_row["tax_year"]) == 2026
+    assert granted_row["paid_at"]
+    assert granted_row["packet_session_id"] == session.id
+    untouched = _FAKE_PACKET_SNAPSHOTS[(user, stored)]
+    assert untouched["analysis_id"] == stored
+    assert untouched["tax_year"] == 2025
+    assert untouched["paid_at"] == "2026-01-01T00:00:00+00:00"
+    assert untouched["packet_session_id"] == "cs_paid_2025"
+    assert untouched["packet_payload"]["marker"] == "paid-2025"
+
+
+def test_legacy_grant_does_not_adopt_other_year_case_variant(monkeypatch):
+    """The only paid row is another year's spelling variant. Do not grant from it."""
+    _test_stripe_env(monkeypatch)
+    user = "test-user-123"
+    stored = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
+    other = stored.lower()
+    paid_variant = {
+        "analysis_id": stored,
+        "user_id": user,
+        "tax_year": 2024,
+        "packet_payload": {"analysis_id": stored, "marker": "other-year"},
+        "packet_session_id": "cs_other_year",
+        "paid_at": "2026-01-01T00:00:00+00:00",
+    }
+    _FAKE_PACKET_SNAPSHOTS[(user, stored)] = dict(paid_variant)
+    monkeypatch.setattr(main, "lookup_analysis_for_entitlement", _no_history_lookup)
+    session = _stripe_object_session(
+        id="cs_legacy_other_year_variant",
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": other,
+            "user_id": user,
+        },
+    )
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda *_args, **_kwargs: session,
+    )
+
+    response = client.post(
+        "/api/year-close-packet/confirm",
+        json={"session_id": session.id, "analysis_id": other},
+    )
+
+    assert response.status_code == 409, response.text
+    assert "PACKET_GRANT_YEAR_UNKNOWN" in response.text
+    assert _FAKE_PACKET_SNAPSHOTS[(user, stored)] == paid_variant
+    assert (user, other) not in _FAKE_PACKET_SNAPSHOTS
+    assert _FAKE_PACKET_ENTITLEMENTS == {}
+
+
+def test_legacy_grant_ambiguous_year_logs_and_confirm_409(monkeypatch, caplog):
+    _test_stripe_env(monkeypatch)
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_packet_test_secret")
+    user = "test-user-123"
+    analysis_id = "analysis-legacy-ambiguous"
+    monkeypatch.setattr(main, "lookup_analysis_for_entitlement", _no_history_lookup)
+    session = _stripe_object_session(
+        id="cs_legacy_ambiguous",
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": analysis_id,
+            "user_id": user,
+        },
+    )
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda *_args, **_kwargs: session,
+    )
+
+    with caplog.at_level(logging.ERROR, logger="main"):
+        webhook = _post_signed_webhook(
+            _packet_checkout_event(
+                analysis_id=analysis_id,
+                user_id=user,
+                event_id="evt_year_unknown",
+            )
+        )
+    assert webhook.status_code == 200, webhook.text
+    assert webhook.json() == {"received": True, "granted": False}
+    unknown_logs = [
+        record
+        for record in caplog.records
+        if record.levelno == logging.ERROR and "PACKET_GRANT_YEAR_UNKNOWN" in record.message
+    ]
+    assert unknown_logs
+    assert "cs_test_paid_1" in unknown_logs[0].message
+    assert user in unknown_logs[0].message
+    assert analysis_id in unknown_logs[0].message
+
+    confirm = client.post(
+        "/api/year-close-packet/confirm",
+        json={"session_id": session.id, "analysis_id": analysis_id},
+    )
+    assert confirm.status_code == 409, confirm.text
+    assert "PACKET_GRANT_YEAR_UNKNOWN" in confirm.json()["detail"]
+
+    stored = "BBBBBBBB-BBBB-4BBB-8BBB-BBBBBBBBBBBB"
+    other = stored.lower()
+    for spelling, year in ((stored, 2024), (other, 2025)):
+        _FAKE_PACKET_SNAPSHOTS[(user, spelling)] = {
+            "analysis_id": spelling,
+            "user_id": user,
+            "tax_year": year,
+            "packet_payload": {"analysis_id": spelling, "marker": year},
+            "packet_session_id": f"cs_{year}",
+            "paid_at": "2026-01-01T00:00:00+00:00",
+        }
+    several = _stripe_object_session(
+        id="cs_legacy_several_rows",
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": stored,
+            "user_id": user,
+        },
+    )
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda *_args, **_kwargs: several,
+    )
+    caplog.clear()
+    with caplog.at_level(logging.ERROR, logger="main"):
+        several_hook = _post_signed_webhook(
+            _packet_checkout_event(
+                analysis_id=stored,
+                user_id=user,
+                event_id="evt_year_unknown_several",
+            )
+        )
+    assert several_hook.status_code == 200, several_hook.text
+    assert several_hook.json()["granted"] is False
+    assert "PACKET_GRANT_YEAR_UNKNOWN" in caplog.text
+    assert _FAKE_PACKET_SNAPSHOTS[(user, stored)]["packet_session_id"] == "cs_2024"
+    assert _FAKE_PACKET_SNAPSHOTS[(user, stored)]["tax_year"] == 2024
+    assert _FAKE_PACKET_SNAPSHOTS[(user, other)]["packet_session_id"] == "cs_2025"
+    assert _FAKE_PACKET_SNAPSHOTS[(user, other)]["paid_at"] == "2026-01-01T00:00:00+00:00"
+
+
+def test_legacy_grant_year_resolution_outage_is_503(monkeypatch):
+    _test_stripe_env(monkeypatch)
+    user = "test-user-123"
+    analysis_id = "analysis-legacy-outage"
+    session = _stripe_object_session(
+        id="cs_legacy_outage",
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": analysis_id,
+            "user_id": user,
+        },
+    )
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda *_args, **_kwargs: session,
+    )
+    monkeypatch.setattr(
+        main,
+        "lookup_analysis_for_entitlement",
+        lambda *_args: (None, False),
+    )
+
+    history_outage = client.post(
+        "/api/year-close-packet/confirm",
+        json={"session_id": session.id, "analysis_id": analysis_id},
+    )
+    assert history_outage.status_code == 503, history_outage.text
+
+    monkeypatch.setattr(main, "lookup_analysis_for_entitlement", _no_history_lookup)
+    monkeypatch.setattr(
+        main,
+        "lookup_packet_entitlements_for_analysis",
+        lambda *_args, **_kwargs: ([], False),
+    )
+
+    def list_must_not_run(*_args, **_kwargs):
+        raise AssertionError("snapshot list ran after an entitlement outage")
+
+    monkeypatch.setattr(main, "list_packet_snapshots_for_identity", list_must_not_run)
+    entitlement_outage = client.post(
+        "/api/year-close-packet/confirm",
+        json={"session_id": session.id, "analysis_id": analysis_id},
+    )
+    assert entitlement_outage.status_code == 503, entitlement_outage.text
+
+
 def test_paid_year_conflict_confirm_409_and_webhook_logs(monkeypatch, caplog):
     _test_stripe_env(monkeypatch)
     monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_packet_test_secret")
@@ -3416,9 +3680,27 @@ def test_download_snapshot_lookup_outage_is_503(monkeypatch):
         raise AssertionError("snapshot list ran after an entitlement outage")
 
     monkeypatch.setattr(main, "list_packet_snapshots_for_identity", list_must_not_run)
+    # Identity must pass before year resolution. Entitlement outage is then 503
+    # and must not fall through to the snapshot list.
+    paid_session = _stripe_object_session(
+        id="cs_entitlement_outage",
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": "analysis-entitlement-outage",
+            "user_id": "test-user-123",
+        },
+    )
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda *_args, **_kwargs: paid_session,
+    )
     entitlement_outage = client.get(
         "/api/year-close-packet/download",
-        params={"analysis_id": "analysis-entitlement-outage"},
+        params={
+            "analysis_id": "analysis-entitlement-outage",
+            "session_id": paid_session.id,
+        },
     )
     assert entitlement_outage.status_code == 503
     assert not entitlement_outage.content.startswith(b"%PDF")
