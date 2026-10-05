@@ -1079,7 +1079,7 @@ class TestLatestActivityBook:
 class TestPacketSnapshots:
     def test_saves_private_packet_snapshot_with_short_unpaid_retention(self, monkeypatch):
         client = _FakeClient(
-            table_responses=[[], [], [{"analysis_id": "analysis-a", "user_id": "user1"}]],
+            table_responses=[[], [], [], [{"analysis_id": "analysis-a", "user_id": "user1"}]],
         )
         monkeypatch.setattr(db, "get_supabase", lambda: client)
 
@@ -1091,7 +1091,7 @@ class TestPacketSnapshots:
         )
 
         assert saved["analysis_id"] == "analysis-a"
-        calls = client.builders[2].calls
+        calls = client.builders[3].calls
         insert = next(call for call in calls if call[0] == "insert")
         assert insert[1][0]["paid_at"] is None
         assert insert[1][0]["tax_year"] == 2026
@@ -1099,7 +1099,7 @@ class TestPacketSnapshots:
 
     def test_paid_packet_snapshot_has_no_expiry(self, monkeypatch):
         client = _FakeClient(
-            table_responses=[[], [], [{"analysis_id": "analysis-a", "user_id": "user1"}]],
+            table_responses=[[], [], [], [{"analysis_id": "analysis-a", "user_id": "user1"}]],
         )
         monkeypatch.setattr(db, "get_supabase", lambda: client)
 
@@ -1113,7 +1113,7 @@ class TestPacketSnapshots:
         )
 
         assert saved["analysis_id"] == "analysis-a"
-        insert = next(call for call in client.builders[2].calls if call[0] == "insert")
+        insert = next(call for call in client.builders[3].calls if call[0] == "insert")
         assert insert[1][0]["paid_at"] is not None
         assert insert[1][0]["expires_at"] is None
 

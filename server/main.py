@@ -2931,6 +2931,7 @@ def _payload_for_download(
     user_id: str,
     analysis: Optional[dict],
     tax_year: Optional[int] = None,
+    session_id: Optional[str] = None,
 ):
     if isinstance(analysis, dict):
         supplied_id = str(analysis.get("analysis_id") or "").strip()
@@ -2958,9 +2959,11 @@ def _payload_for_download(
             status_code=503,
             detail="Could not load the saved packet snapshot. Please retry.",
         )
-    if isinstance(snapshot, dict):
-        if isinstance(snapshot.get("packet_payload"), dict):
-            return snapshot["packet_payload"]
+    # Process memory is not payment. A missing or unpaid year-scoped row is 403.
+    if not isinstance(snapshot, dict) or not snapshot.get("paid_at"):
+        _packet_download_forbidden()
+    payload = snapshot.get("packet_payload")
+    if not isinstance(payload, dict):
         raise HTTPException(
             status_code=503,
             detail=(
@@ -2968,17 +2971,27 @@ def _payload_for_download(
                 "to restore it, then download again."
             ),
         )
-    if packet_store_belongs_to_user(analysis_id, user_id):
-        stored = get_payload(analysis_id)
-        if stored:
-            return stored
-    raise HTTPException(
-        status_code=503,
-        detail=(
-            "The private packet snapshot is unavailable. Re-run the analysis "
-            "to restore it, then download again."
-        ),
-    )
+    if session_id:
+        stored_session_id = snapshot.get("packet_session_id")
+        if stored_session_id and stored_session_id != session_id:
+            # A different cs_ does not match, even when its metadata year does.
+            _packet_download_forbidden()
+        elif stored_session_id == session_id:
+            metadata_year = _packet_tax_year_from_session(session_id)
+            if (
+                metadata_year is not None
+                and metadata_year != int(snapshot.get("tax_year"))
+            ):
+                _packet_download_forbidden()
+        else:
+            # No stored session. Only a readable metadata year can tie this cs_.
+            metadata_year = _packet_tax_year_from_session(session_id)
+            if (
+                metadata_year is None
+                or metadata_year != int(snapshot.get("tax_year"))
+            ):
+                _packet_download_forbidden()
+    return payload
 
 
 @app.post(
@@ -3647,21 +3660,19 @@ def _authorized_packet_download(
             status_code=503,
             detail="Could not verify the saved packet entitlement. Please retry.",
         )
+    # The client confirms Checkout before download. Do not grant, stamp, or
+    # rewrite the analysis id to the session spelling on this request. A
+    # sticky in-memory paid flag is not a paid snapshot for this year.
     if isinstance(snapshot, dict):
+        if not snapshot.get("paid_at"):
+            _packet_download_forbidden()
         if not isinstance(snapshot.get("packet_payload"), dict):
-            if snapshot.get("paid_at"):
-                raise HTTPException(status_code=409, detail=PACKET_MISSING_SOURCE_DETAIL)
+            raise HTTPException(status_code=409, detail=PACKET_MISSING_SOURCE_DETAIL)
         stored_session_id = snapshot.get("packet_session_id")
-        if snapshot.get("paid_at") and stored_session_id:
+        if stored_session_id:
             if session_id and session_id != stored_session_id:
-                raise HTTPException(
-                    status_code=403,
-                    detail="Year-close packet download requires payment.",
-                )
-            if (
-                not session_id
-                and isinstance(snapshot.get("packet_payload"), dict)
-            ):
+                _packet_download_forbidden()
+            if not session_id:
                 # No conflicting session was offered. The owner-scoped paid
                 # snapshot is enough during Stripe downtime.
                 return analysis_id
@@ -3674,12 +3685,7 @@ def _authorized_packet_download(
             except (stripe.StripeError, HTTPException):
                 # The owner-scoped durable grant is enough during Stripe
                 # downtime when the caller echoed the stored session.
-                if isinstance(snapshot.get("packet_payload"), dict):
-                    return analysis_id
-                raise HTTPException(
-                    status_code=403,
-                    detail="Year-close packet download requires payment.",
-                )
+                return analysis_id
             metadata = _session_metadata(settled_session)
             try:
                 settled_tax_year = int(metadata.get("tax_year"))
@@ -3695,59 +3701,10 @@ def _authorized_packet_download(
                     and settled_tax_year != int(snapshot.get("tax_year"))
                 )
             ):
-                raise HTTPException(
-                    status_code=403,
-                    detail="Year-close packet download requires payment.",
-                )
-            return analysis_id
-    elif is_packet_paid(analysis_id, user_id=user_id):
-        # Legacy in-memory grants are usable only when no durable row exists.
-        # A durable row with a cleared payload above always wins over cache.
+                _packet_download_forbidden()
         return analysis_id
-    if not session_id:
-        raise HTTPException(
-            status_code=403,
-            detail="Year-close packet download requires payment.",
-        )
-    packet_api_key = _configure_packet_stripe()
-    try:
-        session = stripe.checkout.Session.retrieve(session_id, api_key=packet_api_key)
-    except stripe.StripeError:
-        if (
-            isinstance(snapshot, dict)
-            and snapshot.get("paid_at")
-            and isinstance(snapshot.get("packet_payload"), dict)
-        ):
-            raise HTTPException(
-                status_code=503,
-                detail="Could not verify the supplied checkout session. Please retry.",
-            )
-        raise HTTPException(status_code=403, detail="Year-close packet download requires payment.")
-    if _grant_packet_from_session(session, analysis_id, user_id=user_id):
-        return packet_analysis_id_from_session(session)
-    if not packet_store_belongs_to_user(analysis_id, user_id):
-        raise HTTPException(
-            status_code=403,
-            detail="Year-close packet download requires payment.",
-        )
-    same_year_grant = _is_persisted_same_year_packet_grant(
-        analysis_id,
-        session_id,
-        user_id,
-        session,
-    )
-    if same_year_grant is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Could not verify the saved packet entitlement. Please retry.",
-        )
-    if same_year_grant and packet_store_belongs_to_user(analysis_id, user_id):
-        if mark_paid(analysis_id, session_id, user_id=user_id):
-            return analysis_id
-    raise HTTPException(
-        status_code=403,
-        detail="Year-close packet download requires payment.",
-    )
+    _packet_download_forbidden()
+    return analysis_id
 
 
 def _resolve_download_tax_year(
@@ -3758,10 +3715,32 @@ def _resolve_download_tax_year(
 ) -> int:
     """Pick one tax year for a download. Never leave the snapshot read unscoped.
 
-    The in-body analysis year and Stripe metadata are hints around
-    _resolve_packet_tax_year_for_identity. A resolver outage is 503. Zero or
-    several years, with nothing else naming the year, is also 503.
+    When Checkout metadata names a tax year, that year is the only one this
+    download may read. A different body or history year is 403. A Stripe miss
+    is not a disagreement. With no metadata year, the body wins, then the
+    shared resolver. A resolver outage is 503. Zero or several years, with
+    nothing else naming the year, is also 503.
     """
+    metadata_year = _packet_tax_year_from_session(session_id) if session_id else None
+    if metadata_year is not None:
+        body_year = (
+            _packet_result_tax_year(analysis) if isinstance(analysis, dict) else None
+        )
+        if body_year is not None and body_year != metadata_year:
+            _packet_download_forbidden()
+        resolved_year, year_ok = _resolve_packet_tax_year_for_identity(
+            analysis_id,
+            user_id,
+        )
+        if not year_ok:
+            raise HTTPException(
+                status_code=503,
+                detail="Could not verify the saved packet entitlement. Please retry.",
+            )
+        if resolved_year is not None and resolved_year != metadata_year:
+            _packet_download_forbidden()
+        return int(metadata_year)
+
     year = _packet_result_tax_year(analysis) if isinstance(analysis, dict) else None
     if year is None:
         year, year_ok = _resolve_packet_tax_year_for_identity(analysis_id, user_id)
@@ -3770,10 +3749,6 @@ def _resolve_download_tax_year(
                 status_code=503,
                 detail="Could not verify the saved packet entitlement. Please retry.",
             )
-    if year is None:
-        stripe_year = _packet_tax_year_from_session(session_id)
-        if stripe_year is not None:
-            year = stripe_year
     if year is None:
         raise HTTPException(
             status_code=503,
@@ -3800,7 +3775,13 @@ async def download_year_close_packet_get(
         user_id,
         tax_year=tax_year,
     )
-    payload = _payload_for_download(analysis_id, user_id, None, tax_year=tax_year)
+    payload = _payload_for_download(
+        analysis_id,
+        user_id,
+        None,
+        tax_year=tax_year,
+        session_id=session_id,
+    )
     pdf_bytes = render_packet_pdf(payload)
     return Response(
         content=pdf_bytes,
@@ -3842,6 +3823,7 @@ async def download_year_close_packet_post(
         user_id,
         body.analysis,
         tax_year=tax_year,
+        session_id=body.session_id,
     )
     pdf_bytes = render_packet_pdf(payload)
     return Response(

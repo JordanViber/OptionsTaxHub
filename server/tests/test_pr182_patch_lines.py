@@ -462,6 +462,7 @@ def test_save_packet_snapshot_insert_reread_paid_other_year(monkeypatch):
         [],
         [],
         [],
+        [],
         [_snap(tax_year=2023, paid_at="2024-01-01T00:00:00+00:00")],
     )
     with pytest.raises(db.PacketSnapshotYearConflict) as raised:
@@ -515,6 +516,7 @@ def test_save_packet_snapshot_insert_reread_paid_same_year(monkeypatch):
         [],
         [],
         [],
+        [],
         [_snap(paid_at="2024-01-01T00:00:00+00:00")],
     )
     assert db.save_packet_snapshot(ANALYSIS_ID, USER_ID, TAX_YEAR, {"lots": [1]}) == {
@@ -526,7 +528,7 @@ def test_save_packet_snapshot_insert_reread_paid_same_year(monkeypatch):
 
 
 def test_save_packet_snapshot_insert_reread_unpaid(monkeypatch):
-    client = _install(monkeypatch, [], [], [], [_snap(paid_at=None)])
+    client = _install(monkeypatch, [], [], [], [], [_snap(paid_at=None)])
     assert db.save_packet_snapshot(ANALYSIS_ID, USER_ID, TAX_YEAR, {"lots": [1]}) == {
         "analysis_id": ANALYSIS_ID,
         "user_id": USER_ID,
@@ -536,7 +538,7 @@ def test_save_packet_snapshot_insert_reread_unpaid(monkeypatch):
 
 
 def test_save_packet_snapshot_insert_reread_missing(monkeypatch):
-    client = _install(monkeypatch, [], [], [], [])
+    client = _install(monkeypatch, [], [], [], [], [])
     assert db.save_packet_snapshot(ANALYSIS_ID, USER_ID, TAX_YEAR, {"lots": [1]}) is None
     _assert_consumed(client)
 
@@ -544,6 +546,7 @@ def test_save_packet_snapshot_insert_reread_missing(monkeypatch):
 def _paid_insert_conflict(monkeypatch, *after_conflict):
     return _install(
         monkeypatch,
+        [],
         [],
         [],
         _error("duplicate key value violates unique constraint", code="23505"),

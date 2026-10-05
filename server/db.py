@@ -1469,6 +1469,36 @@ def save_packet_snapshot(
             return scoped
         return read_exact_key()
 
+    def read_paid_other_spelling():
+        """Paid row under another UUID spelling and another tax year.
+
+        Called only when this spelling has no row, immediately before INSERT.
+        No tax_year filter and no limit, so a paid case-variant in another
+        year cannot hide behind limit 1. A failed read is an outage: the
+        caller returns None and does not insert. This does not rewrite the
+        other row's analysis_id.
+        """
+        result = _order_snapshot_candidates(
+            _match_snapshot_analysis_id(
+                client.table("year_close_packet_snapshots").select(snapshot_columns),
+                analysis_id,
+            ).eq("user_id", user_id)
+        ).execute()
+        for raw in result.data or []:
+            if not isinstance(raw, dict):
+                continue
+            row = dict(raw)
+            if not row.get("paid_at"):
+                continue
+            if str(row.get("analysis_id") or "") == analysis_id:
+                continue
+            try:
+                stored_year = int(row.get("tax_year"))
+            except (TypeError, ValueError):
+                continue
+            if stored_year != int(tax_year):
+                year_conflict(row)
+
     def year_conflict(row):
         raise PacketSnapshotYearConflict(
             row.get("analysis_id"),
@@ -1596,6 +1626,10 @@ def save_packet_snapshot(
             if latest_row.get("packet_payload") == packet_payload:
                 return result_row(result, latest_row)
             return None
+
+        # No row for this spelling. Refuse a second spelling when another
+        # case of this UUID is already paid for a different tax year.
+        read_paid_other_spelling()
 
         # INSERT preserves any row created by a concurrent webhook/checkout;
         # unlike UPSERT it can never replace a just-paid snapshot.
