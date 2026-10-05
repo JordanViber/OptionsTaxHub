@@ -1857,6 +1857,124 @@ def test_delete_analysis_clears_packet_by_history_id_when_result_has_no_analysis
     assert forgotten == [("abc-123", "test-user-123")]
 
 
+def test_delete_analysis_forgets_legacy_alias_packet_payload(monkeypatch):
+    """Deleting the canonical row drops the in-memory payload stored under the legacy id."""
+    from year_close_packet import PACKET_STORE
+
+    canonical = "22222222-2222-4222-8222-222222222222"
+    legacy = "11111111-1111-4111-8111-111111111111"
+    PACKET_STORE[legacy] = {
+        "user_id": "test-user-123",
+        "payload": {"report": "paid-legacy"},
+        "paid": True,
+        "session_ids": set(),
+    }
+    monkeypatch.setattr(
+        "main.get_analysis_by_id",
+        lambda aid, uid: {
+            "id": canonical,
+            "user_id": uid,
+            "result": {"analysis_id": canonical},
+        },
+    )
+    monkeypatch.setattr("main.delete_analysis_by_id", lambda aid, uid: True)
+
+    class _AliasRows:
+        def table(self, name):
+            assert name == "portfolio_analysis_id_aliases"
+            return self
+
+        def select(self, *_args, **_kwargs):
+            return self
+
+        def eq(self, *_args, **_kwargs):
+            return self
+
+        def execute(self):
+            return SimpleNamespace(data=[{"legacy_row_id": legacy}])
+
+    monkeypatch.setattr(db, "get_supabase", lambda: _AliasRows())
+
+    response = client.delete(f"/api/portfolio/analysis/{canonical}")
+
+    assert response.status_code == 200
+    assert response.json()["deleted"] is True
+    assert PACKET_STORE[legacy]["payload"] is None
+
+
+def test_delete_analysis_missing_alias_table_still_deletes(monkeypatch):
+    deleted = []
+    monkeypatch.setattr(
+        "main.get_analysis_by_id",
+        lambda aid, uid: {"id": aid, "user_id": uid, "result": {"analysis_id": aid}},
+    )
+    monkeypatch.setattr(
+        "main.delete_analysis_by_id",
+        lambda aid, uid: deleted.append((aid, uid)) or True,
+    )
+
+    class _MissingAliasTable:
+        def table(self, _name):
+            return self
+
+        def select(self, *_args, **_kwargs):
+            return self
+
+        def eq(self, *_args, **_kwargs):
+            return self
+
+        def execute(self):
+            error = Exception(
+                'relation "portfolio_analysis_id_aliases" does not exist'
+            )
+            error.code = "42P01"
+            raise error
+
+    monkeypatch.setattr(db, "get_supabase", lambda: _MissingAliasTable())
+
+    response = client.delete("/api/portfolio/analysis/abc-123")
+
+    assert response.status_code == 200
+    assert deleted == [("abc-123", "test-user-123")]
+
+
+def test_delete_analysis_schema_cache_miss_does_not_delete(monkeypatch):
+    deleted = []
+    monkeypatch.setattr(
+        "main.get_analysis_by_id",
+        lambda aid, uid: {"id": aid, "user_id": uid, "result": {"analysis_id": aid}},
+    )
+    monkeypatch.setattr(
+        "main.delete_analysis_by_id",
+        lambda aid, uid: deleted.append((aid, uid)) or True,
+    )
+
+    class _SchemaCacheMiss:
+        def table(self, _name):
+            return self
+
+        def select(self, *_args, **_kwargs):
+            return self
+
+        def eq(self, *_args, **_kwargs):
+            return self
+
+        def execute(self):
+            error = Exception(
+                "Could not find the table 'public.portfolio_analysis_id_aliases' "
+                "in the schema cache"
+            )
+            error.code = "PGRST205"
+            raise error
+
+    monkeypatch.setattr(db, "get_supabase", lambda: _SchemaCacheMiss())
+
+    response = client.delete("/api/portfolio/analysis/abc-123")
+
+    assert response.status_code == 503
+    assert deleted == []
+
+
 def test_delete_analysis_not_found(monkeypatch):
     """DELETE /api/portfolio/analysis/{id} returns 404 when not found."""
     monkeypatch.setattr("main.get_analysis_by_id", lambda *_args: None)
@@ -3334,6 +3452,7 @@ class _ApiBookQuery:
         self.table = table
         self.op = "select"
         self.filters = []
+        self.extra_filters = []
         self.orders = []
         self.range_bounds = None
         self.limit_n = None
@@ -3356,6 +3475,10 @@ class _ApiBookQuery:
 
     def eq(self, col, val):
         self.filters.append((col, val))
+        return self
+
+    def filter(self, column, op, value):
+        self.extra_filters.append((column, op, value))
         return self
 
     def order(self, col, desc=False, **_kwargs):
@@ -3402,6 +3525,17 @@ class _ApiBookQuery:
         if self.filters:
             for col, val in self.filters:
                 filtered = [row for row in filtered if row.get(col) == val]
+        for column, op, value in self.extra_filters:
+            if column == "result->>analysis_id" and op == "ilike":
+                needle = str(value).lower()
+                filtered = [
+                    row for row in filtered
+                    if isinstance(row.get("result"), dict)
+                    and isinstance(row["result"].get("analysis_id"), str)
+                    and row["result"]["analysis_id"].lower() == needle
+                ]
+            else:
+                filtered = []
         if self.orders:
             filtered = _sort_by_orders(filtered, self.orders)
         if self.range_bounds is not None:

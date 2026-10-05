@@ -971,6 +971,15 @@ def test_migration_012_unifies_ids_and_backfills_entitlements(postgres):
         ).fetchone() == (_REWRITE_LEGACY, True, True)
         assert conn.execute(
             """
+            SELECT count(*)
+            FROM portfolio_analysis_id_aliases
+            WHERE user_id = 'paid-user'
+              AND canonical_analysis_id = %s
+            """,
+            (_REWRITE_CANONICAL,),
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            """
             SELECT analysis_id
             FROM year_close_packet_entitlements
             WHERE user_id = 'paid-user' AND packet_session_id = 'cs_legacy_snapshot'
@@ -983,6 +992,60 @@ def test_migration_012_unifies_ids_and_backfills_entitlements(postgres):
             WHERE user_id = 'paid-user' AND packet_session_id = 'cs_backfill'
             """
         ).fetchone()[0] == "true"
+
+        other_spelling = _COLLISION_CANONICAL.upper()
+        conn.execute(
+            """
+            INSERT INTO year_close_packet_entitlements (
+              user_id, tax_year, packet_session_id, analysis_id
+            ) VALUES ('paid-user', 2023, 'cs_collision_case', %s)
+            """,
+            (other_spelling,),
+        )
+        conn.execute(
+            """
+            INSERT INTO year_close_packet_snapshots (
+              analysis_id, user_id, tax_year, packet_payload, packet_session_id, paid_at
+            ) VALUES (%s, 'paid-user', 2023, '{"kept": true}'::jsonb, 'cs_collision_case', now())
+            """,
+            (other_spelling,),
+        )
+        conn.execute(
+            """
+            INSERT INTO year_close_packet_snapshots (
+              analysis_id, user_id, tax_year, packet_payload, packet_session_id, paid_at
+            ) VALUES ('Not-A-Uuid', 'paid-user', 2022, '{"kept": true}'::jsonb, 'cs_non_uuid_case', now())
+            """
+        )
+        assert conn.execute(
+            "DELETE FROM portfolio_analyses WHERE id = %s RETURNING id::text",
+            (_COLLISION_LEGACY,),
+        ).fetchone() == (_COLLISION_LEGACY,)
+        assert conn.execute(
+            """
+            SELECT analysis_id, packet_payload IS NULL, paid_at IS NOT NULL
+            FROM year_close_packet_snapshots
+            WHERE user_id = 'paid-user' AND packet_session_id = 'cs_collision_case'
+            """
+        ).fetchone() == (other_spelling, True, True)
+        assert conn.execute(
+            """
+            SELECT analysis_id
+            FROM year_close_packet_entitlements
+            WHERE user_id = 'paid-user' AND packet_session_id = 'cs_collision_case'
+            """
+        ).fetchone()[0] == other_spelling
+        assert conn.execute(
+            "DELETE FROM portfolio_analyses WHERE id = %s RETURNING id::text",
+            (_NON_UUID_ROW,),
+        ).fetchone() == (_NON_UUID_ROW,)
+        assert conn.execute(
+            """
+            SELECT analysis_id, packet_payload->>'kept', paid_at IS NOT NULL
+            FROM year_close_packet_snapshots
+            WHERE user_id = 'paid-user' AND packet_session_id = 'cs_non_uuid_case'
+            """
+        ).fetchone() == ("Not-A-Uuid", "true", True)
     finally:
         conn.close()
 

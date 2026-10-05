@@ -118,6 +118,7 @@ from db import (
     get_analysis_by_id,
     get_analysis_by_result_analysis_id,
     lookup_analysis_for_entitlement,
+    list_legacy_alias_ids,
     delete_analyses_without_result,
     delete_analysis_by_id,
     AnalysisSchemaError,
@@ -1933,7 +1934,9 @@ async def delete_portfolio_analysis(
 
     The id may be the row primary key, the embedded result.analysis_id, or a
     legacy id in portfolio_analysis_id_aliases. The delete uses the resolved
-    primary key. A missing alias table is a miss.
+    primary key. A missing alias table is a miss and does not fail the delete.
+    Any other alias error stays an outage so a schema-cache miss cannot hide
+    a rewritten row's in-memory packet.
 
     **Authentication Required**: Must provide valid Supabase JWT token.
     **Authorization**: User can only delete their own analyses.
@@ -1946,8 +1949,15 @@ async def delete_portfolio_analysis(
         result.get("analysis_id") if isinstance(result, dict) else None
     )
     # Alias and embedded lookups can resolve a caller id that is not the
-    # primary key. Delete the row that was actually found.
+    # primary key. Read legacy ids before the delete: the row trigger removes
+    # those alias rows as it clears snapshots.
     row_id = str(record["id"])
+    legacy_ids = list_legacy_alias_ids(row_id, user_id)
+    if legacy_ids is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Analysis could not be deleted. Please retry.",
+        )
     deleted = delete_analysis_by_id(row_id, user_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Analysis not found")
@@ -1957,6 +1967,9 @@ async def delete_portfolio_analysis(
     forgotten.append(analysis_id)
     if row_id not in forgotten:
         forgotten.append(row_id)
+    for legacy_id in legacy_ids:
+        if legacy_id not in forgotten:
+            forgotten.append(legacy_id)
     for forget_id in forgotten:
         forget_packet_payload(forget_id, user_id)
     return {"deleted": True}

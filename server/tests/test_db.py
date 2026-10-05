@@ -110,6 +110,9 @@ class _ScriptedClient:
     def contains(self, *_args):
         return self
 
+    def filter(self, *_args, **_kwargs):
+        return self
+
     def order(self, *_args, **_kwargs):
         return self
 
@@ -398,7 +401,7 @@ class TestPatchAnalysisResult:
         }
         builder = MagicMock()
         builder.select.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value.data = []
-        builder.select.return_value.eq.return_value.contains.return_value.order.return_value.limit.return_value.execute.return_value.data = [record]
+        builder.select.return_value.eq.return_value.filter.return_value.order.return_value.limit.return_value.execute.return_value.data = [record]
         builder.update.return_value.eq.return_value.eq.return_value.select.return_value.execute.return_value.data = [record]
         client = MagicMock()
         client.table.return_value = builder
@@ -416,13 +419,13 @@ class TestPatchAnalysisResult:
             "id", "00000000-0000-4000-8000-000000000001"
         )
         builder.select.return_value.eq.assert_any_call("user_id", "user1")
-        builder.select.return_value.eq.return_value.contains.assert_called_once_with(
-            "result", {"analysis_id": "00000000-0000-4000-8000-000000000001"}
+        builder.select.return_value.eq.return_value.filter.assert_called_once_with(
+            "result->>analysis_id", "ilike", "00000000-0000-4000-8000-000000000001"
         )
-        builder.select.return_value.eq.return_value.contains.return_value.order.assert_called_once_with(
+        builder.select.return_value.eq.return_value.filter.return_value.order.assert_called_once_with(
             "uploaded_at", desc=True
         )
-        builder.select.return_value.eq.return_value.contains.return_value.order.return_value.limit.assert_called_once_with(
+        builder.select.return_value.eq.return_value.filter.return_value.order.return_value.limit.assert_called_once_with(
             1
         )
 
@@ -441,7 +444,7 @@ class TestPatchAnalysisResult:
     def test_does_not_patch_embedded_analysis_from_another_user(self, monkeypatch):
         builder = MagicMock()
         builder.select.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value.data = []
-        builder.select.return_value.eq.return_value.contains.return_value.order.return_value.limit.return_value.execute.return_value.data = []
+        builder.select.return_value.eq.return_value.filter.return_value.order.return_value.limit.return_value.execute.return_value.data = []
         client = MagicMock()
         client.table.return_value = builder
         monkeypatch.setattr(db, "get_supabase", lambda: client)
@@ -450,10 +453,10 @@ class TestPatchAnalysisResult:
             "00000000-0000-4000-8000-000000000001", "user1", {"packet_unlocked": True}
         ) is False
         builder.select.return_value.eq.assert_any_call("user_id", "user1")
-        builder.select.return_value.eq.return_value.contains.assert_called_once_with(
-            "result", {"analysis_id": "00000000-0000-4000-8000-000000000001"}
+        builder.select.return_value.eq.return_value.filter.assert_called_once_with(
+            "result->>analysis_id", "ilike", "00000000-0000-4000-8000-000000000001"
         )
-        builder.select.return_value.eq.return_value.contains.return_value.order.assert_called_once_with(
+        builder.select.return_value.eq.return_value.filter.return_value.order.assert_called_once_with(
             "uploaded_at", desc=True
         )
         builder.update.assert_not_called()
@@ -474,7 +477,7 @@ class TestEnsureAnalysisHistory:
         client = MagicMock()
         builder = client.table.return_value
         builder.select.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value.data = []
-        builder.select.return_value.eq.return_value.contains.return_value.order.return_value.limit.return_value.execute.return_value.data = [record]
+        builder.select.return_value.eq.return_value.filter.return_value.order.return_value.limit.return_value.execute.return_value.data = [record]
         monkeypatch.setattr(db, "get_supabase", lambda: client)
         monkeypatch.setattr(
             db,
@@ -483,14 +486,14 @@ class TestEnsureAnalysisHistory:
         )
 
         assert db.ensure_analysis_history("00000000-0000-4000-8000-000000000001", "user1", None) == record
-        builder.select.return_value.eq.return_value.contains.assert_called_once_with(
-            "result", {"analysis_id": "00000000-0000-4000-8000-000000000001"}
+        builder.select.return_value.eq.return_value.filter.assert_called_once_with(
+            "result->>analysis_id", "ilike", "00000000-0000-4000-8000-000000000001"
         )
         builder.select.return_value.eq.assert_any_call("user_id", "user1")
-        builder.select.return_value.eq.return_value.contains.return_value.order.assert_called_once_with(
+        builder.select.return_value.eq.return_value.filter.return_value.order.assert_called_once_with(
             "uploaded_at", desc=True
         )
-        builder.select.return_value.eq.return_value.contains.return_value.order.return_value.limit.assert_called_once_with(
+        builder.select.return_value.eq.return_value.filter.return_value.order.return_value.limit.assert_called_once_with(
             1
         )
 
@@ -658,7 +661,7 @@ class TestEnsureAnalysisHistory:
         cache_miss.code = "PGRST205"
         cached = _ScriptedClient([[], [], cache_miss])
         monkeypatch.setattr(db, "get_supabase", lambda: cached)
-        assert db.lookup_analysis_for_entitlement(legacy, "user1") == (None, True)
+        assert db.lookup_analysis_for_entitlement(legacy, "user1") == (None, False)
 
     def test_other_alias_schema_errors_are_outages(self, monkeypatch):
         legacy = "11111111-1111-4111-8111-111111111111"
@@ -1677,6 +1680,49 @@ class TestCrossUserGuestAnalysisId:
         assert preexisting.attempted == []
         assert preexisting.rows[0]["id"] == "99999999-9999-4999-8999-999999999999"
         assert preexisting.rows[0]["result"]["analysis_id"] == upper
+        found, ok = db.lookup_analysis_for_entitlement(canonical, "user-a")
+        assert ok is True
+        assert found["id"] == "99999999-9999-4999-8999-999999999999"
+        assert found["result"]["analysis_id"] == upper
+        found_upper, ok_upper = db.lookup_analysis_for_entitlement(upper, "user-a")
+        assert ok_upper is True
+        assert found_upper["id"] == found["id"]
+        assert found_upper["result"]["analysis_id"] == upper
+
+    def test_case_check_attribute_error_does_not_insert(self, monkeypatch):
+        class _NoFilter:
+            def __init__(self):
+                self.inserts = []
+
+            def table(self, _name):
+                return self
+
+            def select(self, *_args, **_kwargs):
+                return self
+
+            def eq(self, *_args, **_kwargs):
+                return self
+
+            def limit(self, *_args, **_kwargs):
+                return self
+
+            def insert(self, row):
+                self.inserts.append(row)
+                return self
+
+            def execute(self):
+                return _FakeExecuteResult([{"id": "should-not-insert"}])
+
+        client = _NoFilter()
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+        saved = db.save_analysis_history(
+            "user-a",
+            "guest.csv",
+            {"positions_count": 1},
+            result_data={"analysis_id": _GUEST_ANALYSIS_ID, "positions": []},
+        )
+        assert saved is None
+        assert client.inserts == []
 
 
 class _PagedBookClient:

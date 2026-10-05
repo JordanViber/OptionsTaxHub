@@ -121,7 +121,11 @@ END $$;
 
 -- 006 clears snapshots keyed by the deleted row id and its embedded analysis
 -- id. After a rewrite those snapshots may still be keyed by the legacy row id.
--- Entitlement analysis_id values are left unchanged.
+-- UUID-shaped snapshot keys match in any letter case. Other ids stay exact so
+-- distinct non-UUID strings are not collapsed. Alias rows are removed after
+-- they have been copied into cleanup_ids, so a later insert that reuses the
+-- canonical UUID cannot resolve the old legacy id. Entitlement analysis_id
+-- values are left unchanged.
 CREATE OR REPLACE FUNCTION public.clear_packet_payload_after_analysis_delete()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -131,6 +135,7 @@ AS $$
 DECLARE
   deleted_analysis_id TEXT;
   cleanup_ids TEXT[];
+  uuid_cleanup_ids TEXT[];
 BEGIN
   deleted_analysis_id := NULLIF(OLD.result ->> 'analysis_id', '');
   IF deleted_analysis_id IS NULL THEN
@@ -152,16 +157,38 @@ BEGIN
     WHERE candidate IS NOT NULL AND candidate <> ''
   ) INTO cleanup_ids;
 
+  SELECT ARRAY(
+    SELECT DISTINCT lower(candidate)
+    FROM unnest(cleanup_ids) AS candidate
+    WHERE candidate ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+  ) INTO uuid_cleanup_ids;
+
   DELETE FROM public.year_close_packet_snapshots
   WHERE user_id = OLD.user_id
-    AND analysis_id = ANY(cleanup_ids)
-    AND paid_at IS NULL;
+    AND paid_at IS NULL
+    AND (
+      analysis_id = ANY(cleanup_ids)
+      OR (
+        analysis_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        AND lower(analysis_id) = ANY(uuid_cleanup_ids)
+      )
+    );
 
   UPDATE public.year_close_packet_snapshots
   SET packet_payload = NULL, updated_at = now()
   WHERE user_id = OLD.user_id
-    AND analysis_id = ANY(cleanup_ids)
-    AND paid_at IS NOT NULL;
+    AND paid_at IS NOT NULL
+    AND (
+      analysis_id = ANY(cleanup_ids)
+      OR (
+        analysis_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        AND lower(analysis_id) = ANY(uuid_cleanup_ids)
+      )
+    );
+
+  DELETE FROM public.portfolio_analysis_id_aliases
+  WHERE user_id = OLD.user_id
+    AND canonical_analysis_id = OLD.id;
 
   RETURN OLD;
 END;

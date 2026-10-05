@@ -234,10 +234,6 @@ def _user_has_case_insensitive_embedded_id(
             .limit(1)
             .execute()
         )
-    except AttributeError:
-        # Partial test doubles omit this filter. The insert still enforces
-        # the primary key and the case-sensitive embedded unique index.
-        return False
     except Exception as exc:
         logger.error(
             "Could not compare analysis id case for user %s: %s",
@@ -479,15 +475,23 @@ def _fetch_analysis_by_primary_key(client, analysis_id: str, user_id: str, colum
 
 
 def _fetch_analysis_by_embedded_id(client, analysis_id: str, user_id: str, columns: str):
-    return (
+    """Find a row by result.analysis_id.
+
+    UUID-shaped values match in any letter case, the same way the insert
+    pre-check does. The stored text is left as the caller sent it. Any other
+    embedded id stays case-sensitive so distinct non-UUID strings do not collapse.
+    """
+    query = (
         client.table("portfolio_analyses")
         .select(columns)
         .eq("user_id", user_id)
-        .contains("result", {"analysis_id": analysis_id})
-        .order("uploaded_at", desc=True)
-        .limit(1)
-        .execute()
     )
+    canonical = _canonical_analysis_uuid(analysis_id)
+    if canonical is not None:
+        query = query.filter("result->>analysis_id", "ilike", canonical)
+    else:
+        query = query.contains("result", {"analysis_id": analysis_id})
+    return query.order("uploaded_at", desc=True).limit(1).execute()
 
 
 def _fetch_analysis_alias(client, analysis_id: str, user_id: str):
@@ -638,14 +642,12 @@ def get_analysis_by_result_analysis_id(
     if client is None:
         return None
     try:
-        result = (
-            client.table("portfolio_analyses")
-            .select("id, user_id, filename, uploaded_at, summary, positions_count, total_market_value, result")
-            .eq("user_id", user_id)
-            .contains("result", {"analysis_id": analysis_id})
-            .order("uploaded_at", desc=True)
-            .limit(1)
-            .execute()
+        result = _fetch_analysis_by_embedded_id(
+            client,
+            analysis_id,
+            user_id,
+            "id, user_id, filename, uploaded_at, summary, positions_count, "
+            "total_market_value, result",
         )
         if result.data:
             return dict(result.data[0])
@@ -768,6 +770,58 @@ def delete_analyses_without_result(user_id: str) -> int:
     except Exception as e:
         logger.error(f"Failed to delete orphan analyses: {e}")
         return 0
+
+
+def list_legacy_alias_ids(
+    canonical_analysis_id: str,
+    user_id: str,
+) -> Optional[list]:
+    """Legacy row ids aliased to this user and canonical analysis.
+
+    An empty list means there are no aliases, or migration 012 is not applied.
+    None means the lookup failed. Callers must not treat that as no aliases:
+    a PostgREST schema-cache miss still has the rows, and forgetting nothing
+    would leave the rewritten analysis reachable by its old id.
+    """
+    if not canonical_analysis_id or not user_id:
+        return []
+    client = get_supabase()
+    if client is None:
+        return []
+    canonical = _canonical_analysis_uuid(canonical_analysis_id)
+    query_id = canonical if canonical is not None else canonical_analysis_id
+    try:
+        result = (
+            client.table("portfolio_analysis_id_aliases")
+            .select("legacy_row_id")
+            .eq("user_id", user_id)
+            .eq("canonical_analysis_id", query_id)
+            .execute()
+        )
+    except Exception as exc:
+        if _is_missing_alias_table(exc):
+            logger.info(
+                "portfolio_analysis_id_aliases is missing; delete continues "
+                "without legacy packet keys"
+            )
+            return []
+        logger.error(
+            "Could not list analysis id aliases for %s: %s",
+            canonical_analysis_id,
+            exc,
+        )
+        return None
+    data = getattr(result, "data", None)
+    if not isinstance(data, list):
+        return None
+    legacy_ids = []
+    for row in data:
+        if not isinstance(row, dict):
+            continue
+        legacy_id = str(row.get("legacy_row_id") or "").strip()
+        if legacy_id and legacy_id not in legacy_ids:
+            legacy_ids.append(legacy_id)
+    return legacy_ids
 
 
 def delete_analysis_by_id(analysis_id: str, user_id: str) -> bool:
@@ -1161,21 +1215,26 @@ def _exception_text(exc: Exception) -> str:
 def _is_missing_alias_table(exc: Exception) -> bool:
     """True only when portfolio_analysis_id_aliases itself is absent.
 
-    A missing column, a schema-cache miss for a different relation, or any
-    other error is not this case. Payment lookups must keep those as outages.
+    Postgres 42P01 (undefined_table) naming this relation, or text that says
+    the relation or table does not exist, means migration 012 is not applied.
+    The legacy id is still the primary key, so a lookup may fall through.
+    PostgREST schema-cache errors such as PGRST205 are not a miss: the table
+    exists and a rewritten id is no longer a primary key. Those stay outages.
+    A column miss is not this case.
     """
     text = _exception_text(exc)
     if "portfolio_analysis_id_aliases" not in text:
         return False
+    if "column" in text:
+        return False
     code = _exception_code(exc).upper()
-    if code in {"42P01", "PGRST205"}:
+    if code == "42P01":
         return True
     if code:
         return False
     return (
         "does not exist" in text
         and any(token in text for token in ("relation", "table"))
-        and "column" not in text
     )
 
 

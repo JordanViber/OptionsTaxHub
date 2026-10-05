@@ -2192,6 +2192,9 @@ class _AliasStepClient:
     def contains(self, *_args, **_kwargs):
         return self
 
+    def filter(self, *_args, **_kwargs):
+        return self
+
     def order(self, *_args, **_kwargs):
         return self
 
@@ -2220,10 +2223,19 @@ def _alias_column_schema_error():
     return error
 
 
+def _alias_schema_cache_error():
+    error = Exception(
+        "Could not find the table 'public.portfolio_analysis_id_aliases' in the schema cache"
+    )
+    error.code = "PGRST205"
+    return error
+
+
 @pytest.mark.parametrize(
     "alias_error, confirm_status, webhook_status",
     [
         (_missing_alias_table_error(), 409, 200),
+        (_alias_schema_cache_error(), 503, 500),
         (_alias_column_schema_error(), 503, 500),
         (Exception("timeout"), 503, 500),
     ],
@@ -2265,9 +2277,6 @@ def test_alias_lookup_errors_on_confirm_and_webhook(
     assert confirm.status_code == confirm_status
     if confirm_status == 409:
         assert "source document" in confirm.json()["detail"]
-    else:
-        assert confirm.status_code == 503
-        assert "409" not in str(confirm.status_code)
 
     webhook = _post_signed_webhook(
         _packet_checkout_event(
@@ -4336,19 +4345,36 @@ def test_paid_year_survives_restart_deleted_history_and_newer_rows(monkeypatch):
     class _HistoryInsert:
         def __init__(self):
             self.row = None
+            self.op = None
 
         def table(self, name):
             assert name == "portfolio_analyses"
+            self.op = None
+            self.row = None
             return self
 
         def insert(self, row):
+            self.op = "insert"
             self.row = row
             return self
 
         def select(self, *_args):
+            if self.op != "insert":
+                self.op = "select"
+            return self
+
+        def eq(self, *_args, **_kwargs):
+            return self
+
+        def filter(self, *_args, **_kwargs):
+            return self
+
+        def limit(self, *_args, **_kwargs):
             return self
 
         def execute(self):
+            if self.op != "insert":
+                return SimpleNamespace(data=[])
             inserted_rows.append(self.row)
             return SimpleNamespace(data=[{"id": self.row.get("id")}])
 
