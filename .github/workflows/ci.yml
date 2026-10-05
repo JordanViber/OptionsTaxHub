@@ -135,7 +135,7 @@ jobs:
         run: |
           cd client
           npm install --legacy-peer-deps --no-save --ignore-scripts
-          if test -d node_modules/@next/swc-linux-x64-gnu || test -d ../node_modules/@next/swc-linux-x64-gnu; then
+          if node -e "require('@next/swc-linux-x64-gnu')"; then
             echo "SWC @next/swc-linux-x64-gnu present"
           else
             echo "SWC @next/swc-linux-x64-gnu missing; installing with --no-save"
@@ -144,13 +144,13 @@ jobs:
               echo "ERROR: could not read @next/swc-linux-x64-gnu from next optionalDependencies"
               exit 1
             fi
-            npm install --legacy-peer-deps --no-save --ignore-scripts "@next/swc-linux-x64-gnu@${swc_version}"
+            npm install --no-save --package-lock=false "@next/swc-linux-x64-gnu@${swc_version}"
             if [ -n "$(git status --porcelain -- ../package.json ../package-lock.json ./package.json ./package-lock.json)" ]; then
               echo "ERROR: SWC install rewrote a package manifest or lockfile. Restoring and stopping."
               git checkout -- ../package.json ../package-lock.json ./package.json ./package-lock.json
               exit 1
             fi
-            test -d node_modules/@next/swc-linux-x64-gnu || test -d ../node_modules/@next/swc-linux-x64-gnu
+            node -e "require('@next/swc-linux-x64-gnu')"
           fi
 
       - name: Lint with ESLint
@@ -180,6 +180,9 @@ jobs:
           cd client
           export NEXT_IGNORE_INCORRECT_LOCKFILE=1
           export NEXT_TELEMETRY_DISABLED=1
+          # Fake E2E-only Supabase values. The host's first label matches the session key injected by tests/e2e/fixtures.ts. Auth calls are mocked by Playwright. This is not a real key.
+          export NEXT_PUBLIC_SUPABASE_URL=http://vgrlucxqncajjdoaoctq.localhost:54321
+          export NEXT_PUBLIC_SUPABASE_ANON_KEY=e2e-fake-anon-key
           npm run build
 
       - name: Upload coverage to Codecov
@@ -264,7 +267,7 @@ jobs:
         run: |
           cd client
           npm install --legacy-peer-deps --no-save --ignore-scripts
-          if test -d node_modules/@next/swc-linux-x64-gnu || test -d ../node_modules/@next/swc-linux-x64-gnu; then
+          if node -e "require('@next/swc-linux-x64-gnu')"; then
             echo "SWC @next/swc-linux-x64-gnu present"
           else
             echo "SWC @next/swc-linux-x64-gnu missing; installing with --no-save"
@@ -273,13 +276,13 @@ jobs:
               echo "ERROR: could not read @next/swc-linux-x64-gnu from next optionalDependencies"
               exit 1
             fi
-            npm install --legacy-peer-deps --no-save --ignore-scripts "@next/swc-linux-x64-gnu@${swc_version}"
+            npm install --no-save --package-lock=false "@next/swc-linux-x64-gnu@${swc_version}"
             if [ -n "$(git status --porcelain -- ../package.json ../package-lock.json ./package.json ./package-lock.json)" ]; then
               echo "ERROR: SWC install rewrote a package manifest or lockfile. Restoring and stopping."
               git checkout -- ../package.json ../package-lock.json ./package.json ./package-lock.json
               exit 1
             fi
-            test -d node_modules/@next/swc-linux-x64-gnu || test -d ../node_modules/@next/swc-linux-x64-gnu
+            node -e "require('@next/swc-linux-x64-gnu')"
           fi
           npx playwright install --with-deps
 
@@ -289,11 +292,7 @@ jobs:
           python -m uvicorn main:app --host 0.0.0.0 --port 8011 > /tmp/backend.log 2>&1 &
           ready=0
           for _ in $(seq 1 30); do
-            if curl -sf http://127.0.0.1:8011/health >/dev/null 2>&1; then
-              ready=1
-              break
-            fi
-            if bash -c ':</dev/tcp/127.0.0.1/8011' 2>/dev/null; then
+            if curl -fsS --max-time 5 http://localhost:8011/health >/dev/null; then
               ready=1
               break
             fi

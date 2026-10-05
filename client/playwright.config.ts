@@ -11,7 +11,7 @@ export default defineConfig({
   },
   webServer: {
     command: process.env.CI
-      ? "npm run start > /tmp/frontend.log 2>&1"
+      ? "bash -c 'set -o pipefail; npm run start 2>&1 | tee /tmp/frontend.log'"
       : "npm run dev",
     url: "http://localhost:3000",
     reuseExistingServer: !process.env.CI,
