@@ -74,9 +74,13 @@ from year_close_packet import (
 from csv_parser import parse_csv, RealizedEvent, transactions_to_tax_lots
 from lot_matcher import match_1099b_lots
 from ledger import (
+    ACTIVITY_BOOK_LOAD_FAILED_WARNING,
+    ACTIVITY_BOOK_SAVE_FAILED_WARNING,
+    HISTORICAL_BOOK_UNRECOVERABLE_WARNING,
     SAMPLE_FIXTURE_PRICES,
     is_sample_csv_filename,
     is_trusted_in_app_sample,
+    is_trusted_sample_csv_bytes,
     merge_transaction_books,
     merge_warning,
     strip_book_transactions_dict,
@@ -121,7 +125,10 @@ from db import (
     save_tax_profile as db_save_tax_profile,
     get_tax_profile as db_get_tax_profile,
     get_supabase,
-    get_latest_activity_book,
+    ActivityBookLookup,
+    clear_unconfirmed_history_counts,
+    load_activity_book_for_merge,
+    upsert_activity_book,
     lookup_packet_grant_for_tax_year,
     lookup_packet_entitlement_for_tax_year,
     save_packet_entitlement,
@@ -577,6 +584,48 @@ def _try_get_ai_suggestions(
         return None
 
 
+def _stored_history_hides_trade_counts(
+    *,
+    wrote_private_book: bool,
+    private_rows,
+    lookup: ActivityBookLookup,
+    sample: bool = False,
+) -> bool:
+    """True when this history row must not look like a stripped book.
+
+    A confirmed private write may keep the counts: the trades live in the
+    private table. A sample upload, including trusted sample bytes under
+    another filename, is not written to that table. A failed upsert, a failed
+    read, a missing table, or an unfinished scan did not store them either,
+    so the redacted row must not block an older list that still has transactions.
+    """
+    if wrote_private_book:
+        return False
+    if sample:
+        return True
+    if private_rows is not None:
+        return True
+    return (not lookup.ok) or lookup.scan_incomplete
+
+
+def _history_models_without_trade_counts(result: PortfolioAnalysis, summary):
+    """Copies for the history insert. The analyze response keeps its counts."""
+    book = result.activity_book
+    if hasattr(book, "model_copy"):
+        book = book.model_copy(update={"transaction_count": 0})
+    nested = result.summary
+    if hasattr(nested, "model_copy"):
+        nested = nested.model_copy(update={"activity_transaction_count": 0})
+    elif isinstance(nested, dict):
+        nested = {**nested, "activity_transaction_count": 0}
+    cleared = result.model_copy(update={"activity_book": book, "summary": nested})
+    if hasattr(summary, "model_copy"):
+        summary = summary.model_copy(update={"activity_transaction_count": 0})
+    elif isinstance(summary, dict):
+        summary = {**summary, "activity_transaction_count": 0}
+    return cleared, summary
+
+
 def _save_history_best_effort(
     user_id: str,
     filename: str,
@@ -590,6 +639,7 @@ def _save_history_best_effort(
         # Use mode="json" to convert date/datetime objects to ISO strings
         # so the dict is JSON-serializable for the JSONB column.
         result_dict = result.model_dump(mode="json") if hasattr(result, "model_dump") else dict(result)
+        result_dict = _redacted_stored_analysis(result_dict)
         summary_dict = summary.model_dump(mode="json") if hasattr(summary, "model_dump") else dict(summary)
         saved = save_analysis_history(
             user_id=user_id,
@@ -1149,6 +1199,65 @@ def _apply_packet_year_grant(result: PortfolioAnalysis, user_id: str) -> Portfol
     )
 
 
+def _json_book_transactions(book) -> list:
+    """JSON rows from the in-memory book, not from a redacted public copy."""
+    rows = []
+    for txn in getattr(book, "transactions", None) or []:
+        if hasattr(txn, "model_dump"):
+            rows.append(txn.model_dump(mode="json"))
+        else:
+            rows.append(txn)
+    return rows
+
+
+def _private_rows_to_save(
+    book,
+    *,
+    user_id: str,
+    sample: bool,
+    merge_mode: str,
+    lookup: ActivityBookLookup,
+) -> list | None:
+    """Full trade list to upsert, or None when this upload must not write."""
+    if not user_id or sample:
+        return None
+    if not lookup.ok or lookup.missing_schema or lookup.scan_incomplete:
+        return None
+    rows = _json_book_transactions(book)
+    # Auto never writes an empty list over a book, and never creates one.
+    if merge_mode != "replace" and not rows:
+        return None
+    return rows
+
+
+def _claims_trades_added_to_saved_book(warning: str) -> bool:
+    return warning.startswith("Added ") and "to your book" in warning
+
+
+def _activity_book_not_saved(result: PortfolioAnalysis) -> PortfolioAnalysis:
+    """The private ledger write failed. Do not describe this file as saved."""
+    book = result.activity_book
+    if book is not None:
+        book = book.model_copy(
+            update={"added_from_this_upload": 0, "replaced": False}
+        )
+    warnings = [
+        warning
+        for warning in (result.warnings or [])
+        if not _claims_trades_added_to_saved_book(warning)
+    ]
+    if ACTIVITY_BOOK_SAVE_FAILED_WARNING not in warnings:
+        warnings.append(ACTIVITY_BOOK_SAVE_FAILED_WARNING)
+    return result.model_copy(update={"activity_book": book, "warnings": warnings})
+
+
+def _redacted_stored_analysis(analysis: dict) -> dict:
+    """Copy saved to portfolio_analyses.result. Trades stay out of that JSON."""
+    redacted = strip_book_transactions_dict(analysis if isinstance(analysis, dict) else {})
+    redacted.pop("transactions", None)
+    return redacted
+
+
 def _resolve_activity_book(
     *,
     user_id: str,
@@ -1158,15 +1267,26 @@ def _resolve_activity_book(
     parse_errors: list[str],
     tax_lots: list,
     realized_events: list,
+    csv_bytes: bytes | None = None,
 ):
-    """Merge this upload with the saved book when the user is signed in."""
+    """Merge this upload with the saved book when the user is signed in.
+
+    The fifth return value is the full transaction list to store privately,
+    or None when this upload must not write the private book.
+    """
     merge_mode = _normalize_merge_mode(merge_mode)
-    sample = is_sample_csv_filename(filename)
-    prior = None
-    if user_id and merge_mode != "replace" and not sample:
-        prior = get_latest_activity_book(user_id)
-        if prior and is_sample_csv_filename(prior.get("filename") or ""):
-            prior = None
+    sample = is_sample_csv_filename(filename) or is_trusted_sample_csv_bytes(csv_bytes)
+    read_prior = bool(user_id) and merge_mode != "replace" and not sample
+    lookup = ActivityBookLookup()
+    if read_prior:
+        lookup = load_activity_book_for_merge(user_id)
+        if not lookup.ok and not lookup.missing_schema:
+            parse_errors.append(ACTIVITY_BOOK_LOAD_FAILED_WARNING)
+        elif lookup.unrecoverable and not lookup.scan_incomplete:
+            parse_errors.append(HISTORICAL_BOOK_UNRECOVERABLE_WARNING)
+    prior = lookup.book if lookup.ok and not lookup.scan_incomplete else None
+    if prior and is_sample_csv_filename(prior.get("filename") or ""):
+        prior = None
     prior_txns = transactions_from_stored((prior or {}).get("transactions"))
 
     if prior_txns and transactions:
@@ -1201,7 +1321,20 @@ def _resolve_activity_book(
             replaced=False,
             transactions=merged.transactions,
         )
-        return tax_lots, merged.transactions, realized_events, book
+        return (
+            tax_lots,
+            merged.transactions,
+            realized_events,
+            book,
+            _private_rows_to_save(
+                book,
+                user_id=user_id,
+                sample=sample,
+                merge_mode=merge_mode,
+                lookup=lookup,
+            ),
+            lookup,
+        )
 
     stored_txns = list(transactions)
     if not stored_txns and prior_txns:
@@ -1227,7 +1360,20 @@ def _resolve_activity_book(
         replaced=merge_mode == "replace" or sample or not prior_txns,
         transactions=stored_txns,
     )
-    return tax_lots, transactions, realized_events, book
+    return (
+        tax_lots,
+        transactions,
+        realized_events,
+        book,
+        _private_rows_to_save(
+            book,
+            user_id=user_id,
+            sample=sample,
+            merge_mode=merge_mode,
+            lookup=lookup,
+        ),
+        lookup,
+    )
 
 
 @app.post(
@@ -1321,7 +1467,14 @@ async def _run_portfolio_analysis(
             },
         )
 
-    tax_lots, transactions, realized_events, activity_book = _resolve_activity_book(
+    (
+        tax_lots,
+        transactions,
+        realized_events,
+        activity_book,
+        private_rows,
+        activity_lookup,
+    ) = _resolve_activity_book(
         user_id=user_id,
         filename=filename,
         merge_mode=_normalize_merge_mode(merge_mode),
@@ -1329,6 +1482,7 @@ async def _run_portfolio_analysis(
         parse_errors=parse_errors,
         tax_lots=tax_lots,
         realized_events=realized_events,
+        csv_bytes=contents,
     )
 
     tax_profile = _tax_profile_from_query(filing_status, estimated_income, tax_year)
@@ -1440,6 +1594,19 @@ async def _run_portfolio_analysis(
         warnings=_summarize_warnings(all_warnings),
     )
     result = _apply_packet_year_grant(result, user_id)
+    wrote_private_book = False
+    if private_rows is not None:
+        saved_book = upsert_activity_book(
+            user_id, analysis_id, filename, private_rows
+        )
+        if saved_book is None:
+            logger.error(
+                "Private activity book was not saved for analysis %s",
+                analysis_id,
+            )
+            result = _activity_book_not_saved(result)
+        else:
+            wrote_private_book = True
     keep_lot_rows = trusted_sample
     if keep_lot_rows:
         result = result.model_copy(update={"sample_run": True})
@@ -1458,8 +1625,22 @@ async def _run_portfolio_analysis(
         result.model_copy(update={"packet_unlocked": False, "packet_session_id": None}),
         keep_lot_rows=keep_lot_rows,
     )
+    history_summary = summary
+    sample_upload = is_sample_csv_filename(filename) or is_trusted_sample_csv_bytes(
+        contents
+    )
+    if _stored_history_hides_trade_counts(
+        wrote_private_book=wrote_private_book,
+        private_rows=private_rows,
+        lookup=activity_lookup,
+        sample=sample_upload,
+    ):
+        history_result, history_summary = _history_models_without_trade_counts(
+            history_result,
+            summary,
+        )
     history_saved = _save_history_best_effort(
-        user_id, filename, summary, history_result
+        user_id, filename, history_summary, history_result
     )
     if result.packet_unlocked and result.packet_session_id and not history_saved:
         # Paid documents must remain attached to a deletable history row.
@@ -1592,11 +1773,15 @@ async def persist_portfolio_history(
         saved = existing_history
     else:
         try:
+            stored_summary, stored_analysis = clear_unconfirmed_history_counts(
+                summary,
+                _redacted_stored_analysis(analysis),
+            )
             saved = save_analysis_history(
                 user_id=user_id,
                 filename=filename[:255],
-                summary=summary,
-                result_data=analysis,
+                summary=stored_summary,
+                result_data=stored_analysis,
             )
         except HistoryInsertConflict:
             saved = None
