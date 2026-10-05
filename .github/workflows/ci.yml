@@ -83,7 +83,7 @@ jobs:
           fi
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2  # v4
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
         continue-on-error: true
         with:
           files: ./server/coverage.xml
@@ -135,6 +135,23 @@ jobs:
         run: |
           cd client
           npm install --legacy-peer-deps --no-save --ignore-scripts
+          if test -d node_modules/@next/swc-linux-x64-gnu || test -d ../node_modules/@next/swc-linux-x64-gnu; then
+            echo "SWC @next/swc-linux-x64-gnu present"
+          else
+            echo "SWC @next/swc-linux-x64-gnu missing; installing with --no-save"
+            swc_version="$(node -p "require('next/package.json').optionalDependencies['@next/swc-linux-x64-gnu']")"
+            if [ -z "$swc_version" ] || [ "$swc_version" = "undefined" ]; then
+              echo "ERROR: could not read @next/swc-linux-x64-gnu from next optionalDependencies"
+              exit 1
+            fi
+            npm install --legacy-peer-deps --no-save --ignore-scripts "@next/swc-linux-x64-gnu@${swc_version}"
+            if [ -n "$(git status --porcelain -- ../package.json ../package-lock.json ./package.json ./package-lock.json)" ]; then
+              echo "ERROR: SWC install rewrote a package manifest or lockfile. Restoring and stopping."
+              git checkout -- ../package.json ../package-lock.json ./package.json ./package-lock.json
+              exit 1
+            fi
+            test -d node_modules/@next/swc-linux-x64-gnu || test -d ../node_modules/@next/swc-linux-x64-gnu
+          fi
 
       - name: Lint with ESLint
         continue-on-error: true
@@ -161,10 +178,12 @@ jobs:
       - name: Build check
         run: |
           cd client
+          export NEXT_IGNORE_INCORRECT_LOCKFILE=1
+          export NEXT_TELEMETRY_DISABLED=1
           npm run build
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2  # v4
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
         continue-on-error: true
         with:
           files: ./client/coverage/lcov.info
@@ -245,13 +264,46 @@ jobs:
         run: |
           cd client
           npm install --legacy-peer-deps --no-save --ignore-scripts
+          if test -d node_modules/@next/swc-linux-x64-gnu || test -d ../node_modules/@next/swc-linux-x64-gnu; then
+            echo "SWC @next/swc-linux-x64-gnu present"
+          else
+            echo "SWC @next/swc-linux-x64-gnu missing; installing with --no-save"
+            swc_version="$(node -p "require('next/package.json').optionalDependencies['@next/swc-linux-x64-gnu']")"
+            if [ -z "$swc_version" ] || [ "$swc_version" = "undefined" ]; then
+              echo "ERROR: could not read @next/swc-linux-x64-gnu from next optionalDependencies"
+              exit 1
+            fi
+            npm install --legacy-peer-deps --no-save --ignore-scripts "@next/swc-linux-x64-gnu@${swc_version}"
+            if [ -n "$(git status --porcelain -- ../package.json ../package-lock.json ./package.json ./package-lock.json)" ]; then
+              echo "ERROR: SWC install rewrote a package manifest or lockfile. Restoring and stopping."
+              git checkout -- ../package.json ../package-lock.json ./package.json ./package-lock.json
+              exit 1
+            fi
+            test -d node_modules/@next/swc-linux-x64-gnu || test -d ../node_modules/@next/swc-linux-x64-gnu
+          fi
           npx playwright install --with-deps
 
       - name: Start backend server
         run: |
           cd server
           python -m uvicorn main:app --host 0.0.0.0 --port 8011 > /tmp/backend.log 2>&1 &
-          sleep 3
+          ready=0
+          for _ in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8011/health >/dev/null 2>&1; then
+              ready=1
+              break
+            fi
+            if bash -c ':</dev/tcp/127.0.0.1/8011' 2>/dev/null; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo "backend did not become ready on 127.0.0.1:8011"
+            cat /tmp/backend.log
+            exit 1
+          fi
         env:
           PYTHONPATH: ${{ github.workspace }}/server
           DATABASE_URL: sqlite:///test.db
@@ -261,18 +313,12 @@ jobs:
       - name: Build frontend
         run: |
           cd client
+          export NEXT_IGNORE_INCORRECT_LOCKFILE=1
+          export NEXT_TELEMETRY_DISABLED=1
+          export NEXT_PUBLIC_API_URL=http://localhost:8011
           npm run build
 
-      - name: Start frontend server
-        run: |
-          cd client
-          timeout 30 npm run start > /tmp/frontend.log 2>&1 &
-          sleep 5
-        env:
-          NEXT_PUBLIC_API_URL: http://localhost:8011
-
       - name: Run Playwright tests
-        continue-on-error: true
         run: |
           cd client
           npm run test:e2e
