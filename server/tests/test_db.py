@@ -126,6 +126,118 @@ class _ScriptedClient:
         return _FakeExecuteResult(step)
 
 
+class _Desc:
+    def __init__(self, value):
+        self.value = value
+
+    def __lt__(self, other):
+        return self.value > other.value
+
+
+def _snapshot_order_key(row, column, desc, nullsfirst):
+    value = row.get(column)
+    is_null = value is None
+    nulls_first = bool(desc) if nullsfirst is None else bool(nullsfirst)
+    null_rank = 0 if is_null == nulls_first else 1
+    if is_null:
+        ordered = ""
+    elif desc:
+        ordered = _Desc(value)
+    else:
+        ordered = value
+    return (null_rank, ordered)
+
+
+class _OrderingSnapshotQuery:
+    def __init__(self, client):
+        self.client = client
+        self.eqs = []
+        self.filters = []
+        self.orders = []
+        self.limit_n = None
+        self.mode = "select"
+
+    def select(self, *_args, **_kwargs):
+        return self
+
+    def eq(self, column, value):
+        self.eqs.append((column, value))
+        return self
+
+    def filter(self, column, operator, value):
+        self.filters.append((column, operator, value))
+        return self
+
+    def order(self, column, desc=False, nullsfirst=None, **_kwargs):
+        spec = {}
+        if desc:
+            spec["desc"] = True
+        if nullsfirst is not None:
+            spec["nullsfirst"] = nullsfirst
+        self.orders.append((column, desc, nullsfirst))
+        self.client.orders.append((column, spec))
+        return self
+
+    def limit(self, count):
+        self.limit_n = count
+        return self
+
+    def update(self, row):
+        self.mode = "update"
+        self.client.updates.append(dict(row))
+        return self
+
+    def insert(self, row):
+        self.mode = "insert"
+        self.client.inserts.append(dict(row))
+        return self
+
+    def is_(self, *_args, **_kwargs):
+        return self
+
+    def execute(self):
+        if self.mode != "select":
+            return _FakeExecuteResult([])
+        matched = []
+        for row in self.client.rows:
+            if any(row.get(column) != value for column, value in self.eqs):
+                continue
+            kept = True
+            for column, operator, value in self.filters:
+                if operator != "ilike" or str(row.get(column) or "").lower() != str(value).lower():
+                    kept = False
+                    break
+            if not kept:
+                continue
+            matched.append(dict(row))
+        if self.orders:
+            for column, desc, nullsfirst in reversed(self.orders):
+                matched.sort(
+                    key=lambda row, column=column, desc=desc, nullsfirst=nullsfirst: (
+                        _snapshot_order_key(row, column, desc, nullsfirst)
+                    )
+                )
+        if self.limit_n is not None:
+            matched = matched[: self.limit_n]
+        return _FakeExecuteResult(matched)
+
+
+class _OrderingSnapshotClient:
+    """Applies recorded order() calls before limit, so an unordered read is wrong."""
+
+    def __init__(self, rows):
+        self.rows = [dict(row) for row in rows]
+        self.orders = []
+        self.updates = []
+        self.inserts = []
+
+    def rpc(self, *_args, **_kwargs):
+        raise RuntimeError("cleanup unavailable")
+
+    def table(self, _name):
+        return _OrderingSnapshotQuery(self)
+
+
 class _FakeClient:
     """Minimal fake Supabase client."""
 
@@ -970,6 +1082,7 @@ class TestPacketSnapshots:
         assert ("filter", ("paid_at", "not.is", "null"), {}) in client.builders[1].calls
         assert ("is_", ("packet_payload", "null"), {}) in client.builders[1].calls
         assert not any(call[0] == "upsert" for call in client.builders[1].calls)
+        assert "analysis_id" not in row
         assert saved["analysis_id"] == "analysis-a"
 
     def test_conditional_repair_does_not_clobber_payload_written_after_read(self, monkeypatch):
@@ -1004,6 +1117,9 @@ class TestPacketSnapshots:
                 return self
 
             def limit(self, *_args):
+                return self
+
+            def order(self, *_args, **_kwargs):
                 return self
 
             def filter(self, *args):
@@ -1054,6 +1170,7 @@ class TestPacketSnapshots:
         ]
         assert ("paid_at", "not.is", "null") in client.filters
         assert ("is_", ("packet_payload", "null")) in client.filters
+        assert "analysis_id" not in client.updates[0]
         assert fresh["packet_payload"]["lot_match_report"]["matched"] == [
             {"symbol": "AMD"}
         ]
@@ -1079,6 +1196,7 @@ class TestPacketSnapshots:
             def __init__(self):
                 self.reads = 0
                 self.updated_row = None
+                self.updates = []
                 self.update_filters = []
                 self.upserts = []
 
@@ -1094,12 +1212,16 @@ class TestPacketSnapshots:
             def limit(self, *_args):
                 return self
 
+            def order(self, *_args, **_kwargs):
+                return self
+
             def is_(self, *args):
                 self.update_filters.append(args)
                 return self
 
             def update(self, row):
                 self.updated_row = row
+                self.updates.append(dict(row))
                 return self
 
             def upsert(self, row, **_kwargs):
@@ -1129,6 +1251,7 @@ class TestPacketSnapshots:
 
         assert saved["analysis_id"] == "analysis-a"
         assert client.update_filters == [("paid_at", "null")]
+        assert client.updates and "analysis_id" not in client.updates[0]
         assert client.upserts == []
         assert paid["paid_at"] is not None
         assert paid["packet_session_id"] == "cs_paid"
@@ -1180,6 +1303,79 @@ class TestPacketSnapshots:
         assert not any(
             call[0] == "eq" and call[1][0] == "analysis_id" for call in calls
         )
+
+    def test_snapshot_update_keeps_stored_uuid_spelling(self, monkeypatch):
+        stored = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
+        existing = {
+            "analysis_id": stored,
+            "user_id": "user1",
+            "tax_year": 2025,
+            "packet_payload": {"report": "private"},
+            "packet_session_id": None,
+            "paid_at": None,
+            "expires_at": "2099-01-01T00:00:00+00:00",
+        }
+        client = _FakeClient(table_data=[existing])
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+
+        saved = db.save_packet_snapshot(
+            stored.lower(),
+            "user1",
+            2025,
+            {"report": "refreshed"},
+        )
+
+        update = next(call for call in client.builders[1].calls if call[0] == "update")
+        assert "analysis_id" not in update[1][0]
+        assert update[1][0]["packet_payload"] == {"report": "refreshed"}
+        assert saved["analysis_id"] == stored
+        assert not any(call[0] == "insert" for call in client.builders[1].calls)
+
+    def test_snapshot_lookup_prefers_paid_row_over_expired_case_variant(self, monkeypatch):
+        stored = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
+        expired = {
+            "analysis_id": stored.lower(),
+            "user_id": "user1",
+            "tax_year": 2025,
+            "packet_payload": {"report": "expired"},
+            "packet_session_id": None,
+            "paid_at": None,
+            "expires_at": "2000-01-01T00:00:00+00:00",
+        }
+        paid = {
+            "analysis_id": stored,
+            "user_id": "user1",
+            "tax_year": 2025,
+            "packet_payload": {"report": "paid"},
+            "packet_session_id": "cs_paid",
+            "paid_at": "2026-01-01T00:00:00+00:00",
+            "expires_at": None,
+        }
+        client = _OrderingSnapshotClient([expired, paid])
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+
+        snapshot, lookup_succeeded = db.get_packet_snapshot(stored.lower(), "user1")
+
+        assert lookup_succeeded is True
+        assert snapshot["analysis_id"] == stored
+        assert snapshot["packet_payload"] == {"report": "paid"}
+        assert client.orders == [
+            ("paid_at", {"desc": True, "nullsfirst": False}),
+            ("expires_at", {"desc": True, "nullsfirst": False}),
+            ("analysis_id", {}),
+        ]
+
+        save_client = _OrderingSnapshotClient([expired, paid])
+        monkeypatch.setattr(db, "get_supabase", lambda: save_client)
+        saved = db.save_packet_snapshot(
+            stored.lower(),
+            "user1",
+            2025,
+            {"report": "should-not-replace"},
+        )
+        assert saved["analysis_id"] == stored
+        assert save_client.updates == []
+        assert save_client.inserts == []
 
     def test_mark_packet_snapshot_paid_matches_uuid_case_variant(self, monkeypatch):
         stored = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"

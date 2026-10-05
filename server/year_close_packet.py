@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+import uuid
 from copy import deepcopy
 from datetime import date, datetime
 from io import BytesIO
@@ -1382,6 +1383,20 @@ def session_is_settled_packet(session: Any) -> bool:
     )
 
 
+def _analysis_ids_match(left: str, right: str) -> bool:
+    """UUID ids match in any letter case. Other ids stay an exact match.
+
+    Stripe metadata keeps the spelling already stored on the analysis. This
+    only decides whether two strings name that same id.
+    """
+    if left == right:
+        return True
+    try:
+        return str(uuid.UUID(left.strip())) == str(uuid.UUID(right.strip()))
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
 def session_grants_packet(session: Any, analysis_id: str = "") -> bool:
     """True only for a settled packet session bound to the requested analysis."""
     session_analysis = packet_analysis_id_from_session(session)
@@ -1391,7 +1406,7 @@ def session_grants_packet(session: Any, analysis_id: str = "") -> bool:
         and bool(session_analysis)
         and session_analysis != "local-analysis"
         and requested_analysis != "local-analysis"
-        and requested_analysis == session_analysis
+        and _analysis_ids_match(requested_analysis, session_analysis)
     )
     granted = analysis_matches and session_is_settled_packet(session)
     if not granted:

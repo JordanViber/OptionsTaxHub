@@ -535,6 +535,9 @@ class _UuidSnapshotQuery:
     def limit(self, *_args, **_kwargs):
         return self
 
+    def order(self, *_args, **_kwargs):
+        return self
+
     def execute(self):
         matched = []
         for row in self.rows:
@@ -641,20 +644,82 @@ def test_checkout_accepts_uuid_case_variant_and_keeps_stored_spelling(monkeypatc
         }, True),
     )
     captured = {}
+    captured_keys = []
+
+    def _create_checkout(**kwargs):
+        captured.update(kwargs)
+        captured_keys.append(kwargs["idempotency_key"])
+        return FakeCheckoutSession(**kwargs)
+
+    monkeypatch.setattr(main.stripe.checkout.Session, "create", _create_checkout)
+    panel_analysis = {**SAMPLE_ANALYSIS, "analysis_id": requested}
+    paid_session = SimpleNamespace(
+        id="cs_test_packet_abc",
+        payment_status="paid",
+        amount_total=4900,
+        status="complete",
+        currency="usd",
+        mode="payment",
+        livemode=False,
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": stored,
+            "user_id": "test-user-123",
+            "tax_year": "2025",
+        },
+    )
     monkeypatch.setattr(
         main.stripe.checkout.Session,
-        "create",
-        lambda **kwargs: captured.update(kwargs) or FakeCheckoutSession(**kwargs),
+        "retrieve",
+        lambda *_args, **_kwargs: paid_session,
     )
+    monkeypatch.setattr(main, "patch_analysis_result", lambda *_args, **_kwargs: True)
 
     response = client.post(
         "/api/year-close-packet/checkout",
-        json={"analysis_id": requested, "analysis": {**SAMPLE_ANALYSIS, "analysis_id": requested}},
+        json={"analysis_id": requested, "analysis": panel_analysis},
     )
 
     assert response.status_code == 200, response.text
     assert captured["metadata"]["analysis_id"] == stored
     assert response.json()["analysis_id"] == stored
+    stored_key = main._packet_checkout_idempotency_key("test-user-123", stored, 2025)
+    assert captured["idempotency_key"] == stored_key
+    assert stored_key != main._packet_checkout_idempotency_key(
+        "test-user-123", requested, 2025
+    )
+
+    replay = client.post(
+        "/api/year-close-packet/checkout",
+        json={"analysis_id": stored, "analysis": {**SAMPLE_ANALYSIS, "analysis_id": stored}},
+    )
+    assert replay.status_code == 200, replay.text
+    assert captured_keys == [stored_key, stored_key]
+
+    confirm = client.post(
+        "/api/year-close-packet/confirm",
+        json={
+            "analysis_id": requested,
+            "packet_analysis": requested,
+            "session_id": "cs_test_packet_abc",
+            "analysis": panel_analysis,
+        },
+    )
+    assert confirm.status_code == 200, confirm.text
+    assert confirm.json()["paid"] is True
+    assert confirm.json()["analysis_id"] == stored
+
+    downloaded = client.post(
+        "/api/year-close-packet/download",
+        json={
+            "analysis_id": requested,
+            "session_id": "cs_test_packet_abc",
+            "analysis": panel_analysis,
+        },
+    )
+    assert downloaded.status_code == 200, downloaded.text
+    assert downloaded.headers["content-type"].startswith("application/pdf")
+    assert "year-close-packet.pdf" in downloaded.headers.get("content-disposition", "")
 
 
 def test_checkout_claims_guest_snapshot_and_keeps_its_full_payload(monkeypatch):
@@ -1813,6 +1878,28 @@ def test_tips_checkout_does_not_set_packet_entitlement(monkeypatch):
     assert tip.status_code == 200
     unpaid = client.get("/api/year-close-packet/download?analysis_id=analysis-sample-1")
     assert unpaid.status_code == 403
+
+
+def test_session_grants_packet_accepts_uuid_case_variant():
+    stored = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
+    session = SimpleNamespace(
+        id="cs_case",
+        payment_status="paid",
+        amount_total=4900,
+        status="complete",
+        currency="usd",
+        mode="payment",
+        livemode=False,
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": stored,
+            "user_id": "test-user-123",
+        },
+    )
+    assert session_grants_packet(session, stored.lower()) is True
+    assert session_grants_packet(session, stored) is True
+    assert session_grants_packet(session, "not-a-uuid") is False
+    assert session_grants_packet(session, "local-analysis") is False
 
 
 def test_session_grants_packet_rejects_wrong_product_and_amount():

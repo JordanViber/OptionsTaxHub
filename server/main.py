@@ -65,6 +65,7 @@ from year_close_packet import (
     packet_store_belongs_to_user,
     paid_session_for_user_year,
     remember_analysis,
+    _analysis_ids_match,
     render_packet_pdf,
     resolve_packet_stripe_secret_key,
     session_grants_packet,
@@ -2387,20 +2388,6 @@ def _rollback_inserted_history(saved: dict, user_id: str) -> None:
         )
 
 
-def _analysis_ids_match(left: str, right: str) -> bool:
-    """UUID ids match in any letter case. Other ids stay an exact match.
-
-    Stripe metadata keeps the spelling already stored on the analysis. This
-    only decides whether two strings name that same id.
-    """
-    if left == right:
-        return True
-    try:
-        return str(uuid.UUID(left.strip())) == str(uuid.UUID(right.strip()))
-    except (ValueError, AttributeError, TypeError):
-        return False
-
-
 def _packet_checkout_idempotency_key(
     user_id: str,
     analysis_id: str,
@@ -2788,7 +2775,11 @@ def _is_persisted_same_year_packet_grant(
 def _payload_for_download(analysis_id: str, user_id: str, analysis: Optional[dict]):
     if isinstance(analysis, dict):
         supplied_id = str(analysis.get("analysis_id") or "").strip()
-        if supplied_id and supplied_id != "local-analysis" and supplied_id != analysis_id:
+        if (
+            supplied_id
+            and supplied_id != "local-analysis"
+            and not _analysis_ids_match(supplied_id, analysis_id)
+        ):
             raise HTTPException(
                 status_code=400,
                 detail="The analysis ID does not match the paid packet.",
@@ -3188,7 +3179,11 @@ async def confirm_year_close_packet(
             detail="Checkout session does not belong to this analysis.",
         )
     for supplied_id in (body.packet_analysis, body.analysis_id):
-        if supplied_id and supplied_id != "local-analysis" and supplied_id != analysis_id:
+        if (
+            supplied_id
+            and supplied_id != "local-analysis"
+            and not _analysis_ids_match(str(supplied_id), analysis_id)
+        ):
             raise HTTPException(
                 status_code=400,
                 detail="The checkout session does not match this analysis.",
@@ -3219,7 +3214,7 @@ async def confirm_year_close_packet(
 
     if isinstance(body.analysis, dict):
         supplied_id = str(body.analysis.get("analysis_id") or "").strip()
-        if supplied_id and supplied_id != analysis_id:
+        if supplied_id and not _analysis_ids_match(supplied_id, analysis_id):
             raise HTTPException(
                 status_code=400,
                 detail="The analysis ID does not match the paid packet.",

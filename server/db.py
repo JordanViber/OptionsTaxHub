@@ -1371,6 +1371,20 @@ def _match_snapshot_analysis_id(query, analysis_id: str):
     return query.eq("analysis_id", analysis_id)
 
 
+def _order_snapshot_candidates(query):
+    """Pick one snapshot when two spellings of the same UUID both exist.
+
+    DESC in PostgREST is NULLS FIRST unless nullsfirst is false, which would
+    let an expired unpaid row hide a paid row. Paid rows come first, then the
+    latest expiry, then the stored key.
+    """
+    return (
+        query.order("paid_at", desc=True, nullsfirst=False)
+        .order("expires_at", desc=True, nullsfirst=False)
+        .order("analysis_id")
+    )
+
+
 def save_packet_snapshot(
     analysis_id: str,
     user_id: str,
@@ -1394,11 +1408,13 @@ def save_packet_snapshot(
     expires_at = None if requested_paid_at else now + UNPAID_PACKET_SNAPSHOT_TTL
 
     def read_existing():
-        result = _match_snapshot_analysis_id(
-            client.table("year_close_packet_snapshots")
-            .select("analysis_id, user_id, tax_year, packet_payload, packet_session_id, paid_at, expires_at"),
-            analysis_id,
-        ).eq("user_id", user_id).limit(1).execute()
+        result = _order_snapshot_candidates(
+            _match_snapshot_analysis_id(
+                client.table("year_close_packet_snapshots")
+                .select("analysis_id, user_id, tax_year, packet_payload, packet_session_id, paid_at, expires_at"),
+                analysis_id,
+            ).eq("user_id", user_id)
+        ).limit(1).execute()
         return dict(result.data[0]) if result.data else None
 
     def result_row(result, fallback):
@@ -1431,7 +1447,6 @@ def save_packet_snapshot(
                 }
             tax_year = existing_row["tax_year"]
             row = {
-                "analysis_id": analysis_id,
                 "user_id": user_id,
                 "tax_year": int(tax_year),
                 "packet_payload": packet_payload,
@@ -1440,6 +1455,7 @@ def save_packet_snapshot(
                 "expires_at": None,
                 "updated_at": now.isoformat(),
             }
+            update_row = row
             # Repair only the null payload we just read. A concurrent delete or
             # a payload written after this read must not be upserted over.
             repair = _match_snapshot_analysis_id(
@@ -1477,6 +1493,9 @@ def save_packet_snapshot(
             "expires_at": expires_at.isoformat() if expires_at else None,
             "updated_at": now.isoformat(),
         }
+        # Leave the stored primary-key spelling alone. The ilike match can see
+        # another case of the same UUID, and writing analysis_id would rename it.
+        update_row = {key: value for key, value in row.items() if key != "analysis_id"}
 
         if existing_row:
             # The predicate makes this transition atomic with respect to the
@@ -1484,7 +1503,7 @@ def save_packet_snapshot(
             # affects no row and the paid row is read back without downgrading.
             result = _match_snapshot_analysis_id(
                 client.table("year_close_packet_snapshots")
-                .update(row),
+                .update(update_row),
                 analysis_id,
             ).eq("user_id", user_id).is_("paid_at", "null").select(
                 "analysis_id, user_id, tax_year"
@@ -1543,7 +1562,7 @@ def save_packet_snapshot(
                 # key. Promote only while the database still says unpaid.
                 promoted = _match_snapshot_analysis_id(
                     client.table("year_close_packet_snapshots")
-                    .update(row),
+                    .update(update_row),
                     analysis_id,
                 ).eq("user_id", user_id).is_("paid_at", "null").select(
                     "analysis_id, user_id, tax_year"
@@ -1572,11 +1591,13 @@ def get_packet_snapshot(
         return None, False
     _cleanup_expired_packet_snapshots(client)
     try:
-        result = _match_snapshot_analysis_id(
-            client.table("year_close_packet_snapshots")
-            .select("analysis_id, user_id, tax_year, packet_payload, packet_session_id, paid_at, expires_at"),
-            analysis_id,
-        ).eq("user_id", user_id).limit(1).execute()
+        result = _order_snapshot_candidates(
+            _match_snapshot_analysis_id(
+                client.table("year_close_packet_snapshots")
+                .select("analysis_id, user_id, tax_year, packet_payload, packet_session_id, paid_at, expires_at"),
+                analysis_id,
+            ).eq("user_id", user_id)
+        ).limit(1).execute()
         if not result.data:
             return None, True
         snapshot = dict(result.data[0])

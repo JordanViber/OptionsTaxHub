@@ -417,6 +417,8 @@ def test_save_packet_snapshot_unpaid_update_returns_row(monkeypatch):
     updated = {"analysis_id": ANALYSIS_ID, "user_id": USER_ID, "tax_year": TAX_YEAR}
     client = _install(monkeypatch, [_snap()], [updated])
     assert db.save_packet_snapshot(ANALYSIS_ID, USER_ID, TAX_YEAR, {"lots": [2]}) == updated
+    update = next(call for call in client.builders[1].calls if call[0] == "update")
+    assert "analysis_id" not in update[1][0]
     _assert_consumed(client)
 
 
@@ -519,6 +521,20 @@ def test_save_packet_snapshot_unique_conflict_promote_returns_row(monkeypatch):
         session_id="cs_promote",
         paid=True,
     ) == promoted
+    update = next(
+        call
+        for builder in client.builders
+        for call in builder.calls
+        if call[0] == "update"
+    )
+    assert "analysis_id" not in update[1][0]
+    insert = next(
+        call
+        for builder in client.builders
+        for call in builder.calls
+        if call[0] == "insert"
+    )
+    assert insert[1][0]["analysis_id"] == ANALYSIS_ID
     _assert_consumed(client)
 
 
