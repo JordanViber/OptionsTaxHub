@@ -145,7 +145,7 @@ jobs:
               exit 1
             fi
             git status --porcelain -- ../package.json ../package-lock.json ./package.json ./package-lock.json > "$RUNNER_TEMP/swc-lock-before.txt"
-            npm install --legacy-peer-deps --no-save --package-lock=false --ignore-scripts "@next/swc-linux-x64-gnu@${swc_version}"
+            npm install --legacy-peer-deps --no-save --ignore-scripts "@next/swc-linux-x64-gnu@${swc_version}"
             git status --porcelain -- ../package.json ../package-lock.json ./package.json ./package-lock.json > "$RUNNER_TEMP/swc-lock-after.txt"
             if ! cmp -s "$RUNNER_TEMP/swc-lock-before.txt" "$RUNNER_TEMP/swc-lock-after.txt"; then
               echo "ERROR: SWC install rewrote a package manifest or lockfile. Restoring and stopping."
@@ -280,7 +280,7 @@ jobs:
               exit 1
             fi
             git status --porcelain -- ../package.json ../package-lock.json ./package.json ./package-lock.json > "$RUNNER_TEMP/swc-lock-before.txt"
-            npm install --legacy-peer-deps --no-save --package-lock=false --ignore-scripts "@next/swc-linux-x64-gnu@${swc_version}"
+            npm install --legacy-peer-deps --no-save --ignore-scripts "@next/swc-linux-x64-gnu@${swc_version}"
             git status --porcelain -- ../package.json ../package-lock.json ./package.json ./package-lock.json > "$RUNNER_TEMP/swc-lock-after.txt"
             if ! cmp -s "$RUNNER_TEMP/swc-lock-before.txt" "$RUNNER_TEMP/swc-lock-after.txt"; then
               echo "ERROR: SWC install rewrote a package manifest or lockfile. Restoring and stopping."
