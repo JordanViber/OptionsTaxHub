@@ -653,7 +653,8 @@ def _save_history_best_effort(
         else:
             logger.warning("save_analysis_history returned None — check Supabase connection")
     except HistoryInsertConflict:
-        # A concurrent insert already stored this run. The row exists.
+        # This user already has the analysis. A cross-user primary-key collision
+        # is retried inside save_analysis_history and is not this exception.
         return True
     except AnalysisSchemaError:
         # A missing result column is a deploy error, not a transient outage.

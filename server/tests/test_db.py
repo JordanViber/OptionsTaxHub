@@ -1361,6 +1361,221 @@ class TestHistoryInsertConflict:
             )
 
 
+class _SharedGuestHistory:
+    """portfolio_analyses with a global id and a per-user embedded analysis_id.
+
+    Inserts that omit id receive a new UUID, matching gen_random_uuid().
+    Alias lookups are empty. No other table is writable.
+    """
+
+    def __init__(self, *, fail_selects=False, reject_generated_ids=False):
+        self.rows = []
+        self.attempted = []
+        self.updates = []
+        self.tables = []
+        self.fail_selects = fail_selects
+        self.reject_generated_ids = reject_generated_ids
+
+    def table(self, name):
+        self.tables.append(name)
+        return _SharedGuestQuery(self, name)
+
+    def _insert(self, row):
+        payload = dict(row)
+        if isinstance(payload.get("result"), dict):
+            payload["result"] = dict(payload["result"])
+        self.attempted.append(payload)
+        if self.reject_generated_ids and "id" not in payload:
+            raise _history_unique_violation("portfolio_analyses_pkey")
+        stored = dict(payload)
+        if isinstance(stored.get("result"), dict):
+            stored["result"] = dict(stored["result"])
+        if "id" not in stored:
+            stored["id"] = str(uuid.uuid4())
+        for existing in self.rows:
+            if str(existing.get("id")) == str(stored["id"]):
+                raise _history_unique_violation("portfolio_analyses_pkey")
+            if (
+                existing.get("user_id") == stored.get("user_id")
+                and _embedded_analysis_id(existing)
+                and _embedded_analysis_id(existing) == _embedded_analysis_id(stored)
+            ):
+                raise _history_unique_violation(
+                    "portfolio_analyses_user_embedded_analysis_id_uidx"
+                )
+        self.rows.append(stored)
+        return _FakeExecuteResult([{"id": stored["id"]}])
+
+    def _matching(self, eqs, contains):
+        found = []
+        for row in self.rows:
+            if any(row.get(column) != value for column, value in eqs):
+                continue
+            if contains is not None:
+                column, expected = contains
+                blob = row.get(column)
+                if not isinstance(blob, dict):
+                    continue
+                if any(blob.get(key) != value for key, value in expected.items()):
+                    continue
+            found.append(dict(row))
+        return found
+
+
+class _SharedGuestQuery:
+    def __init__(self, store, name):
+        self.store = store
+        self.name = name
+        self.op = "select"
+        self.payload = None
+        self.eqs = []
+        self.contains_filter = None
+
+    def insert(self, row):
+        self.op = "insert"
+        self.payload = row
+        return self
+
+    def select(self, *_args, **_kwargs):
+        return self
+
+    def update(self, row):
+        self.op = "update"
+        self.payload = row
+        return self
+
+    def eq(self, column, value):
+        self.eqs.append((column, value))
+        return self
+
+    def contains(self, column, value):
+        self.contains_filter = (column, value)
+        return self
+
+    def order(self, *_args, **_kwargs):
+        return self
+
+    def limit(self, *_args, **_kwargs):
+        return self
+
+    def execute(self):
+        if self.op == "update":
+            self.store.updates.append((self.name, self.payload))
+            return _FakeExecuteResult([])
+        if self.name == "portfolio_analysis_id_aliases":
+            return _FakeExecuteResult([])
+        if self.op == "insert":
+            return self.store._insert(self.payload)
+        if self.store.fail_selects:
+            raise RuntimeError("lookup unavailable")
+        return _FakeExecuteResult(self.store._matching(self.eqs, self.contains_filter))
+
+
+def _history_unique_violation(constraint):
+    error = Exception(f'duplicate key value violates unique constraint "{constraint}"')
+    error.code = "23505"
+    return error
+
+
+def _embedded_analysis_id(row):
+    result = row.get("result")
+    if not isinstance(result, dict):
+        return None
+    return result.get("analysis_id")
+
+
+_GUEST_ANALYSIS_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+
+
+class TestCrossUserGuestAnalysisId:
+    def test_second_user_keeps_embedded_id_under_a_new_row_id(self, monkeypatch):
+        caller = {"analysis_id": _GUEST_ANALYSIS_ID, "positions": []}
+        store = _SharedGuestHistory()
+        monkeypatch.setattr(db, "get_supabase", lambda: store)
+
+        first = db.save_analysis_history(
+            "user-a", "guest.csv", {"positions_count": 1}, result_data=caller
+        )
+        second = db.save_analysis_history(
+            "user-b", "guest.csv", {"positions_count": 1}, result_data=caller
+        )
+
+        assert first["id"] == _GUEST_ANALYSIS_ID
+        assert second["id"] != _GUEST_ANALYSIS_ID
+        uuid.UUID(second["id"])
+        assert len(store.rows) == 2
+        assert {row["user_id"] for row in store.rows} == {"user-a", "user-b"}
+        assert all(
+            _embedded_analysis_id(row) == _GUEST_ANALYSIS_ID for row in store.rows
+        )
+        retried = [
+            row for row in store.attempted
+            if row["user_id"] == "user-b" and "id" not in row
+        ]
+        assert len(retried) == 1
+        assert retried[0]["result"]["analysis_id"] == _GUEST_ANALYSIS_ID
+        assert caller == {"analysis_id": _GUEST_ANALYSIS_ID, "positions": []}
+        assert store.updates == []
+        assert set(store.tables) <= {
+            "portfolio_analyses",
+            "portfolio_analysis_id_aliases",
+        }
+
+        with pytest.raises(db.HistoryInsertConflict):
+            db.save_analysis_history(
+                "user-a", "guest.csv", {"positions_count": 1}, result_data=caller
+            )
+        assert len(store.rows) == 2
+        assert caller == {"analysis_id": _GUEST_ANALYSIS_ID, "positions": []}
+
+    def test_unresolved_cross_user_conflict_is_not_a_successful_save(self, monkeypatch):
+        store = _SharedGuestHistory(fail_selects=True)
+        store.rows.append({
+            "id": _GUEST_ANALYSIS_ID,
+            "user_id": "user-a",
+            "result": {"analysis_id": _GUEST_ANALYSIS_ID},
+        })
+        monkeypatch.setattr(db, "get_supabase", lambda: store)
+
+        assert db.save_analysis_history(
+            "user-b",
+            "guest.csv",
+            {"positions_count": 1},
+            result_data={"analysis_id": _GUEST_ANALYSIS_ID},
+        ) is None
+        assert [row["user_id"] for row in store.rows] == ["user-a"]
+
+        import main
+
+        class _Dump:
+            def model_dump(self, mode="json"):
+                return {"analysis_id": _GUEST_ANALYSIS_ID, "positions_count": 1}
+
+        assert main._save_history_best_effort(
+            "user-b", "guest.csv", _Dump(), _Dump()
+        ) is False
+        assert [row["user_id"] for row in store.rows] == ["user-a"]
+        assert store.updates == []
+
+    def test_retry_conflict_without_this_users_row_returns_none(self, monkeypatch):
+        store = _SharedGuestHistory(reject_generated_ids=True)
+        store.rows.append({
+            "id": _GUEST_ANALYSIS_ID,
+            "user_id": "user-a",
+            "result": {"analysis_id": _GUEST_ANALYSIS_ID},
+        })
+        monkeypatch.setattr(db, "get_supabase", lambda: store)
+
+        assert db.save_analysis_history(
+            "user-b",
+            "guest.csv",
+            {"positions_count": 1},
+            result_data={"analysis_id": _GUEST_ANALYSIS_ID},
+        ) is None
+        assert [row["user_id"] for row in store.rows] == ["user-a"]
+        assert any("id" not in row and row["user_id"] == "user-b" for row in store.attempted)
+
+
 class _PagedBookClient:
     """In-memory client that honors eq, order, and inclusive range."""
 

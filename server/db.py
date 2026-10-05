@@ -169,6 +169,34 @@ def _history_result_for_insert(
     return copied, canonical
 
 
+def _inserted_history_row(client, row: dict) -> Optional[dict]:
+    result = client.table("portfolio_analyses").insert(row).select("id").execute()
+    if result.data:
+        return dict(result.data[0])
+    # Checkout depends on the returned persisted row ID. An empty
+    # representation is not proof that the insert committed.
+    logger.error("Analysis history insert returned no persisted row")
+    return None
+
+
+def _user_already_has_analysis(client, user_id: str, embedded_id) -> Optional[bool]:
+    """Whether this user already stored the embedded id.
+
+    None means the lookup failed, so the caller must not treat the insert as
+    either a duplicate or a success.
+    """
+    if not isinstance(embedded_id, str) or not embedded_id.strip():
+        return False
+    record, lookup_succeeded = _lookup_analysis_for_entitlement(
+        embedded_id.strip(),
+        user_id,
+        client,
+    )
+    if not lookup_succeeded:
+        return None
+    return record is not None
+
+
 def save_analysis_history(
     user_id: str,
     filename: str,
@@ -182,10 +210,13 @@ def save_analysis_history(
     so that past reports can be re-loaded from the history sidebar.
 
     When the result carries a UUID analysis_id, that value is the row id.
-    Summary-only inserts leave the database default in place.
+    The primary key is global, while the embedded id is unique per user. If
+    another user already owns that primary key, the insert is retried without
+    an id so the database assigns one. The embedded analysis_id stays in the
+    result JSON. Summary-only inserts leave the database default in place.
 
     Returns the inserted row, or None when Supabase is not configured.
-    Raises HistoryInsertConflict when this analysis row already exists.
+    Raises HistoryInsertConflict when this user already has the analysis.
     Raises AnalysisSchemaError when the result column or table is missing.
     """
     client = get_supabase()
@@ -205,13 +236,47 @@ def save_analysis_history(
             row["result"] = stored_result
             if row_id:
                 row["id"] = row_id
-        result = client.table("portfolio_analyses").insert(row).select("id").execute()
-        if result.data:
-            return dict(result.data[0])
-        # Checkout depends on the returned persisted row ID. An empty
-        # representation is not proof that the insert committed.
-        logger.error("Analysis history insert returned no persisted row")
-        return None
+        try:
+            return _inserted_history_row(client, row)
+        except Exception as insert_error:
+            if not _is_unique_violation(insert_error) or not row.get("id"):
+                raise
+            embedded_id = None
+            if isinstance(row.get("result"), dict):
+                embedded_id = row["result"].get("analysis_id")
+            already_saved = _user_already_has_analysis(client, user_id, embedded_id)
+            if already_saved is None:
+                logger.error(
+                    "Could not tell whether user %s already saved analysis %s",
+                    user_id,
+                    embedded_id,
+                )
+                return None
+            if already_saved:
+                raise HistoryInsertConflict(
+                    "portfolio analysis history already exists for this analysis"
+                ) from insert_error
+            # Another account owns this primary key. Keep the embedded id and
+            # let the database assign a row id for this user.
+            retry = dict(row)
+            retry.pop("id", None)
+            try:
+                return _inserted_history_row(client, retry)
+            except Exception as retry_error:
+                if not _is_unique_violation(retry_error):
+                    raise
+                already_saved = _user_already_has_analysis(
+                    client, user_id, embedded_id
+                )
+                if already_saved:
+                    raise HistoryInsertConflict(
+                        "portfolio analysis history already exists for this analysis"
+                    ) from retry_error
+                logger.error(
+                    "Analysis history insert conflict was not this user's row: %s",
+                    retry_error,
+                )
+                return None
     except (HistoryInsertConflict, AnalysisSchemaError):
         raise
     except Exception as e:
