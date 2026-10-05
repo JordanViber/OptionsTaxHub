@@ -29,6 +29,22 @@ class HistoryInsertConflict(Exception):
     """Another request already inserted this user's analysis row."""
 
 
+class PacketSnapshotYearConflict(Exception):
+    """A paid snapshot for this spelling already belongs to another tax year.
+
+    The stored analysis_id is left unchanged. Callers map this to 409.
+    """
+
+    def __init__(self, stored_analysis_id, stored_tax_year, requested_tax_year):
+        self.stored_analysis_id = stored_analysis_id
+        self.stored_tax_year = stored_tax_year
+        self.requested_tax_year = requested_tax_year
+        super().__init__(
+            "Paid packet %s is tax year %s, not %s"
+            % (stored_analysis_id, stored_tax_year, requested_tax_year)
+        )
+
+
 class AnalysisSchemaError(Exception):
     """portfolio_analyses is missing the result column or the table itself.
 
@@ -1385,6 +1401,20 @@ def _order_snapshot_candidates(query):
     )
 
 
+def _packet_snapshot_is_current(snapshot: dict) -> bool:
+    """Paid rows stay. Unpaid rows stay only while expires_at is in the future."""
+    if snapshot.get("paid_at"):
+        return True
+    expires_at = snapshot.get("expires_at")
+    try:
+        if not expires_at:
+            return False
+        expiry = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+        return expiry > datetime.now(timezone.utc)
+    except (TypeError, ValueError):
+        return False
+
+
 def save_packet_snapshot(
     analysis_id: str,
     user_id: str,
@@ -1407,17 +1437,44 @@ def save_packet_snapshot(
     requested_paid_at = now.isoformat() if paid and session_id else None
     expires_at = None if requested_paid_at else now + UNPAID_PACKET_SNAPSHOT_TTL
 
-    def read_existing():
-        # Same user and UUID can have one row per tax year under a different
-        # spelling. Scope the read so another year's paid row is not updated.
+    snapshot_columns = (
+        "analysis_id, user_id, tax_year, packet_payload, packet_session_id, paid_at, expires_at"
+    )
+
+    def read_year_scoped():
         result = _order_snapshot_candidates(
             _match_snapshot_analysis_id(
-                client.table("year_close_packet_snapshots")
-                .select("analysis_id, user_id, tax_year, packet_payload, packet_session_id, paid_at, expires_at"),
+                client.table("year_close_packet_snapshots").select(snapshot_columns),
                 analysis_id,
             ).eq("user_id", user_id).eq("tax_year", int(tax_year))
         ).limit(1).execute()
         return dict(result.data[0]) if result.data else None
+
+    def read_exact_key():
+        # The primary key is (user_id, analysis_id). This spelling's row can
+        # sit in another tax year. Do not ilike + limit 1 here.
+        result = (
+            client.table("year_close_packet_snapshots")
+            .select(snapshot_columns)
+            .eq("analysis_id", analysis_id)
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        return dict(result.data[0]) if result.data else None
+
+    def read_existing():
+        scoped = read_year_scoped()
+        if scoped is not None:
+            return scoped
+        return read_exact_key()
+
+    def year_conflict(row):
+        raise PacketSnapshotYearConflict(
+            row.get("analysis_id"),
+            row.get("tax_year"),
+            tax_year,
+        )
 
     def result_row(result, fallback):
         data = getattr(result, "data", None)
@@ -1438,7 +1495,7 @@ def save_packet_snapshot(
                     existing_row.get("tax_year"),
                     tax_year,
                 )
-                return None
+                year_conflict(existing_row)
             paid_at = existing_row["paid_at"]
             effective_session_id = existing_row.get("packet_session_id")
             stored_payload = existing_row.get("packet_payload")
@@ -1478,6 +1535,8 @@ def save_packet_snapshot(
             latest_row = read_existing()
             if not latest_row:
                 return None
+            if latest_row.get("paid_at") and int(latest_row.get("tax_year")) != int(tax_year):
+                year_conflict(latest_row)
             latest_payload = latest_row.get("packet_payload")
             if latest_row.get("paid_at") and (
                 isinstance(latest_payload, dict) or not isinstance(packet_payload, dict)
@@ -1521,6 +1580,10 @@ def save_packet_snapshot(
             if not latest_row:
                 return None
             if latest_row.get("paid_at"):
+                # Payment won at the old year. Do not write this year's payload
+                # onto that paid row.
+                if int(latest_row.get("tax_year")) != int(tax_year):
+                    year_conflict(latest_row)
                 return save_packet_snapshot(
                     analysis_id,
                     user_id,
@@ -1544,30 +1607,46 @@ def save_packet_snapshot(
         )
         if result.data:
             return dict(result.data[0])
-        latest_row = read_existing()
-        if latest_row:
-            if latest_row.get("paid_at"):
-                if int(latest_row.get("tax_year")) != int(tax_year):
-                    return None
-                return result_row(None, latest_row)
+        latest_row = read_exact_key()
+        if not latest_row:
+            return None
+        if latest_row.get("paid_at"):
+            if int(latest_row.get("tax_year")) != int(tax_year):
+                year_conflict(latest_row)
             return result_row(None, latest_row)
-        return None
+        if int(latest_row.get("tax_year")) != int(tax_year):
+            reyeared = (
+                client.table("year_close_packet_snapshots")
+                .update(update_row)
+                .eq("analysis_id", latest_row["analysis_id"])
+                .eq("user_id", user_id)
+                .is_("paid_at", "null")
+                .select("analysis_id, user_id, tax_year")
+                .execute()
+            )
+            if reyeared.data:
+                return dict(reyeared.data[0])
+            return None
+        return result_row(None, latest_row)
+    except PacketSnapshotYearConflict:
+        raise
     except Exception as e:
         logger.error("Failed to save packet snapshot for %s: %s", analysis_id, e)
         # A uniqueness conflict means another request created the row. Treat
-        # that as idempotent only after reading the durable row back.
+        # that as idempotent only after reading the exact primary key back.
+        # A year-scoped reread would miss the other year and look like an outage.
         error_text = str(e).lower()
         error_code = getattr(e, "code", None)
         if error_code != "23505" and "duplicate key" not in error_text and "unique constraint" not in error_text:
             return None
         try:
-            latest_row = read_existing()
-            if latest_row and int(latest_row.get("tax_year")) == int(tax_year):
-                if latest_row.get("paid_at") or not requested_paid_at:
-                    return result_row(None, latest_row)
-                # A paid insert can race an unpaid insert for the same unique
-                # key. Promote only while the database still says unpaid.
-                promoted = (
+            latest_row = read_exact_key()
+            if not latest_row:
+                return None
+            if int(latest_row.get("tax_year")) != int(tax_year):
+                if latest_row.get("paid_at"):
+                    year_conflict(latest_row)
+                reyeared = (
                     client.table("year_close_packet_snapshots")
                     .update(update_row)
                     .eq("analysis_id", latest_row["analysis_id"])
@@ -1576,11 +1655,36 @@ def save_packet_snapshot(
                     .select("analysis_id, user_id, tax_year")
                     .execute()
                 )
-                if promoted.data:
-                    return dict(promoted.data[0])
-                latest_row = read_existing()
-                if latest_row and latest_row.get("paid_at"):
-                    return result_row(None, latest_row)
+                if reyeared.data:
+                    return dict(reyeared.data[0])
+                raced = read_exact_key()
+                if raced and raced.get("paid_at"):
+                    if int(raced.get("tax_year")) != int(tax_year):
+                        year_conflict(raced)
+                    return result_row(None, raced)
+                return None
+            if latest_row.get("paid_at") or not requested_paid_at:
+                return result_row(None, latest_row)
+            # A paid insert can race an unpaid insert for the same unique
+            # key. Promote only while the database still says unpaid.
+            promoted = (
+                client.table("year_close_packet_snapshots")
+                .update(update_row)
+                .eq("analysis_id", latest_row["analysis_id"])
+                .eq("user_id", user_id)
+                .is_("paid_at", "null")
+                .select("analysis_id, user_id, tax_year")
+                .execute()
+            )
+            if promoted.data:
+                return dict(promoted.data[0])
+            latest_row = read_exact_key()
+            if latest_row and latest_row.get("paid_at"):
+                if int(latest_row.get("tax_year")) != int(tax_year):
+                    year_conflict(latest_row)
+                return result_row(None, latest_row)
+        except PacketSnapshotYearConflict:
+            raise
         except Exception:
             pass
         return None
@@ -1618,20 +1722,84 @@ def get_packet_snapshot(
         if not result.data:
             return None, True
         snapshot = dict(result.data[0])
-        if not snapshot.get("paid_at"):
-            expires_at = snapshot.get("expires_at")
-            try:
-                if not expires_at:
-                    return None, True
-                expiry = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
-                if expiry <= datetime.now(timezone.utc):
-                    return None, True
-            except (TypeError, ValueError):
-                return None, True
+        if not _packet_snapshot_is_current(snapshot):
+            return None, True
         return snapshot, True
     except Exception as e:
         logger.error("Failed to load packet snapshot for %s: %s", analysis_id, e)
         return None, False
+
+
+def list_packet_snapshots_for_identity(
+    analysis_id: str,
+    user_id: str,
+    client=None,
+) -> tuple[list[dict], bool]:
+    """Every live snapshot for this user and analysis identity.
+
+    Same match as get_packet_snapshot, with no tax_year and no limit. Expired
+    unpaid rows are dropped. The second value is False on outage, including
+    when no client is available. An empty list with True is a real miss.
+    """
+    if not analysis_id or not user_id:
+        return [], False
+    if client is None:
+        client = get_supabase()
+    if client is None:
+        return [], False
+    _cleanup_expired_packet_snapshots(client)
+    try:
+        result = _order_snapshot_candidates(
+            _match_snapshot_analysis_id(
+                client.table("year_close_packet_snapshots")
+                .select(
+                    "analysis_id, user_id, tax_year, packet_payload, "
+                    "packet_session_id, paid_at, expires_at"
+                ),
+                analysis_id,
+            ).eq("user_id", user_id)
+        ).execute()
+        rows = []
+        for row in result.data or []:
+            if isinstance(row, dict) and _packet_snapshot_is_current(row):
+                rows.append(dict(row))
+        return rows, True
+    except Exception as e:
+        logger.error("Failed to list packet snapshots for %s: %s", analysis_id, e)
+        return [], False
+
+
+def lookup_packet_entitlements_for_analysis(
+    user_id: str,
+    analysis_id: str,
+    client=None,
+) -> tuple[list[dict], bool]:
+    """Every cs_ entitlement for this user and analysis identity.
+
+    Does not choose a tax year. The second value is False on outage.
+    """
+    if not user_id or not analysis_id:
+        return [], False
+    if client is None:
+        client = get_supabase()
+    if client is None:
+        return [], False
+    try:
+        result = _match_snapshot_analysis_id(
+            client.table("year_close_packet_entitlements")
+            .select("analysis_id, packet_session_id, tax_year")
+            .eq("user_id", user_id),
+            analysis_id,
+        ).execute()
+        rows = []
+        for row in result.data or []:
+            session_id = row.get("packet_session_id") if isinstance(row, dict) else None
+            if isinstance(session_id, str) and session_id.startswith("cs_"):
+                rows.append(dict(row))
+        return rows, True
+    except Exception as e:
+        logger.error("Failed to list packet entitlements for %s: %s", analysis_id, e)
+        return [], False
 
 
 def mark_packet_snapshot_paid(

@@ -1079,7 +1079,7 @@ class TestLatestActivityBook:
 class TestPacketSnapshots:
     def test_saves_private_packet_snapshot_with_short_unpaid_retention(self, monkeypatch):
         client = _FakeClient(
-            table_responses=[[], [{"analysis_id": "analysis-a", "user_id": "user1"}]],
+            table_responses=[[], [], [{"analysis_id": "analysis-a", "user_id": "user1"}]],
         )
         monkeypatch.setattr(db, "get_supabase", lambda: client)
 
@@ -1091,7 +1091,7 @@ class TestPacketSnapshots:
         )
 
         assert saved["analysis_id"] == "analysis-a"
-        calls = client.builders[1].calls
+        calls = client.builders[2].calls
         insert = next(call for call in calls if call[0] == "insert")
         assert insert[1][0]["paid_at"] is None
         assert insert[1][0]["tax_year"] == 2026
@@ -1099,7 +1099,7 @@ class TestPacketSnapshots:
 
     def test_paid_packet_snapshot_has_no_expiry(self, monkeypatch):
         client = _FakeClient(
-            table_responses=[[], [{"analysis_id": "analysis-a", "user_id": "user1"}]],
+            table_responses=[[], [], [{"analysis_id": "analysis-a", "user_id": "user1"}]],
         )
         monkeypatch.setattr(db, "get_supabase", lambda: client)
 
@@ -1113,7 +1113,7 @@ class TestPacketSnapshots:
         )
 
         assert saved["analysis_id"] == "analysis-a"
-        insert = next(call for call in client.builders[1].calls if call[0] == "insert")
+        insert = next(call for call in client.builders[2].calls if call[0] == "insert")
         assert insert[1][0]["paid_at"] is not None
         assert insert[1][0]["expires_at"] is None
 
@@ -1151,15 +1151,99 @@ class TestPacketSnapshots:
         client = _FakeClient(table_data=[existing])
         monkeypatch.setattr(db, "get_supabase", lambda: client)
 
-        saved = db.save_packet_snapshot(
-            "analysis-a",
-            "user1",
-            2026,
-            {"report": "wrong-year"},
-        )
+        with pytest.raises(db.PacketSnapshotYearConflict) as raised:
+            db.save_packet_snapshot(
+                "analysis-a",
+                "user1",
+                2026,
+                {"report": "wrong-year"},
+            )
 
-        assert saved is None
+        assert raised.value.stored_analysis_id == "analysis-a"
+        assert raised.value.stored_tax_year == 2025
+        assert raised.value.requested_tax_year == 2026
         assert len(client.builders) == 1
+
+    def test_unpaid_snapshot_reyear_replaces_payload_and_tax_year_together(self, monkeypatch):
+        stored_id = "analysis-a"
+        existing = {
+            "analysis_id": stored_id,
+            "user_id": "user1",
+            "tax_year": 2025,
+            "packet_payload": {
+                "analysis_tax_year": 2025,
+                "tax_profile": {"tax_year": 2025},
+                "marker": "year-x",
+            },
+            "packet_session_id": None,
+            "paid_at": None,
+            "expires_at": "2099-01-01T00:00:00+00:00",
+        }
+        year_y = {
+            "analysis_tax_year": 2026,
+            "tax_profile": {"tax_year": 2026},
+            "marker": "year-y",
+        }
+        client = _ApplyingSnapshotClient([existing])
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+
+        saved = db.save_packet_snapshot(stored_id, "user1", 2026, year_y)
+
+        row = client.row(stored_id)
+        assert saved["analysis_id"] == stored_id
+        assert row["analysis_id"] == stored_id
+        assert row["tax_year"] == 2026
+        assert row["paid_at"] is None
+        assert row["packet_payload"]["analysis_tax_year"] == 2026
+        assert row["packet_payload"]["tax_profile"]["tax_year"] == 2026
+        assert row["packet_payload"] == year_y
+
+    def test_list_snapshots_and_entitlements_keep_outages_distinct(self, monkeypatch):
+        monkeypatch.setattr(db, "get_supabase", lambda: None)
+        assert db.list_packet_snapshots_for_identity("analysis-a", "user1") == ([], False)
+        assert db.lookup_packet_entitlements_for_analysis("user1", "analysis-a") == ([], False)
+
+        stored = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
+        expired = {
+            "analysis_id": stored.lower(),
+            "user_id": "user1",
+            "tax_year": 2024,
+            "packet_payload": {"analysis_tax_year": 2024},
+            "packet_session_id": None,
+            "paid_at": None,
+            "expires_at": "2000-01-01T00:00:00+00:00",
+        }
+        paid = {
+            "analysis_id": stored,
+            "user_id": "user1",
+            "tax_year": 2025,
+            "packet_payload": {"analysis_tax_year": 2025},
+            "packet_session_id": "cs_paid",
+            "paid_at": "2026-01-01T00:00:00+00:00",
+            "expires_at": None,
+        }
+        client = _ApplyingSnapshotClient([expired, paid])
+        rows, ok = db.list_packet_snapshots_for_identity(stored.lower(), "user1", client=client)
+        assert ok is True
+        assert [row["analysis_id"] for row in rows] == [stored]
+
+        class _Down:
+            def table(self, _name):
+                raise RuntimeError("entitlements down")
+
+        assert db.lookup_packet_entitlements_for_analysis(
+            "user1", stored, client=_Down()
+        ) == ([], False)
+        entitlements = _FakeClient(table_data=[
+            {"analysis_id": stored, "packet_session_id": "cs_a", "tax_year": 2024},
+            {"analysis_id": stored.lower(), "packet_session_id": "cs_b", "tax_year": 2025},
+            {"analysis_id": stored, "packet_session_id": "pi_skip", "tax_year": 2026},
+        ])
+        found, found_ok = db.lookup_packet_entitlements_for_analysis(
+            "user1", stored.lower(), client=entitlements
+        )
+        assert found_ok is True
+        assert {row["tax_year"] for row in found} == {2024, 2025}
 
     def test_paid_snapshot_with_deleted_payload_can_be_refilled(self, monkeypatch):
         existing = {
