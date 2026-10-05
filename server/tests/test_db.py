@@ -1585,7 +1585,7 @@ class TestPacketSnapshots:
 
         assert db.mark_packet_snapshot_paid(
             other, "user1", 2025, "cs_restamp"
-        ) is False
+        ) is True
         assert client.row(stored)["packet_session_id"] == "cs_original"
         assert client.row(stored)["paid_at"] == "2026-01-01T00:00:00+00:00"
         assert client.row(other)["paid_at"] is None
@@ -1599,6 +1599,44 @@ class TestPacketSnapshots:
         assert client.row(other)["analysis_id"] == other
         assert client.row(stored)["packet_session_id"] == "cs_original"
         assert client.row(stored)["paid_at"] == "2026-01-01T00:00:00+00:00"
+
+    def test_get_packet_snapshot_skips_paid_other_year_case_variant(self, monkeypatch):
+        stored = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
+        other = stored.lower()
+        other_year = {
+            "analysis_id": stored,
+            "user_id": "user1",
+            "tax_year": 2024,
+            "packet_payload": {"report": "other-year"},
+            "packet_session_id": "cs_other_year",
+            "paid_at": "2026-03-01T00:00:00+00:00",
+            "expires_at": None,
+        }
+        this_year = {
+            "analysis_id": other,
+            "user_id": "user1",
+            "tax_year": 2025,
+            "packet_payload": {"report": "this-year"},
+            "packet_session_id": None,
+            "paid_at": None,
+            "expires_at": "2099-01-01T00:00:00+00:00",
+        }
+        client = _ApplyingSnapshotClient([other_year, this_year])
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+
+        snapshot, lookup_succeeded = db.get_packet_snapshot(
+            other, "user1", tax_year=2025
+        )
+
+        assert lookup_succeeded is True
+        assert snapshot["analysis_id"] == other
+        assert snapshot["tax_year"] == 2025
+        assert snapshot["packet_payload"] == {"report": "this-year"}
+        unscoped, unscoped_ok = db.get_packet_snapshot(other, "user1")
+        assert unscoped_ok is True
+        assert unscoped["tax_year"] == 2024
+        assert client.row(stored)["packet_session_id"] == "cs_other_year"
+        assert client.row(other)["paid_at"] is None
 
     def test_mark_packet_snapshot_paid_matches_uuid_case_variant(self, monkeypatch):
         stored = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"

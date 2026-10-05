@@ -221,8 +221,13 @@ def _clean_store(monkeypatch):
         }
         return {"analysis_id": analysis_id}
 
-    def get_snapshot(analysis_id, user_id):
-        return _FAKE_PACKET_SNAPSHOTS.get((user_id, analysis_id)), True
+    def get_snapshot(analysis_id, user_id, client=None, *, tax_year=None):
+        row = _FAKE_PACKET_SNAPSHOTS.get((user_id, analysis_id))
+        if row is None:
+            return None, True
+        if tax_year is not None and int(row.get("tax_year")) != int(tax_year):
+            return None, True
+        return row, True
 
     def save_entitlement(analysis_id, user_id, tax_year, session_id):
         row = {
@@ -246,6 +251,8 @@ def _clean_store(monkeypatch):
         row = _FAKE_PACKET_SNAPSHOTS.get((user_id, analysis_id))
         if not row or int(row["tax_year"]) != int(tax_year):
             return False
+        if row.get("paid_at"):
+            return True
         row["packet_session_id"] = session_id
         row["paid_at"] = "now"
         return True
@@ -563,6 +570,92 @@ class _UuidSnapshotClient:
     def table(self, name):
         assert name == "year_close_packet_snapshots"
         return _UuidSnapshotQuery(self.rows)
+
+
+class _YearScopedSnapshotClient:
+    """eq/ilike/is_ snapshot store. Does not reorder rows.
+
+    A paid other-year spelling placed first is what an unscoped limit(1)
+    read returns. A tax_year filter must skip it.
+    """
+
+    def __init__(self, rows):
+        self.rows = [dict(row) for row in rows]
+
+    def rpc(self, *_args, **_kwargs):
+        raise RuntimeError("cleanup unavailable")
+
+    def table(self, _name):
+        return _YearScopedSnapshotQuery(self)
+
+
+class _YearScopedSnapshotQuery:
+    def __init__(self, client):
+        self.client = client
+        self.op = "select"
+        self.payload = None
+        self.eqs = []
+        self.filters = []
+        self.isnull = []
+        self.limit_n = None
+
+    def select(self, *_args, **_kwargs):
+        return self
+
+    def eq(self, column, value):
+        self.eqs.append((column, value))
+        return self
+
+    def filter(self, column, operator, value):
+        self.filters.append((column, operator, value))
+        return self
+
+    def is_(self, column, value):
+        self.isnull.append((column, value))
+        return self
+
+    def order(self, *_args, **_kwargs):
+        return self
+
+    def limit(self, count):
+        self.limit_n = count
+        return self
+
+    def update(self, row):
+        self.op = "update"
+        self.payload = dict(row)
+        return self
+
+    def insert(self, row):
+        self.op = "insert"
+        self.payload = dict(row)
+        return self
+
+    def _matches(self, row):
+        for column, value in self.eqs:
+            if row.get(column) != value:
+                return False
+        for column, operator, value in self.filters:
+            if operator != "ilike" or str(row.get(column) or "").lower() != str(value).lower():
+                return False
+        for column, value in self.isnull:
+            if value == "null" and row.get(column) is not None:
+                return False
+        return True
+
+    def execute(self):
+        matched = [row for row in self.client.rows if self._matches(row)]
+        if self.op == "select" and self.limit_n is not None:
+            matched = matched[: self.limit_n]
+        if self.op == "update":
+            for row in matched:
+                row.update(self.payload)
+            return SimpleNamespace(data=[dict(row) for row in matched])
+        if self.op == "insert":
+            stored = dict(self.payload)
+            self.client.rows.append(stored)
+            return SimpleNamespace(data=[stored])
+        return SimpleNamespace(data=[dict(row) for row in matched])
 
 
 def test_history_restore_finds_private_packet_for_uuid_case_variant(monkeypatch):
@@ -957,6 +1050,142 @@ def test_checkout_retrieves_deleted_document_entitlement_before_reuse(monkeypatc
     assert response.json()["session_id"] == "cs_test_deleted_source"
     assert response.json()["analysis_id"] == analysis_id
     assert retrieved == ["cs_test_deleted_source"]
+    assert created == []
+
+
+def test_checkout_and_grant_ignore_paid_other_year_case_variant(monkeypatch):
+    _test_stripe_env(monkeypatch)
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_packet_test_secret")
+    stored = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
+    other = stored.lower()
+    this_payload = {
+        **SAMPLE_ANALYSIS,
+        "analysis_id": other,
+        "marker": "this-year",
+    }
+    other_payload = {
+        **SAMPLE_ANALYSIS,
+        "analysis_id": stored,
+        "marker": "other-year",
+        "tax_profile": {"tax_year": 2024, "filing_status": "single"},
+    }
+    rows = [
+        {
+            "analysis_id": stored,
+            "user_id": "test-user-123",
+            "tax_year": 2024,
+            "packet_payload": other_payload,
+            "packet_session_id": "cs_other_year",
+            "paid_at": "2026-01-01T00:00:00+00:00",
+            "expires_at": None,
+        },
+        {
+            "analysis_id": other,
+            "user_id": "test-user-123",
+            "tax_year": 2025,
+            "packet_payload": this_payload,
+            "packet_session_id": None,
+            "paid_at": None,
+            "expires_at": "2099-01-01T00:00:00+00:00",
+        },
+    ]
+    snapshot_client = _YearScopedSnapshotClient(rows)
+    monkeypatch.setattr(db, "get_supabase", lambda: snapshot_client)
+    monkeypatch.setattr(main, "get_packet_snapshot", db.get_packet_snapshot)
+    monkeypatch.setattr(main, "mark_packet_snapshot_paid", db.mark_packet_snapshot_paid)
+    remember_analysis(other, "test-user-123", this_payload)
+    captured = {}
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "create",
+        lambda **kwargs: captured.update(kwargs) or FakeCheckoutSession(**kwargs),
+    )
+    monkeypatch.setattr(main, "patch_analysis_result", lambda *_args, **_kwargs: True)
+
+    checkout = client.post(
+        "/api/year-close-packet/checkout",
+        json={"analysis_id": other, "analysis": this_payload},
+    )
+
+    assert checkout.status_code == 200, checkout.text
+    assert checkout.json().get("already_paid") is not True
+    assert captured["metadata"]["tax_year"] == "2025"
+    assert captured["metadata"]["analysis_id"] == other
+    assert snapshot_client.rows[0]["packet_session_id"] == "cs_other_year"
+    assert snapshot_client.rows[0]["paid_at"] == "2026-01-01T00:00:00+00:00"
+    assert snapshot_client.rows[0]["packet_payload"]["marker"] == "other-year"
+    assert snapshot_client.rows[1]["paid_at"] is None
+    assert snapshot_client.rows[1]["analysis_id"] == other
+
+    granted = _post_signed_webhook(
+        _packet_checkout_event(
+            analysis_id=other,
+            tax_year="2025",
+            event_id="evt_this_year_not_other",
+        )
+    )
+
+    assert granted.status_code == 200, granted.text
+    assert granted.json()["granted"] is True
+    assert snapshot_client.rows[0]["packet_session_id"] == "cs_other_year"
+    assert snapshot_client.rows[0]["paid_at"] == "2026-01-01T00:00:00+00:00"
+    assert snapshot_client.rows[0]["packet_payload"]["marker"] == "other-year"
+    assert snapshot_client.rows[1]["analysis_id"] == other
+    assert snapshot_client.rows[1]["packet_session_id"] == "cs_test_paid_1"
+    assert snapshot_client.rows[1]["paid_at"]
+    assert snapshot_client.rows[1]["tax_year"] == 2025
+
+
+def test_checkout_already_paid_accepts_entitlement_analysis_id_case_variant(monkeypatch):
+    _test_stripe_env(monkeypatch)
+    stored = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
+    other = stored.lower()
+    analysis = {**SAMPLE_ANALYSIS, "analysis_id": other}
+    remember_analysis(other, "test-user-123", analysis)
+    _FAKE_PACKET_SNAPSHOTS[("test-user-123", other)] = {
+        "analysis_id": other,
+        "user_id": "test-user-123",
+        "tax_year": 2025,
+        "packet_payload": analysis,
+        "packet_session_id": None,
+        "paid_at": None,
+    }
+    _FAKE_PACKET_ENTITLEMENTS[(
+        "test-user-123", 2025, "cs_test_case_variant"
+    )] = {
+        "analysis_id": stored,
+        "user_id": "test-user-123",
+        "tax_year": 2025,
+        "packet_session_id": "cs_test_case_variant",
+    }
+    prior_session = _stripe_object_session(
+        id="cs_test_case_variant",
+        metadata={
+            "analysis_id": other,
+            "user_id": "test-user-123",
+            "tax_year": "2025",
+        },
+    )
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda *_args, **_kwargs: prior_session,
+    )
+    created = []
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "create",
+        lambda **kwargs: created.append(kwargs),
+    )
+
+    response = client.post(
+        "/api/year-close-packet/checkout",
+        json={"analysis_id": other, "analysis": analysis},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["already_paid"] is True
+    assert response.json()["session_id"] == "cs_test_case_variant"
     assert created == []
 
 
@@ -1999,7 +2228,7 @@ def test_history_flags_alone_do_not_authorize_reused_year_grant(monkeypatch):
             "tax_year": "2025",
         },
     )
-    monkeypatch.setattr(main, "get_packet_snapshot", lambda *_args: (None, True))
+    monkeypatch.setattr(main, "get_packet_snapshot", lambda *_args, **_kwargs: (None, True))
     monkeypatch.setattr(
         main,
         "lookup_analysis_for_entitlement",
@@ -4051,7 +4280,7 @@ def test_paid_download_reloads_suggestions_from_history_on_store_miss(monkeypatc
     _FAKE_PACKET_SNAPSHOTS[("test-user-123", analysis_id)] = {
         "analysis_id": analysis_id,
         "user_id": "test-user-123",
-        "tax_year": 2025,
+        "tax_year": 2024,
         "packet_payload": build_packet_payload(packet_source, analysis_id=analysis_id),
         "packet_session_id": "cs_test_hist_harvest",
         "paid_at": "now",
@@ -4394,6 +4623,36 @@ def test_webhook_after_history_delete_does_not_resurrect_private_payload(monkeyp
     assert PACKET_STORE[analysis_id]["payload"]["lot_match_report"]["matched"] == [
         {"symbol": "AAPL", "quantity": 10}
     ]
+
+
+def test_webhook_replay_keeps_grant_when_paid_snapshot_history_was_deleted(monkeypatch):
+    _test_stripe_env(monkeypatch)
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_packet_test_secret")
+    analysis_id = "analysis-sample-1"
+    payload = {**SAMPLE_ANALYSIS, "analysis_id": analysis_id}
+    paid_at = "2026-01-01T00:00:00+00:00"
+    snapshot_client = _YearScopedSnapshotClient([{
+        "analysis_id": analysis_id,
+        "user_id": "test-user-123",
+        "tax_year": 2025,
+        "packet_payload": payload,
+        "packet_session_id": "cs_test_paid_1",
+        "paid_at": paid_at,
+        "expires_at": None,
+    }])
+    monkeypatch.setattr(db, "get_supabase", lambda: snapshot_client)
+    monkeypatch.setattr(main, "get_packet_snapshot", db.get_packet_snapshot)
+    monkeypatch.setattr(main, "mark_packet_snapshot_paid", db.mark_packet_snapshot_paid)
+    monkeypatch.setattr(main, "lookup_analysis_for_entitlement", lambda *_args: (None, True))
+    monkeypatch.setattr(main, "patch_analysis_result", lambda *_args: False)
+
+    response = _post_signed_webhook(_packet_checkout_event(tax_year="2025"))
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"received": True, "granted": True}
+    assert snapshot_client.rows[0]["paid_at"] == paid_at
+    assert snapshot_client.rows[0]["packet_session_id"] == "cs_test_paid_1"
+    assert snapshot_client.rows[0]["packet_payload"] == payload
 
 
 def _stub_signed_in_analyze(monkeypatch, *, history_row, snapshot_result):

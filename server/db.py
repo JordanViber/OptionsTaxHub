@@ -1408,12 +1408,14 @@ def save_packet_snapshot(
     expires_at = None if requested_paid_at else now + UNPAID_PACKET_SNAPSHOT_TTL
 
     def read_existing():
+        # Same user and UUID can have one row per tax year under a different
+        # spelling. Scope the read so another year's paid row is not updated.
         result = _order_snapshot_candidates(
             _match_snapshot_analysis_id(
                 client.table("year_close_packet_snapshots")
                 .select("analysis_id, user_id, tax_year, packet_payload, packet_session_id, paid_at, expires_at"),
                 analysis_id,
-            ).eq("user_id", user_id)
+            ).eq("user_id", user_id).eq("tax_year", int(tax_year))
         ).limit(1).execute()
         return dict(result.data[0]) if result.data else None
 
@@ -1588,8 +1590,15 @@ def get_packet_snapshot(
     analysis_id: str,
     user_id: str,
     client=None,
+    *,
+    tax_year: Optional[int] = None,
 ) -> tuple[Optional[dict], bool]:
-    """Load a caller-owned packet snapshot and distinguish outages."""
+    """Load a caller-owned packet snapshot and distinguish outages.
+
+    tax_year is keyword-only so a positional client argument stays put. When
+    the caller knows the year, the read stays inside that year and still
+    prefers a paid row, then the latest expiry.
+    """
     if not analysis_id or not user_id:
         return None, False
     if client is None:
@@ -1598,13 +1607,14 @@ def get_packet_snapshot(
         return None, False
     _cleanup_expired_packet_snapshots(client)
     try:
-        result = _order_snapshot_candidates(
-            _match_snapshot_analysis_id(
-                client.table("year_close_packet_snapshots")
-                .select("analysis_id, user_id, tax_year, packet_payload, packet_session_id, paid_at, expires_at"),
-                analysis_id,
-            ).eq("user_id", user_id)
-        ).limit(1).execute()
+        query = _match_snapshot_analysis_id(
+            client.table("year_close_packet_snapshots")
+            .select("analysis_id, user_id, tax_year, packet_payload, packet_session_id, paid_at, expires_at"),
+            analysis_id,
+        ).eq("user_id", user_id)
+        if tax_year is not None:
+            query = query.eq("tax_year", int(tax_year))
+        result = _order_snapshot_candidates(query).limit(1).execute()
         if not result.data:
             return None, True
         snapshot = dict(result.data[0])
@@ -1654,6 +1664,10 @@ def mark_packet_snapshot_paid(
         stored_analysis_id = existing_row.get("analysis_id")
         if not stored_analysis_id:
             return False
+        # An already-paid row is a successful replay. Returning False makes
+        # the grant treat the source as missing. Do not re-stamp it.
+        if existing_row.get("paid_at"):
+            return True
         # Stamp only the row that was read, and only while it is still unpaid.
         # An ilike update would re-stamp every case variant, including one
         # that is already paid.
