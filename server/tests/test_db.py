@@ -7,6 +7,7 @@ Covers save/get/delete operations for portfolio analyses and tax profiles.
 
 import sys
 import os
+import uuid
 from functools import cmp_to_key
 from unittest.mock import MagicMock, patch
 
@@ -89,6 +90,37 @@ class _FakeQueryBuilder:
 
     def execute(self):
         return _FakeExecuteResult(self._data)
+
+
+class _ScriptedClient:
+    """Returns each execute() step in order. An Exception step is raised."""
+
+    def __init__(self, steps):
+        self.steps = list(steps)
+
+    def table(self, _name):
+        return self
+
+    def select(self, *_args):
+        return self
+
+    def eq(self, *_args):
+        return self
+
+    def contains(self, *_args):
+        return self
+
+    def order(self, *_args, **_kwargs):
+        return self
+
+    def limit(self, *_args):
+        return self
+
+    def execute(self):
+        step = self.steps.pop(0)
+        if isinstance(step, Exception):
+            raise step
+        return _FakeExecuteResult(step)
 
 
 class _FakeClient:
@@ -234,6 +266,76 @@ class TestSaveAnalysisHistory:
                 {},
                 result_data={"analysis_id": "analysis-1"},
             )
+
+    def test_uuid_analysis_id_is_the_inserted_row_id(self, monkeypatch):
+        caller = {
+            "analysis_id": "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA",
+            "positions": [],
+        }
+        client = _FakeClient(table_data=[{"id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}])
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+
+        result = db.save_analysis_history(
+            "user1", "test.csv", {"positions_count": 1}, result_data=caller
+        )
+
+        assert result == {"id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}
+        inserted = client.builders[0].calls[0][1][0]
+        assert inserted["id"] == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        assert inserted["result"]["analysis_id"] == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        assert inserted["result"] is not caller
+        assert caller == {
+            "analysis_id": "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA",
+            "positions": [],
+        }
+
+    def test_missing_analysis_id_is_generated_into_row_and_result(self, monkeypatch):
+        generated = uuid.UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+        monkeypatch.setattr(db.uuid, "uuid4", lambda: generated)
+        caller = {"positions": [{"symbol": "AAPL"}]}
+        client = _FakeClient(table_data=[{"id": str(generated)}])
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+
+        result = db.save_analysis_history(
+            "user1", "test.csv", {"positions_count": 1}, result_data=caller
+        )
+
+        assert result == {"id": str(generated)}
+        inserted = client.builders[0].calls[0][1][0]
+        assert inserted["id"] == str(generated)
+        assert inserted["result"]["analysis_id"] == str(generated)
+        assert caller == {"positions": [{"symbol": "AAPL"}]}
+
+    def test_non_uuid_analysis_id_is_not_the_primary_key(self, monkeypatch):
+        caller = {"analysis_id": "local-analysis", "positions": []}
+        client = _FakeClient(table_data=[{"id": "db-default-id"}])
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+
+        result = db.save_analysis_history(
+            "user1", "test.csv", {"positions_count": 1}, result_data=caller
+        )
+
+        assert result == {"id": "db-default-id"}
+        inserted = client.builders[0].calls[0][1][0]
+        assert "id" not in inserted
+        assert inserted["result"]["analysis_id"] == "local-analysis"
+        assert inserted["result"] is not caller
+        assert caller["analysis_id"] == "local-analysis"
+
+    def test_empty_insert_representation_returns_none_with_canonical_id(self, monkeypatch):
+        caller = {
+            "analysis_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            "positions": [],
+        }
+        client = _FakeClient(table_data=[])
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+
+        assert db.save_analysis_history(
+            "user1", "test.csv", {"positions_count": 1}, result_data=caller
+        ) is None
+        inserted = client.builders[0].calls[0][1][0]
+        assert inserted["id"] == caller["analysis_id"]
+        assert caller["positions"] == []
 
 
 # --- get_analysis_history ---
@@ -497,6 +599,67 @@ class TestEnsureAnalysisHistory:
         monkeypatch.setattr(db, "get_supabase", lambda: mock_client)
         result = db.get_analysis_by_id("abc", "user1")
         assert result is None
+
+    def test_alias_resolves_legacy_id_to_canonical_row(self, monkeypatch):
+        legacy = "11111111-1111-4111-8111-111111111111"
+        canonical = "22222222-2222-4222-8222-222222222222"
+        row = {
+            "id": canonical,
+            "user_id": "user1",
+            "result": {"analysis_id": canonical},
+        }
+        client = _ScriptedClient([
+            [],
+            [],
+            [{"canonical_analysis_id": canonical}],
+            [row],
+        ])
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+
+        found, ok = db.lookup_analysis_for_entitlement(legacy, "user1")
+
+        assert ok is True
+        assert found == row
+        assert client.steps == []
+
+    def test_missing_alias_table_is_a_miss(self, monkeypatch):
+        legacy = "11111111-1111-4111-8111-111111111111"
+        missing = Exception(
+            'relation "portfolio_analysis_id_aliases" does not exist'
+        )
+        missing.code = "42P01"
+        client = _ScriptedClient([[], [], missing])
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+
+        assert db.lookup_analysis_for_entitlement(legacy, "user1") == (None, True)
+
+        again = _ScriptedClient([[], [], missing])
+        monkeypatch.setattr(db, "get_supabase", lambda: again)
+        assert db.get_analysis_by_id(legacy, "user1") is None
+
+    def test_alias_outage_is_not_a_miss_for_entitlement_lookup(self, monkeypatch):
+        legacy = "11111111-1111-4111-8111-111111111111"
+        client = _ScriptedClient([[], [], Exception("timeout")])
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+
+        assert db.lookup_analysis_for_entitlement(legacy, "user1") == (None, False)
+
+    def test_invalid_uuid_primary_key_falls_through_to_embedded_id(self, monkeypatch):
+        row = {
+            "id": "33333333-3333-4333-8333-333333333333",
+            "user_id": "user1",
+            "filename": "book.csv",
+            "result": {"analysis_id": "local-analysis"},
+        }
+        invalid = Exception('invalid input syntax for type uuid: "local-analysis"')
+        invalid.code = "22P02"
+        client = _ScriptedClient([invalid, [row]])
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+
+        found = db.get_analysis_by_id("local-analysis", "user1")
+
+        assert found == row
+        assert client.steps == []
 
 
 # --- delete_analyses_without_result ---

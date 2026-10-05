@@ -1873,6 +1873,9 @@ async def get_portfolio_analysis(
     Retrieve a single past portfolio analysis by ID, including the full result.
 
     Used when a user clicks a history item to reload that report.
+    ``get_analysis_by_id`` resolves portfolio_analyses.id, then the embedded
+    result.analysis_id, then portfolio_analysis_id_aliases. A missing alias
+    table is a miss.
 
     **Authentication Required**: Must provide valid Supabase JWT token.
     **Security**: user_id is extracted from the verified JWT. The query filters
@@ -1927,22 +1930,34 @@ async def delete_portfolio_analysis(
     """
     Delete a single portfolio analysis by ID.
 
+    The id may be the row primary key, the embedded result.analysis_id, or a
+    legacy id in portfolio_analysis_id_aliases. The delete uses the resolved
+    primary key. A missing alias table is a miss.
+
     **Authentication Required**: Must provide valid Supabase JWT token.
     **Authorization**: User can only delete their own analyses.
     """
     record = get_analysis_by_id(analysis_id, user_id)
-    if not record:
+    if not record or not record.get("id"):
         raise HTTPException(status_code=404, detail="Analysis not found")
     result = record.get("result") if isinstance(record, dict) else None
     packet_analysis_id = (
         result.get("analysis_id") if isinstance(result, dict) else None
     )
-    deleted = delete_analysis_by_id(analysis_id, user_id)
+    # Alias and embedded lookups can resolve a caller id that is not the
+    # primary key. Delete the row that was actually found.
+    row_id = str(record["id"])
+    deleted = delete_analysis_by_id(row_id, user_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Analysis not found")
+    forgotten = []
     if isinstance(packet_analysis_id, str) and packet_analysis_id:
-        forget_packet_payload(packet_analysis_id, user_id)
-    forget_packet_payload(analysis_id, user_id)
+        forgotten.append(packet_analysis_id)
+    forgotten.append(analysis_id)
+    if row_id not in forgotten:
+        forgotten.append(row_id)
+    for forget_id in forgotten:
+        forget_packet_payload(forget_id, user_id)
     return {"deleted": True}
 
 

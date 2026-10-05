@@ -189,7 +189,7 @@ def _json(value):
     return value
 
 
-def _apply_sql(database_url: str, sql: str) -> None:
+def _apply_sql(database_url: str, sql: str) -> str:
     completed = subprocess.run(
         ["psql", database_url, "-v", "ON_ERROR_STOP=1"],
         input=sql,
@@ -197,10 +197,12 @@ def _apply_sql(database_url: str, sql: str) -> None:
         capture_output=True,
         check=False,
     )
+    output = f"{completed.stdout}\n{completed.stderr}"
     if completed.returncode != 0:
         raise AssertionError(
-            f"psql failed ({completed.returncode})\n{completed.stdout}\n{completed.stderr}"
+            f"psql failed ({completed.returncode})\n{output}"
         )
+    return output
 
 
 def _apply_migrations(database_url: str, apply_from: str | None = None) -> str:
@@ -735,4 +737,224 @@ def test_tax_profile_insert_policy_is_not_public(postgres):
         assert stored == [("backend-user",)]
     finally:
         conn.execute("RESET ROLE")
+        conn.close()
+
+
+IDENTITY_DB = "oth_jor36_identity"
+_COLLISION_CANONICAL = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+_COLLISION_LEGACY = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+_NON_UUID_ROW = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+_REWRITE_LEGACY = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+_REWRITE_CANONICAL = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+
+
+def _insert_identity_row(conn, row_id: str, user_id: str, analysis_id: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO portfolio_analyses (
+          id, user_id, filename, summary, positions_count, total_market_value, result
+        ) VALUES (
+          %s, %s, 'upload.csv', CAST(%s AS jsonb), 0, 0, CAST(%s AS jsonb)
+        )
+        """,
+        (
+            row_id,
+            user_id,
+            json.dumps({"positions_count": 0}),
+            json.dumps({"analysis_id": analysis_id, "positions": []}),
+        ),
+    )
+
+
+def test_migration_012_unifies_ids_and_backfills_entitlements(postgres):
+    url, conn = postgres(IDENTITY_DB)
+    try:
+        applied = _apply_migrations(url)
+        assert "Applying 012_unify_analysis_identity.sql" in applied
+        assert "vgrlucxqncajjdoaoctq" not in url
+
+        _insert_identity_row(conn, _COLLISION_CANONICAL, "other-user", _COLLISION_CANONICAL)
+        _insert_identity_row(conn, _COLLISION_LEGACY, "paid-user", _COLLISION_CANONICAL)
+        _insert_identity_row(conn, _NON_UUID_ROW, "paid-user", "not-a-uuid")
+        _insert_identity_row(conn, _REWRITE_LEGACY, "paid-user", _REWRITE_CANONICAL)
+        conn.execute(
+            """
+            INSERT INTO year_close_packet_entitlements (
+              user_id, tax_year, packet_session_id, analysis_id
+            ) VALUES ('paid-user', 2024, 'cs_existing', 'original-analysis')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO year_close_packet_snapshots (
+              analysis_id, user_id, tax_year, packet_payload, packet_session_id, paid_at
+            ) VALUES
+              ('different-snapshot-analysis', 'paid-user', 2024, '{}'::jsonb, 'cs_existing', now()),
+              ('snapshot-analysis', 'paid-user', 2026, '{"kept": true}'::jsonb, 'cs_backfill', now()),
+              (%s, 'paid-user', 2025, '{}'::jsonb, 'cs_legacy_snapshot', now()),
+              ('unpaid-analysis', 'paid-user', 2026, '{}'::jsonb, 'cs_unpaid', NULL)
+            """,
+            (_REWRITE_LEGACY,),
+        )
+        conn.execute(
+            """
+            INSERT INTO portfolio_activity_books (
+              user_id, analysis_id, filename, transactions
+            ) VALUES ('paid-user', 'book-analysis-id', 'book.csv', '[]'::jsonb)
+            """
+        )
+
+        migration_sql = (
+            SERVER_DIR / "migrations" / "012_unify_analysis_identity.sql"
+        ).read_text()
+        assert migration_sql.strip().startswith("BEGIN;") or "\nBEGIN;" in "\n" + migration_sql
+        assert migration_sql.strip().endswith("COMMIT;")
+        output = _apply_sql(url, "SET client_min_messages TO notice;\n" + migration_sql)
+        assert "skip non-uuid analysis_id" in output
+        assert "skip collision analysis_id" in output
+        assert _NON_UUID_ROW in output
+        assert _COLLISION_LEGACY in output
+
+        rewritten = conn.execute(
+            """
+            SELECT id::text, result->>'analysis_id'
+            FROM portfolio_analyses
+            WHERE user_id = 'paid-user' AND id = %s
+            """,
+            (_REWRITE_CANONICAL,),
+        ).fetchone()
+        assert rewritten == (_REWRITE_CANONICAL, _REWRITE_CANONICAL)
+        assert conn.execute(
+            "SELECT 1 FROM portfolio_analyses WHERE id = %s",
+            (_REWRITE_LEGACY,),
+        ).fetchone() is None
+        alias = conn.execute(
+            """
+            SELECT legacy_row_id::text, canonical_analysis_id::text
+            FROM portfolio_analysis_id_aliases
+            WHERE user_id = 'paid-user'
+            """
+        ).fetchall()
+        assert alias == [(_REWRITE_LEGACY, _REWRITE_CANONICAL)]
+
+        by_legacy = conn.execute(
+            """
+            SELECT id::text, result->>'analysis_id'
+            FROM portfolio_analyses
+            WHERE user_id = 'paid-user' AND id = %s
+            """,
+            (_COLLISION_LEGACY,),
+        ).fetchone()
+        by_embedded = conn.execute(
+            """
+            SELECT id::text, result->>'analysis_id'
+            FROM portfolio_analyses
+            WHERE user_id = 'paid-user' AND result->>'analysis_id' = %s
+            """,
+            (_COLLISION_CANONICAL,),
+        ).fetchone()
+        assert by_legacy == by_embedded == (_COLLISION_LEGACY, _COLLISION_CANONICAL)
+        assert conn.execute(
+            """
+            SELECT count(*)
+            FROM portfolio_analysis_id_aliases
+            WHERE user_id = 'paid-user' AND legacy_row_id = %s
+            """,
+            (_COLLISION_LEGACY,),
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            """
+            SELECT id::text, result->>'analysis_id'
+            FROM portfolio_analyses
+            WHERE id = %s
+            """,
+            (_NON_UUID_ROW,),
+        ).fetchone() == (_NON_UUID_ROW, "not-a-uuid")
+        assert conn.execute(
+            "SELECT id::text FROM portfolio_analyses WHERE user_id = 'other-user'"
+        ).fetchone()[0] == _COLLISION_CANONICAL
+
+        entitlements = conn.execute(
+            """
+            SELECT tax_year, packet_session_id, analysis_id
+            FROM year_close_packet_entitlements
+            WHERE user_id = 'paid-user'
+            ORDER BY tax_year, packet_session_id
+            """
+        ).fetchall()
+        assert entitlements == [
+            (2024, "cs_existing", "original-analysis"),
+            (2025, "cs_legacy_snapshot", _REWRITE_LEGACY),
+            (2026, "cs_backfill", "snapshot-analysis"),
+        ]
+        snapshots = conn.execute(
+            """
+            SELECT analysis_id, tax_year, packet_session_id, paid_at IS NOT NULL
+            FROM year_close_packet_snapshots
+            WHERE user_id = 'paid-user'
+            ORDER BY tax_year, packet_session_id
+            """
+        ).fetchall()
+        assert snapshots == [
+            ("different-snapshot-analysis", 2024, "cs_existing", True),
+            (_REWRITE_LEGACY, 2025, "cs_legacy_snapshot", True),
+            ("snapshot-analysis", 2026, "cs_backfill", True),
+            ("unpaid-analysis", 2026, "cs_unpaid", False),
+        ]
+        assert conn.execute(
+            """
+            SELECT analysis_id, transactions::text
+            FROM portfolio_activity_books
+            WHERE user_id = 'paid-user'
+            """
+        ).fetchone() == ("book-analysis-id", "[]")
+
+        locked = conn.execute(
+            """
+            SELECT c.relrowsecurity
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = 'public' AND c.relname = 'portfolio_analysis_id_aliases'
+            """
+        ).fetchone()
+        assert locked == (True,)
+        assert conn.execute(
+            """
+            SELECT count(*) FROM pg_policies
+            WHERE schemaname = 'public' AND tablename = 'portfolio_analysis_id_aliases'
+            """
+        ).fetchone()[0] == 0
+        grants = conn.execute(
+            """
+            SELECT grantee, privilege_type
+            FROM information_schema.role_table_grants
+            WHERE table_schema = 'public'
+              AND table_name = 'portfolio_analysis_id_aliases'
+              AND grantee IN ('service_role', 'anon', 'authenticated', 'PUBLIC')
+            ORDER BY grantee, privilege_type
+            """
+        ).fetchall()
+        assert grants == [
+            ("service_role", "DELETE"),
+            ("service_role", "INSERT"),
+            ("service_role", "SELECT"),
+            ("service_role", "UPDATE"),
+        ]
+
+        second = _apply_sql(url, "SET client_min_messages TO notice;\n" + migration_sql)
+        assert "skip non-uuid analysis_id" in second
+        assert "skip collision analysis_id" in second
+        assert conn.execute(
+            "SELECT count(*) FROM portfolio_analysis_id_aliases"
+        ).fetchone()[0] == 1
+        assert conn.execute(
+            """
+            SELECT analysis_id FROM year_close_packet_entitlements
+            WHERE user_id = 'paid-user' AND packet_session_id = 'cs_existing'
+            """
+        ).fetchone()[0] == "original-analysis"
+        assert conn.execute(
+            "SELECT count(*) FROM year_close_packet_entitlements WHERE user_id = 'paid-user'"
+        ).fetchone()[0] == 3
+    finally:
         conn.close()

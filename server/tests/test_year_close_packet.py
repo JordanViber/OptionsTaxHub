@@ -1141,6 +1141,106 @@ def test_confirm_does_not_grant_transient_access_when_persistence_fails(monkeypa
     assert PACKET_STORE["analysis-sample-1"]["paid"] is False
 
 
+def test_confirm_retry_keeps_original_entitlement_analysis_id(monkeypatch):
+    """A second confirm stays paid and does not replace the stored analysis id."""
+    _test_stripe_env(monkeypatch)
+    main.remember_analysis("analysis-sample-1", "test-user-123", SAMPLE_ANALYSIS)
+    session = _stripe_object_session(
+        id="cs_test_confirm_retry",
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": "analysis-sample-1",
+            "user_id": "test-user-123",
+            "tax_year": "2025",
+        },
+    )
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda *_args, **_kwargs: session,
+    )
+
+    class _MemoryEntitlements:
+        def __init__(self):
+            self.rows = []
+            self._mode = "read"
+            self._filters = {}
+            self._pending = None
+            self._table = None
+
+        def table(self, name):
+            self._table = name
+            self._mode = "read"
+            self._filters = {}
+            self._pending = None
+            return self
+
+        def select(self, *_args):
+            if self._mode != "insert":
+                self._mode = "read"
+            return self
+
+        def eq(self, key, value):
+            self._filters[key] = value
+            return self
+
+        def limit(self, *_args):
+            return self
+
+        def insert(self, row):
+            self._mode = "insert"
+            self._pending = dict(row)
+            return self
+
+        def execute(self):
+            if self._table != "year_close_packet_entitlements":
+                return SimpleNamespace(data=[])
+            if self._mode == "insert":
+                pending = self._pending
+                for row in self.rows:
+                    if (
+                        row["user_id"] == pending["user_id"]
+                        and int(row["tax_year"]) == int(pending["tax_year"])
+                        and row["packet_session_id"] == pending["packet_session_id"]
+                    ):
+                        error = Exception(
+                            "duplicate key value violates unique constraint"
+                        )
+                        error.code = "23505"
+                        raise error
+                self.rows.append(pending)
+                self._mode = "read"
+                return SimpleNamespace(data=[dict(pending)])
+            matched = [
+                dict(row)
+                for row in self.rows
+                if all(row.get(key) == value for key, value in self._filters.items())
+            ]
+            return SimpleNamespace(data=matched[:1])
+
+    store = _MemoryEntitlements()
+    monkeypatch.setattr(db, "get_supabase", lambda: store)
+    monkeypatch.setattr(main, "save_packet_entitlement", db.save_packet_entitlement)
+
+    body = {"session_id": session.id, "analysis_id": "analysis-sample-1"}
+    first = client.post("/api/year-close-packet/confirm", json=body)
+    second = client.post("/api/year-close-packet/confirm", json=body)
+
+    assert first.status_code == 200, first.text
+    assert first.json()["paid"] is True
+    assert second.status_code == 200, second.text
+    assert second.json()["paid"] is True
+    kept = db.save_packet_entitlement(
+        "followup-analysis",
+        "test-user-123",
+        2025,
+        session.id,
+    )
+    assert kept["analysis_id"] == "analysis-sample-1"
+    assert len(store.rows) == 1
+    assert store.rows[0]["analysis_id"] == "analysis-sample-1"
+
+
 def test_confirm_returns_open_checkout_to_client_for_resume(monkeypatch):
     _test_stripe_env(monkeypatch)
     session = _stripe_object_session(
@@ -3991,21 +4091,22 @@ def test_same_year_grant_snapshot_failure_keeps_private_lots_out_of_history(monk
     )
     csv_path = Path(__file__).resolve().parent / "fixtures" / "year_close_2024.csv"
     pdf_path = Path(__file__).resolve().parents[2] / "docs" / "c15f7458-e9d5-4dfb-a985-351df5a36cde.pdf"
-    main.app.dependency_overrides[get_optional_user] = lambda: "test-user-123"
-    try:
-        response = client.post(
-            "/api/portfolio/analyze?tax_year=2024",
-            files={
-                "file": ("year_close_2024.csv", csv_path.read_bytes(), "text/csv"),
-                "supplemental_1099": (
-                    pdf_path.name,
-                    pdf_path.read_bytes(),
-                    "application/pdf",
-                ),
-            },
-        )
-    finally:
-        main.app.dependency_overrides.pop(get_optional_user, None)
+    monkeypatch.setitem(
+        main.app.dependency_overrides,
+        get_optional_user,
+        lambda: "test-user-123",
+    )
+    response = client.post(
+        "/api/portfolio/analyze?tax_year=2024",
+        files={
+            "file": ("year_close_2024.csv", csv_path.read_bytes(), "text/csv"),
+            "supplemental_1099": (
+                pdf_path.name,
+                pdf_path.read_bytes(),
+                "application/pdf",
+            ),
+        },
+    )
 
     assert response.status_code == 200, response.text
     body = response.json()
@@ -4060,16 +4161,17 @@ def test_paid_snapshot_is_not_saved_when_history_insert_fails(monkeypatch):
         snapshot_result={"analysis_id": "should-not-save"},
     )
     csv_path = Path(__file__).resolve().parent / "fixtures" / "year_close_2024.csv"
-    main.app.dependency_overrides[get_optional_user] = lambda: "test-user-123"
-    try:
-        response = client.post(
-            "/api/portfolio/analyze?tax_year=2024",
-            files={
-                "file": ("year_close_2024.csv", csv_path.read_bytes(), "text/csv"),
-            },
-        )
-    finally:
-        main.app.dependency_overrides.pop(get_optional_user, None)
+    monkeypatch.setitem(
+        main.app.dependency_overrides,
+        get_optional_user,
+        lambda: "test-user-123",
+    )
+    response = client.post(
+        "/api/portfolio/analyze?tax_year=2024",
+        files={
+            "file": ("year_close_2024.csv", csv_path.read_bytes(), "text/csv"),
+        },
+    )
 
     assert response.status_code == 200, response.text
     body = response.json()
@@ -4079,3 +4181,245 @@ def test_paid_snapshot_is_not_saved_when_history_insert_fails(monkeypatch):
     assert snapshots == []
     book = body.get("activity_book") or {}
     assert not book.get("transactions")
+
+
+def test_paid_year_survives_restart_deleted_history_and_newer_rows(monkeypatch):
+    """Pay once, then a later 2026 upload on a fresh process stays unlocked.
+
+    The webhook is the only fulfillment path. Restart clears PACKET_STORE.
+    History for the paid run is deleted, and any history read sees 21 newer
+    rows that do not contain the paid Checkout session.
+    """
+    import uuid
+    from auth import get_optional_user
+
+    _test_stripe_env(monkeypatch)
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_packet_test_secret")
+    monkeypatch.setattr(
+        "main.fetch_current_prices",
+        lambda symbols, fb=None, allow_network=True: (
+            {symbol.upper(): 100.0 for symbol in symbols},
+            [],
+        ),
+    )
+    monkeypatch.setattr(
+        "main.fetch_option_prices",
+        lambda labels, fb=None, allow_network=True: ({}, []),
+    )
+    monkeypatch.setattr("main.prepare_positions_for_ai", lambda lots: [])
+    monkeypatch.setattr(
+        "main.load_activity_book_for_merge",
+        lambda *args, **kwargs: db.ActivityBookLookup(),
+    )
+    monkeypatch.setattr(
+        "main.upsert_activity_book",
+        lambda *args, **kwargs: {"ok": True},
+    )
+
+    inserted_rows = []
+
+    class _HistoryInsert:
+        def __init__(self):
+            self.row = None
+
+        def table(self, name):
+            assert name == "portfolio_analyses"
+            return self
+
+        def insert(self, row):
+            self.row = row
+            return self
+
+        def select(self, *_args):
+            return self
+
+        def execute(self):
+            inserted_rows.append(self.row)
+            return SimpleNamespace(data=[{"id": self.row.get("id")}])
+
+    def save_history(user_id, filename, summary, result_data=None):
+        previous = db.get_supabase
+        monkeypatch.setattr(db, "get_supabase", lambda: _HistoryInsert())
+        try:
+            return db.save_analysis_history(
+                user_id,
+                filename,
+                summary,
+                result_data=result_data,
+            )
+        finally:
+            monkeypatch.setattr(db, "get_supabase", previous)
+
+    def save_entitlement(analysis_id, user_id, tax_year, session_id):
+        key = (user_id, int(tax_year), session_id)
+        existing = _FAKE_PACKET_ENTITLEMENTS.get(key)
+        if existing:
+            return dict(existing)
+        row = {
+            "analysis_id": analysis_id,
+            "user_id": user_id,
+            "tax_year": int(tax_year),
+            "packet_session_id": session_id,
+        }
+        _FAKE_PACKET_ENTITLEMENTS[key] = row
+        return dict(row)
+
+    def lookup_grant(user_id, tax_year, client=None):
+        for (owner, _analysis_id), row in _FAKE_PACKET_SNAPSHOTS.items():
+            if owner != user_id or int(row.get("tax_year") or -1) != int(tax_year):
+                continue
+            session_id = row.get("packet_session_id")
+            if (
+                row.get("paid_at")
+                and isinstance(session_id, str)
+                and session_id.startswith("cs_")
+            ):
+                return session_id, True
+        return None, True
+
+    monkeypatch.setattr(main, "save_analysis_history", save_history)
+    monkeypatch.setattr(main, "save_packet_entitlement", save_entitlement)
+    monkeypatch.setattr(main, "lookup_packet_grant_for_tax_year", lookup_grant)
+
+    header = (
+        "Activity Date,Process Date,Settle Date,Instrument,Description,"
+        "Trans Code,Quantity,Price,Amount\n"
+    )
+    first_csv = (
+        header
+        + "01/01/2026,01/01/2026,01/03/2026,AAPL,Apple,Buy,2,180.00,-360.00\n"
+    ).encode()
+    second_csv = (
+        header
+        + "02/02/2026,02/02/2026,02/04/2026,MSFT,Microsoft,Buy,1,400.00,-400.00\n"
+    ).encode()
+    monkeypatch.setitem(
+        main.app.dependency_overrides,
+        get_optional_user,
+        lambda: "test-user-123",
+    )
+    first_response = client.post(
+        "/api/portfolio/analyze?tax_year=2026",
+        files={"file": ("ytd-2026.csv", first_csv, "text/csv")},
+    )
+
+    assert first_response.status_code == 200, first_response.text
+    first = first_response.json()
+    first_id = first["analysis_id"]
+    uuid.UUID(first_id)
+    assert inserted_rows[0]["id"] == first_id
+    assert inserted_rows[0]["result"]["analysis_id"] == first_id
+
+    event = _packet_checkout_event()
+    event["data"]["object"]["id"] = "cs_paid_restart"
+    event["data"]["object"]["metadata"]["analysis_id"] = first_id
+    event["data"]["object"]["metadata"]["user_id"] = "test-user-123"
+    event["data"]["object"]["metadata"]["tax_year"] = "2026"
+    webhook = _post_signed_webhook(event)
+    assert webhook.status_code == 200, webhook.text
+    assert webhook.json()["granted"] is True
+    entitlement_key = ("test-user-123", 2026, "cs_paid_restart")
+    assert list(_FAKE_PACKET_ENTITLEMENTS) == [entitlement_key]
+    assert _FAKE_PACKET_ENTITLEMENTS[entitlement_key]["analysis_id"] == first_id
+
+    reset_packet_store()
+    deleted = []
+    monkeypatch.setattr(
+        main,
+        "get_analysis_by_id",
+        lambda analysis_id, user_id, client=None: (
+            {
+                "id": analysis_id,
+                "user_id": user_id,
+                "result": {"analysis_id": analysis_id},
+            }
+            if analysis_id == first_id
+            else None
+        ),
+    )
+    monkeypatch.setattr(
+        main,
+        "delete_analysis_by_id",
+        lambda row_id, user_id: deleted.append((row_id, user_id)) or True,
+    )
+    removed = client.delete(f"/api/portfolio/analysis/{first_id}")
+    assert removed.status_code == 200, removed.text
+    assert deleted == [(first_id, "test-user-123")]
+    monkeypatch.setattr(main, "get_analysis_by_id", db.get_analysis_by_id)
+    for row in _FAKE_PACKET_SNAPSHOTS.values():
+        if row.get("paid_at") and row.get("analysis_id") == first_id:
+            row["packet_payload"] = None
+            assert row["packet_session_id"] == "cs_paid_restart"
+
+    history_reads = []
+
+    def get_history(user_id, limit=20, client=None):
+        rows = [
+            {
+                "id": f"newer-{index}",
+                "user_id": user_id,
+                "summary": {},
+                "result": {
+                    "analysis_id": f"newer-{index}",
+                    "packet_unlocked": True,
+                    "packet_session_id": f"cs_decoy_{index}",
+                    "tax_profile": {"tax_year": 2026},
+                },
+            }
+            for index in range(21)
+        ]
+        history_reads.append({"user_id": user_id, "limit": limit, "rows": rows})
+        return rows
+
+    monkeypatch.setattr(main, "get_analysis_history", get_history)
+    monkeypatch.setattr(db, "get_analysis_history", get_history)
+
+    second_response = client.post(
+        "/api/portfolio/analyze?tax_year=2026",
+        files={"file": ("later-2026.csv", second_csv, "text/csv")},
+    )
+
+    assert second_response.status_code == 200, second_response.text
+    second = second_response.json()
+    second_id = second["analysis_id"]
+    assert second_id != first_id
+    assert second["packet_unlocked"] is True
+    assert second["packet_session_id"] == "cs_paid_restart"
+    assert inserted_rows[1]["id"] == second_id
+    for read in history_reads:
+        assert len(read["rows"]) == 21
+        sessions = {
+            (row.get("result") or {}).get("packet_session_id") for row in read["rows"]
+        }
+        assert "cs_paid_restart" not in sessions
+        assert second["packet_session_id"] not in sessions
+
+    created = []
+
+    def create(*_args, **kwargs):
+        created.append(kwargs)
+        raise AssertionError("stripe.checkout.Session.create must not run")
+
+    monkeypatch.setattr(main.stripe.checkout.Session, "create", create)
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda *_args, **_kwargs: _stripe_object_session(
+            id="cs_paid_restart",
+            metadata={
+                "product": PACKET_METADATA_PRODUCT,
+                "analysis_id": first_id,
+                "user_id": "test-user-123",
+                "tax_year": "2026",
+            },
+        ),
+    )
+    checkout = client.post(
+        "/api/year-close-packet/checkout",
+        json={"analysis_id": second_id, "analysis": second},
+    )
+    assert checkout.status_code == 200, checkout.text
+    assert checkout.json()["already_paid"] is True
+    assert checkout.json()["session_id"] == "cs_paid_restart"
+    assert created == []
+    assert _FAKE_PACKET_ENTITLEMENTS[entitlement_key]["analysis_id"] == first_id

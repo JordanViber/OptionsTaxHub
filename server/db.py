@@ -132,6 +132,43 @@ def get_supabase_with_token(access_token: str):
 # ---------- Portfolio History ----------
 
 
+def _canonical_analysis_uuid(value) -> Optional[str]:
+    """Return the lowercase UUID string, or None when value is not a UUID."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        return str(uuid.UUID(text))
+    except (ValueError, AttributeError):
+        return None
+
+
+def _history_result_for_insert(
+    result_data: Optional[dict],
+) -> tuple[Optional[dict], Optional[str]]:
+    """Copy result JSON and choose the row id. Does not mutate result_data.
+
+    A UUID analysis_id becomes the primary key. A missing id is generated
+    once and written into both fields. Any other embedded id stays in JSON
+    only, because portfolio_analyses.id is a UUID column.
+    """
+    if not isinstance(result_data, dict):
+        return result_data, None
+    copied = dict(result_data)
+    raw = copied.get("analysis_id")
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        canonical = str(uuid.uuid4())
+        copied["analysis_id"] = canonical
+        return copied, canonical
+    canonical = _canonical_analysis_uuid(raw)
+    if canonical is None:
+        return copied, None
+    copied["analysis_id"] = canonical
+    return copied, canonical
+
+
 def save_analysis_history(
     user_id: str,
     filename: str,
@@ -143,6 +180,9 @@ def save_analysis_history(
 
     Also persists the full analysis result (positions, suggestions, etc.)
     so that past reports can be re-loaded from the history sidebar.
+
+    When the result carries a UUID analysis_id, that value is the row id.
+    Summary-only inserts leave the database default in place.
 
     Returns the inserted row, or None when Supabase is not configured.
     Raises HistoryInsertConflict when this analysis row already exists.
@@ -161,7 +201,10 @@ def save_analysis_history(
             "total_market_value": summary.get("total_market_value", 0),
         }
         if result_data is not None:
-            row["result"] = result_data
+            stored_result, row_id = _history_result_for_insert(result_data)
+            row["result"] = stored_result
+            if row_id:
+                row["id"] = row_id
         result = client.table("portfolio_analyses").insert(row).select("id").execute()
         if result.data:
             return dict(result.data[0])
@@ -253,6 +296,148 @@ def get_analysis_history(
         return []
 
 
+_ANALYSIS_ROW_COLUMNS = (
+    "id, user_id, filename, uploaded_at, summary, positions_count, "
+    "total_market_value, result"
+)
+_ANALYSIS_LOOKUP_COLUMNS = "id, user_id, result"
+
+
+def _analysis_row(result) -> Optional[dict]:
+    data = getattr(result, "data", None) or []
+    if not data:
+        return None
+    return dict(data[0])
+
+
+def _is_invalid_uuid_query(exc: Exception) -> bool:
+    """True when Postgres rejected a non-UUID primary-key comparison."""
+    code = _exception_code(exc).upper()
+    if code == "22P02":
+        return True
+    text = _exception_text(exc)
+    return "invalid input syntax for type uuid" in text or "invalid uuid" in text
+
+
+def _fetch_analysis_by_primary_key(client, analysis_id: str, user_id: str, columns: str):
+    return (
+        client.table("portfolio_analyses")
+        .select(columns)
+        .eq("id", analysis_id)
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+
+
+def _fetch_analysis_by_embedded_id(client, analysis_id: str, user_id: str, columns: str):
+    return (
+        client.table("portfolio_analyses")
+        .select(columns)
+        .eq("user_id", user_id)
+        .contains("result", {"analysis_id": analysis_id})
+        .order("uploaded_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+
+
+def _fetch_analysis_alias(client, analysis_id: str, user_id: str):
+    return (
+        client.table("portfolio_analysis_id_aliases")
+        .select("canonical_analysis_id")
+        .eq("user_id", user_id)
+        .eq("legacy_row_id", analysis_id)
+        .limit(1)
+        .execute()
+    )
+
+
+def _resolve_owned_analysis(
+    analysis_id: str,
+    user_id: str,
+    client,
+    *,
+    full: bool,
+    strict_outage: bool,
+) -> tuple[Optional[dict], bool]:
+    """Find one owner row by id, then embedded analysis_id, then alias.
+
+    ``strict_outage`` is for payment lookups: a database error is ``(None, False)``.
+    Reads used by history restore treat those errors as a miss. A missing alias
+    table is always a miss, so an install that has not applied migration 012
+    does not fail the request.
+    """
+    if not analysis_id or not user_id or client is None:
+        return None, False
+    columns = _ANALYSIS_ROW_COLUMNS if full else _ANALYSIS_LOOKUP_COLUMNS
+
+    def failed(exc: Exception, label: str) -> tuple[Optional[dict], bool]:
+        logger.error("Failed to find analysis %s by %s: %s", analysis_id, label, exc)
+        if strict_outage:
+            return None, False
+        return None, True
+
+    id_is_uuid = _canonical_analysis_uuid(analysis_id) is not None
+    # Payment lookups skip the UUID primary key for ids such as "analysis-1".
+    # Postgres would reject the cast, and a scripted miss is the embedded query.
+    # History reads still try id first and fall through on an invalid-uuid error.
+    row = None
+    if id_is_uuid or not strict_outage:
+        try:
+            row = _analysis_row(
+                _fetch_analysis_by_primary_key(client, analysis_id, user_id, columns)
+            )
+        except Exception as exc:
+            if not _is_invalid_uuid_query(exc):
+                return failed(exc, "id")
+            row = None
+        if row:
+            return row, True
+
+    try:
+        row = _analysis_row(
+            _fetch_analysis_by_embedded_id(client, analysis_id, user_id, columns)
+        )
+    except Exception as exc:
+        return failed(exc, "embedded id")
+    if row:
+        return row, True
+
+    if not id_is_uuid:
+        return None, True
+    try:
+        alias = _analysis_row(_fetch_analysis_alias(client, analysis_id, user_id))
+    except Exception as exc:
+        if _is_missing_analysis_schema(exc):
+            logger.info(
+                "portfolio_analysis_id_aliases is missing; analysis lookup "
+                "continues without legacy ids"
+            )
+            return None, True
+        return failed(exc, "alias")
+    if not alias:
+        return None, True
+    canonical = str(alias.get("canonical_analysis_id") or "").strip()
+    if not canonical or canonical == analysis_id:
+        return None, True
+    try:
+        row = _analysis_row(
+            _fetch_analysis_by_primary_key(client, canonical, user_id, columns)
+        )
+    except Exception as exc:
+        return failed(exc, "alias target")
+    if row:
+        return row, True
+    try:
+        row = _analysis_row(
+            _fetch_analysis_by_embedded_id(client, canonical, user_id, columns)
+        )
+    except Exception as exc:
+        return failed(exc, "alias target embedded id")
+    return (row, True) if row else (None, True)
+
+
 def get_analysis_by_id(
     analysis_id: str,
     user_id: str,
@@ -261,7 +446,9 @@ def get_analysis_by_id(
     """
     Retrieve a single portfolio analysis by ID, including the full result.
 
-    Filters by user_id to enforce ownership.
+    Resolves portfolio_analyses.id, then result.analysis_id, then
+    portfolio_analysis_id_aliases. Filters by user_id on every query.
+    A missing alias table is a miss, not an error.
 
     Args:
         analysis_id: ID of the analysis to retrieve
@@ -275,20 +462,17 @@ def get_analysis_by_id(
         return None
 
     try:
-        result = (
-            client.table("portfolio_analyses")
-            .select("id, user_id, filename, uploaded_at, summary, positions_count, total_market_value, result")
-            .eq("id", analysis_id)
-            .eq("user_id", user_id)
-            .limit(1)
-            .execute()
+        record, _lookup_succeeded = _resolve_owned_analysis(
+            analysis_id,
+            user_id,
+            client,
+            full=True,
+            strict_outage=False,
         )
-        if result.data:
-            return dict(result.data[0])
-        return None
     except Exception as e:
         logger.error(f"Failed to fetch analysis by id: {e}")
         return None
+    return record
 
 
 def get_analysis_by_result_analysis_id(
@@ -326,43 +510,18 @@ def _lookup_analysis_for_entitlement(
     user_id: str,
     client,
 ) -> tuple[Optional[dict], bool]:
-    """Find the owner-scoped row; the bool distinguishes a miss from DB errors."""
-    try:
-        uuid.UUID(analysis_id)
-    except (TypeError, ValueError, AttributeError):
-        # The primary key is a UUID; guest and legacy IDs may be arbitrary text.
-        pass
-    else:
-        try:
-            result = (
-                client.table("portfolio_analyses")
-                .select("id, user_id, result")
-                .eq("id", analysis_id)
-                .eq("user_id", user_id)
-                .limit(1)
-                .execute()
-            )
-        except Exception as e:
-            logger.error("Failed to find analysis row %s: %s", analysis_id, e)
-            return None, False
-        if result.data:
-            return dict(result.data[0]), True
-    try:
-        result = (
-            client.table("portfolio_analyses")
-            .select("id, user_id, result")
-            .eq("user_id", user_id)
-            .contains("result", {"analysis_id": analysis_id})
-            .order("uploaded_at", desc=True)
-            .limit(1)
-            .execute()
-        )
-    except Exception as e:
-        logger.error("Failed to find analysis result %s: %s", analysis_id, e)
-        return None, False
-    if result.data:
-        return dict(result.data[0]), True
-    return None, True
+    """Find the owner-scoped row; the bool distinguishes a miss from DB errors.
+
+    Order is portfolio_analyses.id, then result.analysis_id, then
+    portfolio_analysis_id_aliases. A missing alias table is a miss.
+    """
+    return _resolve_owned_analysis(
+        analysis_id,
+        user_id,
+        client,
+        full=False,
+        strict_outage=True,
+    )
 
 
 def lookup_analysis_for_entitlement(

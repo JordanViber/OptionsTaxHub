@@ -734,7 +734,7 @@ def test_apply_sql_failure_and_success(monkeypatch):
     monkeypatch.setattr(migration.subprocess, "run", fake_run)
     with pytest.raises(AssertionError, match=r"psql failed \(1\)"):
         migration._apply_sql("postgresql:///postgres", "SELECT 1")
-    assert migration._apply_sql("postgresql:///postgres", "SELECT 1") is None
+    assert migration._apply_sql("postgresql:///postgres", "SELECT 1") == "out\nerr"
     assert calls[0][0][0] == "psql"
     assert calls[1][0][0] == "psql"
 
