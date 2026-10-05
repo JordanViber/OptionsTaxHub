@@ -1458,11 +1458,14 @@ def save_packet_snapshot(
             update_row = row
             # Repair only the null payload we just read. A concurrent delete or
             # a payload written after this read must not be upserted over.
-            repair = _match_snapshot_analysis_id(
+            # Pin the stored key: an ilike match would rewrite every case variant.
+            repair = (
                 client.table("year_close_packet_snapshots")
-                .update(row),
-                analysis_id,
-            ).eq("user_id", user_id).filter("paid_at", "not.is", "null")
+                .update(row)
+                .eq("analysis_id", existing_row["analysis_id"])
+                .eq("user_id", user_id)
+                .filter("paid_at", "not.is", "null")
+            )
             if stored_payload is None:
                 repair = repair.is_("packet_payload", "null")
             else:
@@ -1501,13 +1504,15 @@ def save_packet_snapshot(
             # The predicate makes this transition atomic with respect to the
             # webhook's paid_at update. If payment wins the race, the UPDATE
             # affects no row and the paid row is read back without downgrading.
-            result = _match_snapshot_analysis_id(
+            result = (
                 client.table("year_close_packet_snapshots")
-                .update(update_row),
-                analysis_id,
-            ).eq("user_id", user_id).is_("paid_at", "null").select(
-                "analysis_id, user_id, tax_year"
-            ).execute()
+                .update(update_row)
+                .eq("analysis_id", existing_row["analysis_id"])
+                .eq("user_id", user_id)
+                .is_("paid_at", "null")
+                .select("analysis_id, user_id, tax_year")
+                .execute()
+            )
             if result.data:
                 return dict(result.data[0])
             latest_row = read_existing()
@@ -1560,13 +1565,15 @@ def save_packet_snapshot(
                     return result_row(None, latest_row)
                 # A paid insert can race an unpaid insert for the same unique
                 # key. Promote only while the database still says unpaid.
-                promoted = _match_snapshot_analysis_id(
+                promoted = (
                     client.table("year_close_packet_snapshots")
-                    .update(update_row),
-                    analysis_id,
-                ).eq("user_id", user_id).is_("paid_at", "null").select(
-                    "analysis_id, user_id, tax_year"
-                ).execute()
+                    .update(update_row)
+                    .eq("analysis_id", latest_row["analysis_id"])
+                    .eq("user_id", user_id)
+                    .is_("paid_at", "null")
+                    .select("analysis_id, user_id, tax_year")
+                    .execute()
+                )
                 if promoted.data:
                     return dict(promoted.data[0])
                 latest_row = read_existing()
@@ -1634,18 +1641,37 @@ def mark_packet_snapshot_paid(
     _cleanup_expired_packet_snapshots(client)
     now = datetime.now(timezone.utc)
     try:
-        result = _match_snapshot_analysis_id(
+        existing = _order_snapshot_candidates(
+            _match_snapshot_analysis_id(
+                client.table("year_close_packet_snapshots")
+                .select("analysis_id, user_id, tax_year, paid_at"),
+                analysis_id,
+            ).eq("user_id", user_id).eq("tax_year", int(tax_year))
+        ).limit(1).execute()
+        if not existing.data:
+            return False
+        existing_row = dict(existing.data[0])
+        stored_analysis_id = existing_row.get("analysis_id")
+        if not stored_analysis_id:
+            return False
+        # Stamp only the row that was read, and only while it is still unpaid.
+        # An ilike update would re-stamp every case variant, including one
+        # that is already paid.
+        result = (
             client.table("year_close_packet_snapshots")
             .update({
                 "packet_session_id": session_id,
                 "paid_at": now.isoformat(),
                 "expires_at": None,
                 "updated_at": now.isoformat(),
-            }),
-            analysis_id,
-        ).eq("user_id", user_id).eq("tax_year", int(tax_year)).select(
-            "analysis_id"
-        ).execute()
+            })
+            .eq("analysis_id", stored_analysis_id)
+            .eq("user_id", user_id)
+            .eq("tax_year", int(tax_year))
+            .is_("paid_at", "null")
+            .select("analysis_id")
+            .execute()
+        )
         return bool(result.data)
     except Exception as e:
         logger.error("Failed to mark packet snapshot paid for %s: %s", analysis_id, e)

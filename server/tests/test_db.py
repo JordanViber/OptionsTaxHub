@@ -222,6 +222,112 @@ class _OrderingSnapshotQuery:
         return _FakeExecuteResult(matched)
 
 
+class _ApplyingSnapshotQuery:
+    """Selects with the snapshot order and updates only rows that match eq/is_."""
+
+    def __init__(self, store):
+        self.store = store
+        self.op = "select"
+        self.payload = None
+        self.eqs = []
+        self.filters = []
+        self.isnull = []
+        self.orders = []
+        self.limit_n = None
+
+    def select(self, *_args, **_kwargs):
+        return self
+
+    def eq(self, column, value):
+        self.eqs.append((column, value))
+        return self
+
+    def filter(self, column, operator, value):
+        self.filters.append((column, operator, value))
+        return self
+
+    def is_(self, column, value):
+        self.isnull.append((column, value))
+        return self
+
+    def order(self, column, desc=False, nullsfirst=None, **_kwargs):
+        self.orders.append((column, desc, nullsfirst))
+        return self
+
+    def limit(self, count):
+        self.limit_n = count
+        return self
+
+    def update(self, row):
+        self.op = "update"
+        self.payload = dict(row)
+        return self
+
+    def insert(self, row):
+        self.op = "insert"
+        self.payload = dict(row)
+        return self
+
+    def _matches(self, row):
+        for column, value in self.eqs:
+            if row.get(column) != value:
+                return False
+        for column, operator, value in self.filters:
+            if operator == "ilike":
+                if str(row.get(column) or "").lower() != str(value).lower():
+                    return False
+            elif operator == "not.is" and value == "null":
+                if row.get(column) is None:
+                    return False
+            else:
+                return False
+        for column, value in self.isnull:
+            if value == "null":
+                if row.get(column) is not None:
+                    return False
+            elif row.get(column) != value:
+                return False
+        return True
+
+    def execute(self):
+        if self.op == "insert":
+            stored = dict(self.payload)
+            self.store.rows.append(stored)
+            return _FakeExecuteResult([dict(stored)])
+        matched = [row for row in self.store.rows if self._matches(row)]
+        if self.op == "select" and self.orders:
+            for column, desc, nullsfirst in reversed(self.orders):
+                matched.sort(
+                    key=lambda row, column=column, desc=desc, nullsfirst=nullsfirst: (
+                        _snapshot_order_key(row, column, desc, nullsfirst)
+                    )
+                )
+            if self.limit_n is not None:
+                matched = matched[: self.limit_n]
+            return _FakeExecuteResult([dict(row) for row in matched])
+        if self.op == "update":
+            for row in matched:
+                row.update(self.payload)
+            return _FakeExecuteResult([dict(row) for row in matched])
+        if self.limit_n is not None:
+            matched = matched[: self.limit_n]
+        return _FakeExecuteResult([dict(row) for row in matched])
+
+
+class _ApplyingSnapshotClient:
+    def __init__(self, rows):
+        self.rows = [dict(row) for row in rows]
+
+    def rpc(self, *_args, **_kwargs):
+        raise RuntimeError("cleanup unavailable")
+
+    def table(self, _name):
+        return _ApplyingSnapshotQuery(self)
+
+    def row(self, analysis_id):
+        return next(row for row in self.rows if row["analysis_id"] == analysis_id)
+
+
 class _OrderingSnapshotClient:
     """Applies recorded order() calls before limit, so an unordered read is wrong."""
 
@@ -1377,18 +1483,144 @@ class TestPacketSnapshots:
         assert save_client.updates == []
         assert save_client.inserts == []
 
+    def test_unpaid_snapshot_update_changes_only_the_selected_case_variant(self, monkeypatch):
+        stored = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
+        other = stored.lower()
+        selected = {
+            "analysis_id": stored,
+            "user_id": "user1",
+            "tax_year": 2025,
+            "packet_payload": {"report": "selected"},
+            "packet_session_id": None,
+            "paid_at": None,
+            "expires_at": "2099-12-01T00:00:00+00:00",
+        }
+        untouched = {
+            "analysis_id": other,
+            "user_id": "user1",
+            "tax_year": 2024,
+            "packet_payload": {"report": "other-year"},
+            "packet_session_id": None,
+            "paid_at": None,
+            "expires_at": "2099-01-01T00:00:00+00:00",
+        }
+        client = _ApplyingSnapshotClient([untouched, selected])
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+
+        saved = db.save_packet_snapshot(
+            other,
+            "user1",
+            2025,
+            {"report": "updated"},
+        )
+
+        assert saved["analysis_id"] == stored
+        assert client.row(stored)["packet_payload"] == {"report": "updated"}
+        assert client.row(stored)["tax_year"] == 2025
+        assert client.row(other)["packet_payload"] == {"report": "other-year"}
+        assert client.row(other)["tax_year"] == 2024
+        assert client.row(other)["analysis_id"] == other
+
+    def test_paid_payload_repair_does_not_overwrite_the_other_spelling(self, monkeypatch):
+        stored = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
+        other = stored.lower()
+        selected = {
+            "analysis_id": stored,
+            "user_id": "user1",
+            "tax_year": 2025,
+            "packet_payload": None,
+            "packet_session_id": "cs_selected",
+            "paid_at": "2026-02-01T00:00:00+00:00",
+            "expires_at": None,
+        }
+        untouched = {
+            "analysis_id": other,
+            "user_id": "user1",
+            "tax_year": 2024,
+            "packet_payload": None,
+            "packet_session_id": "cs_other",
+            "paid_at": "2026-01-01T00:00:00+00:00",
+            "expires_at": None,
+        }
+        client = _ApplyingSnapshotClient([untouched, selected])
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+
+        saved = db.save_packet_snapshot(
+            other,
+            "user1",
+            2025,
+            {"report": "repaired"},
+        )
+
+        assert saved["analysis_id"] == stored
+        assert client.row(stored)["packet_payload"] == {"report": "repaired"}
+        assert client.row(stored)["packet_session_id"] == "cs_selected"
+        assert client.row(other)["packet_payload"] is None
+        assert client.row(other)["packet_session_id"] == "cs_other"
+        assert client.row(other)["paid_at"] == "2026-01-01T00:00:00+00:00"
+
+    def test_mark_packet_snapshot_paid_does_not_restamp_paid_row(self, monkeypatch):
+        stored = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
+        other = stored.lower()
+        paid = {
+            "analysis_id": stored,
+            "user_id": "user1",
+            "tax_year": 2025,
+            "packet_payload": {"report": "paid"},
+            "packet_session_id": "cs_original",
+            "paid_at": "2026-01-01T00:00:00+00:00",
+            "expires_at": None,
+        }
+        unpaid = {
+            "analysis_id": other,
+            "user_id": "user1",
+            "tax_year": 2024,
+            "packet_payload": {"report": "unpaid"},
+            "packet_session_id": None,
+            "paid_at": None,
+            "expires_at": "2099-01-01T00:00:00+00:00",
+        }
+        client = _ApplyingSnapshotClient([unpaid, paid])
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+
+        assert db.mark_packet_snapshot_paid(
+            other, "user1", 2025, "cs_restamp"
+        ) is False
+        assert client.row(stored)["packet_session_id"] == "cs_original"
+        assert client.row(stored)["paid_at"] == "2026-01-01T00:00:00+00:00"
+        assert client.row(other)["paid_at"] is None
+        assert client.row(other)["packet_session_id"] is None
+
+        assert db.mark_packet_snapshot_paid(
+            stored, "user1", 2024, "cs_new"
+        ) is True
+        assert client.row(other)["packet_session_id"] == "cs_new"
+        assert client.row(other)["paid_at"]
+        assert client.row(other)["analysis_id"] == other
+        assert client.row(stored)["packet_session_id"] == "cs_original"
+        assert client.row(stored)["paid_at"] == "2026-01-01T00:00:00+00:00"
+
     def test_mark_packet_snapshot_paid_matches_uuid_case_variant(self, monkeypatch):
         stored = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
-        client = _FakeClient(table_data=[{"analysis_id": stored}])
+        client = _FakeClient(table_data=[{
+            "analysis_id": stored,
+            "user_id": "user1",
+            "tax_year": 2025,
+            "paid_at": None,
+        }])
         monkeypatch.setattr(db, "get_supabase", lambda: client)
 
         assert db.mark_packet_snapshot_paid(
             stored.lower(), "user1", 2025, "cs_case"
         ) is True
-        calls = client.builders[0].calls
-        assert ("filter", ("analysis_id", "ilike", stored.lower()), {}) in calls
-        update = next(call for call in calls if call[0] == "update")
+        read_calls = client.builders[0].calls
+        assert ("filter", ("analysis_id", "ilike", stored.lower()), {}) in read_calls
+        update_calls = client.builders[1].calls
+        update = next(call for call in update_calls if call[0] == "update")
         assert "analysis_id" not in update[1][0]
+        assert ("eq", ("analysis_id", stored), {}) in update_calls
+        assert ("is_", ("paid_at", "null"), {}) in update_calls
+        assert not any(call[0] == "filter" for call in update_calls)
 
     def test_does_not_load_expired_unpaid_snapshot(self, monkeypatch):
         row = {
@@ -1423,7 +1655,24 @@ class TestPacketSnapshots:
 
     def test_paid_snapshot_update_reports_database_failure(self, monkeypatch):
         client = MagicMock()
-        client.table.return_value.update.return_value.eq.return_value.eq.return_value.eq.return_value.select.return_value.execute.side_effect = RuntimeError("offline")
+        read = MagicMock()
+        read.data = [{
+            "analysis_id": "analysis-a",
+            "user_id": "user1",
+            "tax_year": 2026,
+            "paid_at": None,
+        }]
+        (
+            client.table.return_value.select.return_value.eq.return_value
+            .eq.return_value.eq.return_value.order.return_value
+            .order.return_value.order.return_value.limit.return_value
+            .execute.return_value
+        ) = read
+        (
+            client.table.return_value.update.return_value.eq.return_value
+            .eq.return_value.eq.return_value.is_.return_value.select.return_value
+            .execute.side_effect
+        ) = RuntimeError("offline")
         monkeypatch.setattr(db, "get_supabase", lambda: client)
 
         assert db.mark_packet_snapshot_paid(
@@ -1432,9 +1681,24 @@ class TestPacketSnapshots:
 
     def test_paid_snapshot_update_removes_expiration(self, monkeypatch):
         client = MagicMock()
-        client.table.return_value.update.return_value.eq.return_value.eq.return_value.eq.return_value.select.return_value.execute.return_value.data = [
-            {"analysis_id": "analysis-a"}
-        ]
+        read = MagicMock()
+        read.data = [{
+            "analysis_id": "analysis-a",
+            "user_id": "user1",
+            "tax_year": 2026,
+            "paid_at": None,
+        }]
+        (
+            client.table.return_value.select.return_value.eq.return_value
+            .eq.return_value.eq.return_value.order.return_value
+            .order.return_value.order.return_value.limit.return_value
+            .execute.return_value
+        ) = read
+        (
+            client.table.return_value.update.return_value.eq.return_value
+            .eq.return_value.eq.return_value.is_.return_value.select.return_value
+            .execute.return_value.data
+        ) = [{"analysis_id": "analysis-a"}]
         monkeypatch.setattr(db, "get_supabase", lambda: client)
 
         assert db.mark_packet_snapshot_paid(

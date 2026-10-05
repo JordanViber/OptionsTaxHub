@@ -4699,17 +4699,21 @@ def test_paid_year_survives_restart_deleted_history_and_newer_rows(monkeypatch):
 
     reset_packet_store()
     deleted = []
+    packet_lookup = main.lookup_analysis_for_entitlement
     monkeypatch.setattr(
         main,
-        "get_analysis_by_id",
-        lambda analysis_id, user_id, client=None: (
-            {
-                "id": analysis_id,
-                "user_id": user_id,
-                "result": {"analysis_id": analysis_id},
-            }
+        "lookup_analysis_for_entitlement",
+        lambda analysis_id, user_id: (
+            (
+                {
+                    "id": analysis_id,
+                    "user_id": user_id,
+                    "result": {"analysis_id": analysis_id},
+                },
+                True,
+            )
             if analysis_id == first_id
-            else None
+            else (None, True)
         ),
     )
     monkeypatch.setattr(
@@ -4720,7 +4724,7 @@ def test_paid_year_survives_restart_deleted_history_and_newer_rows(monkeypatch):
     removed = client.delete(f"/api/portfolio/analysis/{first_id}")
     assert removed.status_code == 200, removed.text
     assert deleted == [(first_id, "test-user-123")]
-    monkeypatch.setattr(main, "get_analysis_by_id", db.get_analysis_by_id)
+    monkeypatch.setattr(main, "lookup_analysis_for_entitlement", packet_lookup)
     for row in _FAKE_PACKET_SNAPSHOTS.values():
         if row.get("paid_at") and row.get("analysis_id") == first_id:
             row["packet_payload"] = None

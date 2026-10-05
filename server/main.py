@@ -1924,7 +1924,10 @@ async def cleanup_orphan_history(
 
 @app.delete(
     "/api/portfolio/analysis/{analysis_id}",
-    responses={404: {"description": "Analysis not found"}},
+    responses={
+        404: {"description": "Analysis not found"},
+        503: {"description": "Analysis lookup failed"},
+    },
 )
 async def delete_portfolio_analysis(
     analysis_id: str,
@@ -1942,7 +1945,12 @@ async def delete_portfolio_analysis(
     **Authentication Required**: Must provide valid Supabase JWT token.
     **Authorization**: User can only delete their own analyses.
     """
-    record = get_analysis_by_id(analysis_id, user_id)
+    record, lookup_succeeded = lookup_analysis_for_entitlement(analysis_id, user_id)
+    if not lookup_succeeded:
+        raise HTTPException(
+            status_code=503,
+            detail="Analysis could not be deleted. Please retry.",
+        )
     if not record or not record.get("id"):
         raise HTTPException(status_code=404, detail="Analysis not found")
     result = record.get("result") if isinstance(record, dict) else None

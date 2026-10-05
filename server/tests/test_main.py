@@ -1820,8 +1820,11 @@ def test_get_portfolio_analysis_not_found(monkeypatch):
 def test_delete_analysis_success(monkeypatch):
     """DELETE /api/portfolio/analysis/{id} returns success on deletion."""
     monkeypatch.setattr(
-        "main.get_analysis_by_id",
-        lambda aid, uid: {"id": aid, "user_id": uid, "result": {"analysis_id": "packet-id"}},
+        "main.lookup_analysis_for_entitlement",
+        lambda aid, uid: (
+            {"id": aid, "user_id": uid, "result": {"analysis_id": "packet-id"}},
+            True,
+        ),
     )
     monkeypatch.setattr("main.delete_analysis_by_id", lambda aid, uid: True)
     forgotten = []
@@ -1841,8 +1844,8 @@ def test_delete_analysis_success(monkeypatch):
 
 def test_delete_analysis_clears_packet_by_history_id_when_result_has_no_analysis_id(monkeypatch):
     monkeypatch.setattr(
-        "main.get_analysis_by_id",
-        lambda aid, uid: {"id": aid, "user_id": uid, "result": None},
+        "main.lookup_analysis_for_entitlement",
+        lambda aid, uid: ({"id": aid, "user_id": uid, "result": None}, True),
     )
     monkeypatch.setattr("main.delete_analysis_by_id", lambda aid, uid: True)
     forgotten = []
@@ -1870,12 +1873,15 @@ def test_delete_analysis_forgets_legacy_alias_packet_payload(monkeypatch):
         "session_ids": set(),
     }
     monkeypatch.setattr(
-        "main.get_analysis_by_id",
-        lambda aid, uid: {
-            "id": canonical,
-            "user_id": uid,
-            "result": {"analysis_id": canonical},
-        },
+        "main.lookup_analysis_for_entitlement",
+        lambda aid, uid: (
+            {
+                "id": canonical,
+                "user_id": uid,
+                "result": {"analysis_id": canonical},
+            },
+            True,
+        ),
     )
     monkeypatch.setattr("main.delete_analysis_by_id", lambda aid, uid: True)
 
@@ -1905,8 +1911,11 @@ def test_delete_analysis_forgets_legacy_alias_packet_payload(monkeypatch):
 def test_delete_analysis_missing_alias_table_still_deletes(monkeypatch):
     deleted = []
     monkeypatch.setattr(
-        "main.get_analysis_by_id",
-        lambda aid, uid: {"id": aid, "user_id": uid, "result": {"analysis_id": aid}},
+        "main.lookup_analysis_for_entitlement",
+        lambda aid, uid: (
+            {"id": aid, "user_id": uid, "result": {"analysis_id": aid}},
+            True,
+        ),
     )
     monkeypatch.setattr(
         "main.delete_analysis_by_id",
@@ -1941,8 +1950,11 @@ def test_delete_analysis_missing_alias_table_still_deletes(monkeypatch):
 def test_delete_analysis_schema_cache_miss_does_not_delete(monkeypatch):
     deleted = []
     monkeypatch.setattr(
-        "main.get_analysis_by_id",
-        lambda aid, uid: {"id": aid, "user_id": uid, "result": {"analysis_id": aid}},
+        "main.lookup_analysis_for_entitlement",
+        lambda aid, uid: (
+            {"id": aid, "user_id": uid, "result": {"analysis_id": aid}},
+            True,
+        ),
     )
     monkeypatch.setattr(
         "main.delete_analysis_by_id",
@@ -1975,9 +1987,67 @@ def test_delete_analysis_schema_cache_miss_does_not_delete(monkeypatch):
     assert deleted == []
 
 
+def test_delete_analysis_alias_lookup_error_is_503_and_deletes_nothing(monkeypatch):
+    """An alias-table outage must not look like a missing analysis."""
+    legacy = "11111111-1111-4111-8111-111111111111"
+    deleted = []
+    cache_miss = Exception(
+        "Could not find the table 'public.portfolio_analysis_id_aliases' "
+        "in the schema cache"
+    )
+    cache_miss.code = "PGRST205"
+
+    class _Lookup:
+        def __init__(self, steps):
+            self.steps = list(steps)
+
+        def table(self, _name):
+            outcome = self.steps.pop(0)
+            return _LookupQuery(outcome)
+
+    class _LookupQuery:
+        def __init__(self, outcome):
+            self.outcome = outcome
+
+        def select(self, *_args, **_kwargs):
+            return self
+
+        def eq(self, *_args, **_kwargs):
+            return self
+
+        def filter(self, *_args, **_kwargs):
+            return self
+
+        def order(self, *_args, **_kwargs):
+            return self
+
+        def limit(self, *_args, **_kwargs):
+            return self
+
+        def execute(self):
+            if isinstance(self.outcome, Exception):
+                raise self.outcome
+            return SimpleNamespace(data=self.outcome)
+
+    monkeypatch.setattr(db, "get_supabase", lambda: _Lookup([[], [], cache_miss]))
+    monkeypatch.setattr(
+        "main.delete_analysis_by_id",
+        lambda aid, uid: deleted.append((aid, uid)) or True,
+    )
+
+    response = client.delete(f"/api/portfolio/analysis/{legacy}")
+
+    assert response.status_code == 503
+    assert deleted == []
+    assert "retry" in response.json()["detail"].lower()
+
+
 def test_delete_analysis_not_found(monkeypatch):
     """DELETE /api/portfolio/analysis/{id} returns 404 when not found."""
-    monkeypatch.setattr("main.get_analysis_by_id", lambda *_args: None)
+    monkeypatch.setattr(
+        "main.lookup_analysis_for_entitlement",
+        lambda *_args: (None, True),
+    )
     monkeypatch.setattr("main.delete_analysis_by_id", lambda aid, uid: False)
 
     response = client.delete("/api/portfolio/analysis/nonexistent")
