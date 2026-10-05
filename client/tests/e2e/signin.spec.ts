@@ -67,7 +67,9 @@ test.describe("Sign In Page", () => {
 
     // Should redirect to dashboard
     await expect(page).toHaveURL(/\/dashboard/, { timeout: 15000 });
-    await expect(page.getByText("OptionsTaxHub")).toBeVisible({
+    await expect(
+      page.getByRole("link", { name: "OptionsTaxHub" }),
+    ).toBeVisible({
       timeout: 10000,
     });
   });

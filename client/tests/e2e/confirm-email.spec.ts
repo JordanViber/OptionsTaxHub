@@ -113,6 +113,6 @@ test.describe("Dashboard blocks unconfirmed sessions", () => {
 
     await expect(page).toHaveURL(/\/auth\/confirm-email/, { timeout: 15000 });
     await expect(page.getByText("Portfolio Analysis")).toHaveCount(0);
-    await expect(page.getByText("Portfolio Value")).toHaveCount(0);
+    await expect(page.getByText("Net Open Position Value")).toHaveCount(0);
   });
 });

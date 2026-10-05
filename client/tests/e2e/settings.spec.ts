@@ -49,12 +49,9 @@ test.describe("Settings Page", () => {
       timeout: 10000,
     });
 
-    // Wait for profile data to load
-    await expect(page.getByText("Single")).toBeVisible({ timeout: 5000 });
-
-    // Income field should show the saved value
-    const incomeInput = page.locator('input[type="number"]');
-    await expect(incomeInput).toHaveValue("85000");
+    // Saved profile is 85000. The field is a text input and renders en-US grouping.
+    const incomeInput = page.getByLabel("Estimated Annual Income");
+    await expect(incomeInput).toHaveValue("85,000");
   });
 
   test("Dashboard back button navigates to home", async ({ page }) => {
