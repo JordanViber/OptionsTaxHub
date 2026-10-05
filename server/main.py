@@ -2387,6 +2387,20 @@ def _rollback_inserted_history(saved: dict, user_id: str) -> None:
         )
 
 
+def _analysis_ids_match(left: str, right: str) -> bool:
+    """UUID ids match in any letter case. Other ids stay an exact match.
+
+    Stripe metadata keeps the spelling already stored on the analysis. This
+    only decides whether two strings name that same id.
+    """
+    if left == right:
+        return True
+    try:
+        return str(uuid.UUID(left.strip())) == str(uuid.UUID(right.strip()))
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
 def _packet_checkout_idempotency_key(
     user_id: str,
     analysis_id: str,
@@ -2864,14 +2878,24 @@ async def create_year_close_packet_checkout(
             result = record.get("result")
             if isinstance(result, dict):
                 stored_analysis_id = str(result.get("analysis_id") or "").strip()
-                if stored_analysis_id and stored_analysis_id != analysis_id:
+                if stored_analysis_id and not _analysis_ids_match(
+                    stored_analysis_id, analysis_id
+                ):
                     raise HTTPException(
                         status_code=400,
                         detail="The analysis ID does not match the saved analysis.",
                     )
+                # Keep the stored spelling for Stripe metadata. A different
+                # letter case of the same UUID is not a different analysis.
+                if stored_analysis_id and _analysis_ids_match(
+                    stored_analysis_id, analysis_id
+                ):
+                    analysis_id = stored_analysis_id
                 if analysis is None:
                     analysis = result
-        elif not isinstance(analysis, dict) or analysis.get("analysis_id") != analysis_id:
+        elif not isinstance(analysis, dict) or not _analysis_ids_match(
+            str(analysis.get("analysis_id") or ""), analysis_id
+        ):
             raise HTTPException(
                 status_code=400,
                 detail="This analysis has no matching stable ID. Reload it before checkout.",
@@ -2880,7 +2904,7 @@ async def create_year_close_packet_checkout(
             analysis = {"analysis_id": analysis_id}
         elif not analysis.get("analysis_id"):
             analysis = {**analysis, "analysis_id": analysis_id}
-        elif analysis.get("analysis_id") != analysis_id:
+        elif not _analysis_ids_match(str(analysis.get("analysis_id") or ""), analysis_id):
             raise HTTPException(
                 status_code=400,
                 detail="The analysis ID does not match the checkout request.",

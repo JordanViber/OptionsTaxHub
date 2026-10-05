@@ -335,6 +335,10 @@ def save_analysis_history(
                 ) from insert_error
             # Another account owns this primary key. Keep the embedded id and
             # let the database assign a row id for this user.
+            # The concurrent cross-user retry race is accepted. New ids are
+            # lowercase uuid4, and a lower() unique index would require
+            # collapsing duplicates inside migration 012, which is riskier
+            # than the race.
             retry = dict(row)
             retry.pop("id", None)
             try:
@@ -1355,6 +1359,18 @@ def get_packet_grant_for_tax_year(
     )
 
 
+def _match_snapshot_analysis_id(query, analysis_id: str):
+    """Match a snapshot key. UUID spellings compare case-insensitively.
+
+    The stored analysis_id text is not rewritten. Non-UUID keys stay an exact
+    match so distinct strings are not collapsed.
+    """
+    canonical = _canonical_analysis_uuid(analysis_id)
+    if canonical is not None:
+        return query.filter("analysis_id", "ilike", canonical)
+    return query.eq("analysis_id", analysis_id)
+
+
 def save_packet_snapshot(
     analysis_id: str,
     user_id: str,
@@ -1378,14 +1394,11 @@ def save_packet_snapshot(
     expires_at = None if requested_paid_at else now + UNPAID_PACKET_SNAPSHOT_TTL
 
     def read_existing():
-        result = (
+        result = _match_snapshot_analysis_id(
             client.table("year_close_packet_snapshots")
-            .select("analysis_id, user_id, tax_year, packet_payload, packet_session_id, paid_at, expires_at")
-            .eq("analysis_id", analysis_id)
-            .eq("user_id", user_id)
-            .limit(1)
-            .execute()
-        )
+            .select("analysis_id, user_id, tax_year, packet_payload, packet_session_id, paid_at, expires_at"),
+            analysis_id,
+        ).eq("user_id", user_id).limit(1).execute()
         return dict(result.data[0]) if result.data else None
 
     def result_row(result, fallback):
@@ -1429,13 +1442,11 @@ def save_packet_snapshot(
             }
             # Repair only the null payload we just read. A concurrent delete or
             # a payload written after this read must not be upserted over.
-            repair = (
+            repair = _match_snapshot_analysis_id(
                 client.table("year_close_packet_snapshots")
-                .update(row)
-                .eq("analysis_id", analysis_id)
-                .eq("user_id", user_id)
-                .filter("paid_at", "not.is", "null")
-            )
+                .update(row),
+                analysis_id,
+            ).eq("user_id", user_id).filter("paid_at", "not.is", "null")
             if stored_payload is None:
                 repair = repair.is_("packet_payload", "null")
             else:
@@ -1471,15 +1482,13 @@ def save_packet_snapshot(
             # The predicate makes this transition atomic with respect to the
             # webhook's paid_at update. If payment wins the race, the UPDATE
             # affects no row and the paid row is read back without downgrading.
-            result = (
+            result = _match_snapshot_analysis_id(
                 client.table("year_close_packet_snapshots")
-                .update(row)
-                .eq("analysis_id", analysis_id)
-                .eq("user_id", user_id)
-                .is_("paid_at", "null")
-                .select("analysis_id, user_id, tax_year")
-                .execute()
-            )
+                .update(row),
+                analysis_id,
+            ).eq("user_id", user_id).is_("paid_at", "null").select(
+                "analysis_id, user_id, tax_year"
+            ).execute()
             if result.data:
                 return dict(result.data[0])
             latest_row = read_existing()
@@ -1532,15 +1541,13 @@ def save_packet_snapshot(
                     return result_row(None, latest_row)
                 # A paid insert can race an unpaid insert for the same unique
                 # key. Promote only while the database still says unpaid.
-                promoted = (
+                promoted = _match_snapshot_analysis_id(
                     client.table("year_close_packet_snapshots")
-                    .update(row)
-                    .eq("analysis_id", analysis_id)
-                    .eq("user_id", user_id)
-                    .is_("paid_at", "null")
-                    .select("analysis_id, user_id, tax_year")
-                    .execute()
-                )
+                    .update(row),
+                    analysis_id,
+                ).eq("user_id", user_id).is_("paid_at", "null").select(
+                    "analysis_id, user_id, tax_year"
+                ).execute()
                 if promoted.data:
                     return dict(promoted.data[0])
                 latest_row = read_existing()
@@ -1565,14 +1572,11 @@ def get_packet_snapshot(
         return None, False
     _cleanup_expired_packet_snapshots(client)
     try:
-        result = (
+        result = _match_snapshot_analysis_id(
             client.table("year_close_packet_snapshots")
-            .select("analysis_id, user_id, tax_year, packet_payload, packet_session_id, paid_at, expires_at")
-            .eq("analysis_id", analysis_id)
-            .eq("user_id", user_id)
-            .limit(1)
-            .execute()
-        )
+            .select("analysis_id, user_id, tax_year, packet_payload, packet_session_id, paid_at, expires_at"),
+            analysis_id,
+        ).eq("user_id", user_id).limit(1).execute()
         if not result.data:
             return None, True
         snapshot = dict(result.data[0])
@@ -1609,20 +1613,18 @@ def mark_packet_snapshot_paid(
     _cleanup_expired_packet_snapshots(client)
     now = datetime.now(timezone.utc)
     try:
-        result = (
+        result = _match_snapshot_analysis_id(
             client.table("year_close_packet_snapshots")
             .update({
                 "packet_session_id": session_id,
                 "paid_at": now.isoformat(),
                 "expires_at": None,
                 "updated_at": now.isoformat(),
-            })
-            .eq("analysis_id", analysis_id)
-            .eq("user_id", user_id)
-            .eq("tax_year", int(tax_year))
-            .select("analysis_id")
-            .execute()
-        )
+            }),
+            analysis_id,
+        ).eq("user_id", user_id).eq("tax_year", int(tax_year)).select(
+            "analysis_id"
+        ).execute()
         return bool(result.data)
     except Exception as e:
         logger.error("Failed to mark packet snapshot paid for %s: %s", analysis_id, e)

@@ -40,6 +40,11 @@ DECLARE
   pk_taken boolean;
   source_embedded boolean;
 BEGIN
+  -- Block concurrent inserts and updates for the rest of this transaction.
+  -- The snapshot below is only a READ COMMITTED view: a row committed while
+  -- the loop runs could otherwise lose its primary key to a rewrite.
+  LOCK TABLE public.portfolio_analyses IN SHARE ROW EXCLUSIVE MODE;
+
   -- Snapshot embedded ids before any primary-key update. A later EXISTS would
   -- see ids this loop has already vacated.
   CREATE TEMP TABLE portfolio_analysis_embedded_snapshot ON COMMIT DROP AS

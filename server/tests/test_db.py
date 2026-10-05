@@ -1155,6 +1155,45 @@ class TestPacketSnapshots:
         assert ("eq", ("user_id", "user1"), {}) in calls
         assert not any(call[0] == "gt" and call[1][0] == "expires_at" for call in calls)
 
+    def test_packet_snapshot_read_matches_uuid_case_variant(self, monkeypatch):
+        stored = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
+        canonical = stored.lower()
+        row = {
+            "analysis_id": stored,
+            "user_id": "user1",
+            "tax_year": 2025,
+            "packet_payload": {"report": "private"},
+            "packet_session_id": None,
+            "paid_at": "2026-01-01T00:00:00+00:00",
+            "expires_at": None,
+        }
+        client = _FakeClient(table_data=[row])
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+
+        snapshot, lookup_succeeded = db.get_packet_snapshot(canonical, "user1")
+
+        assert lookup_succeeded is True
+        assert snapshot["analysis_id"] == stored
+        assert snapshot["packet_payload"] == {"report": "private"}
+        calls = client.builders[0].calls
+        assert ("filter", ("analysis_id", "ilike", canonical), {}) in calls
+        assert not any(
+            call[0] == "eq" and call[1][0] == "analysis_id" for call in calls
+        )
+
+    def test_mark_packet_snapshot_paid_matches_uuid_case_variant(self, monkeypatch):
+        stored = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
+        client = _FakeClient(table_data=[{"analysis_id": stored}])
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+
+        assert db.mark_packet_snapshot_paid(
+            stored.lower(), "user1", 2025, "cs_case"
+        ) is True
+        calls = client.builders[0].calls
+        assert ("filter", ("analysis_id", "ilike", stored.lower()), {}) in calls
+        update = next(call for call in calls if call[0] == "update")
+        assert "analysis_id" not in update[1][0]
+
     def test_does_not_load_expired_unpaid_snapshot(self, monkeypatch):
         row = {
             "analysis_id": "analysis-a",

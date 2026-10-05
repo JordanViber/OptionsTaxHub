@@ -766,6 +766,20 @@ def _insert_identity_row(conn, row_id: str, user_id: str, analysis_id: str) -> N
     )
 
 
+def test_migration_012_locks_analyses_before_embedded_snapshot():
+    sql = (SERVER_DIR / "migrations" / "012_unify_analysis_identity.sql").read_text()
+    begin = sql.find("BEGIN;")
+    lock = sql.find(
+        "LOCK TABLE public.portfolio_analyses IN SHARE ROW EXCLUSIVE MODE;"
+    )
+    snapshot = sql.find("CREATE TEMP TABLE portfolio_analysis_embedded_snapshot")
+    assert begin != -1
+    assert lock != -1
+    assert snapshot != -1
+    assert begin < lock < snapshot
+    assert sql.strip().endswith("COMMIT;")
+
+
 def test_migration_012_unifies_ids_and_backfills_entitlements(postgres):
     url, conn = postgres(IDENTITY_DB)
     try:

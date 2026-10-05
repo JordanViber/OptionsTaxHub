@@ -510,6 +510,153 @@ def test_checkout_keeps_client_analysis_id_when_history_is_missing(monkeypatch):
     assert captured["success_url"].endswith(f"packet_analysis={analysis_id}")
 
 
+class _UuidSnapshotQuery:
+    """Returns a snapshot only when a UUID key is matched case-insensitively."""
+
+    def __init__(self, rows):
+        self.rows = rows
+        self.eqs = []
+        self.filters = []
+
+    def select(self, *_args, **_kwargs):
+        return self
+
+    def update(self, *_args, **_kwargs):
+        return self
+
+    def eq(self, column, value):
+        self.eqs.append((column, value))
+        return self
+
+    def filter(self, column, operator, value):
+        self.filters.append((column, operator, value))
+        return self
+
+    def limit(self, *_args, **_kwargs):
+        return self
+
+    def execute(self):
+        matched = []
+        for row in self.rows:
+            if any(row.get(column) != value for column, value in self.eqs):
+                continue
+            kept = True
+            for column, operator, value in self.filters:
+                if operator != "ilike" or str(row.get(column) or "").lower() != str(value).lower():
+                    kept = False
+                    break
+            if kept:
+                matched.append(dict(row))
+        return SimpleNamespace(data=matched[:1])
+
+
+class _UuidSnapshotClient:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def rpc(self, *_args, **_kwargs):
+        raise RuntimeError("cleanup unavailable")
+
+    def table(self, name):
+        assert name == "year_close_packet_snapshots"
+        return _UuidSnapshotQuery(self.rows)
+
+
+def test_history_restore_finds_private_packet_for_uuid_case_variant(monkeypatch):
+    stored = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
+    requested = stored.lower()
+    payload = {
+        "analysis_id": stored,
+        "tax_profile": {"tax_year": 2025},
+        "summary": {},
+    }
+    monkeypatch.setattr(
+        db,
+        "get_supabase",
+        lambda: _UuidSnapshotClient([{
+            "analysis_id": stored,
+            "user_id": "test-user-123",
+            "tax_year": 2025,
+            "packet_payload": payload,
+            "packet_session_id": None,
+            "paid_at": None,
+            "expires_at": "2099-01-01T00:00:00+00:00",
+        }]),
+    )
+    monkeypatch.setattr(main, "get_packet_snapshot", db.get_packet_snapshot)
+    monkeypatch.setattr(
+        main,
+        "lookup_analysis_for_entitlement",
+        lambda *_args: ({
+            "id": "history-row",
+            "user_id": "test-user-123",
+            "result": {"analysis_id": stored},
+        }, True),
+    )
+
+    response = client.post(
+        "/api/portfolio/history",
+        json={
+            "filename": "guest.csv",
+            "analysis": {"analysis_id": requested, "summary": {}, "tax_profile": {"tax_year": 2025}},
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert "missing its private packet data" not in response.text
+    assert response.json()["id"] == "history-row"
+
+
+def test_checkout_accepts_uuid_case_variant_and_keeps_stored_spelling(monkeypatch):
+    _test_stripe_env(monkeypatch)
+    stored = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
+    requested = stored.lower()
+    payload = {
+        **SAMPLE_ANALYSIS,
+        "analysis_id": stored,
+        "tax_profile": {"tax_year": 2025},
+    }
+    remember_analysis(stored, "test-user-123", payload)
+    monkeypatch.setattr(
+        db,
+        "get_supabase",
+        lambda: _UuidSnapshotClient([{
+            "analysis_id": requested,
+            "user_id": "test-user-123",
+            "tax_year": 2025,
+            "packet_payload": payload,
+            "packet_session_id": None,
+            "paid_at": None,
+            "expires_at": "2099-01-01T00:00:00+00:00",
+        }]),
+    )
+    monkeypatch.setattr(main, "get_packet_snapshot", db.get_packet_snapshot)
+    monkeypatch.setattr(
+        main,
+        "lookup_analysis_for_entitlement",
+        lambda *_args: ({
+            "id": "history-row",
+            "user_id": "test-user-123",
+            "result": {"analysis_id": stored, "tax_profile": {"tax_year": 2025}},
+        }, True),
+    )
+    captured = {}
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "create",
+        lambda **kwargs: captured.update(kwargs) or FakeCheckoutSession(**kwargs),
+    )
+
+    response = client.post(
+        "/api/year-close-packet/checkout",
+        json={"analysis_id": requested, "analysis": {**SAMPLE_ANALYSIS, "analysis_id": requested}},
+    )
+
+    assert response.status_code == 200, response.text
+    assert captured["metadata"]["analysis_id"] == stored
+    assert response.json()["analysis_id"] == stored
+
+
 def test_checkout_claims_guest_snapshot_and_keeps_its_full_payload(monkeypatch):
     _test_stripe_env(monkeypatch)
     analysis_id = "guest-with-private-lots"
