@@ -212,6 +212,15 @@ export const MOCK_TAX_PROFILE = {
  * Set up Supabase auth interception + backend API mocks.
  */
 export async function setupMockAuth(page: Page) {
+  // signOut() POSTs here. CI's Supabase host is fake, so an unmocked call
+  // throws and the app never routes to /auth/signin.
+  await page.route("**/auth/v1/logout*", (route) =>
+    route.fulfill({
+      status: 204,
+      body: "",
+    }),
+  );
+
   await page.route("**/auth/v1/token*", (route) =>
     route.fulfill({
       status: 200,
@@ -325,13 +334,13 @@ export async function goToAuthenticatedHome(page: Page) {
 }
 
 /**
- * Upload the test CSV and wait for Portfolio Value card to appear.
+ * Upload the test CSV and wait for the net open position card to appear.
  */
 export async function uploadTestCsv(page: Page) {
   const fileInput = page.locator("#desk-csv-input");
   const csvPath = path.resolve(__dirname, "../../../test.csv");
   await fileInput.setInputFiles(csvPath);
-  await expect(page.getByText("Portfolio Value")).toBeVisible({
+  await expect(page.getByText("Net Open Position Value")).toBeVisible({
     timeout: 15000,
   });
 }
