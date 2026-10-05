@@ -185,6 +185,38 @@ def save_analysis_history(
         return None
 
 
+def clear_unconfirmed_history_counts(
+    summary: dict,
+    result_data: Optional[dict],
+) -> tuple[dict, Optional[dict]]:
+    """Zero trade counts on a history copy that did not land in the private book.
+
+    A redacted row with a positive count is a stripped marker. The next auto
+    upload would then refuse an older transaction list. Callers pass copies;
+    this does not mutate those inputs.
+    """
+    summary_out = dict(summary) if isinstance(summary, dict) else {}
+    if not isinstance(result_data, dict):
+        if "activity_transaction_count" in summary_out:
+            summary_out["activity_transaction_count"] = 0
+        return summary_out, result_data
+    result_out = dict(result_data)
+    book = result_out.get("activity_book")
+    has_book = isinstance(book, dict)
+    if has_book:
+        result_out["activity_book"] = {**book, "transaction_count": 0}
+    nested = result_out.get("summary")
+    if isinstance(nested, dict) and (
+        has_book or "activity_transaction_count" in nested
+    ):
+        nested_out = dict(nested)
+        nested_out["activity_transaction_count"] = 0
+        result_out["summary"] = nested_out
+    if has_book or "activity_transaction_count" in summary_out:
+        summary_out["activity_transaction_count"] = 0
+    return summary_out, result_out
+
+
 def get_analysis_history(
     user_id: str,
     limit: int = 20,
@@ -378,6 +410,7 @@ def ensure_analysis_history(
     safe_analysis.pop("packet_unlocked", None)
     safe_analysis.pop("packet_session_id", None)
     safe_analysis.pop("transactions", None)
+    summary, safe_analysis = clear_unconfirmed_history_counts(summary, safe_analysis)
     try:
         return save_analysis_history(
             user_id,
@@ -704,10 +737,12 @@ def upsert_activity_book(
     except Exception as exc:
         logger.error("Failed to save private activity book: %s", exc)
         return None
-    data = getattr(result, "data", None) or []
-    if data and isinstance(data[0], dict):
+    # An empty representation is not proof the upsert committed.
+    data = getattr(result, "data", None)
+    if isinstance(data, list) and data and isinstance(data[0], dict):
         return dict(data[0])
-    return row
+    logger.error("Private activity book upsert returned no persisted row")
+    return None
 
 
 def lookup_packet_grant_for_tax_year(

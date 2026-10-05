@@ -419,12 +419,13 @@ class TestEnsureAnalysisHistory:
 
         def save(user_id, filename, summary, result_data=None):
             saved["result"] = result_data
+            saved["summary"] = summary
             return inserted
 
         monkeypatch.setattr(db, "save_analysis_history", save)
         analysis = {
             "analysis_id": "analysis-uuid",
-            "summary": {"positions_count": 1},
+            "summary": {"positions_count": 1, "activity_transaction_count": 3},
             "transactions": [{"instrument": "AAPL", "trans_code": "Buy"}],
             "activity_book": {
                 "transaction_count": 1,
@@ -435,9 +436,13 @@ class TestEnsureAnalysisHistory:
 
         assert db.ensure_analysis_history("analysis-uuid", "user1", analysis) == inserted
         assert saved["result"]["activity_book"]["transactions"] == []
-        assert saved["result"]["activity_book"]["transaction_count"] == 1
+        assert saved["result"]["activity_book"]["transaction_count"] == 0
+        assert saved["result"]["summary"]["activity_transaction_count"] == 0
+        assert saved["summary"]["activity_transaction_count"] == 0
         assert "transactions" not in saved["result"]
         assert "packet_unlocked" not in saved["result"]
+        assert analysis["activity_book"]["transaction_count"] == 1
+        assert analysis["summary"]["activity_transaction_count"] == 3
 
     def test_refuses_to_insert_mismatched_analysis(self, monkeypatch):
         client = MagicMock()
@@ -1539,6 +1544,17 @@ class TestPrivateActivityBook:
         client = MagicMock()
         client.table.return_value.upsert.return_value.execute.side_effect = RuntimeError("down")
         monkeypatch.setattr(db, "get_supabase", lambda: client)
+        assert db.upsert_activity_book("user1", "analysis-1", "book.csv", [{"instrument": "AAPL"}]) is None
+
+    def test_upsert_empty_representation_returns_none(self, monkeypatch):
+        client = MagicMock()
+        executed = client.table.return_value.upsert.return_value.execute
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+        executed.return_value.data = []
+        assert db.upsert_activity_book("user1", "analysis-1", "book.csv", [{"instrument": "AAPL"}]) is None
+        executed.return_value.data = None
+        assert db.upsert_activity_book("user1", "analysis-1", "book.csv", [{"instrument": "AAPL"}]) is None
+        executed.return_value.data = ["not-a-row"]
         assert db.upsert_activity_book("user1", "analysis-1", "book.csv", [{"instrument": "AAPL"}]) is None
 
     def test_no_client_is_an_empty_ok_lookup(self, monkeypatch):

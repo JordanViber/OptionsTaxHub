@@ -477,7 +477,6 @@ def _stub_analyze_network(monkeypatch):
         "main.save_packet_snapshot",
         lambda analysis_id, *_args, **_kwargs: {"analysis_id": analysis_id},
     )
-    monkeypatch.setattr("main.get_latest_activity_book", lambda uid, client=None: None)
     monkeypatch.setattr(
         "main.load_activity_book_for_merge",
         lambda user_id, client=None: db.ActivityBookLookup(),
@@ -2821,7 +2820,6 @@ def test_trusted_in_app_sample_skips_yahoo_and_still_returns_positions(monkeypat
     """Open sample must finish even when Yahoo is blocked."""
     monkeypatch.setattr("main.prepare_positions_for_ai", lambda lots: [])
     monkeypatch.setattr("main._save_history_best_effort", lambda *args, **kwargs: None)
-    monkeypatch.setattr("main.get_latest_activity_book", lambda uid, client=None: None)
     monkeypatch.setattr(
         "main.load_activity_book_for_merge",
         lambda user_id, client=None: db.ActivityBookLookup(),
@@ -3479,6 +3477,141 @@ def test_buy_then_sell_merges_from_the_private_book(monkeypatch):
         assert "trans_code" not in str(payload["activity_book"]["transactions"])
 
 
+def test_failed_upsert_does_not_hide_an_older_history_list(monkeypatch):
+    """A None upsert still stores history, but that row must not block the older list."""
+    from ledger import ACTIVITY_BOOK_SAVE_FAILED_WARNING
+
+    save_history = main._save_history_best_effort
+    _stub_analyze_network(monkeypatch)
+    memory = _use_memory_book(monkeypatch)
+    monkeypatch.setattr(main, "_save_history_best_effort", save_history)
+    memory.tables["portfolio_analyses"].append(_older_aapl_history_row())
+    real = db.upsert_activity_book
+    calls = {"n": 0}
+
+    def flaky(user_id, analysis_id, filename, transactions, client=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return None
+        return real(user_id, analysis_id, filename, transactions, client=client)
+
+    monkeypatch.setattr(main, "upsert_activity_book", flaky)
+    extra = _rh_csv(
+        "03/01/2026,03/01/2026,03/03/2026,AAPL,Apple,Buy,5,150.00,-750.00\n"
+    )
+    failed = _post_book("more.csv", extra)
+    assert failed.status_code == 200, failed.text
+    body = failed.json()
+    assert ACTIVITY_BOOK_SAVE_FAILED_WARNING in body["warnings"]
+    assert body["activity_book"]["transaction_count"] == 2
+    assert body["summary"]["activity_transaction_count"] == 2
+    assert memory.tables["portfolio_activity_books"] == []
+    inserted = next(
+        row for row in memory.tables["portfolio_analyses"] if row.get("filename") == "more.csv"
+    )
+    _assert_stored_history_is_not_a_stripped_marker(inserted)
+    _stamp_newest(inserted)
+
+    _forget_process_memory()
+    sold = _post_book("sell.csv", _aapl_sell_bytes())
+    assert sold.status_code == 200, sold.text
+    sold_body = sold.json()
+    assert ACTIVITY_BOOK_SAVE_FAILED_WARNING not in sold_body["warnings"]
+    assert sold_body["activity_book"]["merged_from_analysis_id"] == "older-book"
+    aapl = next(position for position in sold_body["positions"] if position["symbol"] == "AAPL")
+    assert aapl["quantity"] == 6
+    realized = sold_body["summary"]["realized_summary"]
+    assert realized["lt_gains"] == 200
+    stored = _stored_books(memory)[0]["transactions"]
+    buys = [txn for txn in stored if txn.get("trans_code") == "Buy"]
+    assert len(buys) == 1
+    assert buys[0]["quantity"] == 10
+    assert not any(txn.get("quantity") == 5 for txn in stored)
+
+
+def test_skipped_private_write_does_not_hide_an_older_history_list(monkeypatch):
+    """An unfinished scan still saves history, without becoming a stripped marker."""
+    from ledger import (
+        ACTIVITY_BOOK_LOAD_FAILED_WARNING,
+        ACTIVITY_BOOK_SAVE_FAILED_WARNING,
+        HISTORICAL_BOOK_UNRECOVERABLE_WARNING,
+    )
+
+    save_history = main._save_history_best_effort
+    _stub_analyze_network(monkeypatch)
+    memory = _use_memory_book(monkeypatch)
+    monkeypatch.setattr(main, "_save_history_best_effort", save_history)
+    monkeypatch.setattr(db, "ACTIVITY_BOOK_HISTORY_MAX_PAGES", 0)
+    memory.tables["portfolio_analyses"].append(_older_aapl_history_row())
+
+    skipped = _post_book("buy.csv", _aapl_buy_bytes())
+    assert skipped.status_code == 200, skipped.text
+    body = skipped.json()
+    assert body["activity_book"]["transaction_count"] == 1
+    assert body["summary"]["activity_transaction_count"] == 1
+    assert ACTIVITY_BOOK_SAVE_FAILED_WARNING not in body["warnings"]
+    assert ACTIVITY_BOOK_LOAD_FAILED_WARNING not in body["warnings"]
+    assert HISTORICAL_BOOK_UNRECOVERABLE_WARNING not in body["warnings"]
+    assert memory.upserts == []
+    assert memory.tables["portfolio_activity_books"] == []
+    inserted = next(
+        row for row in memory.tables["portfolio_analyses"] if row.get("filename") == "buy.csv"
+    )
+    _assert_stored_history_is_not_a_stripped_marker(inserted)
+    _stamp_newest(inserted)
+    monkeypatch.setattr(db, "ACTIVITY_BOOK_HISTORY_MAX_PAGES", 10000)
+
+    _forget_process_memory()
+    sold = _post_book("sell.csv", _aapl_sell_bytes())
+    assert sold.status_code == 200, sold.text
+    sold_body = sold.json()
+    assert HISTORICAL_BOOK_UNRECOVERABLE_WARNING not in sold_body["warnings"]
+    assert sold_body["activity_book"]["merged_from_analysis_id"] == "older-book"
+    aapl = next(position for position in sold_body["positions"] if position["symbol"] == "AAPL")
+    assert aapl["quantity"] == 6
+    assert sold_body["summary"]["realized_summary"]["lt_gains"] == 200
+
+
+def test_private_read_error_does_not_hide_an_older_history_list(monkeypatch):
+    """A failed private read still saves history, without becoming a stripped marker."""
+    from ledger import (
+        ACTIVITY_BOOK_LOAD_FAILED_WARNING,
+        HISTORICAL_BOOK_UNRECOVERABLE_WARNING,
+    )
+
+    save_history = main._save_history_best_effort
+    _stub_analyze_network(monkeypatch)
+    memory = _use_memory_book(monkeypatch)
+    monkeypatch.setattr(main, "_save_history_best_effort", save_history)
+    memory.select_error = RuntimeError("connection reset")
+    memory.tables["portfolio_analyses"].append(_older_aapl_history_row())
+
+    failed = _post_book("buy.csv", _aapl_buy_bytes())
+    assert failed.status_code == 200, failed.text
+    body = failed.json()
+    assert ACTIVITY_BOOK_LOAD_FAILED_WARNING in body["warnings"]
+    assert body["activity_book"]["transaction_count"] == 1
+    assert body["summary"]["activity_transaction_count"] == 1
+    assert memory.upserts == []
+    inserted = next(
+        row for row in memory.tables["portfolio_analyses"] if row.get("filename") == "buy.csv"
+    )
+    _assert_stored_history_is_not_a_stripped_marker(inserted)
+    _stamp_newest(inserted)
+    memory.select_error = None
+
+    _forget_process_memory()
+    sold = _post_book("sell.csv", _aapl_sell_bytes())
+    assert sold.status_code == 200, sold.text
+    sold_body = sold.json()
+    assert HISTORICAL_BOOK_UNRECOVERABLE_WARNING not in sold_body["warnings"]
+    assert ACTIVITY_BOOK_LOAD_FAILED_WARNING not in sold_body["warnings"]
+    assert sold_body["activity_book"]["merged_from_analysis_id"] == "older-book"
+    aapl = next(position for position in sold_body["positions"] if position["symbol"] == "AAPL")
+    assert aapl["quantity"] == 6
+    assert sold_body["summary"]["realized_summary"]["lt_gains"] == 200
+
+
 def test_failed_activity_book_upsert_keeps_the_previous_book(monkeypatch):
     """A None upsert must not claim the new trades landed, and the next auto merge uses the old row."""
     import copy
@@ -3640,7 +3773,49 @@ def _assert_original_buy(memory):
     assert stored[0]["trans_code"] == "Buy"
 
 
+def _older_aapl_history_row():
+    return {
+        "id": "older-book",
+        "user_id": "test-user-123",
+        "filename": "old.csv",
+        "uploaded_at": "2024-01-01T00:00:00+00:00",
+        "summary": {"activity_transaction_count": 1},
+        "result": {
+            "activity_book": {
+                "transactions": [
+                    {
+                        "activity_date": "2024-01-15",
+                        "instrument": "AAPL",
+                        "description": "Apple",
+                        "trans_code": "Buy",
+                        "quantity": 10,
+                        "price": 100,
+                        "amount": -1000,
+                    }
+                ],
+                "transaction_count": 1,
+            },
+            "summary": {"activity_transaction_count": 1},
+            "tax_profile": {"tax_year": 2024},
+        },
+    }
+
+
+def _assert_stored_history_is_not_a_stripped_marker(row):
+    result = row["result"]
+    assert result["activity_book"]["transactions"] == []
+    assert result["activity_book"]["transaction_count"] == 0
+    assert result["summary"]["activity_transaction_count"] == 0
+    assert row["summary"]["activity_transaction_count"] == 0
+
+
+def _stamp_newest(row):
+    row["uploaded_at"] = "2026-09-01T00:00:00+00:00"
+
+
 def test_history_persist_strips_client_transactions(monkeypatch):
+    from ledger import HISTORICAL_BOOK_UNRECOVERABLE_WARNING
+
     saved = {}
 
     def fake_save(**kwargs):
@@ -3666,10 +3841,10 @@ def test_history_persist_strips_client_transactions(monkeypatch):
             "filename": "book.csv",
             "analysis": {
                 "analysis_id": "guest-trades",
-                "summary": {"positions_count": 1},
+                "summary": {"positions_count": 1, "activity_transaction_count": 4},
                 "transactions": [{"instrument": "AAPL", "trans_code": "Buy"}],
                 "activity_book": {
-                    "transaction_count": 1,
+                    "transaction_count": 4,
                     "transactions": [{"instrument": "AAPL", "trans_code": "Buy"}],
                 },
             },
@@ -3677,7 +3852,9 @@ def test_history_persist_strips_client_transactions(monkeypatch):
     )
     assert response.status_code == 200, response.text
     assert saved["result_data"]["activity_book"]["transactions"] == []
-    assert saved["result_data"]["activity_book"]["transaction_count"] == 1
+    assert saved["result_data"]["activity_book"]["transaction_count"] == 0
+    assert saved["result_data"]["summary"]["activity_transaction_count"] == 0
+    assert saved["summary"]["activity_transaction_count"] == 0
     assert "transactions" not in saved["result_data"]
     assert upserts == []
 
@@ -3694,7 +3871,38 @@ def test_history_persist_strips_client_transactions(monkeypatch):
     loaded = client.get("/api/portfolio/analysis/hist-1")
     assert loaded.status_code == 200, loaded.text
     assert loaded.json()["result"]["activity_book"]["transactions"] == []
+    assert loaded.json()["result"]["activity_book"]["transaction_count"] == 0
     assert "trans_code" not in loaded.text
+
+    save_history = main._save_history_best_effort
+    _stub_analyze_network(monkeypatch)
+    memory = _use_memory_book(monkeypatch)
+    monkeypatch.setattr(main, "_save_history_best_effort", save_history)
+    memory.tables["portfolio_analyses"].extend(
+        [
+            {
+                "id": "persisted-guest",
+                "user_id": "test-user-123",
+                "filename": "book.csv",
+                "uploaded_at": "2026-08-01T00:00:00+00:00",
+                "summary": saved["summary"],
+                "result": saved["result_data"],
+            },
+            _older_aapl_history_row(),
+        ]
+    )
+    _forget_process_memory()
+    sold = _post_book("sell.csv", _aapl_sell_bytes())
+    assert sold.status_code == 200, sold.text
+    sold_body = sold.json()
+    assert HISTORICAL_BOOK_UNRECOVERABLE_WARNING not in sold_body["warnings"]
+    assert sold_body["activity_book"]["merged_from_analysis_id"] == "older-book"
+    aapl = next(position for position in sold_body["positions"] if position["symbol"] == "AAPL")
+    assert aapl["quantity"] == 6
+    assert sold_body["summary"]["realized_summary"]["lt_gains"] == 200
+    kept = _stored_books(memory)[0]["transactions"]
+    assert len(kept) == 2
+    assert {txn["trans_code"] for txn in kept} == {"Buy", "Sell"}
 
 
 def test_stripped_marker_rejects_an_older_subset_and_keeps_a_prior_list(monkeypatch):

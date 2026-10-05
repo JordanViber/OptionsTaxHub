@@ -126,7 +126,7 @@ from db import (
     get_tax_profile as db_get_tax_profile,
     get_supabase,
     ActivityBookLookup,
-    get_latest_activity_book,
+    clear_unconfirmed_history_counts,
     load_activity_book_for_merge,
     upsert_activity_book,
     lookup_packet_grant_for_tax_year,
@@ -582,6 +582,44 @@ def _try_get_ai_suggestions(
             "AI-powered suggestions unavailable. Using default replacement mappings."
         )
         return None
+
+
+def _stored_history_hides_trade_counts(
+    *,
+    wrote_private_book: bool,
+    private_rows,
+    lookup: ActivityBookLookup,
+) -> bool:
+    """True when this history row must not look like a stripped book.
+
+    A confirmed private write may keep the counts: the trades live in the
+    private table. A failed upsert, a failed read, a missing table, or an
+    unfinished scan did not store them, so the redacted row must not block
+    an older list that still has transactions.
+    """
+    if wrote_private_book:
+        return False
+    if private_rows is not None:
+        return True
+    return (not lookup.ok) or lookup.scan_incomplete
+
+
+def _history_models_without_trade_counts(result: PortfolioAnalysis, summary):
+    """Copies for the history insert. The analyze response keeps its counts."""
+    book = result.activity_book
+    if hasattr(book, "model_copy"):
+        book = book.model_copy(update={"transaction_count": 0})
+    nested = result.summary
+    if hasattr(nested, "model_copy"):
+        nested = nested.model_copy(update={"activity_transaction_count": 0})
+    elif isinstance(nested, dict):
+        nested = {**nested, "activity_transaction_count": 0}
+    cleared = result.model_copy(update={"activity_book": book, "summary": nested})
+    if hasattr(summary, "model_copy"):
+        summary = summary.model_copy(update={"activity_transaction_count": 0})
+    elif isinstance(summary, dict):
+        summary = {**summary, "activity_transaction_count": 0}
+    return cleared, summary
 
 
 def _save_history_best_effort(
@@ -1291,6 +1329,7 @@ def _resolve_activity_book(
                 merge_mode=merge_mode,
                 lookup=lookup,
             ),
+            lookup,
         )
 
     stored_txns = list(transactions)
@@ -1329,6 +1368,7 @@ def _resolve_activity_book(
             merge_mode=merge_mode,
             lookup=lookup,
         ),
+        lookup,
     )
 
 
@@ -1429,6 +1469,7 @@ async def _run_portfolio_analysis(
         realized_events,
         activity_book,
         private_rows,
+        activity_lookup,
     ) = _resolve_activity_book(
         user_id=user_id,
         filename=filename,
@@ -1549,6 +1590,7 @@ async def _run_portfolio_analysis(
         warnings=_summarize_warnings(all_warnings),
     )
     result = _apply_packet_year_grant(result, user_id)
+    wrote_private_book = False
     if private_rows is not None:
         saved_book = upsert_activity_book(
             user_id, analysis_id, filename, private_rows
@@ -1559,6 +1601,8 @@ async def _run_portfolio_analysis(
                 analysis_id,
             )
             result = _activity_book_not_saved(result)
+        else:
+            wrote_private_book = True
     keep_lot_rows = trusted_sample
     if keep_lot_rows:
         result = result.model_copy(update={"sample_run": True})
@@ -1577,8 +1621,18 @@ async def _run_portfolio_analysis(
         result.model_copy(update={"packet_unlocked": False, "packet_session_id": None}),
         keep_lot_rows=keep_lot_rows,
     )
+    history_summary = summary
+    if _stored_history_hides_trade_counts(
+        wrote_private_book=wrote_private_book,
+        private_rows=private_rows,
+        lookup=activity_lookup,
+    ):
+        history_result, history_summary = _history_models_without_trade_counts(
+            history_result,
+            summary,
+        )
     history_saved = _save_history_best_effort(
-        user_id, filename, summary, history_result
+        user_id, filename, history_summary, history_result
     )
     if result.packet_unlocked and result.packet_session_id and not history_saved:
         # Paid documents must remain attached to a deletable history row.
@@ -1711,11 +1765,15 @@ async def persist_portfolio_history(
         saved = existing_history
     else:
         try:
+            stored_summary, stored_analysis = clear_unconfirmed_history_counts(
+                summary,
+                _redacted_stored_analysis(analysis),
+            )
             saved = save_analysis_history(
                 user_id=user_id,
                 filename=filename[:255],
-                summary=summary,
-                result_data=_redacted_stored_analysis(analysis),
+                summary=stored_summary,
+                result_data=stored_analysis,
             )
         except HistoryInsertConflict:
             saved = None

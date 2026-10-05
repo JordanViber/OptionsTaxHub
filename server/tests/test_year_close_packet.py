@@ -3954,7 +3954,6 @@ def _stub_signed_in_analyze(monkeypatch, *, history_row, snapshot_result):
         lambda labels, fb=None, allow_network=True: ({}, []),
     )
     monkeypatch.setattr("main.prepare_positions_for_ai", lambda lots: [])
-    monkeypatch.setattr("main.get_latest_activity_book", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         "main.load_activity_book_for_merge",
         lambda *args, **kwargs: db.ActivityBookLookup(),
