@@ -254,11 +254,16 @@ def merge_warning(result: MergeResult, prior_filename: str = "") -> str | None:
 
 
 def strip_book_transactions_dict(result: dict | None) -> dict:
-    """Drop raw trades from an analysis dict before sending it to the browser."""
+    """Drop raw trades from an analysis dict before sending it to the browser.
+
+    A legacy row may still store a top-level transactions array. The copy
+    returned here omits that key. The stored row is left unchanged.
+    """
     if not result:
         return {}
     public = dict(result)
     book = public.get("activity_book")
     if isinstance(book, dict) and book.get("transactions"):
         public["activity_book"] = {**book, "transactions": []}
+    public.pop("transactions", None)
     return public

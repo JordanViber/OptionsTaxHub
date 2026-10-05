@@ -7,6 +7,7 @@ Covers save/get/delete operations for portfolio analyses and tax profiles.
 
 import sys
 import os
+from functools import cmp_to_key
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1217,8 +1218,7 @@ class _PagedBookQuery:
         self.name = name
         self.op = "select"
         self.filters = []
-        self.order_col = None
-        self.order_desc = False
+        self.orders = []
         self.range_bounds = None
         self.limit_n = None
         self.payload = None
@@ -1238,8 +1238,7 @@ class _PagedBookQuery:
         return self
 
     def order(self, col, desc=False, **_kwargs):
-        self.order_col = col
-        self.order_desc = bool(desc)
+        self.orders.append((col, bool(desc)))
         return self
 
     def limit(self, n):
@@ -1266,11 +1265,8 @@ class _PagedBookQuery:
         if self.filters:
             for col, val in self.filters:
                 rows = [row for row in rows if row.get(col) == val]
-        if self.order_col:
-            rows.sort(
-                key=lambda row: row.get(self.order_col) or "",
-                reverse=self.order_desc,
-            )
+        if self.orders:
+            rows = _sort_by_orders(rows, self.orders)
         if self.range_bounds is not None:
             start, end = self.range_bounds
             rows = rows[start:end + 1]
@@ -1291,6 +1287,21 @@ class _PagedBookQuery:
                 target.append(stored)
             return _FakeExecuteResult([stored])
         return _FakeExecuteResult(rows)
+
+
+def _sort_by_orders(rows, orders):
+    def compare(left, right):
+        for column, descending in orders:
+            left_value = left.get(column) or ""
+            right_value = right.get(column) or ""
+            if left_value == right_value:
+                continue
+            if left_value < right_value:
+                return 1 if descending else -1
+            return -1 if descending else 1
+        return 0
+
+    return sorted(rows, key=cmp_to_key(compare))
 
 
 def _history_row(row_id, filename, uploaded_at, transactions=None, count=0, user_id="user1"):
@@ -1338,13 +1349,14 @@ class TestPrivateActivityBook:
         assert "packet_unlocked" not in lookup.book
         assert client.history_queries == 0
 
-    def test_non_list_private_transactions_are_an_empty_book(self):
+    @pytest.mark.parametrize("raw", [None, {"instrument": "AAPL"}, "AAPL"])
+    def test_non_list_private_transactions_are_an_empty_book(self, raw):
         client = _PagedBookClient(
             books=[{
                 "user_id": "user1",
                 "analysis_id": "blank",
                 "filename": "blank.csv",
-                "transactions": None,
+                "transactions": raw,
             }],
             history=[
                 _history_row(
@@ -1356,9 +1368,43 @@ class TestPrivateActivityBook:
                 )
             ],
         )
-        book = db.get_latest_activity_book("user1", client=client)
-        assert book["transactions"] == []
+        lookup = db.load_activity_book_for_merge("user1", client=client)
+        assert lookup.ok is False
+        assert lookup.missing_schema is False
+        assert lookup.book is None
+        assert lookup.scan_incomplete is False
         assert client.history_queries == 0
+        assert db.get_latest_activity_book("user1", client=client) is None
+        assert client.history_queries == 0
+
+    def test_same_uploaded_at_is_paged_by_id_descending(self, monkeypatch):
+        monkeypatch.setattr(db, "ACTIVITY_BOOK_HISTORY_PAGE", 1)
+        shared = "2026-08-01T00:00:00Z"
+        book_txns = [{"instrument": "NVDA", "trans_code": "Buy", "quantity": 2}]
+        client = _PagedBookClient(
+            history=[
+                _history_row(
+                    "id-a",
+                    "book.csv",
+                    shared,
+                    transactions=book_txns,
+                    count=1,
+                ),
+                _history_row(
+                    "id-b",
+                    "empty.csv",
+                    shared,
+                    transactions=[],
+                    count=0,
+                ),
+            ]
+        )
+        lookup = db.load_activity_book_for_merge("user1", client=client)
+        assert lookup.ok is True
+        assert lookup.unrecoverable is False
+        assert lookup.book["analysis_id"] == "id-a"
+        assert lookup.book["transactions"] == book_txns
+        assert client.history_queries == 2
 
     def test_pages_past_the_first_page_and_skips_sample_filenames(self, monkeypatch):
         monkeypatch.setattr(db, "ACTIVITY_BOOK_HISTORY_PAGE", 10)

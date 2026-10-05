@@ -589,16 +589,20 @@ def _stored_history_hides_trade_counts(
     wrote_private_book: bool,
     private_rows,
     lookup: ActivityBookLookup,
+    sample: bool = False,
 ) -> bool:
     """True when this history row must not look like a stripped book.
 
     A confirmed private write may keep the counts: the trades live in the
-    private table. A failed upsert, a failed read, a missing table, or an
-    unfinished scan did not store them, so the redacted row must not block
-    an older list that still has transactions.
+    private table. A sample upload, including trusted sample bytes under
+    another filename, is not written to that table. A failed upsert, a failed
+    read, a missing table, or an unfinished scan did not store them either,
+    so the redacted row must not block an older list that still has transactions.
     """
     if wrote_private_book:
         return False
+    if sample:
+        return True
     if private_rows is not None:
         return True
     return (not lookup.ok) or lookup.scan_incomplete
@@ -1622,10 +1626,14 @@ async def _run_portfolio_analysis(
         keep_lot_rows=keep_lot_rows,
     )
     history_summary = summary
+    sample_upload = is_sample_csv_filename(filename) or is_trusted_sample_csv_bytes(
+        contents
+    )
     if _stored_history_hides_trade_counts(
         wrote_private_book=wrote_private_book,
         private_rows=private_rows,
         lookup=activity_lookup,
+        sample=sample_upload,
     ):
         history_result, history_summary = _history_models_without_trade_counts(
             history_result,

@@ -522,13 +522,18 @@ def _positive_count(value) -> bool:
     return False
 
 
-def _book_from_private_row(row: dict) -> dict:
+def _book_from_private_row(row: dict) -> Optional[dict]:
+    """The private book, or None when transactions is not a list.
+
+    None, an object, or a string is a failed read. An empty list is a real book.
+    """
     raw = row.get("transactions")
-    transactions = raw if isinstance(raw, list) else []
+    if not isinstance(raw, list):
+        return None
     return {
         "analysis_id": row.get("analysis_id"),
         "filename": row.get("filename") or "",
-        "transactions": transactions,
+        "transactions": raw,
         "tax_year": None,
     }
 
@@ -594,8 +599,9 @@ def _scan_history_for_activity_book(client, user_id: str) -> ActivityBookLookup:
 
     A non-empty list found before any stripped non-sample row is the book.
     A stripped row means a newer analysis had trades that are gone, so an
-    older list is not restored. Read failures and the page cap stay an
-    unfinished scan.
+    older list is not restored. Rows that share uploaded_at are ordered by
+    id descending so a page boundary cannot swap them. Read failures and the
+    page cap stay an unfinished scan.
     """
     page_size = max(1, int(ACTIVITY_BOOK_HISTORY_PAGE))
     max_pages = max(0, int(ACTIVITY_BOOK_HISTORY_MAX_PAGES))
@@ -609,6 +615,7 @@ def _scan_history_for_activity_book(client, user_id: str) -> ActivityBookLookup:
                 .select("id, filename, uploaded_at, summary, result")
                 .eq("user_id", user_id)
                 .order("uploaded_at", desc=True)
+                .order("id", desc=True)
                 .range(offset, offset + page_size - 1)
                 .execute()
             )
@@ -649,12 +656,14 @@ def _scan_history_for_activity_book(client, user_id: str) -> ActivityBookLookup:
 def load_activity_book_for_merge(user_id: str, client=None) -> ActivityBookLookup:
     """Read the account book. A private row wins, even when it has no trades.
 
-    No private row pages this user's portfolio_analyses, newest first, until a
-    non-empty activity_book.transactions or top-level transactions list that
-    appears before any stripped non-sample row, or until the rows run out. An
-    older list after a stripped row is unrecoverable and is not the book.
-    Sample filenames are skipped. A cap hit before the rows run out is an
-    unfinished scan, not an unrecoverable book.
+    A private transactions value that is not a list is a failed read: history
+    is not scanned and the caller must not upsert. No private row pages this
+    user's portfolio_analyses, newest first, until a non-empty
+    activity_book.transactions or top-level transactions list that appears
+    before any stripped non-sample row, or until the rows run out. An older
+    list after a stripped row is unrecoverable and is not the book. Sample
+    filenames are skipped. A cap hit before the rows run out is an unfinished
+    scan, not an unrecoverable book.
     """
     if not user_id:
         return ActivityBookLookup()
@@ -684,7 +693,11 @@ def load_activity_book_for_merge(user_id: str, client=None) -> ActivityBookLooku
         return ActivityBookLookup(ok=False)
     if rows:
         row = rows[0] if isinstance(rows[0], dict) else {}
-        return ActivityBookLookup(book=_book_from_private_row(row))
+        book = _book_from_private_row(row)
+        if book is None:
+            logger.error("Private activity book transactions were not a list")
+            return ActivityBookLookup(ok=False)
+        return ActivityBookLookup(book=book)
     return _scan_history_for_activity_book(client, user_id)
 
 

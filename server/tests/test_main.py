@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+from functools import cmp_to_key
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1762,6 +1763,43 @@ def test_get_portfolio_analysis_found(monkeypatch):
     assert "result" in data
 
 
+def test_get_analysis_drops_legacy_top_level_transactions(monkeypatch):
+    """GET hides a legacy transactions array without rewriting the stored row."""
+    legacy = {
+        "id": "legacy-1",
+        "user_id": "test-user-123",
+        "filename": "old.csv",
+        "result": {
+            "analysis_id": "legacy-1",
+            "transactions": [
+                {"instrument": "AAPL", "trans_code": "Buy", "quantity": 10}
+            ],
+            "activity_book": {
+                "transaction_count": 1,
+                "transactions": [{"instrument": "AAPL", "trans_code": "Buy"}],
+            },
+        },
+    }
+    upserts = []
+    monkeypatch.setattr("main.get_supabase", lambda: object())
+    monkeypatch.setattr("main.get_analysis_by_id", lambda *_args, **_kwargs: legacy)
+    monkeypatch.setattr(
+        "main.upsert_activity_book",
+        lambda *_args, **_kwargs: upserts.append(1),
+    )
+
+    response = client.get("/api/portfolio/analysis/legacy-1")
+    assert response.status_code == 200, response.text
+    result = response.json()["result"]
+    assert "transactions" not in result
+    assert result["activity_book"]["transactions"] == []
+    assert result["activity_book"]["transaction_count"] == 1
+    assert "trans_code" not in response.text
+    assert upserts == []
+    assert legacy["result"]["transactions"][0]["trans_code"] == "Buy"
+    assert legacy["result"]["activity_book"]["transactions"][0]["trans_code"] == "Buy"
+
+
 def test_get_portfolio_analysis_not_found(monkeypatch):
     """GET /api/portfolio/analysis/{id} returns 404 when not found."""
     mock_client = object()
@@ -3296,8 +3334,7 @@ class _ApiBookQuery:
         self.table = table
         self.op = "select"
         self.filters = []
-        self.order_col = None
-        self.order_desc = False
+        self.orders = []
         self.range_bounds = None
         self.limit_n = None
         self.payload = None
@@ -3322,8 +3359,7 @@ class _ApiBookQuery:
         return self
 
     def order(self, col, desc=False, **_kwargs):
-        self.order_col = col
-        self.order_desc = bool(desc)
+        self.orders.append((col, bool(desc)))
         return self
 
     def limit(self, n):
@@ -3366,17 +3402,29 @@ class _ApiBookQuery:
         if self.filters:
             for col, val in self.filters:
                 filtered = [row for row in filtered if row.get(col) == val]
-        if self.order_col:
-            filtered.sort(
-                key=lambda row: row.get(self.order_col) or "",
-                reverse=self.order_desc,
-            )
+        if self.orders:
+            filtered = _sort_by_orders(filtered, self.orders)
         if self.range_bounds is not None:
             start, end = self.range_bounds
             filtered = filtered[start:end + 1]
         elif self.limit_n is not None:
             filtered = filtered[: self.limit_n]
         return SimpleNamespace(data=filtered)
+
+
+def _sort_by_orders(rows, orders):
+    def compare(left, right):
+        for column, descending in orders:
+            left_value = left.get(column) or ""
+            right_value = right.get(column) or ""
+            if left_value == right_value:
+                continue
+            if left_value < right_value:
+                return 1 if descending else -1
+            return -1 if descending else 1
+        return 0
+
+    return sorted(rows, key=cmp_to_key(compare))
 
 
 class _ApiBookClient:
@@ -3728,6 +3776,79 @@ def test_replace_mode_replaces_the_private_book(monkeypatch):
     assert realized["total_net"] == 150
     aapl = [position for position in body["positions"] if position["symbol"] == "AAPL"]
     assert not aapl or aapl[0]["quantity"] == 0
+
+
+def test_renamed_trusted_sample_does_not_hide_an_older_history_list(monkeypatch):
+    """Trusted sample bytes under another filename must not become a stripped marker."""
+    from ledger import HISTORICAL_BOOK_UNRECOVERABLE_WARNING
+
+    save_history = main._save_history_best_effort
+    _stub_analyze_network(monkeypatch)
+    memory = _use_memory_book(monkeypatch)
+    monkeypatch.setattr(main, "_save_history_best_effort", save_history)
+    memory.tables["portfolio_analyses"].append(_older_aapl_history_row())
+    sample_bytes = SAMPLE_CSV_PATH.read_bytes()
+
+    uploaded = _post_book("renamed-export.csv", sample_bytes)
+    assert uploaded.status_code == 200, uploaded.text
+    body = uploaded.json()
+    assert body["activity_book"]["transaction_count"] > 0
+    assert body["summary"]["activity_transaction_count"] > 0
+    assert memory.tables["portfolio_activity_books"] == []
+    assert memory.upserts == []
+    inserted = next(
+        row
+        for row in memory.tables["portfolio_analyses"]
+        if row.get("filename") == "renamed-export.csv"
+    )
+    _assert_stored_history_is_not_a_stripped_marker(inserted)
+    _stamp_newest(inserted)
+
+    _forget_process_memory()
+    sold = _post_book("sell.csv", _aapl_sell_bytes())
+    assert sold.status_code == 200, sold.text
+    sold_body = sold.json()
+    assert HISTORICAL_BOOK_UNRECOVERABLE_WARNING not in sold_body["warnings"]
+    assert sold_body["activity_book"]["merged_from_analysis_id"] == "older-book"
+    aapl = next(position for position in sold_body["positions"] if position["symbol"] == "AAPL")
+    assert aapl["quantity"] == 6
+    assert sold_body["summary"]["realized_summary"]["lt_gains"] == 200
+    stored = _stored_books(memory)[0]["transactions"]
+    buys = [txn for txn in stored if txn.get("trans_code") == "Buy"]
+    assert len(buys) == 1
+    assert buys[0]["quantity"] == 10
+    assert buys[0]["instrument"] == "AAPL"
+
+
+def test_non_list_private_book_is_not_upserted(monkeypatch):
+    from ledger import ACTIVITY_BOOK_LOAD_FAILED_WARNING
+
+    _stub_analyze_network(monkeypatch)
+    memory = _use_memory_book(monkeypatch)
+    original = {"instrument": "AAPL"}
+    memory.tables["portfolio_activity_books"].append(
+        {
+            "user_id": "test-user-123",
+            "analysis_id": "bad",
+            "filename": "bad.csv",
+            "transactions": original,
+        }
+    )
+    memory.tables["portfolio_analyses"].append(_older_aapl_history_row())
+
+    response = _post_book("sell.csv", _aapl_sell_bytes())
+    assert response.status_code == 200, response.text
+    assert ACTIVITY_BOOK_LOAD_FAILED_WARNING in response.json()["warnings"]
+    assert memory.upserts == []
+    assert memory.tables["portfolio_activity_books"] == [
+        {
+            "user_id": "test-user-123",
+            "analysis_id": "bad",
+            "filename": "bad.csv",
+            "transactions": original,
+        }
+    ]
+    assert response.json()["summary"]["realized_summary"]["lt_gains"] == 0
 
 
 def test_sample_upload_does_not_replace_the_private_book(monkeypatch):
