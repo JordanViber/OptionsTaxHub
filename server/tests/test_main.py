@@ -3697,6 +3697,120 @@ def test_history_persist_strips_client_transactions(monkeypatch):
     assert "trans_code" not in loaded.text
 
 
+def test_stripped_marker_rejects_an_older_subset_and_keeps_a_prior_list(monkeypatch):
+    """A newer stripped row blocks an older trade list. A list before that marker stays the book."""
+    from ledger import HISTORICAL_BOOK_UNRECOVERABLE_WARNING
+
+    _stub_analyze_network(monkeypatch)
+    memory = _use_memory_book(monkeypatch)
+    older_subset = {
+        "activity_date": "2023-06-01",
+        "instrument": "MSFT",
+        "description": "Microsoft",
+        "trans_code": "Buy",
+        "quantity": 3,
+        "price": 200,
+        "amount": -600,
+    }
+    memory.tables["portfolio_analyses"].extend(
+        [
+            {
+                "id": "stripped",
+                "user_id": "test-user-123",
+                "filename": "recent.csv",
+                "uploaded_at": "2026-08-01T00:00:00+00:00",
+                "summary": {"activity_transaction_count": 4},
+                "result": {
+                    "activity_book": {"transactions": [], "transaction_count": 4},
+                    "summary": {"activity_transaction_count": 4},
+                },
+            },
+            {
+                "id": "older-subset",
+                "user_id": "test-user-123",
+                "filename": "old.csv",
+                "uploaded_at": "2024-01-01T00:00:00+00:00",
+                "summary": {"activity_transaction_count": 1},
+                "result": {
+                    "activity_book": {
+                        "transactions": [older_subset],
+                        "transaction_count": 1,
+                    }
+                },
+            },
+        ]
+    )
+    first = _post_book("buy.csv", _aapl_buy_bytes())
+    assert first.status_code == 200, first.text
+    body = first.json()
+    assert HISTORICAL_BOOK_UNRECOVERABLE_WARNING in body["warnings"]
+    assert body["activity_book"]["transaction_count"] == 1
+    assert body["activity_book"]["merged_from_analysis_id"] is None
+    symbols = {position["symbol"] for position in body["positions"]}
+    assert "MSFT" not in symbols
+    stored = _stored_books(memory)[0]["transactions"]
+    assert len(stored) == 1
+    assert stored[0]["instrument"] == "AAPL"
+    assert stored[0]["quantity"] == 10
+    assert all(txn.get("instrument") != "MSFT" for txn in stored)
+    assert all(
+        txn.get("instrument") != "MSFT"
+        for row in memory.upserts
+        for txn in row["transactions"]
+    )
+
+    kept = _use_memory_book(monkeypatch)
+    kept.tables["portfolio_analyses"].extend(
+        [
+            {
+                "id": "newer-book",
+                "user_id": "test-user-123",
+                "filename": "newer.csv",
+                "uploaded_at": "2026-07-01T00:00:00+00:00",
+                "summary": {"activity_transaction_count": 1},
+                "result": {
+                    "activity_book": {
+                        "transactions": [
+                            {
+                                "activity_date": "2024-01-15",
+                                "instrument": "AAPL",
+                                "description": "Apple",
+                                "trans_code": "Buy",
+                                "quantity": 10,
+                                "price": 100,
+                                "amount": -1000,
+                            }
+                        ],
+                        "transaction_count": 1,
+                    },
+                    "tax_profile": {"tax_year": 2024},
+                },
+            },
+            {
+                "id": "stripped-older",
+                "user_id": "test-user-123",
+                "filename": "gap.csv",
+                "uploaded_at": "2024-01-01T00:00:00+00:00",
+                "summary": {"activity_transaction_count": 4},
+                "result": {"activity_book": {"transactions": [], "transaction_count": 4}},
+            },
+        ]
+    )
+    _forget_process_memory()
+    sold = _post_book("sell.csv", _aapl_sell_bytes())
+    assert sold.status_code == 200, sold.text
+    sold_body = sold.json()
+    assert HISTORICAL_BOOK_UNRECOVERABLE_WARNING not in sold_body["warnings"]
+    assert sold_body["activity_book"]["merged_from_analysis_id"] == "newer-book"
+    assert sold_body["activity_book"]["transaction_count"] == 2
+    aapl = next(position for position in sold_body["positions"] if position["symbol"] == "AAPL")
+    assert aapl["quantity"] == 6
+    assert sold_body["summary"]["realized_summary"]["lt_gains"] == 200
+    kept_rows = _stored_books(kept)[0]["transactions"]
+    assert len(kept_rows) == 2
+    assert {txn["trans_code"] for txn in kept_rows} == {"Buy", "Sell"}
+
+
 def test_stripped_history_warns_and_starts_a_new_book(monkeypatch):
     from ledger import HISTORICAL_BOOK_UNRECOVERABLE_WARNING
 

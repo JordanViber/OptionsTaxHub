@@ -1416,6 +1416,66 @@ class TestPrivateActivityBook:
         assert lookup.unrecoverable is True
         assert lookup.scan_incomplete is False
 
+    def test_older_list_after_a_stripped_row_is_not_the_book(self):
+        older = [{"instrument": "MSFT", "trans_code": "Buy", "quantity": 3}]
+        client = _PagedBookClient(
+            history=[
+                _history_row(
+                    "stripped",
+                    "recent.csv",
+                    "2026-08-01T00:00:00Z",
+                    transactions=[],
+                    count=4,
+                ),
+                _history_row(
+                    "old",
+                    "old.csv",
+                    "2024-01-01T00:00:00Z",
+                    transactions=older,
+                    count=1,
+                ),
+            ]
+        )
+        lookup = db.load_activity_book_for_merge("user1", client=client)
+        assert lookup.ok is True
+        assert lookup.scan_incomplete is False
+        assert lookup.unrecoverable is True
+        assert lookup.book is None
+
+    def test_list_before_a_stripped_marker_is_the_book(self):
+        newer = [{"instrument": "NVDA", "trans_code": "Buy", "quantity": 2}]
+        client = _PagedBookClient(
+            history=[
+                _history_row(
+                    "empty",
+                    "empty.csv",
+                    "2026-09-01T00:00:00Z",
+                    transactions=[],
+                    count=0,
+                ),
+                _history_row(
+                    "newer",
+                    "newer.csv",
+                    "2026-08-01T00:00:00Z",
+                    transactions=newer,
+                    count=1,
+                ),
+                _history_row(
+                    "stripped",
+                    "old.csv",
+                    "2024-01-01T00:00:00Z",
+                    transactions=[],
+                    count=4,
+                ),
+            ]
+        )
+        lookup = db.load_activity_book_for_merge("user1", client=client)
+        assert lookup.ok is True
+        assert lookup.unrecoverable is False
+        assert lookup.scan_incomplete is False
+        assert lookup.book["analysis_id"] == "newer"
+        assert lookup.book["transactions"] == newer
+
     def test_page_cap_is_incomplete_not_unrecoverable(self, monkeypatch):
         monkeypatch.setattr(db, "ACTIVITY_BOOK_HISTORY_PAGE", 1)
         monkeypatch.setattr(db, "ACTIVITY_BOOK_HISTORY_MAX_PAGES", 1)

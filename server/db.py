@@ -557,7 +557,13 @@ def _query_rows(result) -> Optional[list]:
 
 
 def _scan_history_for_activity_book(client, user_id: str) -> ActivityBookLookup:
-    """Page this user's history until a non-empty trade list or the rows end."""
+    """Page this user's history, newest first, for a usable trade list.
+
+    A non-empty list found before any stripped non-sample row is the book.
+    A stripped row means a newer analysis had trades that are gone, so an
+    older list is not restored. Read failures and the page cap stay an
+    unfinished scan.
+    """
     page_size = max(1, int(ACTIVITY_BOOK_HISTORY_PAGE))
     max_pages = max(0, int(ACTIVITY_BOOK_HISTORY_MAX_PAGES))
     saw_marker = False
@@ -587,6 +593,8 @@ def _scan_history_for_activity_book(client, user_id: str) -> ActivityBookLookup:
                 continue
             transactions = _nonempty_transaction_list(row)
             if transactions is not None:
+                if saw_marker:
+                    return ActivityBookLookup(unrecoverable=True)
                 return ActivityBookLookup(
                     book=_book_from_history_row(row, transactions)
                 )
@@ -608,10 +616,12 @@ def _scan_history_for_activity_book(client, user_id: str) -> ActivityBookLookup:
 def load_activity_book_for_merge(user_id: str, client=None) -> ActivityBookLookup:
     """Read the account book. A private row wins, even when it has no trades.
 
-    No private row pages this user's portfolio_analyses until a non-empty
-    activity_book.transactions or top-level transactions list, or until the
-    rows run out. Sample filenames are skipped. A cap hit before the rows run
-    out is an unfinished scan, not an unrecoverable book.
+    No private row pages this user's portfolio_analyses, newest first, until a
+    non-empty activity_book.transactions or top-level transactions list that
+    appears before any stripped non-sample row, or until the rows run out. An
+    older list after a stripped row is unrecoverable and is not the book.
+    Sample filenames are skipped. A cap hit before the rows run out is an
+    unfinished scan, not an unrecoverable book.
     """
     if not user_id:
         return ActivityBookLookup()
