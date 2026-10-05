@@ -280,9 +280,14 @@ class TestSaveAnalysisHistory:
         )
 
         assert result == {"id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}
-        inserted = client.builders[0].calls[0][1][0]
+        inserted = next(
+            call[1][0]
+            for builder in client.builders
+            for call in builder.calls
+            if call[0] == "insert"
+        )
         assert inserted["id"] == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-        assert inserted["result"]["analysis_id"] == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        assert inserted["result"]["analysis_id"] == "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
         assert inserted["result"] is not caller
         assert caller == {
             "analysis_id": "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA",
@@ -301,7 +306,12 @@ class TestSaveAnalysisHistory:
         )
 
         assert result == {"id": str(generated)}
-        inserted = client.builders[0].calls[0][1][0]
+        inserted = next(
+            call[1][0]
+            for builder in client.builders
+            for call in builder.calls
+            if call[0] == "insert"
+        )
         assert inserted["id"] == str(generated)
         assert inserted["result"]["analysis_id"] == str(generated)
         assert caller == {"positions": [{"symbol": "AAPL"}]}
@@ -333,7 +343,12 @@ class TestSaveAnalysisHistory:
         assert db.save_analysis_history(
             "user1", "test.csv", {"positions_count": 1}, result_data=caller
         ) is None
-        inserted = client.builders[0].calls[0][1][0]
+        inserted = next(
+            call[1][0]
+            for builder in client.builders
+            for call in builder.calls
+            if call[0] == "insert"
+        )
         assert inserted["id"] == caller["analysis_id"]
         assert caller["positions"] == []
 
@@ -636,6 +651,32 @@ class TestEnsureAnalysisHistory:
         again = _ScriptedClient([[], [], missing])
         monkeypatch.setattr(db, "get_supabase", lambda: again)
         assert db.get_analysis_by_id(legacy, "user1") is None
+
+        cache_miss = Exception(
+            "Could not find the table 'public.portfolio_analysis_id_aliases' in the schema cache"
+        )
+        cache_miss.code = "PGRST205"
+        cached = _ScriptedClient([[], [], cache_miss])
+        monkeypatch.setattr(db, "get_supabase", lambda: cached)
+        assert db.lookup_analysis_for_entitlement(legacy, "user1") == (None, True)
+
+    def test_other_alias_schema_errors_are_outages(self, monkeypatch):
+        legacy = "11111111-1111-4111-8111-111111111111"
+        unnamed = Exception('relation "portfolio_analyses" does not exist')
+        unnamed.code = "42P01"
+        column = Exception(
+            "Could not find the 'canonical_analysis_id' column of "
+            "'portfolio_analysis_id_aliases' in the schema cache"
+        )
+        column.code = "PGRST204"
+        other_table = Exception(
+            "Could not find the table 'public.year_close_packet_snapshots' in the schema cache"
+        )
+        other_table.code = "PGRST205"
+        for error in (unnamed, column, other_table):
+            client = _ScriptedClient([[], [], error])
+            monkeypatch.setattr(db, "get_supabase", lambda client=client: client)
+            assert db.lookup_analysis_for_entitlement(legacy, "user1") == (None, False)
 
     def test_alias_outage_is_not_a_miss_for_entitlement_lookup(self, monkeypatch):
         legacy = "11111111-1111-4111-8111-111111111111"
@@ -1406,10 +1447,12 @@ class _SharedGuestHistory:
         self.rows.append(stored)
         return _FakeExecuteResult([{"id": stored["id"]}])
 
-    def _matching(self, eqs, contains):
+    def _matching(self, eqs, contains, extra_filters=()):
         found = []
         for row in self.rows:
             if any(row.get(column) != value for column, value in eqs):
+                continue
+            if extra_filters and not _row_matches_extra_filters(row, extra_filters):
                 continue
             if contains is not None:
                 column, expected = contains
@@ -1430,6 +1473,7 @@ class _SharedGuestQuery:
         self.payload = None
         self.eqs = []
         self.contains_filter = None
+        self.extra_filters = []
 
     def insert(self, row):
         self.op = "insert"
@@ -1452,6 +1496,10 @@ class _SharedGuestQuery:
         self.contains_filter = (column, value)
         return self
 
+    def filter(self, column, operator, value):
+        self.extra_filters.append((column, operator, value))
+        return self
+
     def order(self, *_args, **_kwargs):
         return self
 
@@ -1468,7 +1516,9 @@ class _SharedGuestQuery:
             return self.store._insert(self.payload)
         if self.store.fail_selects:
             raise RuntimeError("lookup unavailable")
-        return _FakeExecuteResult(self.store._matching(self.eqs, self.contains_filter))
+        return _FakeExecuteResult(
+            self.store._matching(self.eqs, self.contains_filter, self.extra_filters)
+        )
 
 
 def _history_unique_violation(constraint):
@@ -1482,6 +1532,16 @@ def _embedded_analysis_id(row):
     if not isinstance(result, dict):
         return None
     return result.get("analysis_id")
+
+
+def _row_matches_extra_filters(row, extra_filters) -> bool:
+    for column, operator, value in extra_filters:
+        if column != "result->>analysis_id" or operator != "ilike":
+            return False
+        embedded = _embedded_analysis_id(row)
+        if not isinstance(embedded, str) or embedded.lower() != str(value).lower():
+            return False
+    return True
 
 
 _GUEST_ANALYSIS_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
@@ -1574,6 +1634,49 @@ class TestCrossUserGuestAnalysisId:
         ) is None
         assert [row["user_id"] for row in store.rows] == ["user-a"]
         assert any("id" not in row and row["user_id"] == "user-b" for row in store.attempted)
+
+    def test_same_user_case_variant_is_a_conflict(self, monkeypatch):
+        upper = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
+        canonical = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        caller = {"analysis_id": upper, "positions": []}
+        store = _SharedGuestHistory()
+        monkeypatch.setattr(db, "get_supabase", lambda: store)
+
+        saved = db.save_analysis_history(
+            "user-a", "guest.csv", {"positions_count": 1}, result_data=caller
+        )
+
+        assert saved["id"] == canonical
+        assert store.rows[0]["result"]["analysis_id"] == upper
+        assert caller["analysis_id"] == upper
+        with pytest.raises(db.HistoryInsertConflict):
+            db.save_analysis_history(
+                "user-a",
+                "guest.csv",
+                {"positions_count": 1},
+                result_data={"analysis_id": canonical, "positions": []},
+            )
+        assert len(store.rows) == 1
+        assert store.rows[0]["result"]["analysis_id"] == upper
+
+        preexisting = _SharedGuestHistory()
+        preexisting.rows.append({
+            "id": "99999999-9999-4999-8999-999999999999",
+            "user_id": "user-a",
+            "result": {"analysis_id": upper, "positions": []},
+        })
+        monkeypatch.setattr(db, "get_supabase", lambda: preexisting)
+        with pytest.raises(db.HistoryInsertConflict):
+            db.save_analysis_history(
+                "user-a",
+                "guest.csv",
+                {"positions_count": 1},
+                result_data={"analysis_id": canonical, "positions": [{"symbol": "AAPL"}]},
+            )
+        assert len(preexisting.rows) == 1
+        assert preexisting.attempted == []
+        assert preexisting.rows[0]["id"] == "99999999-9999-4999-8999-999999999999"
+        assert preexisting.rows[0]["result"]["analysis_id"] == upper
 
 
 class _PagedBookClient:

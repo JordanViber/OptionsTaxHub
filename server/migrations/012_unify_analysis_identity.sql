@@ -27,7 +27,9 @@ REVOKE TRUNCATE, REFERENCES, TRIGGER ON TABLE public.portfolio_analysis_id_alias
 -- Record a legacy primary key, then move the row onto its embedded UUID when
 -- that UUID is free and this user has exactly one row for it. Non-UUID
 -- embedded ids and primary-key collisions stay on their current id so both
--- values still locate the same row.
+-- values still locate the same row. A source id that another of this user's
+-- rows still embeds is also left in place: moving it would vacate the primary
+-- key and the embedded row would shadow the alias.
 DO $$
 DECLARE
   rec record;
@@ -36,7 +38,15 @@ DECLARE
   owner_count integer;
   updated_count integer;
   pk_taken boolean;
+  source_embedded boolean;
 BEGIN
+  -- Snapshot embedded ids before any primary-key update. A later EXISTS would
+  -- see ids this loop has already vacated.
+  CREATE TEMP TABLE portfolio_analysis_embedded_snapshot ON COMMIT DROP AS
+  SELECT user_id, id AS row_id, lower(result->>'analysis_id') AS embedded_id
+  FROM public.portfolio_analyses
+  WHERE COALESCE(result->>'analysis_id', '') <> '';
+
   FOR rec IN
     SELECT id, user_id, result->>'analysis_id' AS embedded_id
     FROM public.portfolio_analyses
@@ -69,9 +79,17 @@ BEGIN
         AND other.id <> rec.id
     ) INTO pk_taken;
 
-    IF owner_count <> 1 OR pk_taken THEN
-      RAISE NOTICE 'skip collision analysis_id user=% row=% canonical=% owners=% pk_taken=%',
-        rec.user_id, rec.id, embedded, owner_count, pk_taken;
+    SELECT EXISTS (
+      SELECT 1
+      FROM portfolio_analysis_embedded_snapshot other
+      WHERE other.user_id = rec.user_id
+        AND other.row_id <> rec.id
+        AND other.embedded_id = lower(rec.id::text)
+    ) INTO source_embedded;
+
+    IF owner_count <> 1 OR pk_taken OR source_embedded THEN
+      RAISE NOTICE 'skip collision analysis_id user=% row=% canonical=% owners=% pk_taken=% source_embedded=%',
+        rec.user_id, rec.id, embedded, owner_count, pk_taken, source_embedded;
       CONTINUE;
     END IF;
 
@@ -100,6 +118,57 @@ BEGIN
     ON CONFLICT (user_id, legacy_row_id) DO NOTHING;
   END LOOP;
 END $$;
+
+-- 006 clears snapshots keyed by the deleted row id and its embedded analysis
+-- id. After a rewrite those snapshots may still be keyed by the legacy row id.
+-- Entitlement analysis_id values are left unchanged.
+CREATE OR REPLACE FUNCTION public.clear_packet_payload_after_analysis_delete()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  deleted_analysis_id TEXT;
+  cleanup_ids TEXT[];
+BEGIN
+  deleted_analysis_id := NULLIF(OLD.result ->> 'analysis_id', '');
+  IF deleted_analysis_id IS NULL THEN
+    deleted_analysis_id := OLD.id::text;
+  END IF;
+
+  SELECT ARRAY(
+    SELECT DISTINCT candidate
+    FROM (
+      SELECT OLD.id::text AS candidate
+      UNION ALL
+      SELECT deleted_analysis_id
+      UNION ALL
+      SELECT legacy_row_id::text
+      FROM public.portfolio_analysis_id_aliases
+      WHERE user_id = OLD.user_id
+        AND canonical_analysis_id = OLD.id
+    ) keys
+    WHERE candidate IS NOT NULL AND candidate <> ''
+  ) INTO cleanup_ids;
+
+  DELETE FROM public.year_close_packet_snapshots
+  WHERE user_id = OLD.user_id
+    AND analysis_id = ANY(cleanup_ids)
+    AND paid_at IS NULL;
+
+  UPDATE public.year_close_packet_snapshots
+  SET packet_payload = NULL, updated_at = now()
+  WHERE user_id = OLD.user_id
+    AND analysis_id = ANY(cleanup_ids)
+    AND paid_at IS NOT NULL;
+
+  RETURN OLD;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.clear_packet_payload_after_analysis_delete() FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.clear_packet_payload_after_analysis_delete() TO service_role;
 
 -- Receipts for paid snapshots that never got an entitlement row. Do not
 -- replace an entitlement that already recorded the checkout analysis id.

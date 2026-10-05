@@ -354,13 +354,17 @@ def _packet_checkout_event(
     event_id="evt_packet",
     livemode=False,
     user_id="test-user-123",
+    analysis_id="analysis-sample-1",
+    tax_year=None,
 ):
     metadata = {
         "product": PACKET_METADATA_PRODUCT,
-        "analysis_id": "analysis-sample-1",
+        "analysis_id": analysis_id,
     }
     if user_id:
         metadata["user_id"] = user_id
+    if tax_year is not None:
+        metadata["tax_year"] = str(tax_year)
     return {
         "id": event_id,
         "object": "event",
@@ -2164,6 +2168,117 @@ def test_async_payment_succeeded_event_unlocks_packet(monkeypatch):
     ]
     assert PACKET_STORE["analysis-sample-1"]["user_id"] == "test-user-123"
     assert PACKET_STORE["analysis-sample-1"]["session_ids"] == {"cs_test_paid_1"}
+
+
+_LEGACY_PAYMENT_ANALYSIS = "11111111-1111-4111-8111-111111111111"
+
+
+class _AliasStepClient:
+    """Primary key miss, embedded miss, then the alias query fails."""
+
+    def __init__(self, alias_error):
+        self.alias_error = alias_error
+        self.calls = 0
+
+    def table(self, _name):
+        return self
+
+    def select(self, *_args, **_kwargs):
+        return self
+
+    def eq(self, *_args, **_kwargs):
+        return self
+
+    def contains(self, *_args, **_kwargs):
+        return self
+
+    def order(self, *_args, **_kwargs):
+        return self
+
+    def limit(self, *_args, **_kwargs):
+        return self
+
+    def execute(self):
+        self.calls += 1
+        if self.calls < 3:
+            return SimpleNamespace(data=[])
+        raise self.alias_error
+
+
+def _missing_alias_table_error():
+    error = Exception('relation "portfolio_analysis_id_aliases" does not exist')
+    error.code = "42P01"
+    return error
+
+
+def _alias_column_schema_error():
+    error = Exception(
+        "Could not find the 'canonical_analysis_id' column of "
+        "'portfolio_analysis_id_aliases' in the schema cache"
+    )
+    error.code = "PGRST204"
+    return error
+
+
+@pytest.mark.parametrize(
+    "alias_error, confirm_status, webhook_status",
+    [
+        (_missing_alias_table_error(), 409, 200),
+        (_alias_column_schema_error(), 503, 500),
+        (Exception("timeout"), 503, 500),
+    ],
+)
+def test_alias_lookup_errors_on_confirm_and_webhook(
+    monkeypatch, alias_error, confirm_status, webhook_status
+):
+    _test_stripe_env(monkeypatch)
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_packet_test_secret")
+    monkeypatch.setattr(
+        main,
+        "lookup_analysis_for_entitlement",
+        db.lookup_analysis_for_entitlement,
+    )
+    monkeypatch.setattr(
+        db,
+        "get_supabase",
+        lambda: _AliasStepClient(alias_error),
+    )
+    paid_session = _stripe_object_session(
+        id="cs_alias_lookup",
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": _LEGACY_PAYMENT_ANALYSIS,
+            "user_id": "test-user-123",
+            "tax_year": "2025",
+        },
+    )
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda *_args, **_kwargs: paid_session,
+    )
+
+    confirm = client.post(
+        "/api/year-close-packet/confirm",
+        json={"session_id": paid_session.id, "analysis_id": _LEGACY_PAYMENT_ANALYSIS},
+    )
+    assert confirm.status_code == confirm_status
+    if confirm_status == 409:
+        assert "source document" in confirm.json()["detail"]
+    else:
+        assert confirm.status_code == 503
+        assert "409" not in str(confirm.status_code)
+
+    webhook = _post_signed_webhook(
+        _packet_checkout_event(
+            analysis_id=_LEGACY_PAYMENT_ANALYSIS,
+            tax_year="2025",
+            event_id="evt_alias_lookup",
+        )
+    )
+    assert webhook.status_code == webhook_status
+    if webhook_status == 200:
+        assert webhook.json()["granted"] is False
 
 
 def test_webhook_retries_when_durable_packet_grant_fails(monkeypatch):

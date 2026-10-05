@@ -956,5 +956,130 @@ def test_migration_012_unifies_ids_and_backfills_entitlements(postgres):
         assert conn.execute(
             "SELECT count(*) FROM year_close_packet_entitlements WHERE user_id = 'paid-user'"
         ).fetchone()[0] == 3
+
+        assert conn.execute(
+            "DELETE FROM portfolio_analyses WHERE id = %s RETURNING id::text",
+            (_REWRITE_CANONICAL,),
+        ).fetchone() == (_REWRITE_CANONICAL,)
+        assert conn.execute(
+            """
+            SELECT analysis_id, packet_payload IS NULL, paid_at IS NOT NULL
+            FROM year_close_packet_snapshots
+            WHERE user_id = 'paid-user' AND analysis_id = %s
+            """,
+            (_REWRITE_LEGACY,),
+        ).fetchone() == (_REWRITE_LEGACY, True, True)
+        assert conn.execute(
+            """
+            SELECT analysis_id
+            FROM year_close_packet_entitlements
+            WHERE user_id = 'paid-user' AND packet_session_id = 'cs_legacy_snapshot'
+            """
+        ).fetchone()[0] == _REWRITE_LEGACY
+        assert conn.execute(
+            """
+            SELECT packet_payload->>'kept'
+            FROM year_close_packet_snapshots
+            WHERE user_id = 'paid-user' AND packet_session_id = 'cs_backfill'
+            """
+        ).fetchone()[0] == "true"
+    finally:
+        conn.close()
+
+
+def _resolve_migrated_analysis(conn, user_id: str, analysis_id: str):
+    """Primary key, then embedded analysis_id, then alias. Same order as the app."""
+    by_pk = conn.execute(
+        """
+        SELECT id::text, result->>'analysis_id'
+        FROM portfolio_analyses
+        WHERE user_id = %s AND id = %s::uuid
+        """,
+        (user_id, analysis_id),
+    ).fetchone()
+    if by_pk:
+        return by_pk
+    by_embedded = conn.execute(
+        """
+        SELECT id::text, result->>'analysis_id'
+        FROM portfolio_analyses
+        WHERE user_id = %s AND result->>'analysis_id' = %s
+        """,
+        (user_id, analysis_id),
+    ).fetchone()
+    if by_embedded:
+        return by_embedded
+    alias = conn.execute(
+        """
+        SELECT canonical_analysis_id::text
+        FROM portfolio_analysis_id_aliases
+        WHERE user_id = %s AND legacy_row_id = %s::uuid
+        """,
+        (user_id, analysis_id),
+    ).fetchone()
+    if not alias:
+        return None
+    return conn.execute(
+        """
+        SELECT id::text, result->>'analysis_id'
+        FROM portfolio_analyses
+        WHERE user_id = %s AND id = %s::uuid
+        """,
+        (user_id, alias[0]),
+    ).fetchone()
+
+
+def test_migration_012_does_not_vacate_an_embedded_primary_key(postgres):
+    url, conn = postgres("oth_jor36_vacated")
+    source = "22222222-2222-4222-8222-222222222222"
+    destination = "33333333-3333-4333-8333-333333333333"
+    embedded_row = "11111111-1111-4111-8111-111111111111"
+    case_source = "55555555-5555-4555-8555-555555555555"
+    case_destination = "66666666-6666-4666-8666-666666666666"
+    case_embedded_row = "44444444-4444-4444-8444-444444444444"
+    free_legacy = "77777777-7777-4777-8777-777777777777"
+    free_canonical = "88888888-8888-4888-8888-888888888888"
+    try:
+        applied = _apply_migrations(url)
+        assert "Applying 012_unify_analysis_identity.sql" in applied
+        _insert_identity_row(conn, embedded_row, "same-user", source)
+        _insert_identity_row(conn, source, "same-user", destination)
+        _insert_identity_row(conn, case_embedded_row, "same-user", case_source.upper())
+        _insert_identity_row(conn, case_source, "same-user", case_destination)
+        _insert_identity_row(conn, free_legacy, "same-user", free_canonical)
+
+        migration_sql = (
+            SERVER_DIR / "migrations" / "012_unify_analysis_identity.sql"
+        ).read_text()
+        output = _apply_sql(url, "SET client_min_messages TO notice;\n" + migration_sql)
+        assert "skip collision analysis_id" in output
+        assert source in output
+
+        resolved = _resolve_migrated_analysis(conn, "same-user", source)
+        assert resolved == (source, destination)
+        assert resolved != (embedded_row, source)
+        assert conn.execute(
+            """
+            SELECT id::text FROM portfolio_analyses
+            WHERE user_id = 'same-user' AND id = %s
+            """,
+            (case_source,),
+        ).fetchone() == (case_source,)
+        assert conn.execute(
+            """
+            SELECT count(*) FROM portfolio_analysis_id_aliases
+            WHERE user_id = 'same-user'
+              AND legacy_row_id IN (%s::uuid, %s::uuid)
+            """,
+            (source, case_source),
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            """
+            SELECT legacy_row_id::text, canonical_analysis_id::text
+            FROM portfolio_analysis_id_aliases
+            WHERE user_id = 'same-user' AND legacy_row_id = %s
+            """,
+            (free_legacy,),
+        ).fetchone() == (free_legacy, free_canonical)
     finally:
         conn.close()

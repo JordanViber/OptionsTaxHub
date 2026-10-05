@@ -150,7 +150,8 @@ def _history_result_for_insert(
 ) -> tuple[Optional[dict], Optional[str]]:
     """Copy result JSON and choose the row id. Does not mutate result_data.
 
-    A UUID analysis_id becomes the primary key. A missing id is generated
+    A UUID analysis_id becomes the primary key in its parsed form. The result
+    JSON keeps the caller's exact analysis_id text. A missing id is generated
     once and written into both fields. Any other embedded id stays in JSON
     only, because portfolio_analyses.id is a UUID column.
     """
@@ -165,7 +166,6 @@ def _history_result_for_insert(
     canonical = _canonical_analysis_uuid(raw)
     if canonical is None:
         return copied, None
-    copied["analysis_id"] = canonical
     return copied, canonical
 
 
@@ -197,6 +197,60 @@ def _user_already_has_analysis(client, user_id: str, embedded_id) -> Optional[bo
     return record is not None
 
 
+def _stored_row_matches_uuid(row, user_id: str, canonical: str) -> bool:
+    """True when a stored history row is this user's copy of the UUID."""
+    if not isinstance(row, dict):
+        return False
+    owner = row.get("user_id")
+    result = row.get("result") if isinstance(row.get("result"), dict) else None
+    # Insert representations echo only an id. They are not a stored analysis.
+    if owner is None and result is None:
+        return False
+    if owner is not None and owner != user_id:
+        return False
+    row_id = _canonical_analysis_uuid(str(row.get("id") or ""))
+    embedded = None
+    if result is not None and isinstance(result.get("analysis_id"), str):
+        embedded = _canonical_analysis_uuid(result.get("analysis_id"))
+    return row_id == canonical or embedded == canonical
+
+
+def _user_has_case_insensitive_embedded_id(
+    client,
+    user_id: str,
+    canonical: str,
+) -> Optional[bool]:
+    """Whether this user already stored this UUID in any letter case.
+
+    None means the lookup failed. The unique index is case-sensitive, so a
+    different spelling of the same UUID would otherwise insert a second row.
+    """
+    try:
+        result = (
+            client.table("portfolio_analyses")
+            .select("id, user_id, result")
+            .eq("user_id", user_id)
+            .filter("result->>analysis_id", "ilike", canonical)
+            .limit(1)
+            .execute()
+        )
+    except AttributeError:
+        # Partial test doubles omit this filter. The insert still enforces
+        # the primary key and the case-sensitive embedded unique index.
+        return False
+    except Exception as exc:
+        logger.error(
+            "Could not compare analysis id case for user %s: %s",
+            user_id,
+            exc,
+        )
+        return None
+    data = getattr(result, "data", None)
+    if not isinstance(data, list) or not data:
+        return False
+    return _stored_row_matches_uuid(data[0], user_id, canonical)
+
+
 def save_analysis_history(
     user_id: str,
     filename: str,
@@ -209,11 +263,12 @@ def save_analysis_history(
     Also persists the full analysis result (positions, suggestions, etc.)
     so that past reports can be re-loaded from the history sidebar.
 
-    When the result carries a UUID analysis_id, that value is the row id.
-    The primary key is global, while the embedded id is unique per user. If
-    another user already owns that primary key, the insert is retried without
-    an id so the database assigns one. The embedded analysis_id stays in the
-    result JSON. Summary-only inserts leave the database default in place.
+    When the result carries a UUID analysis_id, the parsed value is the row id.
+    The result JSON keeps the caller's exact text. The same UUID in another
+    letter case is the same analysis for this user. The primary key is global,
+    while the embedded id is unique per user. If another user already owns
+    that primary key, the insert is retried without an id so the database
+    assigns one. Summary-only inserts leave the database default in place.
 
     Returns the inserted row, or None when Supabase is not configured.
     Raises HistoryInsertConflict when this user already has the analysis.
@@ -236,15 +291,41 @@ def save_analysis_history(
             row["result"] = stored_result
             if row_id:
                 row["id"] = row_id
+        embedded_id = None
+        if isinstance(row.get("result"), dict):
+            embedded_id = row["result"].get("analysis_id")
+        if row.get("id"):
+            # The per-user unique index compares embedded text as written.
+            # A pre-existing row can spell the same UUID differently and use
+            # a different primary key, so check before inserting.
+            already_saved = _user_has_case_insensitive_embedded_id(
+                client,
+                user_id,
+                row["id"],
+            )
+            if already_saved is None:
+                logger.error(
+                    "Could not tell whether user %s already saved analysis %s",
+                    user_id,
+                    embedded_id,
+                )
+                return None
+            if already_saved:
+                raise HistoryInsertConflict(
+                    "portfolio analysis history already exists for this analysis"
+                )
         try:
             return _inserted_history_row(client, row)
         except Exception as insert_error:
             if not _is_unique_violation(insert_error) or not row.get("id"):
                 raise
-            embedded_id = None
-            if isinstance(row.get("result"), dict):
-                embedded_id = row["result"].get("analysis_id")
             already_saved = _user_already_has_analysis(client, user_id, embedded_id)
+            if already_saved is False:
+                already_saved = _user_has_case_insensitive_embedded_id(
+                    client,
+                    user_id,
+                    row["id"],
+                )
             if already_saved is None:
                 logger.error(
                     "Could not tell whether user %s already saved analysis %s",
@@ -385,10 +466,12 @@ def _is_invalid_uuid_query(exc: Exception) -> bool:
 
 
 def _fetch_analysis_by_primary_key(client, analysis_id: str, user_id: str, columns: str):
+    canonical = _canonical_analysis_uuid(analysis_id)
+    query_id = canonical if canonical is not None else analysis_id
     return (
         client.table("portfolio_analyses")
         .select(columns)
-        .eq("id", analysis_id)
+        .eq("id", query_id)
         .eq("user_id", user_id)
         .limit(1)
         .execute()
@@ -429,9 +512,11 @@ def _resolve_owned_analysis(
     """Find one owner row by id, then embedded analysis_id, then alias.
 
     ``strict_outage`` is for payment lookups: a database error is ``(None, False)``.
-    Reads used by history restore treat those errors as a miss. A missing alias
-    table is always a miss, so an install that has not applied migration 012
-    does not fail the request.
+    Reads used by history restore treat those errors as a miss. Only a missing
+    portfolio_analysis_id_aliases table is a miss. Any other alias error on the
+    payment path stays an outage, so an install that has not applied migration
+    012 does not fail the request and a schema or network error does not look
+    like a missing analysis.
     """
     if not analysis_id or not user_id or client is None:
         return None, False
@@ -474,7 +559,7 @@ def _resolve_owned_analysis(
     try:
         alias = _analysis_row(_fetch_analysis_alias(client, analysis_id, user_id))
     except Exception as exc:
-        if _is_missing_analysis_schema(exc):
+        if _is_missing_alias_table(exc):
             logger.info(
                 "portfolio_analysis_id_aliases is missing; analysis lookup "
                 "continues without legacy ids"
@@ -578,7 +663,7 @@ def _lookup_analysis_for_entitlement(
     """Find the owner-scoped row; the bool distinguishes a miss from DB errors.
 
     Order is portfolio_analyses.id, then result.analysis_id, then
-    portfolio_analysis_id_aliases. A missing alias table is a miss.
+    portfolio_analysis_id_aliases. Only a missing alias table is a miss.
     """
     return _resolve_owned_analysis(
         analysis_id,
@@ -1071,6 +1156,27 @@ def _exception_text(exc: Exception) -> str:
     if exc.args and isinstance(exc.args[0], dict):
         parts.append(str(exc.args[0]))
     return " ".join(parts).lower()
+
+
+def _is_missing_alias_table(exc: Exception) -> bool:
+    """True only when portfolio_analysis_id_aliases itself is absent.
+
+    A missing column, a schema-cache miss for a different relation, or any
+    other error is not this case. Payment lookups must keep those as outages.
+    """
+    text = _exception_text(exc)
+    if "portfolio_analysis_id_aliases" not in text:
+        return False
+    code = _exception_code(exc).upper()
+    if code in {"42P01", "PGRST205"}:
+        return True
+    if code:
+        return False
+    return (
+        "does not exist" in text
+        and any(token in text for token in ("relation", "table"))
+        and "column" not in text
+    )
 
 
 def _is_unique_violation(exc: Exception) -> bool:
