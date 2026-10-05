@@ -144,7 +144,7 @@ jobs:
               echo "ERROR: could not read @next/swc-linux-x64-gnu from next optionalDependencies"
               exit 1
             fi
-            npm install --no-save --package-lock=false "@next/swc-linux-x64-gnu@${swc_version}"
+            npm install --legacy-peer-deps --no-save --package-lock=false --ignore-scripts "@next/swc-linux-x64-gnu@${swc_version}"
             if [ -n "$(git status --porcelain -- ../package.json ../package-lock.json ./package.json ./package-lock.json)" ]; then
               echo "ERROR: SWC install rewrote a package manifest or lockfile. Restoring and stopping."
               git checkout -- ../package.json ../package-lock.json ./package.json ./package-lock.json
@@ -180,7 +180,8 @@ jobs:
           cd client
           export NEXT_IGNORE_INCORRECT_LOCKFILE=1
           export NEXT_TELEMETRY_DISABLED=1
-          # Fake E2E-only Supabase values. The host's first label matches the session key injected by tests/e2e/fixtures.ts. Auth calls are mocked by Playwright. This is not a real key.
+          export NEXT_PUBLIC_API_URL=http://localhost:8011
+          # These NEXT_PUBLIC_* values are fake build-time placeholders so the bundle compiles; not real keys/endpoints.
           export NEXT_PUBLIC_SUPABASE_URL=http://vgrlucxqncajjdoaoctq.localhost:54321
           export NEXT_PUBLIC_SUPABASE_ANON_KEY=e2e-fake-anon-key
           npm run build
@@ -276,7 +277,7 @@ jobs:
               echo "ERROR: could not read @next/swc-linux-x64-gnu from next optionalDependencies"
               exit 1
             fi
-            npm install --no-save --package-lock=false "@next/swc-linux-x64-gnu@${swc_version}"
+            npm install --legacy-peer-deps --no-save --package-lock=false --ignore-scripts "@next/swc-linux-x64-gnu@${swc_version}"
             if [ -n "$(git status --porcelain -- ../package.json ../package-lock.json ./package.json ./package-lock.json)" ]; then
               echo "ERROR: SWC install rewrote a package manifest or lockfile. Restoring and stopping."
               git checkout -- ../package.json ../package-lock.json ./package.json ./package-lock.json
@@ -292,7 +293,7 @@ jobs:
           python -m uvicorn main:app --host 0.0.0.0 --port 8011 > /tmp/backend.log 2>&1 &
           ready=0
           for _ in $(seq 1 30); do
-            if curl -fsS --max-time 5 http://localhost:8011/health >/dev/null; then
+            if curl -fsS --max-time 5 http://127.0.0.1:8011/health >/dev/null; then
               ready=1
               break
             fi
