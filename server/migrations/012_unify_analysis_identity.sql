@@ -1,6 +1,8 @@
 -- Unify portfolio_analyses.id with the server-owned result.analysis_id.
--- Additive. Does not change year_close_packet_entitlements.analysis_id,
--- year_close_packet_snapshots.analysis_id, or portfolio_activity_books.analysis_id.
+-- Also canonicalizes UUID analysis_id values on year_close_packet_snapshots,
+-- year_close_packet_entitlements, and portfolio_activity_books in this
+-- transaction. Snapshot case-variants collapse. Two paid years, two paid
+-- sessions in one year, and two history rows for one UUID RAISE.
 -- Stripe still checks session metadata against the stored entitlement analysis id.
 -- This file has its own transaction. apply_migrations.sh does not wrap it.
 -- Not applied to Supabase project ref vgrlucxqncajjdoaoctq here.
@@ -23,6 +25,117 @@ ALTER TABLE public.portfolio_analysis_id_aliases ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON TABLE public.portfolio_analysis_id_aliases FROM PUBLIC, anon, authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.portfolio_analysis_id_aliases TO service_role;
 REVOKE TRUNCATE, REFERENCES, TRIGGER ON TABLE public.portfolio_analysis_id_aliases FROM service_role;
+
+-- Block concurrent writes before any detection or rewrite. The analyses lock
+-- stays ahead of the embedded-id temp snapshot inside the primary-key loop.
+LOCK TABLE public.portfolio_analyses IN SHARE ROW EXCLUSIVE MODE;
+LOCK TABLE public.year_close_packet_snapshots IN SHARE ROW EXCLUSIVE MODE;
+LOCK TABLE public.year_close_packet_entitlements IN SHARE ROW EXCLUSIVE MODE;
+LOCK TABLE public.portfolio_activity_books IN SHARE ROW EXCLUSIVE MODE;
+
+-- Detection only. A RAISE aborts the transaction before any canonical write.
+DO $$
+DECLARE
+  collision record;
+BEGIN
+  FOR collision IN
+    SELECT user_id,
+           (result->>'analysis_id')::uuid AS canonical_uuid,
+           (array_agg(id::text ORDER BY id::text))[1] AS row_a,
+           (array_agg(id::text ORDER BY id::text))[2] AS row_b
+    FROM public.portfolio_analyses
+    WHERE COALESCE(result->>'analysis_id', '') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    GROUP BY user_id, (result->>'analysis_id')::uuid
+    HAVING count(*) > 1
+  LOOP
+    RAISE EXCEPTION
+      'two portfolio_analyses rows share one analysis UUID user=% canonical=% rows=% %',
+      collision.user_id, collision.canonical_uuid, collision.row_a, collision.row_b;
+  END LOOP;
+
+  FOR collision IN
+    SELECT user_id,
+           (analysis_id)::uuid AS canonical_uuid,
+           array_agg(DISTINCT tax_year ORDER BY tax_year) AS years
+    FROM public.year_close_packet_snapshots
+    WHERE analysis_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+      AND paid_at IS NOT NULL
+    GROUP BY user_id, (analysis_id)::uuid
+    HAVING count(*) > 1
+       AND count(DISTINCT tax_year) > 1
+  LOOP
+    RAISE EXCEPTION
+      'two paid packet snapshots for one analysis UUID in different tax years user=% canonical=% years=%',
+      collision.user_id, collision.canonical_uuid, collision.years;
+  END LOOP;
+
+  FOR collision IN
+    SELECT user_id,
+           (analysis_id)::uuid AS canonical_uuid,
+           tax_year,
+           array_agg(DISTINCT COALESCE(packet_session_id, '') ORDER BY COALESCE(packet_session_id, '')) AS sessions
+    FROM public.year_close_packet_snapshots
+    WHERE analysis_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+      AND paid_at IS NOT NULL
+    GROUP BY user_id, (analysis_id)::uuid, tax_year
+    HAVING count(DISTINCT COALESCE(packet_session_id, '')) > 1
+  LOOP
+    RAISE EXCEPTION
+      'two paid packet snapshots for one analysis UUID in the same tax year with different checkout sessions user=% canonical=% year=% sessions=%',
+      collision.user_id, collision.canonical_uuid, collision.tax_year, collision.sessions;
+  END LOOP;
+END $$;
+
+-- Paid beats unpaid. Same-year same-session duplicates keep one row.
+-- Keeper: a paid row, then latest updated_at, then latest created_at, then
+-- the lexicographically greatest original analysis_id.
+DELETE FROM public.year_close_packet_snapshots AS loser
+WHERE loser.ctid IN (
+  SELECT ranked.ctid
+  FROM (
+    SELECT
+      snap.ctid,
+      row_number() OVER (
+        PARTITION BY snap.user_id, (snap.analysis_id)::uuid
+        ORDER BY
+          (snap.paid_at IS NOT NULL) DESC,
+          snap.updated_at DESC NULLS LAST,
+          snap.created_at DESC NULLS LAST,
+          snap.analysis_id DESC
+      ) AS keeper_rank,
+      count(*) OVER (
+        PARTITION BY snap.user_id, (snap.analysis_id)::uuid
+      ) AS group_size
+    FROM public.year_close_packet_snapshots AS snap
+    WHERE snap.analysis_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+  ) AS ranked
+  WHERE ranked.group_size > 1
+    AND ranked.keeper_rank > 1
+);
+
+UPDATE public.year_close_packet_snapshots
+SET analysis_id = (analysis_id)::uuid::text
+WHERE analysis_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+  AND analysis_id IS DISTINCT FROM (analysis_id)::uuid::text;
+
+UPDATE public.year_close_packet_entitlements
+SET analysis_id = (analysis_id)::uuid::text
+WHERE analysis_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+  AND analysis_id IS DISTINCT FROM (analysis_id)::uuid::text;
+
+UPDATE public.portfolio_activity_books
+SET analysis_id = (analysis_id)::uuid::text
+WHERE analysis_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+  AND analysis_id IS DISTINCT FROM (analysis_id)::uuid::text;
+
+UPDATE public.portfolio_analyses
+SET result = jsonb_set(
+  result,
+  '{analysis_id}',
+  to_jsonb((result->>'analysis_id')::uuid::text)
+)
+WHERE COALESCE(result->>'analysis_id', '') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+  AND (result->>'analysis_id') IS DISTINCT FROM (result->>'analysis_id')::uuid::text;
 
 -- Record a legacy primary key, then move the row onto its embedded UUID when
 -- that UUID is free and this user has exactly one row for it. Non-UUID
@@ -126,11 +239,12 @@ END $$;
 
 -- 006 clears snapshots keyed by the deleted row id and its embedded analysis
 -- id. After a rewrite those snapshots may still be keyed by the legacy row id.
--- UUID-shaped snapshot keys match in any letter case. Other ids stay exact so
--- distinct non-UUID strings are not collapsed. Alias rows are removed after
+-- Application writes are canonical. The case-insensitive UUID arm covers a
+-- mixed-case snapshot from the old server during deploy. Other ids stay exact
+-- so distinct non-UUID strings are not collapsed. Alias rows are removed after
 -- they have been copied into cleanup_ids, so a later insert that reuses the
 -- canonical UUID cannot resolve the old legacy id. Entitlement analysis_id
--- values are left unchanged.
+-- values are rewritten to canonical text above and are not deleted here.
 CREATE OR REPLACE FUNCTION public.clear_packet_payload_after_analysis_delete()
 RETURNS trigger
 LANGUAGE plpgsql

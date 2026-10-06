@@ -161,15 +161,39 @@ def _canonical_analysis_uuid(value) -> Optional[str]:
         return None
 
 
+def _canonical_analysis_id(value) -> Optional[str]:
+    """Canonical analysis id for writes and for exact reads.
+
+    A UUID becomes ``str(uuid.UUID(text))``: lowercase and hyphenated.
+    ``uuid.UUID`` leniency is unchanged. Any other non-empty string is
+    returned stripped and is not casefolded, so ``local-analysis`` and
+    distinct test ids stay distinct. Non-strings and blank strings are None.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    parsed = _canonical_analysis_uuid(text)
+    if parsed is not None:
+        return parsed
+    return text
+
+
+class _SnapshotReadOutage(Exception):
+    """A snapshot or entitlement read failed. Callers must not treat it as a miss."""
+
+
 def _history_result_for_insert(
     result_data: Optional[dict],
 ) -> tuple[Optional[dict], Optional[str]]:
     """Copy result JSON and choose the row id. Does not mutate result_data.
 
-    A UUID analysis_id becomes the primary key in its parsed form. The result
-    JSON keeps the caller's exact analysis_id text. A missing id is generated
-    once and written into both fields. Any other embedded id stays in JSON
-    only, because portfolio_analyses.id is a UUID column.
+    A UUID analysis_id is stored in lowercase canonical form on both the
+    primary key and the result JSON. A missing id is generated once and
+    written into both fields. Any other embedded id is stripped, not
+    casefolded, and stays in JSON only, because portfolio_analyses.id is a
+    UUID column.
     """
     if not isinstance(result_data, dict):
         return result_data, None
@@ -179,8 +203,11 @@ def _history_result_for_insert(
         canonical = str(uuid.uuid4())
         copied["analysis_id"] = canonical
         return copied, canonical
-    canonical = _canonical_analysis_uuid(raw)
+    canonical = _canonical_analysis_id(raw) if isinstance(raw, str) else None
     if canonical is None:
+        return copied, None
+    copied["analysis_id"] = canonical
+    if _canonical_analysis_uuid(canonical) is None:
         return copied, None
     return copied, canonical
 
@@ -231,28 +258,49 @@ def _stored_row_matches_uuid(row, user_id: str, canonical: str) -> bool:
     return row_id == canonical or embedded == canonical
 
 
+def _query_embedded_analysis_id(client, user_id: str, operator: str, canonical: str):
+    return (
+        client.table("portfolio_analyses")
+        .select("id, user_id, result")
+        .eq("user_id", user_id)
+        .filter("result->>analysis_id", operator, canonical)
+        .limit(1)
+        .execute()
+    )
+
+
 def _user_has_case_insensitive_embedded_id(
     client,
     user_id: str,
     canonical: str,
 ) -> Optional[bool]:
-    """Whether this user already stored this UUID in any letter case.
+    """Whether this user already stored this UUID.
 
-    None means the lookup failed. The unique index is case-sensitive, so a
-    different spelling of the same UUID would otherwise insert a second row.
+    Exact match first. A case-insensitive read runs only when that misses, so
+    an unmigrated uppercase JSON id still blocks a second insert. None means
+    the lookup failed, including a failed fallback. The unique index is
+    case-sensitive, so a different spelling would otherwise insert a second row.
     """
     try:
-        result = (
-            client.table("portfolio_analyses")
-            .select("id, user_id, result")
-            .eq("user_id", user_id)
-            .filter("result->>analysis_id", "ilike", canonical)
-            .limit(1)
-            .execute()
-        )
+        result = _query_embedded_analysis_id(client, user_id, "eq", canonical)
     except Exception as exc:
         logger.error(
             "Could not compare analysis id case for user %s: %s",
+            user_id,
+            exc,
+        )
+        return None
+    data = getattr(result, "data", None)
+    if isinstance(data, list) and data:
+        return _stored_row_matches_uuid(data[0], user_id, canonical)
+    if _canonical_analysis_uuid(canonical) is None:
+        return False
+    # TODO(remove after 012 applied): legacy mixed-case embedded analysis_id.
+    try:
+        result = _query_embedded_analysis_id(client, user_id, "ilike", canonical)
+    except Exception as exc:
+        logger.error(
+            "Could not compare legacy analysis id case for user %s: %s",
             user_id,
             exc,
         )
@@ -275,9 +323,10 @@ def save_analysis_history(
     Also persists the full analysis result (positions, suggestions, etc.)
     so that past reports can be re-loaded from the history sidebar.
 
-    When the result carries a UUID analysis_id, the parsed value is the row id.
-    The result JSON keeps the caller's exact text. The same UUID in another
-    letter case is the same analysis for this user. The primary key is global,
+    When the result carries a UUID analysis_id, the canonical value is the row
+    id and the result JSON. The same UUID in another letter case is the same
+    analysis for this user. Non-UUID ids are stripped, not casefolded. The
+    primary key is global,
     while the embedded id is unique per user. If another user already owns
     that primary key, the insert is retried without an id so the database
     assigns one. Summary-only inserts leave the database default in place.
@@ -497,21 +546,33 @@ def _fetch_analysis_by_primary_key(client, analysis_id: str, user_id: str, colum
 def _fetch_analysis_by_embedded_id(client, analysis_id: str, user_id: str, columns: str):
     """Find a row by result.analysis_id.
 
-    UUID-shaped values match in any letter case, the same way the insert
-    pre-check does. The stored text is left as the caller sent it. Any other
-    embedded id stays case-sensitive so distinct non-UUID strings do not collapse.
+    UUID ids use an exact match on the canonical text. A case-insensitive
+    read runs only when that misses, so an unmigrated uppercase JSON id is
+    still found. A failed fallback is an outage, not a miss. Non-UUID ids
+    stay an exact contains match and are not casefolded.
     """
-    query = (
-        client.table("portfolio_analyses")
-        .select(columns)
-        .eq("user_id", user_id)
+    canonical = _canonical_analysis_id(analysis_id) or analysis_id
+
+    def _run(match):
+        query = (
+            client.table("portfolio_analyses")
+            .select(columns)
+            .eq("user_id", user_id)
+        )
+        query = match(query)
+        return query.order("uploaded_at", desc=True).limit(1).execute()
+
+    if _canonical_analysis_uuid(canonical) is None:
+        return _run(lambda query: query.contains("result", {"analysis_id": canonical}))
+    exact = _run(
+        lambda query: query.filter("result->>analysis_id", "eq", canonical)
     )
-    canonical = _canonical_analysis_uuid(analysis_id)
-    if canonical is not None:
-        query = query.filter("result->>analysis_id", "ilike", canonical)
-    else:
-        query = query.contains("result", {"analysis_id": analysis_id})
-    return query.order("uploaded_at", desc=True).limit(1).execute()
+    if getattr(exact, "data", None):
+        return exact
+    # TODO(remove after 012 applied): legacy mixed-case embedded analysis_id.
+    return _run(
+        lambda query: query.filter("result->>analysis_id", "ilike", canonical)
+    )
 
 
 def _fetch_analysis_alias(client, analysis_id: str, user_id: str):
@@ -542,8 +603,10 @@ def _resolve_owned_analysis(
     012 does not fail the request and a schema or network error does not look
     like a missing analysis.
     """
-    if not analysis_id or not user_id or client is None:
+    canonical_id = _canonical_analysis_id(analysis_id)
+    if not canonical_id or not user_id or client is None:
         return None, False
+    analysis_id = canonical_id
     columns = _ANALYSIS_ROW_COLUMNS if full else _ANALYSIS_LOOKUP_COLUMNS
 
     def failed(exc: Exception, label: str) -> tuple[Optional[dict], bool]:
@@ -803,6 +866,7 @@ def list_legacy_alias_ids(
     a PostgREST schema-cache miss still has the rows, and forgetting nothing
     would leave the rewritten analysis reachable by its old id.
     """
+    canonical_analysis_id = _canonical_analysis_id(canonical_analysis_id) or ""
     if not canonical_analysis_id or not user_id:
         return []
     client = get_supabase()
@@ -851,8 +915,9 @@ def delete_analysis_by_id(analysis_id: str, user_id: str) -> bool:
     Filters by user_id to enforce ownership so that users can only
     delete their own records. Returns True if a row was deleted.
     """
+    analysis_id = _canonical_analysis_id(analysis_id) or ""
     client = get_supabase()
-    if client is None:
+    if client is None or not analysis_id:
         return False
 
     try:
@@ -1109,6 +1174,7 @@ def upsert_activity_book(
     client=None,
 ) -> Optional[dict]:
     """Store the full in-memory trade list for this account. Best-effort."""
+    analysis_id = _canonical_analysis_id(analysis_id) or ""
     if not user_id or not analysis_id:
         return None
     if client is None:
@@ -1308,6 +1374,7 @@ def save_packet_entitlement(
     analysis in that paid year gets its own snapshot and must not rewrite the
     original analysis id, or Stripe metadata checks 503.
     """
+    analysis_id = _canonical_analysis_id(analysis_id) or ""
     if not analysis_id or not user_id or tax_year is None or not session_id.startswith("cs_"):
         return None
     if client is None:
@@ -1375,16 +1442,63 @@ def get_packet_grant_for_tax_year(
     )
 
 
-def _match_snapshot_analysis_id(query, analysis_id: str):
-    """Match a snapshot key. UUID spellings compare case-insensitively.
+def _load_analysis_id_rows(
+    client,
+    table: str,
+    analysis_id: str,
+    user_id: str,
+    columns: str,
+    *,
+    refine=None,
+) -> tuple[list[dict], bool]:
+    """Exact ``analysis_id`` read, then a temporary UUID case fallback.
 
-    The stored analysis_id text is not rewritten. Non-UUID keys stay an exact
-    match so distinct strings are not collapsed.
+    The second value is False on outage, including a failed fallback. An empty
+    list with True is a real miss. Non-UUID ids never casefold.
     """
-    canonical = _canonical_analysis_uuid(analysis_id)
-    if canonical is not None:
-        return query.filter("analysis_id", "ilike", canonical)
-    return query.eq("analysis_id", analysis_id)
+    canonical = _canonical_analysis_id(analysis_id)
+    if not canonical or not user_id or client is None:
+        return [], False
+
+    def _execute(match):
+        query = client.table(table).select(columns)
+        query = match(query)
+        query = query.eq("user_id", user_id)
+        if refine is not None:
+            query = refine(query)
+        return query.execute()
+
+    try:
+        exact = _execute(lambda query: query.eq("analysis_id", canonical))
+    except Exception as exc:
+        logger.error("Failed to read %s for %s: %s", table, canonical, exc)
+        return [], False
+    rows = [
+        dict(row)
+        for row in (getattr(exact, "data", None) or [])
+        if isinstance(row, dict)
+    ]
+    if rows or _canonical_analysis_uuid(canonical) is None:
+        return rows, True
+    # TODO(remove after 012 applied): legacy mixed-case UUID analysis_id.
+    try:
+        legacy = _execute(
+            lambda query: query.filter("analysis_id", "ilike", canonical)
+        )
+    except Exception as exc:
+        logger.error(
+            "Failed legacy case read of %s for %s: %s",
+            table,
+            canonical,
+            exc,
+        )
+        return [], False
+    rows = [
+        dict(row)
+        for row in (getattr(legacy, "data", None) or [])
+        if isinstance(row, dict)
+    ]
+    return rows, True
 
 
 def _order_snapshot_candidates(query):
@@ -1426,6 +1540,7 @@ def save_packet_snapshot(
     client=None,
 ) -> Optional[dict]:
     """Persist a private packet snapshot separately from user history."""
+    analysis_id = _canonical_analysis_id(analysis_id) or ""
     if not analysis_id or not user_id or tax_year is None:
         return None
     if client is None:
@@ -1441,18 +1556,35 @@ def save_packet_snapshot(
         "analysis_id, user_id, tax_year, packet_payload, packet_session_id, paid_at, expires_at"
     )
 
+    def _snapshot_rows(*, tax_year_filter=None, limit=None):
+        def refine(query):
+            if tax_year_filter is not None:
+                query = query.eq("tax_year", int(tax_year_filter))
+            query = _order_snapshot_candidates(query)
+            if limit is not None:
+                query = query.limit(limit)
+            return query
+
+        rows, ok = _load_analysis_id_rows(
+            client,
+            "year_close_packet_snapshots",
+            analysis_id,
+            user_id,
+            snapshot_columns,
+            refine=refine,
+        )
+        if not ok:
+            raise _SnapshotReadOutage()
+        return rows
+
     def read_year_scoped():
-        result = _order_snapshot_candidates(
-            _match_snapshot_analysis_id(
-                client.table("year_close_packet_snapshots").select(snapshot_columns),
-                analysis_id,
-            ).eq("user_id", user_id).eq("tax_year", int(tax_year))
-        ).limit(1).execute()
-        return dict(result.data[0]) if result.data else None
+        rows = _snapshot_rows(tax_year_filter=tax_year, limit=1)
+        return rows[0] if rows else None
 
     def read_exact_key():
-        # The primary key is (user_id, analysis_id). This spelling's row can
-        # sit in another tax year. Do not ilike + limit 1 here.
+        # The primary key is (user_id, canonical analysis_id). This row can
+        # sit in another tax year. Exact eq only; the legacy spelling scan
+        # is separate and has no limit.
         result = (
             client.table("year_close_packet_snapshots")
             .select(snapshot_columns)
@@ -1463,41 +1595,39 @@ def save_packet_snapshot(
         )
         return dict(result.data[0]) if result.data else None
 
+    def read_legacy_other_spelling():
+        """Legacy UUID spelling left by the pre-012 deploy window.
+
+        Called only when the canonical key missed. No tax_year filter and no
+        limit, so a paid uppercase row in another year cannot hide. A failed
+        read is an outage and does not insert. A paid other year conflicts.
+        Any other legacy row is updated in place. The stored key is not rewritten.
+
+        # TODO(remove after 012 applied)
+        """
+        if _canonical_analysis_uuid(analysis_id) is None:
+            return None
+        for row in _snapshot_rows():
+            if str(row.get("analysis_id") or "") == analysis_id:
+                continue
+            if row.get("paid_at"):
+                try:
+                    stored_year = int(row.get("tax_year"))
+                except (TypeError, ValueError):
+                    continue
+                if stored_year != int(tax_year):
+                    year_conflict(row)
+            return row
+        return None
+
     def read_existing():
         scoped = read_year_scoped()
         if scoped is not None:
             return scoped
-        return read_exact_key()
-
-    def read_paid_other_spelling():
-        """Paid row under another UUID spelling and another tax year.
-
-        Called only when this spelling has no row, immediately before INSERT.
-        No tax_year filter and no limit, so a paid case-variant in another
-        year cannot hide behind limit 1. A failed read is an outage: the
-        caller returns None and does not insert. This does not rewrite the
-        other row's analysis_id.
-        """
-        result = _order_snapshot_candidates(
-            _match_snapshot_analysis_id(
-                client.table("year_close_packet_snapshots").select(snapshot_columns),
-                analysis_id,
-            ).eq("user_id", user_id)
-        ).execute()
-        for raw in result.data or []:
-            if not isinstance(raw, dict):
-                continue
-            row = dict(raw)
-            if not row.get("paid_at"):
-                continue
-            if str(row.get("analysis_id") or "") == analysis_id:
-                continue
-            try:
-                stored_year = int(row.get("tax_year"))
-            except (TypeError, ValueError):
-                continue
-            if stored_year != int(tax_year):
-                year_conflict(row)
+        exact = read_exact_key()
+        if exact is not None:
+            return exact
+        return read_legacy_other_spelling()
 
     def year_conflict(row):
         raise PacketSnapshotYearConflict(
@@ -1627,11 +1757,8 @@ def save_packet_snapshot(
                 return result_row(result, latest_row)
             return None
 
-        # No row for this spelling. Refuse a second spelling when another
-        # case of this UUID is already paid for a different tax year.
-        read_paid_other_spelling()
-
-        # INSERT preserves any row created by a concurrent webhook/checkout;
+        # No canonical row and no legacy spelling. INSERT preserves any row
+        # created by a concurrent webhook/checkout;
         # unlike UPSERT it can never replace a just-paid snapshot.
         result = (
             client.table("year_close_packet_snapshots")
@@ -1664,6 +1791,8 @@ def save_packet_snapshot(
         return result_row(None, latest_row)
     except PacketSnapshotYearConflict:
         raise
+    except _SnapshotReadOutage:
+        return None
     except Exception as e:
         logger.error("Failed to save packet snapshot for %s: %s", analysis_id, e)
         # A uniqueness conflict means another request created the row. Treat
@@ -1737,6 +1866,7 @@ def get_packet_snapshot(
     the caller knows the year, the read stays inside that year and still
     prefers a paid row, then the latest expiry.
     """
+    analysis_id = _canonical_analysis_id(analysis_id) or ""
     if not analysis_id or not user_id:
         return None, False
     if client is None:
@@ -1744,24 +1874,28 @@ def get_packet_snapshot(
     if client is None:
         return None, False
     _cleanup_expired_packet_snapshots(client)
-    try:
-        query = _match_snapshot_analysis_id(
-            client.table("year_close_packet_snapshots")
-            .select("analysis_id, user_id, tax_year, packet_payload, packet_session_id, paid_at, expires_at"),
-            analysis_id,
-        ).eq("user_id", user_id)
+
+    def refine(query):
         if tax_year is not None:
             query = query.eq("tax_year", int(tax_year))
-        result = _order_snapshot_candidates(query).limit(1).execute()
-        if not result.data:
-            return None, True
-        snapshot = dict(result.data[0])
-        if not _packet_snapshot_is_current(snapshot):
-            return None, True
-        return snapshot, True
-    except Exception as e:
-        logger.error("Failed to load packet snapshot for %s: %s", analysis_id, e)
+        return _order_snapshot_candidates(query).limit(1)
+
+    rows, ok = _load_analysis_id_rows(
+        client,
+        "year_close_packet_snapshots",
+        analysis_id,
+        user_id,
+        "analysis_id, user_id, tax_year, packet_payload, packet_session_id, paid_at, expires_at",
+        refine=refine,
+    )
+    if not ok:
         return None, False
+    if not rows:
+        return None, True
+    snapshot = rows[0]
+    if not _packet_snapshot_is_current(snapshot):
+        return None, True
+    return snapshot, True
 
 
 def list_packet_snapshots_for_identity(
@@ -1775,6 +1909,7 @@ def list_packet_snapshots_for_identity(
     unpaid rows are dropped. The second value is False on outage, including
     when no client is available. An empty list with True is a real miss.
     """
+    analysis_id = _canonical_analysis_id(analysis_id) or ""
     if not analysis_id or not user_id:
         return [], False
     if client is None:
@@ -1782,25 +1917,17 @@ def list_packet_snapshots_for_identity(
     if client is None:
         return [], False
     _cleanup_expired_packet_snapshots(client)
-    try:
-        result = _order_snapshot_candidates(
-            _match_snapshot_analysis_id(
-                client.table("year_close_packet_snapshots")
-                .select(
-                    "analysis_id, user_id, tax_year, packet_payload, "
-                    "packet_session_id, paid_at, expires_at"
-                ),
-                analysis_id,
-            ).eq("user_id", user_id)
-        ).execute()
-        rows = []
-        for row in result.data or []:
-            if isinstance(row, dict) and _packet_snapshot_is_current(row):
-                rows.append(dict(row))
-        return rows, True
-    except Exception as e:
-        logger.error("Failed to list packet snapshots for %s: %s", analysis_id, e)
+    rows, ok = _load_analysis_id_rows(
+        client,
+        "year_close_packet_snapshots",
+        analysis_id,
+        user_id,
+        "analysis_id, user_id, tax_year, packet_payload, packet_session_id, paid_at, expires_at",
+        refine=_order_snapshot_candidates,
+    )
+    if not ok:
         return [], False
+    return [row for row in rows if _packet_snapshot_is_current(row)], True
 
 
 def lookup_packet_entitlements_for_analysis(
@@ -1812,28 +1939,28 @@ def lookup_packet_entitlements_for_analysis(
 
     Does not choose a tax year. The second value is False on outage.
     """
+    analysis_id = _canonical_analysis_id(analysis_id) or ""
     if not user_id or not analysis_id:
         return [], False
     if client is None:
         client = get_supabase()
     if client is None:
         return [], False
-    try:
-        result = _match_snapshot_analysis_id(
-            client.table("year_close_packet_entitlements")
-            .select("analysis_id, packet_session_id, tax_year")
-            .eq("user_id", user_id),
-            analysis_id,
-        ).execute()
-        rows = []
-        for row in result.data or []:
-            session_id = row.get("packet_session_id") if isinstance(row, dict) else None
-            if isinstance(session_id, str) and session_id.startswith("cs_"):
-                rows.append(dict(row))
-        return rows, True
-    except Exception as e:
-        logger.error("Failed to list packet entitlements for %s: %s", analysis_id, e)
+    rows, ok = _load_analysis_id_rows(
+        client,
+        "year_close_packet_entitlements",
+        analysis_id,
+        user_id,
+        "analysis_id, packet_session_id, tax_year",
+    )
+    if not ok:
         return [], False
+    kept = []
+    for row in rows:
+        session_id = row.get("packet_session_id")
+        if isinstance(session_id, str) and session_id.startswith("cs_"):
+            kept.append(row)
+    return kept, True
 
 
 def mark_packet_snapshot_paid(
@@ -1844,6 +1971,7 @@ def mark_packet_snapshot_paid(
     client=None,
 ) -> Optional[bool]:
     """Mark an existing owner-scoped snapshot as paid for a settled session."""
+    analysis_id = _canonical_analysis_id(analysis_id) or ""
     if not analysis_id or not user_id or tax_year is None or not session_id:
         return False
     if client is None:
@@ -1853,16 +1981,21 @@ def mark_packet_snapshot_paid(
     _cleanup_expired_packet_snapshots(client)
     now = datetime.now(timezone.utc)
     try:
-        existing = _order_snapshot_candidates(
-            _match_snapshot_analysis_id(
-                client.table("year_close_packet_snapshots")
-                .select("analysis_id, user_id, tax_year, paid_at"),
-                analysis_id,
-            ).eq("user_id", user_id).eq("tax_year", int(tax_year))
-        ).limit(1).execute()
-        if not existing.data:
+        rows, ok = _load_analysis_id_rows(
+            client,
+            "year_close_packet_snapshots",
+            analysis_id,
+            user_id,
+            "analysis_id, user_id, tax_year, paid_at",
+            refine=lambda query: _order_snapshot_candidates(
+                query.eq("tax_year", int(tax_year))
+            ).limit(1),
+        )
+        if not ok:
+            return None
+        if not rows:
             return False
-        existing_row = dict(existing.data[0])
+        existing_row = rows[0]
         stored_analysis_id = existing_row.get("analysis_id")
         if not stored_analysis_id:
             return False
@@ -1904,6 +2037,7 @@ def patch_analysis_result(
     Portfolio history row IDs predate the analysis IDs embedded in result JSON,
     so locate legacy rows by either identity while always filtering by owner.
     """
+    analysis_id = _canonical_analysis_id(analysis_id) or ""
     if not analysis_id or not user_id or not patch:
         return False
     client = get_supabase()

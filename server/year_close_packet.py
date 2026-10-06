@@ -18,6 +18,8 @@ from datetime import date, datetime
 from io import BytesIO
 from typing import Any, Optional
 
+from db import _canonical_analysis_id
+
 logger = logging.getLogger(__name__)
 
 PACKET_AMOUNT_CENTS = 4900
@@ -916,7 +918,17 @@ def _payload_preserving_harvest(
     return merged
 
 
+def _packet_store_id(analysis_id: str) -> str:
+    """PACKET_STORE key. UUIDs are canonical; other ids are stripped only."""
+    if not isinstance(analysis_id, str):
+        return ""
+    return _canonical_analysis_id(analysis_id) or ""
+
+
 def remember_analysis(analysis_id: str, user_id: str, analysis: dict[str, Any]) -> None:
+    analysis_id = _packet_store_id(analysis_id)
+    if not analysis_id:
+        return
     existing = PACKET_STORE.get(analysis_id) or {}
     if existing and not _same_packet_owner(existing.get("user_id"), user_id):
         logger.warning("Refusing to replace packet snapshot owned by another user")
@@ -940,6 +952,7 @@ def remember_analysis(analysis_id: str, user_id: str, analysis: dict[str, Any]) 
 
 
 def upsert_payload(analysis_id: str, user_id: str, analysis: dict[str, Any] | None) -> dict[str, Any]:
+    analysis_id = _packet_store_id(analysis_id)
     rec = PACKET_STORE.get(analysis_id)
     if rec and not _same_packet_owner(rec.get("user_id"), user_id):
         logger.warning("Refusing to reuse packet snapshot owned by another user")
@@ -975,6 +988,7 @@ def upsert_packet_payload(
     payload: dict[str, Any],
 ) -> bool:
     """Cache a packet built from server-owned data without rebuilding client JSON."""
+    analysis_id = _packet_store_id(analysis_id)
     if not analysis_id or not user_id or not isinstance(payload, dict):
         return False
     rec = PACKET_STORE.get(analysis_id)
@@ -999,12 +1013,14 @@ def packet_store_belongs_to_user(analysis_id: str, user_id: str) -> bool:
     A blank guest row is not this caller's document. Checkout may still adopt
     it after claimable_guest_packet_payload matches.
     """
+    analysis_id = _packet_store_id(analysis_id)
     rec = PACKET_STORE.get(analysis_id)
     return rec is None or _same_packet_owner(rec.get("user_id"), user_id)
 
 
 def packet_store_owner(analysis_id: str) -> str | None:
     """Return the cached record owner; an empty string denotes guest state."""
+    analysis_id = _packet_store_id(analysis_id)
     rec = PACKET_STORE.get(analysis_id)
     if rec is None:
         return None
@@ -1041,6 +1057,7 @@ def claimable_guest_packet_payload(
     analysis: dict[str, Any],
 ) -> dict[str, Any] | None:
     """Return an exact server snapshot match without transferring its owner yet."""
+    analysis_id = _packet_store_id(analysis_id)
     if not analysis_id or not user_id or not isinstance(analysis, dict):
         return None
     record = PACKET_STORE.get(analysis_id)
@@ -1062,6 +1079,7 @@ def claimable_guest_packet_payload(
 
 def adopt_guest_packet(analysis_id: str, user_id: str, payload: dict[str, Any]) -> bool:
     """Transfer a blank-owner snapshot only when payload is the exact stored document."""
+    analysis_id = _packet_store_id(analysis_id)
     if not analysis_id or not user_id or not isinstance(payload, dict):
         return False
     record = PACKET_STORE.get(analysis_id)
@@ -1078,7 +1096,8 @@ def adopt_guest_packet(analysis_id: str, user_id: str, payload: dict[str, Any]) 
 
 
 def mark_paid(analysis_id: str, session_id: str, user_id: str = "") -> bool:
-    if not user_id:
+    analysis_id = _packet_store_id(analysis_id)
+    if not analysis_id or not user_id:
         return False
     rec = PACKET_STORE.get(analysis_id)
     if rec is None:
@@ -1100,6 +1119,7 @@ def mark_paid(analysis_id: str, session_id: str, user_id: str = "") -> bool:
 
 
 def is_packet_paid(analysis_id: str, user_id: str | None = None) -> bool:
+    analysis_id = _packet_store_id(analysis_id)
     purge_packet_store()
     rec = PACKET_STORE.get(analysis_id)
     if not rec or not rec.get("paid"):
@@ -1141,6 +1161,7 @@ def paid_session_for_user_year(user_id: str, tax_year: int | None = None) -> str
 
 
 def get_payload(analysis_id: str) -> dict[str, Any] | None:
+    analysis_id = _packet_store_id(analysis_id)
     purge_packet_store()
     rec = PACKET_STORE.get(analysis_id)
     if not rec:
@@ -1156,6 +1177,8 @@ def copy_packet_payload_to_id(
     analysis: dict[str, Any] | None = None,
 ) -> bool:
     """Copy an owner-validated local snapshot onto a fresh canonical ID."""
+    source_analysis_id = _packet_store_id(source_analysis_id)
+    target_analysis_id = _packet_store_id(target_analysis_id)
     if not source_analysis_id or not target_analysis_id or not user_id:
         return False
     source = PACKET_STORE.get(source_analysis_id)
@@ -1195,6 +1218,7 @@ def copy_packet_payload_to_id(
 
 def forget_packet_payload(analysis_id: str, user_id: str) -> bool:
     """Erase private in-memory packet data while retaining any paid year grant."""
+    analysis_id = _packet_store_id(analysis_id)
     record = PACKET_STORE.get(analysis_id)
     if not record or record.get("user_id") != user_id:
         return False
@@ -1340,8 +1364,11 @@ def packet_analysis_id_from_session(session: Any, *fallbacks: str) -> str:
     ]
     for value in candidates:
         text = str(value or "").strip()
-        if text:
-            return text
+        if not text:
+            continue
+        canonical = _canonical_analysis_id(text)
+        if canonical:
+            return canonical
     return ""
 
 

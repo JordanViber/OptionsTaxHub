@@ -772,12 +772,39 @@ def test_migration_012_locks_analyses_before_embedded_snapshot():
     lock = sql.find(
         "LOCK TABLE public.portfolio_analyses IN SHARE ROW EXCLUSIVE MODE;"
     )
+    snapshot_lock = sql.find(
+        "LOCK TABLE public.year_close_packet_snapshots IN SHARE ROW EXCLUSIVE MODE;"
+    )
+    entitlement_lock = sql.find(
+        "LOCK TABLE public.year_close_packet_entitlements IN SHARE ROW EXCLUSIVE MODE;"
+    )
+    activity_lock = sql.find(
+        "LOCK TABLE public.portfolio_activity_books IN SHARE ROW EXCLUSIVE MODE;"
+    )
+    canonical_update = sql.find(
+        "UPDATE public.year_close_packet_snapshots\nSET analysis_id = (analysis_id)::uuid::text"
+    )
     snapshot = sql.find("CREATE TEMP TABLE portfolio_analysis_embedded_snapshot")
     assert begin != -1
     assert lock != -1
+    assert snapshot_lock != -1
+    assert entitlement_lock != -1
+    assert activity_lock != -1
+    assert canonical_update != -1
     assert snapshot != -1
     assert begin < lock < snapshot
+    assert begin < snapshot_lock < entitlement_lock < activity_lock < canonical_update
     assert sql.strip().endswith("COMMIT;")
+    assert not re.search(
+        r"create\s+unique\s+index[\s\S]{0,240}lower\s*\(\s*analysis_id",
+        sql,
+        re.I,
+    )
+    assert not re.search(
+        r"create\s+unique\s+index[\s\S]{0,240}lower\s*\(\s*result",
+        sql,
+        re.I,
+    )
 
 
 def test_migration_012_unifies_ids_and_backfills_entitlements(postgres):
@@ -1060,6 +1087,183 @@ def test_migration_012_unifies_ids_and_backfills_entitlements(postgres):
             WHERE user_id = 'paid-user' AND packet_session_id = 'cs_non_uuid_case'
             """
         ).fetchone() == ("Not-A-Uuid", "true", True)
+    finally:
+        conn.close()
+
+
+def _psql(database_url: str, sql: str) -> tuple[int, str]:
+    completed = subprocess.run(
+        ["psql", database_url, "-v", "ON_ERROR_STOP=1"],
+        input=sql,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    return completed.returncode, f"{completed.stdout}\n{completed.stderr}"
+
+
+def test_migration_012_collapses_snapshot_case_and_raises_on_two_paid_years(postgres):
+    url, conn = postgres("oth_jor36_canon_collapse")
+    migration = (SERVER_DIR / "migrations" / "012_unify_analysis_identity.sql").read_text()
+    paid_mix = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    unpaid_pair = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+    entitlement_id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+    book_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+    history_id = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+    raise_years = "ffffffff-ffff-4fff-8fff-ffffffffffff"
+    raise_sessions = "abababab-abab-4aba-8aba-abababababab"
+    hist_a = "12121212-1212-4121-8121-121212121212"
+    hist_b = "34343434-3434-4343-8343-343434343434"
+    hist_shared = "cdcdcdcd-cdcd-4cdc-8cdc-cdcdcdcdcdcd"
+    try:
+        _apply_migrations(url)
+
+        conn.execute(
+            """
+            INSERT INTO year_close_packet_snapshots (
+              analysis_id, user_id, tax_year, packet_payload, packet_session_id, paid_at
+            ) VALUES
+              (%s, 'raise-user', 2025, '{"y":2025}'::jsonb, 'cs_year_a', now()),
+              (%s, 'raise-user', 2026, '{"y":2026}'::jsonb, 'cs_year_b', now())
+            """,
+            (raise_years.upper(), raise_years),
+        )
+        code, output = _psql(url, migration)
+        assert code != 0
+        assert "two paid packet snapshots for one analysis UUID in different tax years" in output
+        spellings = conn.execute(
+            """
+            SELECT analysis_id, tax_year
+            FROM year_close_packet_snapshots
+            WHERE user_id = 'raise-user'
+            ORDER BY tax_year
+            """
+        ).fetchall()
+        assert spellings == [(raise_years.upper(), 2025), (raise_years, 2026)]
+        conn.execute("DELETE FROM year_close_packet_snapshots WHERE user_id = 'raise-user'")
+
+        conn.execute(
+            """
+            INSERT INTO year_close_packet_snapshots (
+              analysis_id, user_id, tax_year, packet_payload, packet_session_id, paid_at
+            ) VALUES
+              (%s, 'session-user', 2025, '{}'::jsonb, 'cs_one', now()),
+              (%s, 'session-user', 2025, '{}'::jsonb, 'cs_two', now())
+            """,
+            (raise_sessions.upper(), raise_sessions),
+        )
+        code, output = _psql(url, migration)
+        assert code != 0
+        assert "different checkout sessions" in output
+        assert conn.execute(
+            """
+            SELECT count(*), count(DISTINCT analysis_id)
+            FROM year_close_packet_snapshots
+            WHERE user_id = 'session-user'
+            """
+        ).fetchone() == (2, 2)
+        conn.execute("DELETE FROM year_close_packet_snapshots WHERE user_id = 'session-user'")
+
+        _insert_identity_row(conn, hist_a, "hist-collide", hist_shared.upper())
+        _insert_identity_row(conn, hist_b, "hist-collide", hist_shared)
+        code, output = _psql(url, migration)
+        assert code != 0
+        assert "two portfolio_analyses rows share one analysis UUID" in output
+        remaining = conn.execute(
+            """
+            SELECT id::text FROM portfolio_analyses
+            WHERE user_id = 'hist-collide'
+            ORDER BY id::text
+            """
+        ).fetchall()
+        assert remaining == [(hist_a,), (hist_b,)]
+        conn.execute("DELETE FROM portfolio_analyses WHERE user_id = 'hist-collide'")
+
+        conn.execute(
+            """
+            INSERT INTO year_close_packet_snapshots (
+              analysis_id, user_id, tax_year, packet_payload, packet_session_id,
+              paid_at, updated_at
+            ) VALUES
+              (%s, 'mix-user', 2025, '{"marker":"paid"}'::jsonb, 'cs_paid', now(), now()),
+              (%s, 'mix-user', 2026, '{"marker":"unpaid"}'::jsonb, NULL, NULL, now())
+            """,
+            (paid_mix.upper(), paid_mix),
+        )
+        conn.execute(
+            """
+            INSERT INTO year_close_packet_snapshots (
+              analysis_id, user_id, tax_year, packet_payload, paid_at, updated_at
+            ) VALUES
+              (%s, 'unpaid-user', 2025, '{"marker":"old"}'::jsonb, NULL, '2020-01-01T00:00:00Z'),
+              (%s, 'unpaid-user', 2025, '{"marker":"new"}'::jsonb, NULL, '2026-06-01T00:00:00Z')
+            """,
+            (unpaid_pair.upper(), unpaid_pair),
+        )
+        conn.execute(
+            """
+            INSERT INTO year_close_packet_entitlements (
+              user_id, tax_year, packet_session_id, analysis_id
+            ) VALUES ('ent-user', 2024, 'cs_ent', %s)
+            """,
+            (entitlement_id.upper(),),
+        )
+        conn.execute(
+            """
+            INSERT INTO portfolio_activity_books (
+              user_id, analysis_id, filename, transactions
+            ) VALUES ('book-user', %s, 'book.csv', '[{"symbol":"AMD"}]'::jsonb)
+            """,
+            (book_id.upper(),),
+        )
+        _insert_identity_row(conn, history_id, "hist-user", history_id.upper())
+
+        code, output = _psql(url, migration)
+        assert code == 0, output
+
+        mixed = conn.execute(
+            """
+            SELECT analysis_id, tax_year, paid_at IS NOT NULL, packet_payload->>'marker'
+            FROM year_close_packet_snapshots
+            WHERE user_id = 'mix-user'
+            """
+        ).fetchall()
+        assert mixed == [(paid_mix, 2025, True, "paid")]
+
+        unpaid = conn.execute(
+            """
+            SELECT analysis_id, packet_payload->>'marker'
+            FROM year_close_packet_snapshots
+            WHERE user_id = 'unpaid-user'
+            """
+        ).fetchall()
+        assert unpaid == [(unpaid_pair, "new")]
+
+        assert conn.execute(
+            """
+            SELECT analysis_id, count(*)
+            FROM year_close_packet_entitlements
+            WHERE user_id = 'ent-user'
+            GROUP BY analysis_id
+            """
+        ).fetchone() == (entitlement_id, 1)
+
+        assert conn.execute(
+            """
+            SELECT analysis_id, transactions
+            FROM portfolio_activity_books
+            WHERE user_id = 'book-user'
+            """
+        ).fetchone()[0] == book_id
+
+        history = conn.execute(
+            """
+            SELECT id::text, result->>'analysis_id'
+            FROM portfolio_analyses
+            WHERE user_id = 'hist-user'
+            """
+        ).fetchone()
+        assert history == (history_id, history_id)
     finally:
         conn.close()
 

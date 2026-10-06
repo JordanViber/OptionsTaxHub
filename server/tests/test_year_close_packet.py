@@ -309,6 +309,12 @@ def _clean_store(monkeypatch):
     monkeypatch.setattr(main, "list_packet_snapshots_for_identity", list_snapshots)
     monkeypatch.setattr(main, "mark_packet_snapshot_paid", mark_snapshot_paid)
     monkeypatch.setattr(main, "lookup_packet_grant_for_tax_year", lambda *_args, **_kwargs: (None, True))
+    def patch_result(analysis_id, user_id, patch):
+        # Year alignment and unlock flags must not depend on a live database
+        # in these tests. Callers that need a failure replace this stub.
+        return True
+
+    monkeypatch.setattr(main, "patch_analysis_result", patch_result)
     monkeypatch.setattr(main, "lookup_analysis_for_entitlement", lookup_analysis)
     monkeypatch.setattr(
         main,
@@ -740,24 +746,11 @@ def test_checkout_accepts_uuid_case_variant_and_keeps_stored_spelling(monkeypatc
     requested = stored.lower()
     payload = {
         **SAMPLE_ANALYSIS,
-        "analysis_id": stored,
+        "analysis_id": requested,
         "tax_profile": {"tax_year": 2025},
     }
     remember_analysis(stored, "test-user-123", payload)
-    monkeypatch.setattr(
-        db,
-        "get_supabase",
-        lambda: _UuidSnapshotClient([{
-            "analysis_id": requested,
-            "user_id": "test-user-123",
-            "tax_year": 2025,
-            "packet_payload": payload,
-            "packet_session_id": None,
-            "paid_at": None,
-            "expires_at": "2099-01-01T00:00:00+00:00",
-        }]),
-    )
-    monkeypatch.setattr(main, "get_packet_snapshot", db.get_packet_snapshot)
+    snapshot_client = _wire_real_snapshot_client(monkeypatch, [])
     monkeypatch.setattr(
         main,
         "lookup_analysis_for_entitlement",
@@ -805,25 +798,26 @@ def test_checkout_accepts_uuid_case_variant_and_keeps_stored_spelling(monkeypatc
     )
 
     assert response.status_code == 200, response.text
-    assert captured["metadata"]["analysis_id"] == stored
-    assert response.json()["analysis_id"] == stored
-    stored_key = main._packet_checkout_idempotency_key("test-user-123", stored, 2025)
-    assert captured["idempotency_key"] == stored_key
-    assert stored_key != main._packet_checkout_idempotency_key(
+    canonical_key = main._packet_checkout_idempotency_key(
         "test-user-123", requested, 2025
     )
+    assert captured["metadata"]["analysis_id"] == requested
+    assert response.json()["analysis_id"] == requested
+    assert captured["idempotency_key"] == canonical_key
 
     replay = client.post(
         "/api/year-close-packet/checkout",
         json={"analysis_id": stored, "analysis": {**SAMPLE_ANALYSIS, "analysis_id": stored}},
     )
     assert replay.status_code == 200, replay.text
-    assert captured_keys == [stored_key, stored_key]
+    assert captured_keys == [canonical_key, canonical_key]
+    assert len(snapshot_client.rows) == 1
+    assert snapshot_client.rows[0]["analysis_id"] == requested
 
     confirm = client.post(
         "/api/year-close-packet/confirm",
         json={
-            "analysis_id": requested,
+            "analysis_id": stored,
             "packet_analysis": requested,
             "session_id": "cs_test_packet_abc",
             "analysis": panel_analysis,
@@ -831,21 +825,23 @@ def test_checkout_accepts_uuid_case_variant_and_keeps_stored_spelling(monkeypatc
     )
     assert confirm.status_code == 200, confirm.text
     assert confirm.json()["paid"] is True
-    assert confirm.json()["analysis_id"] == stored
+    assert confirm.json()["analysis_id"] == requested
+    assert snapshot_client.rows[0]["paid_at"]
+    assert snapshot_client.rows[0]["analysis_id"] == requested
 
-    # The year-scoped row on the real client is still unpaid. Download does
-    # not grant, so it must not serve that payload.
     downloaded = client.post(
         "/api/year-close-packet/download",
         json={
-            "analysis_id": requested,
+            "analysis_id": stored,
             "session_id": "cs_test_packet_abc",
             "analysis": panel_analysis,
         },
     )
-    assert downloaded.status_code == 403, downloaded.text
-    assert downloaded.json()["detail"] == "Year-close packet download requires payment."
-    assert not downloaded.content.startswith(b"%PDF")
+    assert downloaded.status_code == 200, downloaded.text
+    assert downloaded.headers["content-type"] == "application/pdf"
+    assert downloaded.content.startswith(b"%PDF")
+    assert len(snapshot_client.rows) == 1
+    assert snapshot_client.rows[0]["analysis_id"] == requested
 
 
 def test_checkout_claims_guest_snapshot_and_keeps_its_full_payload(monkeypatch):
@@ -1087,86 +1083,69 @@ def test_checkout_retrieves_deleted_document_entitlement_before_reuse(monkeypatc
 
 
 def test_checkout_and_grant_ignore_paid_other_year_case_variant(monkeypatch):
+    """One canonical paid year blocks checkout and a second grant."""
     _test_stripe_env(monkeypatch)
     monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_packet_test_secret")
-    stored = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
-    other = stored.lower()
-    this_payload = {
-        **SAMPLE_ANALYSIS,
-        "analysis_id": other,
-        "marker": "this-year",
-    }
-    other_payload = {
-        **SAMPLE_ANALYSIS,
-        "analysis_id": stored,
-        "marker": "other-year",
+    canonical = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    user = "test-user-123"
+    paid_payload = {
+        "analysis_id": canonical,
+        "marker": "paid-2024",
         "tax_profile": {"tax_year": 2024, "filing_status": "single"},
     }
-    rows = [
-        {
-            "analysis_id": stored,
-            "user_id": "test-user-123",
+    snapshot_client = _wire_real_snapshot_client(
+        monkeypatch,
+        [{
+            "analysis_id": canonical,
+            "user_id": user,
             "tax_year": 2024,
-            "packet_payload": other_payload,
+            "packet_payload": paid_payload,
             "packet_session_id": "cs_other_year",
             "paid_at": "2026-01-01T00:00:00+00:00",
             "expires_at": None,
-        },
-        {
-            "analysis_id": other,
-            "user_id": "test-user-123",
-            "tax_year": 2025,
-            "packet_payload": this_payload,
-            "packet_session_id": None,
-            "paid_at": None,
-            "expires_at": "2099-01-01T00:00:00+00:00",
-        },
-    ]
-    snapshot_client = _YearScopedSnapshotClient(rows)
-    monkeypatch.setattr(db, "get_supabase", lambda: snapshot_client)
-    monkeypatch.setattr(main, "get_packet_snapshot", db.get_packet_snapshot)
-    monkeypatch.setattr(main, "mark_packet_snapshot_paid", db.mark_packet_snapshot_paid)
-    remember_analysis(other, "test-user-123", this_payload)
-    captured = {}
+        }],
+    )
+    year_2025 = {
+        **SAMPLE_ANALYSIS,
+        "analysis_id": canonical,
+        "analysis_tax_year": 2025,
+        "tax_profile": {"tax_year": 2025, "filing_status": "single"},
+    }
+    remember_analysis(canonical, user, year_2025)
+    created = []
     monkeypatch.setattr(
         main.stripe.checkout.Session,
         "create",
-        lambda **kwargs: captured.update(kwargs) or FakeCheckoutSession(**kwargs),
+        lambda **kwargs: created.append(kwargs) or FakeCheckoutSession(**kwargs),
     )
-    monkeypatch.setattr(main, "patch_analysis_result", lambda *_args, **_kwargs: True)
 
     checkout = client.post(
         "/api/year-close-packet/checkout",
-        json={"analysis_id": other, "analysis": this_payload},
+        json={"analysis_id": canonical.upper(), "analysis": year_2025},
     )
 
-    assert checkout.status_code == 200, checkout.text
-    assert checkout.json().get("already_paid") is not True
-    assert captured["metadata"]["tax_year"] == "2025"
-    assert captured["metadata"]["analysis_id"] == other
+    assert checkout.status_code == 409, checkout.text
+    assert checkout.json()["detail"] == _PAID_OTHER_YEAR_DETAIL
+    assert created == []
+    assert len(snapshot_client.rows) == 1
+    assert snapshot_client.rows[0]["analysis_id"] == canonical
+    assert snapshot_client.rows[0]["tax_year"] == 2024
     assert snapshot_client.rows[0]["packet_session_id"] == "cs_other_year"
     assert snapshot_client.rows[0]["paid_at"] == "2026-01-01T00:00:00+00:00"
-    assert snapshot_client.rows[0]["packet_payload"]["marker"] == "other-year"
-    assert snapshot_client.rows[1]["paid_at"] is None
-    assert snapshot_client.rows[1]["analysis_id"] == other
+    assert snapshot_client.rows[0]["packet_payload"]["marker"] == "paid-2024"
 
     granted = _post_signed_webhook(
         _packet_checkout_event(
-            analysis_id=other,
+            analysis_id=canonical.upper(),
             tax_year="2025",
-            event_id="evt_this_year_not_other",
+            event_id="evt_second_year_blocked",
         )
     )
-
     assert granted.status_code == 200, granted.text
-    assert granted.json()["granted"] is True
+    assert granted.json()["granted"] is False
+    assert len(snapshot_client.rows) == 1
+    assert snapshot_client.rows[0]["tax_year"] == 2024
     assert snapshot_client.rows[0]["packet_session_id"] == "cs_other_year"
-    assert snapshot_client.rows[0]["paid_at"] == "2026-01-01T00:00:00+00:00"
-    assert snapshot_client.rows[0]["packet_payload"]["marker"] == "other-year"
-    assert snapshot_client.rows[1]["analysis_id"] == other
-    assert snapshot_client.rows[1]["packet_session_id"] == "cs_test_paid_1"
-    assert snapshot_client.rows[1]["paid_at"]
-    assert snapshot_client.rows[1]["tax_year"] == 2025
 
 
 def test_checkout_already_paid_accepts_entitlement_analysis_id_case_variant(monkeypatch):
@@ -1186,7 +1165,7 @@ def test_checkout_already_paid_accepts_entitlement_analysis_id_case_variant(monk
     _FAKE_PACKET_ENTITLEMENTS[(
         "test-user-123", 2025, "cs_test_case_variant"
     )] = {
-        "analysis_id": stored,
+        "analysis_id": other,
         "user_id": "test-user-123",
         "tax_year": 2025,
         "packet_session_id": "cs_test_case_variant",
@@ -1213,7 +1192,7 @@ def test_checkout_already_paid_accepts_entitlement_analysis_id_case_variant(monk
 
     response = client.post(
         "/api/year-close-packet/checkout",
-        json={"analysis_id": other, "analysis": analysis},
+        json={"analysis_id": stored, "analysis": {**analysis, "analysis_id": stored}},
     )
 
     assert response.status_code == 200, response.text
@@ -2736,7 +2715,7 @@ _LEGACY_PAYMENT_ANALYSIS = "11111111-1111-4111-8111-111111111111"
 
 
 class _AliasStepClient:
-    """Primary key miss, embedded miss, then the alias query fails."""
+    """Primary-key miss, embedded eq miss, embedded ilike miss, then alias fails."""
 
     def __init__(self, alias_error):
         self.alias_error = alias_error
@@ -2765,7 +2744,9 @@ class _AliasStepClient:
 
     def execute(self):
         self.calls += 1
-        if self.calls < 3:
+        # UUID lookup is primary key, embedded eq, then the temporary ilike
+        # fallback, and only then the alias table.
+        if self.calls < 4:
             return SimpleNamespace(data=[])
         raise self.alias_error
 
@@ -2887,8 +2868,9 @@ def test_webhook_acknowledges_missing_history_when_no_snapshot_can_restore(monke
 
     response = _post_signed_webhook(_packet_checkout_event())
 
-    assert response.status_code == 200
-    assert response.json()["granted"] is False
+    assert response.status_code == 500, response.text
+    assert "PACKET_GRANT_YEAR_UNKNOWN" in response.text
+    assert response.json().get("granted") is not True
 
 
 def test_webhook_does_not_claim_blank_guest_snapshot_by_id(monkeypatch):
@@ -2900,8 +2882,9 @@ def test_webhook_does_not_claim_blank_guest_snapshot_by_id(monkeypatch):
 
     response = _post_signed_webhook(_packet_checkout_event())
 
-    assert response.status_code == 200
-    assert response.json()["granted"] is False
+    assert response.status_code == 500, response.text
+    assert "PACKET_GRANT_YEAR_UNKNOWN" in response.text
+    assert response.json().get("granted") is not True
     assert PACKET_STORE["analysis-sample-1"]["user_id"] == ""
     assert PACKET_STORE["analysis-sample-1"]["paid"] is False
     assert PACKET_STORE["analysis-sample-1"]["payload"] == original_payload
@@ -3095,7 +3078,10 @@ def test_download_uses_durable_paid_snapshot_during_stripe_outage(monkeypatch):
         "/api/year-close-packet/download",
         params={"analysis_id": analysis_id, "session_id": "cs_test_stale"},
     )
-    assert stale_session.status_code == 403
+    assert stale_session.status_code == 503
+    assert stale_session.json()["detail"] == (
+        "Could not verify the Checkout session. Please retry."
+    )
 
     missing_session = client.get(
         "/api/year-close-packet/download",
@@ -3145,17 +3131,16 @@ def _no_history_lookup(*_args, **_kwargs):
 def test_first_year_grant_leaves_paid_case_variant_untouched(monkeypatch):
     _test_stripe_env(monkeypatch)
     monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_packet_test_secret")
-    stored = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
-    other = stored.lower()
+    canonical = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
     user = "test-user-123"
     year_x = {
-        "analysis_id": stored,
+        "analysis_id": canonical,
         "analysis_tax_year": 2025,
         "tax_profile": {"tax_year": 2025},
         "marker": "paid-x",
     }
-    _FAKE_PACKET_SNAPSHOTS[(user, stored)] = {
-        "analysis_id": stored,
+    _FAKE_PACKET_SNAPSHOTS[(user, canonical)] = {
+        "analysis_id": canonical,
         "user_id": user,
         "tax_year": 2025,
         "packet_payload": year_x,
@@ -3163,30 +3148,30 @@ def test_first_year_grant_leaves_paid_case_variant_untouched(monkeypatch):
         "paid_at": "2026-01-01T00:00:00+00:00",
     }
     year_y = {
-        "analysis_id": other,
+        "analysis_id": canonical,
         "analysis_tax_year": 2026,
         "tax_profile": {"tax_year": 2026},
         "marker": "new-y",
     }
-    remember_analysis(other, user, year_y)
+    remember_analysis(canonical, user, year_y)
 
     response = _post_signed_webhook(
-        _packet_checkout_event(analysis_id=other, tax_year=2026, event_id="evt_variant_y")
+        _packet_checkout_event(
+            analysis_id=canonical.upper(),
+            tax_year=2026,
+            event_id="evt_variant_y",
+        )
     )
 
     assert response.status_code == 200, response.text
-    assert response.json()["granted"] is True
-    untouched = _FAKE_PACKET_SNAPSHOTS[(user, stored)]
+    assert response.json()["granted"] is False
+    assert list(_FAKE_PACKET_SNAPSHOTS) == [(user, canonical)]
+    untouched = _FAKE_PACKET_SNAPSHOTS[(user, canonical)]
     assert untouched["paid_at"] == "2026-01-01T00:00:00+00:00"
     assert untouched["packet_session_id"] == "cs_paid_x"
     assert untouched["packet_payload"] == year_x
-    assert untouched["analysis_id"] == stored
+    assert untouched["analysis_id"] == canonical
     assert untouched["tax_year"] == 2025
-    created = _FAKE_PACKET_SNAPSHOTS[(user, other)]
-    assert created["analysis_id"] == other
-    assert created["tax_year"] == 2026
-    assert created["paid_at"]
-    assert created["packet_session_id"] == "cs_test_paid_1"
 
 
 def test_checkout_reyears_unpaid_same_spelling_and_blocks_paid_other_year(monkeypatch):
@@ -3253,31 +3238,31 @@ def test_checkout_reyears_unpaid_same_spelling_and_blocks_paid_other_year(monkey
 
 
 def test_legacy_session_without_metadata_year_grants_history_year(monkeypatch):
-    """No Stripe tax_year: history names the year, and that year is what gets granted."""
+    """History 2026 plus a paid 2025 row is a conflict, not a second packet."""
     _test_stripe_env(monkeypatch)
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_packet_test_secret")
     user = "test-user-123"
-    stored = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
-    other = stored.lower()
+    canonical = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
     history_payload = {
-        "analysis_id": other,
+        "analysis_id": canonical,
         "tax_profile": {"tax_year": 2026, "filing_status": "single"},
         "marker": "history-2026",
     }
-    remember_analysis(other, user, history_payload)
-    _FAKE_PACKET_SNAPSHOTS[(user, stored)] = {
-        "analysis_id": stored,
+    remember_analysis(canonical, user, history_payload)
+    paid_2025 = {
+        "analysis_id": canonical,
         "user_id": user,
         "tax_year": 2025,
-        "packet_payload": {"analysis_id": stored, "marker": "paid-2025"},
+        "packet_payload": {"analysis_id": canonical, "marker": "paid-2025"},
         "packet_session_id": "cs_paid_2025",
         "paid_at": "2026-01-01T00:00:00+00:00",
     }
-    monkeypatch.setattr(main, "patch_analysis_result", lambda *_args, **_kwargs: True)
+    _FAKE_PACKET_SNAPSHOTS[(user, canonical)] = dict(paid_2025)
     session = _stripe_object_session(
         id="cs_legacy_history_year",
         metadata={
             "product": PACKET_METADATA_PRODUCT,
-            "analysis_id": other,
+            "analysis_id": canonical.upper(),
             "user_id": user,
         },
     )
@@ -3289,44 +3274,56 @@ def test_legacy_session_without_metadata_year_grants_history_year(monkeypatch):
 
     response = client.post(
         "/api/year-close-packet/confirm",
-        json={"session_id": session.id, "analysis_id": other},
+        json={"session_id": session.id, "analysis_id": canonical.upper()},
     )
 
-    assert response.status_code == 200, response.text
-    granted_row = _FAKE_PACKET_SNAPSHOTS[(user, other)]
-    assert granted_row["analysis_id"] == other
-    assert int(granted_row["tax_year"]) == 2026
-    assert granted_row["paid_at"]
-    assert granted_row["packet_session_id"] == session.id
-    untouched = _FAKE_PACKET_SNAPSHOTS[(user, stored)]
-    assert untouched["analysis_id"] == stored
+    assert response.status_code == 409, response.text
+    assert "PACKET_GRANT_YEAR_CONFLICT" in response.text
+    assert list(_FAKE_PACKET_SNAPSHOTS) == [(user, canonical)]
+    untouched = _FAKE_PACKET_SNAPSHOTS[(user, canonical)]
     assert untouched["tax_year"] == 2025
     assert untouched["paid_at"] == "2026-01-01T00:00:00+00:00"
     assert untouched["packet_session_id"] == "cs_paid_2025"
     assert untouched["packet_payload"]["marker"] == "paid-2025"
 
+    webhook = _post_signed_webhook(
+        _packet_checkout_event(
+            analysis_id=canonical.upper(),
+            user_id=user,
+            event_id="evt_legacy_history_conflict",
+        )
+    )
+    assert webhook.status_code == 200, webhook.text
+    assert webhook.json()["granted"] is False
+    assert _FAKE_PACKET_SNAPSHOTS[(user, canonical)]["tax_year"] == 2025
+    assert _FAKE_PACKET_SNAPSHOTS[(user, canonical)]["packet_session_id"] == "cs_paid_2025"
 
-def test_legacy_grant_does_not_adopt_other_year_case_variant(monkeypatch):
-    """The only paid row is another year's spelling variant. Do not grant from it."""
+
+def test_legacy_session_without_metadata_year_grants_history_year_when_unpaid(monkeypatch):
+    """An unpaid snapshot is re-yeared to the history year and granted once."""
     _test_stripe_env(monkeypatch)
     user = "test-user-123"
-    stored = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
-    other = stored.lower()
-    paid_variant = {
-        "analysis_id": stored,
-        "user_id": user,
-        "tax_year": 2024,
-        "packet_payload": {"analysis_id": stored, "marker": "other-year"},
-        "packet_session_id": "cs_other_year",
-        "paid_at": "2026-01-01T00:00:00+00:00",
+    canonical = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    history_payload = {
+        "analysis_id": canonical,
+        "analysis_tax_year": 2026,
+        "tax_profile": {"tax_year": 2026, "filing_status": "single"},
+        "marker": "history-2026",
     }
-    _FAKE_PACKET_SNAPSHOTS[(user, stored)] = dict(paid_variant)
-    monkeypatch.setattr(main, "lookup_analysis_for_entitlement", _no_history_lookup)
+    remember_analysis(canonical, user, history_payload)
+    _FAKE_PACKET_SNAPSHOTS[(user, canonical)] = {
+        "analysis_id": canonical,
+        "user_id": user,
+        "tax_year": 2025,
+        "packet_payload": {"analysis_id": canonical, "marker": "draft-2025"},
+        "packet_session_id": None,
+        "paid_at": None,
+    }
     session = _stripe_object_session(
-        id="cs_legacy_other_year_variant",
+        id="cs_legacy_unpaid_reyear",
         metadata={
             "product": PACKET_METADATA_PRODUCT,
-            "analysis_id": other,
+            "analysis_id": canonical.upper(),
             "user_id": user,
         },
     )
@@ -3338,14 +3335,59 @@ def test_legacy_grant_does_not_adopt_other_year_case_variant(monkeypatch):
 
     response = client.post(
         "/api/year-close-packet/confirm",
-        json={"session_id": session.id, "analysis_id": other},
+        json={"session_id": session.id, "analysis_id": canonical},
     )
 
-    assert response.status_code == 409, response.text
-    assert "PACKET_GRANT_YEAR_UNKNOWN" in response.text
-    assert _FAKE_PACKET_SNAPSHOTS[(user, stored)] == paid_variant
-    assert (user, other) not in _FAKE_PACKET_SNAPSHOTS
-    assert _FAKE_PACKET_ENTITLEMENTS == {}
+    assert response.status_code == 200, response.text
+    assert list(_FAKE_PACKET_SNAPSHOTS) == [(user, canonical)]
+    row = _FAKE_PACKET_SNAPSHOTS[(user, canonical)]
+    assert row["analysis_id"] == canonical
+    assert int(row["tax_year"]) == 2026
+    assert row["paid_at"]
+    assert row["packet_session_id"] == session.id
+
+
+def test_legacy_grant_does_not_adopt_other_year_case_variant(monkeypatch):
+    """One paid snapshot names the year. An already-paid row is not restamped."""
+    _test_stripe_env(monkeypatch)
+    user = "test-user-123"
+    canonical = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    paid_variant = {
+        "analysis_id": canonical,
+        "user_id": user,
+        "tax_year": 2024,
+        "packet_payload": {"analysis_id": canonical, "marker": "other-year"},
+        "packet_session_id": "cs_other_year",
+        "paid_at": "2026-01-01T00:00:00+00:00",
+    }
+    _FAKE_PACKET_SNAPSHOTS[(user, canonical)] = dict(paid_variant)
+    monkeypatch.setattr(main, "lookup_analysis_for_entitlement", _no_history_lookup)
+    session = _stripe_object_session(
+        id="cs_legacy_other_year_variant",
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": canonical.upper(),
+            "user_id": user,
+        },
+    )
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda *_args, **_kwargs: session,
+    )
+
+    response = client.post(
+        "/api/year-close-packet/confirm",
+        json={"session_id": session.id, "analysis_id": canonical.upper()},
+    )
+
+    assert response.status_code == 200, response.text
+    assert "PACKET_GRANT_YEAR_UNKNOWN" not in response.text
+    assert list(_FAKE_PACKET_SNAPSHOTS) == [(user, canonical)]
+    row = _FAKE_PACKET_SNAPSHOTS[(user, canonical)]
+    assert row["packet_session_id"] == "cs_other_year"
+    assert row["tax_year"] == 2024
+    assert row["paid_at"] == "2026-01-01T00:00:00+00:00"
 
 
 def test_legacy_grant_ambiguous_year_logs_and_confirm_409(monkeypatch, caplog):
@@ -3376,8 +3418,9 @@ def test_legacy_grant_ambiguous_year_logs_and_confirm_409(monkeypatch, caplog):
                 event_id="evt_year_unknown",
             )
         )
-    assert webhook.status_code == 200, webhook.text
-    assert webhook.json() == {"received": True, "granted": False}
+    assert webhook.status_code == 500, webhook.text
+    assert "PACKET_GRANT_YEAR_UNKNOWN" in webhook.text
+    assert webhook.json().get("granted") is not True
     unknown_logs = [
         record
         for record in caplog.records
@@ -3395,22 +3438,19 @@ def test_legacy_grant_ambiguous_year_logs_and_confirm_409(monkeypatch, caplog):
     assert confirm.status_code == 409, confirm.text
     assert "PACKET_GRANT_YEAR_UNKNOWN" in confirm.json()["detail"]
 
-    stored = "BBBBBBBB-BBBB-4BBB-8BBB-BBBBBBBBBBBB"
-    other = stored.lower()
-    for spelling, year in ((stored, 2024), (other, 2025)):
-        _FAKE_PACKET_SNAPSHOTS[(user, spelling)] = {
-            "analysis_id": spelling,
+    canonical = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+    for year, session_id in ((2024, "cs_2024"), (2025, "cs_2025")):
+        _FAKE_PACKET_ENTITLEMENTS[(user, year, session_id)] = {
+            "analysis_id": canonical,
             "user_id": user,
             "tax_year": year,
-            "packet_payload": {"analysis_id": spelling, "marker": year},
-            "packet_session_id": f"cs_{year}",
-            "paid_at": "2026-01-01T00:00:00+00:00",
+            "packet_session_id": session_id,
         }
     several = _stripe_object_session(
         id="cs_legacy_several_rows",
         metadata={
             "product": PACKET_METADATA_PRODUCT,
-            "analysis_id": stored,
+            "analysis_id": canonical.upper(),
             "user_id": user,
         },
     )
@@ -3423,18 +3463,23 @@ def test_legacy_grant_ambiguous_year_logs_and_confirm_409(monkeypatch, caplog):
     with caplog.at_level(logging.ERROR, logger="main"):
         several_hook = _post_signed_webhook(
             _packet_checkout_event(
-                analysis_id=stored,
+                analysis_id=canonical.upper(),
                 user_id=user,
                 event_id="evt_year_unknown_several",
             )
         )
-    assert several_hook.status_code == 200, several_hook.text
-    assert several_hook.json()["granted"] is False
+    assert several_hook.status_code == 500, several_hook.text
+    assert "PACKET_GRANT_YEAR_UNKNOWN" in several_hook.text
     assert "PACKET_GRANT_YEAR_UNKNOWN" in caplog.text
-    assert _FAKE_PACKET_SNAPSHOTS[(user, stored)]["packet_session_id"] == "cs_2024"
-    assert _FAKE_PACKET_SNAPSHOTS[(user, stored)]["tax_year"] == 2024
-    assert _FAKE_PACKET_SNAPSHOTS[(user, other)]["packet_session_id"] == "cs_2025"
-    assert _FAKE_PACKET_SNAPSHOTS[(user, other)]["paid_at"] == "2026-01-01T00:00:00+00:00"
+    assert _FAKE_PACKET_SNAPSHOTS == {}
+    assert _FAKE_PACKET_ENTITLEMENTS[(user, 2024, "cs_2024")]["packet_session_id"] == "cs_2024"
+    assert _FAKE_PACKET_ENTITLEMENTS[(user, 2025, "cs_2025")]["analysis_id"] == canonical
+    several_confirm = client.post(
+        "/api/year-close-packet/confirm",
+        json={"session_id": several.id, "analysis_id": canonical},
+    )
+    assert several_confirm.status_code == 409, several_confirm.text
+    assert "PACKET_GRANT_YEAR_UNKNOWN" in several_confirm.json()["detail"]
 
 
 def test_legacy_grant_year_resolution_outage_is_503(monkeypatch):
@@ -3575,20 +3620,20 @@ def test_checkout_unknown_year_uses_one_snapshot_or_409(monkeypatch):
     assert expired.json()["detail"] == main.PACKET_SNAPSHOT_EXPIRED_DETAIL
     assert created == []
 
-    stored = "BBBBBBBB-BBBB-4BBB-8BBB-BBBBBBBBBBBB"
-    other = stored.lower()
-    for spelling, year in ((stored, 2024), (other, 2025)):
-        _FAKE_PACKET_SNAPSHOTS[(user, spelling)] = {
-            "analysis_id": spelling,
+    canonical = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+    for year, session_id in ((2024, "cs_2024"), (2025, "cs_2025")):
+        _FAKE_PACKET_ENTITLEMENTS[(user, year, session_id)] = {
+            "analysis_id": canonical,
             "user_id": user,
             "tax_year": year,
-            "packet_payload": {"analysis_id": spelling, "analysis_tax_year": year},
-            "packet_session_id": f"cs_{year}",
-            "paid_at": "2026-01-01T00:00:00+00:00",
+            "packet_session_id": session_id,
         }
     ambiguous = client.post(
         "/api/year-close-packet/checkout",
-        json={"analysis_id": stored, "analysis": {"analysis_id": stored, "summary": {}}},
+        json={
+            "analysis_id": canonical,
+            "analysis": {"analysis_id": canonical, "summary": {}},
+        },
     )
     assert ambiguous.status_code == 409, ambiguous.text
     assert ambiguous.json()["detail"] == main.PACKET_YEAR_AMBIGUOUS_DETAIL
@@ -3677,25 +3722,21 @@ def test_download_stripe_miss_picks_named_year_or_single_paid_row(monkeypatch):
     assert single_pdf.status_code == 200, single_pdf.text
     assert single_pdf.content == b"YEAR:2023"
 
-    stored = "CCCCCCCC-CCCC-4CCC-8CCC-CCCCCCCCCCCC"
-    spelling = stored.lower()
-    _FAKE_PACKET_SNAPSHOTS.clear()
-    for key, year in ((stored, 2024), (spelling, 2025)):
-        _FAKE_PACKET_SNAPSHOTS[(user, key)] = {
-            "analysis_id": key,
-            "user_id": user,
-            "tax_year": year,
-            "packet_payload": {"analysis_tax_year": year},
-            "packet_session_id": f"cs_{year}",
-            "paid_at": "2026-05-01T00:00:00+00:00",
-        }
-    ambiguous = client.get(
+    no_session_pdf = client.get(
         "/api/year-close-packet/download",
-        params={"analysis_id": stored},
+        params={"analysis_id": single_id},
     )
-    assert ambiguous.status_code == 503, ambiguous.text
-    assert not ambiguous.content.startswith(b"%PDF")
-    assert b"YEAR:" not in ambiguous.content
+    assert no_session_pdf.status_code == 200, no_session_pdf.text
+    assert no_session_pdf.content == b"YEAR:2023"
+
+    mismatched = client.get(
+        "/api/year-close-packet/download",
+        params={"analysis_id": single_id, "session_id": "cs_other_session"},
+    )
+    assert mismatched.status_code == 503, mismatched.text
+    assert mismatched.json()["detail"] == (
+        "Could not verify the Checkout session. Please retry."
+    )
 
 
 def test_download_snapshot_lookup_outage_is_503(monkeypatch):
@@ -3775,16 +3816,40 @@ def _use_ilike_snapshot_client(monkeypatch, rows):
     return snapshot_client
 
 
-def test_download_rejects_2026_history_when_2025_session_is_paid(monkeypatch):
-    """2025 paid snapshot plus a 2026 re-run must not serve 2026 lots."""
+def _wire_real_snapshot_client(monkeypatch, rows):
+    """Point packet snapshot reads and writes at the real db helpers."""
+    snapshot_client = _YearScopedSnapshotClient(rows)
+    monkeypatch.setattr(db, "get_supabase", lambda: snapshot_client)
+    monkeypatch.setattr(main, "get_packet_snapshot", db.get_packet_snapshot)
+    monkeypatch.setattr(main, "save_packet_snapshot", db.save_packet_snapshot)
+    monkeypatch.setattr(main, "mark_packet_snapshot_paid", db.mark_packet_snapshot_paid)
+    monkeypatch.setattr(
+        main,
+        "list_packet_snapshots_for_identity",
+        db.list_packet_snapshots_for_identity,
+    )
+    return snapshot_client
+
+
+_PAID_OTHER_YEAR_DETAIL = (
+    "This analysis already has a paid packet for another tax year. "
+    "Start a new analysis for the year you want to buy."
+)
+
+
+def _paid_2025_session_fixture(monkeypatch):
     _test_stripe_env(monkeypatch)
     aid = "analysis-2025-paid"
     user = "test-user-123"
-    paid_payload = build_packet_payload(
-        {**SAMPLE_ANALYSIS, "analysis_id": aid},
-        analysis_id=aid,
-    )
-    paid_payload = {**paid_payload, "marker": "paid-2025-lots"}
+    paid_source = {
+        **SAMPLE_ANALYSIS,
+        "analysis_id": aid,
+        "wash_sale_flags": [{
+            **SAMPLE_ANALYSIS["wash_sale_flags"][0],
+            "symbol": "PAID2025",
+        }],
+    }
+    paid_payload = build_packet_payload(paid_source, analysis_id=aid)
     snapshot_client = _use_ilike_snapshot_client(
         monkeypatch,
         [{
@@ -3802,10 +3867,13 @@ def test_download_rejects_2026_history_when_2025_session_is_paid(monkeypatch):
         "analysis_id": aid,
         "tax_profile": {"tax_year": 2026, "filing_status": "single"},
         "tax_lots": [{"symbol": "UNPAID2026", "quantity": 1}],
+        "wash_sale_flags": [{
+            **SAMPLE_ANALYSIS["wash_sale_flags"][0],
+            "symbol": "UNPAID2026",
+        }],
     }
     mark_paid(aid, "cs_paid_2025", user_id=user)
     remember_analysis(aid, user, year_2026)
-    assert PACKET_STORE[aid]["paid"] is True
     paid_session = _stripe_object_session(
         id="cs_paid_2025",
         metadata={
@@ -3821,13 +3889,33 @@ def test_download_rejects_2026_history_when_2025_session_is_paid(monkeypatch):
         lambda *_args, **_kwargs: paid_session,
     )
     _forbid_download_writes(monkeypatch)
+    return aid, snapshot_client, year_2026
+
+
+def test_download_get_uses_session_year_when_history_year_differs(monkeypatch):
+    """GET with the paid 2025 session serves that PDF, not the 2026 re-run."""
+    aid, snapshot_client, _year_2026 = _paid_2025_session_fixture(monkeypatch)
     original = deepcopy(snapshot_client.rows[0])
 
-    history_download = client.get(
+    response = client.get(
         "/api/year-close-packet/download",
         params={"analysis_id": aid, "session_id": "cs_paid_2025"},
     )
-    body_download = client.post(
+
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"] == "application/pdf"
+    text = _pdf_text(response.content)
+    assert "PAID2025" in text
+    assert b"UNPAID2026" not in response.content
+    assert snapshot_client.rows[0] == original
+
+
+def test_download_post_403_when_body_year_disagrees_with_session_year(monkeypatch):
+    """A 2026 body cannot override a 2025 Checkout session."""
+    aid, snapshot_client, year_2026 = _paid_2025_session_fixture(monkeypatch)
+    original = deepcopy(snapshot_client.rows[0])
+
+    response = client.post(
         "/api/year-close-packet/download",
         json={
             "analysis_id": aid,
@@ -3836,12 +3924,11 @@ def test_download_rejects_2026_history_when_2025_session_is_paid(monkeypatch):
         },
     )
 
-    for response in (history_download, body_download):
-        assert response.status_code == 403, response.text
-        assert response.json()["detail"] == "Year-close packet download requires payment."
-        assert not response.content.startswith(b"%PDF")
-        assert b"UNPAID2026" not in response.content
-    assert len(snapshot_client.rows) == 1
+    assert response.status_code == 403, response.text
+    assert response.json()["detail"] == "Year-close packet download requires payment."
+    assert not response.content.startswith(b"%PDF")
+    assert b"UNPAID2026" not in response.content
+    assert b"PAID2025" not in response.content
     assert snapshot_client.rows[0] == original
 
 
@@ -3859,10 +3946,10 @@ def test_download_rejects_second_spelling_post_with_other_sessions(monkeypatch):
     snapshot_client = _use_ilike_snapshot_client(
         monkeypatch,
         [{
-            "analysis_id": stored,
+            "analysis_id": other,
             "user_id": user,
             "tax_year": 2025,
-            "packet_payload": paid_payload,
+            "packet_payload": {**paid_payload, "analysis_id": other},
             "packet_session_id": "cs_A",
             "paid_at": "2026-01-01T00:00:00+00:00",
             "expires_at": None,
@@ -3904,7 +3991,7 @@ def test_download_rejects_second_spelling_post_with_other_sessions(monkeypatch):
     assert b"paid-A-2025" not in response.content
     assert len(snapshot_client.rows) == 1
     assert snapshot_client.rows[0] == original
-    assert all(row["analysis_id"] != other for row in snapshot_client.rows)
+    assert snapshot_client.rows[0]["analysis_id"] == other
 
 
 def test_download_rejects_unpaid_snapshot_despite_memory_paid_flag(monkeypatch):
@@ -3972,171 +4059,497 @@ def test_download_rejects_unpaid_snapshot_despite_memory_paid_flag(monkeypatch):
     assert PACKET_STORE[aid]["paid"] is True
 
 
-def test_save_packet_snapshot_rejects_paid_other_spelling_other_year():
-    stored = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
-    other = stored.lower()
+def test_save_packet_snapshot_rejects_paid_other_spelling_other_year(monkeypatch):
+    """Pay 2025 first. A later 2026 save or checkout cannot open a second row."""
+    upper = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
+    lower = upper.lower()
     user = "test-user-123"
-    paid = {
-        "analysis_id": stored,
-        "user_id": user,
-        "tax_year": 2025,
-        "packet_payload": {"marker": "paid-A"},
-        "packet_session_id": "cs_paid_x",
-        "paid_at": "2026-01-01T00:00:00+00:00",
-        "expires_at": None,
-    }
-    client = _YearScopedSnapshotClient([paid])
+    snapshot_client = _YearScopedSnapshotClient([])
+
+    saved = db.save_packet_snapshot(
+        upper,
+        user,
+        2025,
+        {"marker": "draft-A"},
+        client=snapshot_client,
+    )
+    assert saved["analysis_id"] == lower
+    assert len(snapshot_client.rows) == 1
+    assert snapshot_client.rows[0]["analysis_id"] == lower
+    assert snapshot_client.rows[0]["tax_year"] == 2025
+    assert snapshot_client.rows[0]["paid_at"] is None
+
+    assert db.mark_packet_snapshot_paid(
+        upper, user, 2025, "cs_paid_A", client=snapshot_client
+    ) is True
+    assert len(snapshot_client.rows) == 1
+    assert snapshot_client.rows[0]["analysis_id"] == lower
+    assert snapshot_client.rows[0]["tax_year"] == 2025
+    assert snapshot_client.rows[0]["paid_at"]
+    assert snapshot_client.rows[0]["packet_session_id"] == "cs_paid_A"
+    assert snapshot_client.rows[0]["packet_payload"] == {"marker": "draft-A"}
 
     with pytest.raises(db.PacketSnapshotYearConflict) as raised:
         db.save_packet_snapshot(
-            other,
+            lower,
             user,
             2026,
             {"marker": "new-B"},
-            client=client,
+            client=snapshot_client,
         )
-
-    assert raised.value.stored_analysis_id == stored
     assert raised.value.stored_tax_year == 2025
     assert raised.value.requested_tax_year == 2026
-    assert len(client.rows) == 1
-    assert client.rows[0]["analysis_id"] == stored
-    assert client.rows[0]["tax_year"] == 2025
-    assert client.rows[0]["paid_at"] == "2026-01-01T00:00:00+00:00"
-    assert client.rows[0]["packet_session_id"] == "cs_paid_x"
-    assert client.rows[0]["packet_payload"] == {"marker": "paid-A"}
+    assert len(snapshot_client.rows) == 1
+    assert snapshot_client.rows[0]["tax_year"] == 2025
+    assert snapshot_client.rows[0]["paid_at"]
+    assert snapshot_client.rows[0]["packet_payload"] == {"marker": "draft-A"}
 
-    unpaid_client = _YearScopedSnapshotClient([{
-        **paid,
-        "paid_at": None,
-        "packet_session_id": None,
-        "expires_at": "2099-01-01T00:00:00+00:00",
-    }])
-    inserted = db.save_packet_snapshot(
-        other,
-        user,
-        2026,
-        {"marker": "new-B"},
-        client=unpaid_client,
-    )
-    assert inserted["analysis_id"] == other
-    assert len(unpaid_client.rows) == 2
-    assert unpaid_client.rows[0]["analysis_id"] == stored
-    assert unpaid_client.rows[0]["tax_year"] == 2025
-    assert unpaid_client.rows[0]["paid_at"] is None
-    assert unpaid_client.rows[1]["analysis_id"] == other
-    assert unpaid_client.rows[1]["tax_year"] == 2026
-
-    reyear_client = _YearScopedSnapshotClient([{
-        "analysis_id": stored,
-        "user_id": user,
-        "tax_year": 2025,
-        "packet_payload": {"marker": "draft"},
-        "packet_session_id": None,
-        "paid_at": None,
-        "expires_at": "2099-01-01T00:00:00+00:00",
-    }])
-    reyeared = db.save_packet_snapshot(
-        stored,
-        user,
-        2026,
-        {"marker": "year-y"},
-        client=reyear_client,
-    )
-    assert reyeared["analysis_id"] == stored
-    assert len(reyear_client.rows) == 1
-    assert reyear_client.rows[0]["analysis_id"] == stored
-    assert reyear_client.rows[0]["tax_year"] == 2026
-    assert reyear_client.rows[0]["paid_at"] is None
-    assert reyear_client.rows[0]["packet_payload"] == {"marker": "year-y"}
-
-
-def test_checkout_scan_outage_is_503_and_does_not_open_stripe(monkeypatch):
-    """A paid-other-spelling scan failure is not a saved snapshot."""
     _test_stripe_env(monkeypatch)
-    aid = "analysis-scan-outage"
-    remember_analysis(aid, "test-user-123", {**SAMPLE_ANALYSIS, "analysis_id": aid})
-
-    class _ScanOutageClient:
-        def __init__(self):
-            self.selects = 0
-            self.inserts = []
-
-        def rpc(self, *_args, **_kwargs):
-            raise RuntimeError("cleanup unavailable")
-
-        def table(self, _name):
-            return _ScanOutageQuery(self)
-
-    class _ScanOutageQuery:
-        def __init__(self, owner):
-            self.owner = owner
-            self.op = "select"
-            self.payload = None
-
-        def select(self, *_args, **_kwargs):
-            return self
-
-        def eq(self, *_args, **_kwargs):
-            return self
-
-        def filter(self, *_args, **_kwargs):
-            return self
-
-        def is_(self, *_args, **_kwargs):
-            return self
-
-        def order(self, *_args, **_kwargs):
-            return self
-
-        def limit(self, *_args, **_kwargs):
-            return self
-
-        def insert(self, row):
-            self.op = "insert"
-            self.payload = row
-            return self
-
-        def update(self, row):
-            self.op = "update"
-            self.payload = row
-            return self
-
-        def execute(self):
-            if self.op == "insert":
-                self.owner.inserts.append(self.payload)
-                return SimpleNamespace(data=[dict(self.payload)])
-            self.owner.selects += 1
-            if self.owner.selects >= 3:
-                raise RuntimeError("paid-other-spelling scan down")
-            return SimpleNamespace(data=[])
-
-    outage = _ScanOutageClient()
-    monkeypatch.setattr(db, "get_supabase", lambda: outage)
-    monkeypatch.setattr(main, "save_packet_snapshot", db.save_packet_snapshot)
+    http_client = _wire_real_snapshot_client(monkeypatch, [])
+    db.save_packet_snapshot(
+        upper, user, 2025, {"marker": "draft-A"}, client=http_client
+    )
+    assert db.mark_packet_snapshot_paid(
+        upper, user, 2025, "cs_paid_A", client=http_client
+    ) is True
+    year_2026 = {
+        **SAMPLE_ANALYSIS,
+        "analysis_id": lower,
+        "analysis_tax_year": 2026,
+        "tax_profile": {"tax_year": 2026, "filing_status": "single"},
+    }
+    remember_analysis(lower, user, year_2026)
     created = []
     monkeypatch.setattr(
         main.stripe.checkout.Session,
         "create",
-        lambda **kwargs: created.append(kwargs) or (_ for _ in ()).throw(
-            AssertionError("Stripe checkout must not be created")
-        ),
+        lambda **kwargs: created.append(kwargs) or FakeCheckoutSession(**kwargs),
+    )
+    blocked = client.post(
+        "/api/year-close-packet/checkout",
+        json={"analysis_id": upper, "analysis": year_2026},
+    )
+    assert blocked.status_code == 409, blocked.text
+    assert blocked.json()["detail"] == _PAID_OTHER_YEAR_DETAIL
+    assert created == []
+    assert len(http_client.rows) == 1
+    assert http_client.rows[0]["analysis_id"] == lower
+    assert http_client.rows[0]["tax_year"] == 2025
+    assert http_client.rows[0]["paid_at"]
+    assert http_client.rows[0]["packet_session_id"] == "cs_paid_A"
+
+
+def test_unpaid_upper_reyear_then_pay_leaves_one_paid_year(monkeypatch):
+    """Jordan's order: unpaid upper 2025, save lower 2026, pay 2025, block 2026.
+
+    The unpaid re-year runs before payment, so the safety property is one
+    primary-key row and at most one paid year, not a frozen 2025 draft.
+    """
+    _test_stripe_env(monkeypatch)
+    upper = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
+    lower = upper.lower()
+    user = "test-user-123"
+    snapshot_client = _wire_real_snapshot_client(monkeypatch, [])
+    year_2025 = {
+        **SAMPLE_ANALYSIS,
+        "analysis_id": lower,
+        "analysis_tax_year": 2025,
+        "tax_profile": {"tax_year": 2025, "filing_status": "single"},
+    }
+    remember_analysis(lower, user, year_2025)
+
+    first = db.save_packet_snapshot(
+        upper, user, 2025, {"marker": "draft-A"}, client=snapshot_client
+    )
+    assert first["analysis_id"] == lower
+    assert len(snapshot_client.rows) == 1
+    assert snapshot_client.rows[0]["tax_year"] == 2025
+    assert snapshot_client.rows[0]["paid_at"] is None
+
+    second = db.save_packet_snapshot(
+        lower, user, 2026, {"marker": "draft-B"}, client=snapshot_client
+    )
+    assert second["analysis_id"] == lower
+    assert len(snapshot_client.rows) == 1
+    assert snapshot_client.rows[0]["tax_year"] == 2026
+    assert snapshot_client.rows[0]["paid_at"] is None
+
+    created = []
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "create",
+        lambda **kwargs: created.append(kwargs) or FakeCheckoutSession(**kwargs),
+    )
+    pay = client.post(
+        "/api/year-close-packet/checkout",
+        json={"analysis_id": upper, "analysis": year_2025},
+    )
+    assert pay.status_code == 200, pay.text
+    assert len(created) == 1
+    assert len(snapshot_client.rows) == 1
+    assert snapshot_client.rows[0]["tax_year"] == 2025
+    assert db.mark_packet_snapshot_paid(
+        upper, user, 2025, "cs_paid_A", client=snapshot_client
+    ) is True
+    assert snapshot_client.rows[0]["paid_at"]
+    assert snapshot_client.rows[0]["tax_year"] == 2025
+
+    with pytest.raises(db.PacketSnapshotYearConflict):
+        db.save_packet_snapshot(
+            lower, user, 2026, {"marker": "new-B"}, client=snapshot_client
+        )
+    year_2026 = {
+        **year_2025,
+        "analysis_tax_year": 2026,
+        "tax_profile": {"tax_year": 2026, "filing_status": "single"},
+    }
+    blocked = client.post(
+        "/api/year-close-packet/checkout",
+        json={"analysis_id": lower, "analysis": year_2026},
+    )
+    assert blocked.status_code == 409, blocked.text
+    assert blocked.json()["detail"] == _PAID_OTHER_YEAR_DETAIL
+    assert len(created) == 1
+    paid_years = {
+        int(row["tax_year"]) for row in snapshot_client.rows if row.get("paid_at")
+    }
+    assert len(snapshot_client.rows) == 1
+    assert len(paid_years) == 1
+    assert snapshot_client.rows[0]["analysis_id"] == lower
+
+
+def test_download_get_serves_unmigrated_upper_paid_row(monkeypatch):
+    """New code reads a legacy UPPER paid row when the canonical eq misses."""
+    _test_stripe_env(monkeypatch)
+    upper = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
+    lower = upper.lower()
+    user = "test-user-123"
+    payload = build_packet_payload(
+        {**SAMPLE_ANALYSIS, "analysis_id": lower},
+        analysis_id=lower,
+    )
+    snapshot_client = _wire_real_snapshot_client(
+        monkeypatch,
+        [{
+            "analysis_id": upper,
+            "user_id": user,
+            "tax_year": 2025,
+            "packet_payload": payload,
+            "packet_session_id": "cs_upper_paid",
+            "paid_at": "2026-01-01T00:00:00+00:00",
+            "expires_at": None,
+        }],
+    )
+    session = _stripe_object_session(
+        id="cs_upper_paid",
+        metadata={
+            "analysis_id": upper,
+            "user_id": user,
+            "tax_year": "2025",
+        },
+    )
+    calls = {"n": 0}
+
+    def retrieve(*_args, **_kwargs):
+        calls["n"] += 1
+        return session
+
+    monkeypatch.setattr(main.stripe.checkout.Session, "retrieve", retrieve)
+    _forbid_download_writes(monkeypatch)
+
+    response = client.get(
+        "/api/year-close-packet/download",
+        params={"analysis_id": lower, "session_id": "cs_upper_paid"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.content.startswith(b"%PDF")
+    assert calls["n"] == 1
+    assert len(snapshot_client.rows) == 1
+    assert snapshot_client.rows[0]["analysis_id"] == upper
+
+
+def test_checkout_other_year_conflicts_with_unmigrated_upper_paid_row(monkeypatch):
+    """Do not insert a lowercase row beside a legacy UPPER paid year."""
+    _test_stripe_env(monkeypatch)
+    upper = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
+    lower = upper.lower()
+    user = "test-user-123"
+    snapshot_client = _wire_real_snapshot_client(
+        monkeypatch,
+        [{
+            "analysis_id": upper,
+            "user_id": user,
+            "tax_year": 2025,
+            "packet_payload": {"marker": "paid-A", "analysis_id": upper},
+            "packet_session_id": "cs_upper_paid",
+            "paid_at": "2026-01-01T00:00:00+00:00",
+            "expires_at": None,
+        }],
+    )
+    year_2026 = {
+        **SAMPLE_ANALYSIS,
+        "analysis_id": lower,
+        "analysis_tax_year": 2026,
+        "tax_profile": {"tax_year": 2026, "filing_status": "single"},
+    }
+    remember_analysis(lower, user, year_2026)
+    created = []
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "create",
+        lambda **kwargs: created.append(kwargs) or FakeCheckoutSession(**kwargs),
     )
 
     response = client.post(
         "/api/year-close-packet/checkout",
-        json={"analysis_id": aid, "analysis": {**SAMPLE_ANALYSIS, "analysis_id": aid}},
+        json={"analysis_id": upper, "analysis": year_2026},
     )
 
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == _PAID_OTHER_YEAR_DETAIL
+    assert created == []
+    assert len(snapshot_client.rows) == 1
+    assert snapshot_client.rows[0]["analysis_id"] == upper
+    assert snapshot_client.rows[0]["tax_year"] == 2025
+    assert snapshot_client.rows[0]["paid_at"]
+
+
+def test_download_serves_pdf_when_stripe_outage_has_matching_paid_session(monkeypatch):
+    _test_stripe_env(monkeypatch)
+    analysis_id = "analysis-durable-proof"
+    user = "test-user-123"
+    payload = build_packet_payload(SAMPLE_ANALYSIS, analysis_id=analysis_id)
+    _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)] = {
+        "analysis_id": analysis_id,
+        "user_id": user,
+        "tax_year": 2025,
+        "packet_payload": payload,
+        "packet_session_id": "cs_durable_match",
+        "paid_at": "2026-09-30T00:00:00+00:00",
+    }
+    calls = {"n": 0}
+
+    def retrieve(*_args, **_kwargs):
+        calls["n"] += 1
+        raise main.stripe.StripeError("offline")
+
+    monkeypatch.setattr(main.stripe.checkout.Session, "retrieve", retrieve)
+    response = client.get(
+        "/api/year-close-packet/download",
+        params={"analysis_id": analysis_id, "session_id": "cs_durable_match"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.content.startswith(b"%PDF")
+    assert calls["n"] == 1
+
+
+def test_download_stripe_outage_without_matching_paid_session_is_503(monkeypatch):
+    _test_stripe_env(monkeypatch)
+    analysis_id = "analysis-no-durable-proof"
+    user = "test-user-123"
+    payload = build_packet_payload(SAMPLE_ANALYSIS, analysis_id=analysis_id)
+    _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)] = {
+        "analysis_id": analysis_id,
+        "user_id": user,
+        "tax_year": 2025,
+        "packet_payload": payload,
+        "packet_session_id": "cs_real_paid",
+        "paid_at": "2026-09-30T00:00:00+00:00",
+    }
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(main.stripe.StripeError("offline")),
+    )
+    response = client.get(
+        "/api/year-close-packet/download",
+        params={"analysis_id": analysis_id, "session_id": "cs_not_this_buyer"},
+    )
     assert response.status_code == 503, response.text
     assert response.json()["detail"] == (
-        "Could not securely save the packet before checkout. Please retry."
+        "Could not verify the Checkout session. Please retry."
     )
-    assert response.json().get("already_paid") is not True
-    assert created == []
-    assert outage.inserts == []
-    assert outage.selects == 3
-    assert PACKET_STORE[aid]["paid"] is False
+    assert not response.content.startswith(b"%PDF")
+
+
+def test_checkout_updates_existing_history_tax_year(monkeypatch):
+    canonical = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    user = "test-user-123"
+    record = {
+        "id": "history-row",
+        "user_id": user,
+        "result": {
+            "analysis_id": canonical,
+            "analysis_tax_year": 2025,
+            "tax_profile": {"tax_year": 2025, "filing_status": "single"},
+        },
+    }
+    patches = []
+
+    def lookup(_analysis_id, _user_id):
+        return record, True
+
+    def patch(_analysis_id, _user_id, body):
+        patches.append(body)
+        result = record["result"]
+        result["analysis_tax_year"] = body["analysis_tax_year"]
+        result["tax_profile"] = body["tax_profile"]
+        return True
+
+    monkeypatch.setattr(main, "lookup_analysis_for_entitlement", lookup)
+    monkeypatch.setattr(main, "patch_analysis_result", patch)
+
+    assert main._ensure_packet_history_row(canonical, user, 2026) is True
+    assert patches == [{
+        "analysis_tax_year": 2026,
+        "tax_profile": {"tax_year": 2026, "filing_status": "single"},
+    }]
+    assert "id" not in patches[0]
+    assert main._ensure_packet_history_row(canonical, user, 2026) is True
+    assert len(patches) == 1
+
+
+def test_download_retrieves_checkout_session_once(monkeypatch):
+    _test_stripe_env(monkeypatch)
+    aid = "analysis-retrieve-once"
+    user = "test-user-123"
+    payload = build_packet_payload(
+        {**SAMPLE_ANALYSIS, "analysis_id": aid},
+        analysis_id=aid,
+    )
+    _FAKE_PACKET_SNAPSHOTS[(user, aid)] = {
+        "analysis_id": aid,
+        "user_id": user,
+        "tax_year": 2025,
+        "packet_payload": payload,
+        "packet_session_id": "cs_once",
+        "paid_at": "2026-01-01T00:00:00+00:00",
+    }
+    calls = {"n": 0}
+    session = _stripe_object_session(
+        id="cs_once",
+        metadata={
+            "analysis_id": aid,
+            "user_id": user,
+            "tax_year": "2025",
+        },
+    )
+
+    def retrieve(*_args, **_kwargs):
+        calls["n"] += 1
+        return session
+
+    monkeypatch.setattr(main.stripe.checkout.Session, "retrieve", retrieve)
+    got = client.get(
+        "/api/year-close-packet/download",
+        params={"analysis_id": aid, "session_id": "cs_once"},
+    )
+    assert got.status_code == 200, got.text
+    assert calls["n"] == 1
+
+    calls["n"] = 0
+    posted = client.post(
+        "/api/year-close-packet/download",
+        json={
+            "analysis_id": aid,
+            "session_id": "cs_once",
+            "analysis": {**SAMPLE_ANALYSIS, "analysis_id": aid},
+        },
+    )
+    assert posted.status_code == 200, posted.text
+    assert calls["n"] == 1
+
+    calls["n"] = 0
+    bare = client.get(
+        "/api/year-close-packet/download",
+        params={"analysis_id": aid},
+    )
+    assert bare.status_code == 200, bare.text
+    assert calls["n"] == 0
+
+
+def test_legacy_webhook_uses_single_snapshot_year(monkeypatch, caplog):
+    _test_stripe_env(monkeypatch)
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_packet_test_secret")
+    user = "test-user-123"
+    canonical = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    monkeypatch.setattr(main, "lookup_analysis_for_entitlement", _no_history_lookup)
+    _FAKE_PACKET_SNAPSHOTS[(user, canonical)] = {
+        "analysis_id": canonical,
+        "user_id": user,
+        "tax_year": 2024,
+        "packet_payload": {"analysis_id": canonical, "marker": "snap-2024"},
+        "packet_session_id": None,
+        "paid_at": None,
+    }
+    with caplog.at_level(logging.ERROR, logger="main"):
+        webhook = _post_signed_webhook(
+            _packet_checkout_event(
+                analysis_id=canonical.upper(),
+                user_id=user,
+                event_id="evt_single_snapshot_year",
+            )
+        )
+    assert webhook.status_code == 200, webhook.text
+    assert webhook.json()["granted"] is True
+    assert "PACKET_GRANT_YEAR_UNKNOWN" not in caplog.text
+    row = _FAKE_PACKET_SNAPSHOTS[(user, canonical)]
+    assert int(row["tax_year"]) == 2024
+    assert row["paid_at"]
+    assert row["packet_session_id"] == "cs_test_paid_1"
+    assert list(_FAKE_PACKET_SNAPSHOTS) == [(user, canonical)]
+    entitlement = _FAKE_PACKET_ENTITLEMENTS[(user, 2024, "cs_test_paid_1")]
+    assert entitlement["analysis_id"] == canonical
+
+
+def test_legacy_webhook_unknown_year_is_retryable(monkeypatch, caplog):
+    _test_stripe_env(monkeypatch)
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_packet_test_secret")
+    user = "test-user-123"
+    analysis_id = "analysis-year-unknown"
+    monkeypatch.setattr(main, "lookup_analysis_for_entitlement", _no_history_lookup)
+    session = _stripe_object_session(
+        id="cs_year_unknown_retry",
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": analysis_id,
+            "user_id": user,
+        },
+    )
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda *_args, **_kwargs: session,
+    )
+    with caplog.at_level(logging.ERROR, logger="main"):
+        webhook = _post_signed_webhook(
+            _packet_checkout_event(
+                analysis_id=analysis_id,
+                user_id=user,
+                event_id="evt_year_unknown_retry",
+            )
+        )
+    assert webhook.status_code == 500, webhook.text
+    assert webhook.json().get("granted") is not True
+    unknown_logs = [
+        record
+        for record in caplog.records
+        if record.levelno == logging.ERROR and "PACKET_GRANT_YEAR_UNKNOWN" in record.message
+    ]
+    assert len(unknown_logs) == 1
+    assert "cs_test_paid_1" in unknown_logs[0].message
+    assert user in unknown_logs[0].message
+    assert analysis_id in unknown_logs[0].message
+    assert _FAKE_PACKET_ENTITLEMENTS == {}
+    confirm = client.post(
+        "/api/year-close-packet/confirm",
+        json={"session_id": session.id, "analysis_id": analysis_id},
+    )
+    assert confirm.status_code == 409, confirm.text
+    assert "PACKET_GRANT_YEAR_UNKNOWN" in confirm.json()["detail"]
 
 
 def test_paid_grant_survives_history_miss_from_owned_private_snapshot(monkeypatch):
@@ -5457,15 +5870,25 @@ def test_paid_download_reloads_suggestions_from_history_on_store_miss(monkeypatc
 def test_paid_download_uses_server_lot_rows_not_redacted_client_json(monkeypatch):
     _test_stripe_env(monkeypatch)
     analysis_id = "analysis-paid-server-rows"
-    remember_analysis(analysis_id, "test-user-123", LOT_MATCH_ANALYSIS)
-    mark_paid(analysis_id, "cs_test_paid_rows", user_id="test-user-123")
-    paid_session = SimpleNamespace(
+    user = "test-user-123"
+    remember_analysis(analysis_id, user, LOT_MATCH_ANALYSIS)
+    mark_paid(analysis_id, "cs_test_paid_rows", user_id=user)
+    payload = build_packet_payload(LOT_MATCH_ANALYSIS, analysis_id=analysis_id)
+    _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)] = {
+        "analysis_id": analysis_id,
+        "user_id": user,
+        "tax_year": 2024,
+        "packet_payload": payload,
+        "packet_session_id": "cs_test_paid_rows",
+        "paid_at": "2026-01-01T00:00:00+00:00",
+    }
+    paid_session = _stripe_object_session(
         id="cs_test_paid_rows",
-        payment_status="paid",
-        amount_total=PACKET_AMOUNT_CENTS,
         metadata={
             "product": PACKET_METADATA_PRODUCT,
             "analysis_id": analysis_id,
+            "user_id": user,
+            "tax_year": "2024",
         },
     )
     monkeypatch.setattr(
@@ -5493,9 +5916,11 @@ def test_paid_download_uses_server_lot_rows_not_redacted_client_json(monkeypatch
             "analysis": redacted,
         },
     )
-    assert response.status_code == 403
-    assert response.json()["detail"] == "Year-close packet download requires payment."
-    assert not response.content.startswith(b"%PDF")
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"] == "application/pdf"
+    pdf_text = _pdf_text(response.content)
+    assert "matched_settlement_gap NVDA" in pdf_text
+    assert "1099_only SPX" in pdf_text
     assert PACKET_STORE[analysis_id]["paid"] is True
 
 

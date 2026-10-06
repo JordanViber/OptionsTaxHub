@@ -508,7 +508,7 @@ class TestSaveAnalysisHistory:
             if call[0] == "insert"
         )
         assert inserted["id"] == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-        assert inserted["result"]["analysis_id"] == "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
+        assert inserted["result"]["analysis_id"] == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
         assert inserted["result"] is not caller
         assert caller == {
             "analysis_id": "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA",
@@ -638,7 +638,7 @@ class TestPatchAnalysisResult:
         )
         builder.select.return_value.eq.assert_any_call("user_id", "user1")
         builder.select.return_value.eq.return_value.filter.assert_called_once_with(
-            "result->>analysis_id", "ilike", "00000000-0000-4000-8000-000000000001"
+            "result->>analysis_id", "eq", "00000000-0000-4000-8000-000000000001"
         )
         builder.select.return_value.eq.return_value.filter.return_value.order.assert_called_once_with(
             "uploaded_at", desc=True
@@ -671,10 +671,13 @@ class TestPatchAnalysisResult:
             "00000000-0000-4000-8000-000000000001", "user1", {"packet_unlocked": True}
         ) is False
         builder.select.return_value.eq.assert_any_call("user_id", "user1")
-        builder.select.return_value.eq.return_value.filter.assert_called_once_with(
+        builder.select.return_value.eq.return_value.filter.assert_any_call(
+            "result->>analysis_id", "eq", "00000000-0000-4000-8000-000000000001"
+        )
+        builder.select.return_value.eq.return_value.filter.assert_any_call(
             "result->>analysis_id", "ilike", "00000000-0000-4000-8000-000000000001"
         )
-        builder.select.return_value.eq.return_value.filter.return_value.order.assert_called_once_with(
+        builder.select.return_value.eq.return_value.filter.return_value.order.assert_any_call(
             "uploaded_at", desc=True
         )
         builder.update.assert_not_called()
@@ -705,7 +708,7 @@ class TestEnsureAnalysisHistory:
 
         assert db.ensure_analysis_history("00000000-0000-4000-8000-000000000001", "user1", None) == record
         builder.select.return_value.eq.return_value.filter.assert_called_once_with(
-            "result->>analysis_id", "ilike", "00000000-0000-4000-8000-000000000001"
+            "result->>analysis_id", "eq", "00000000-0000-4000-8000-000000000001"
         )
         builder.select.return_value.eq.assert_any_call("user_id", "user1")
         builder.select.return_value.eq.return_value.filter.return_value.order.assert_called_once_with(
@@ -847,6 +850,7 @@ class TestEnsureAnalysisHistory:
         client = _ScriptedClient([
             [],
             [],
+            [],
             [{"canonical_analysis_id": canonical}],
             [row],
         ])
@@ -864,12 +868,12 @@ class TestEnsureAnalysisHistory:
             'relation "portfolio_analysis_id_aliases" does not exist'
         )
         missing.code = "42P01"
-        client = _ScriptedClient([[], [], missing])
+        client = _ScriptedClient([[], [], [], missing])
         monkeypatch.setattr(db, "get_supabase", lambda: client)
 
         assert db.lookup_analysis_for_entitlement(legacy, "user1") == (None, True)
 
-        again = _ScriptedClient([[], [], missing])
+        again = _ScriptedClient([[], [], [], missing])
         monkeypatch.setattr(db, "get_supabase", lambda: again)
         assert db.get_analysis_by_id(legacy, "user1") is None
 
@@ -877,7 +881,7 @@ class TestEnsureAnalysisHistory:
             "Could not find the table 'public.portfolio_analysis_id_aliases' in the schema cache"
         )
         cache_miss.code = "PGRST205"
-        cached = _ScriptedClient([[], [], cache_miss])
+        cached = _ScriptedClient([[], [], [], cache_miss])
         monkeypatch.setattr(db, "get_supabase", lambda: cached)
         assert db.lookup_analysis_for_entitlement(legacy, "user1") == (None, False)
 
@@ -895,13 +899,13 @@ class TestEnsureAnalysisHistory:
         )
         other_table.code = "PGRST205"
         for error in (unnamed, column, other_table):
-            client = _ScriptedClient([[], [], error])
+            client = _ScriptedClient([[], [], [], error])
             monkeypatch.setattr(db, "get_supabase", lambda client=client: client)
             assert db.lookup_analysis_for_entitlement(legacy, "user1") == (None, False)
 
     def test_alias_outage_is_not_a_miss_for_entitlement_lookup(self, monkeypatch):
         legacy = "11111111-1111-4111-8111-111111111111"
-        client = _ScriptedClient([[], [], Exception("timeout")])
+        client = _ScriptedClient([[], [], [], Exception("timeout")])
         monkeypatch.setattr(db, "get_supabase", lambda: client)
 
         assert db.lookup_analysis_for_entitlement(legacy, "user1") == (None, False)
@@ -1079,7 +1083,7 @@ class TestLatestActivityBook:
 class TestPacketSnapshots:
     def test_saves_private_packet_snapshot_with_short_unpaid_retention(self, monkeypatch):
         client = _FakeClient(
-            table_responses=[[], [], [], [{"analysis_id": "analysis-a", "user_id": "user1"}]],
+            table_responses=[[], [], [{"analysis_id": "analysis-a", "user_id": "user1"}]],
         )
         monkeypatch.setattr(db, "get_supabase", lambda: client)
 
@@ -1091,7 +1095,7 @@ class TestPacketSnapshots:
         )
 
         assert saved["analysis_id"] == "analysis-a"
-        calls = client.builders[3].calls
+        calls = client.builders[2].calls
         insert = next(call for call in calls if call[0] == "insert")
         assert insert[1][0]["paid_at"] is None
         assert insert[1][0]["tax_year"] == 2026
@@ -1099,7 +1103,7 @@ class TestPacketSnapshots:
 
     def test_paid_packet_snapshot_has_no_expiry(self, monkeypatch):
         client = _FakeClient(
-            table_responses=[[], [], [], [{"analysis_id": "analysis-a", "user_id": "user1"}]],
+            table_responses=[[], [], [{"analysis_id": "analysis-a", "user_id": "user1"}]],
         )
         monkeypatch.setattr(db, "get_supabase", lambda: client)
 
@@ -1113,7 +1117,7 @@ class TestPacketSnapshots:
         )
 
         assert saved["analysis_id"] == "analysis-a"
-        insert = next(call for call in client.builders[3].calls if call[0] == "insert")
+        insert = next(call for call in client.builders[2].calls if call[0] == "insert")
         assert insert[1][0]["paid_at"] is not None
         assert insert[1][0]["expires_at"] is None
 
@@ -1214,7 +1218,7 @@ class TestPacketSnapshots:
             "expires_at": "2000-01-01T00:00:00+00:00",
         }
         paid = {
-            "analysis_id": stored,
+            "analysis_id": stored.lower(),
             "user_id": "user1",
             "tax_year": 2025,
             "packet_payload": {"analysis_tax_year": 2025},
@@ -1222,10 +1226,10 @@ class TestPacketSnapshots:
             "paid_at": "2026-01-01T00:00:00+00:00",
             "expires_at": None,
         }
-        client = _ApplyingSnapshotClient([expired, paid])
-        rows, ok = db.list_packet_snapshots_for_identity(stored.lower(), "user1", client=client)
+        client = _ApplyingSnapshotClient([paid])
+        rows, ok = db.list_packet_snapshots_for_identity(stored, "user1", client=client)
         assert ok is True
-        assert [row["analysis_id"] for row in rows] == [stored]
+        assert [row["analysis_id"] for row in rows] == [stored.lower()]
 
         class _Down:
             def table(self, _name):
@@ -1469,10 +1473,9 @@ class TestPacketSnapshots:
         assert not any(call[0] == "gt" and call[1][0] == "expires_at" for call in calls)
 
     def test_packet_snapshot_read_matches_uuid_case_variant(self, monkeypatch):
-        stored = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
-        canonical = stored.lower()
+        canonical = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
         row = {
-            "analysis_id": stored,
+            "analysis_id": canonical,
             "user_id": "user1",
             "tax_year": 2025,
             "packet_payload": {"report": "private"},
@@ -1483,16 +1486,37 @@ class TestPacketSnapshots:
         client = _FakeClient(table_data=[row])
         monkeypatch.setattr(db, "get_supabase", lambda: client)
 
-        snapshot, lookup_succeeded = db.get_packet_snapshot(canonical, "user1")
+        snapshot, lookup_succeeded = db.get_packet_snapshot(canonical.upper(), "user1")
+
+        assert lookup_succeeded is True
+        assert snapshot["analysis_id"] == canonical
+        assert snapshot["packet_payload"] == {"report": "private"}
+        calls = client.builders[0].calls
+        assert ("eq", ("analysis_id", canonical), {}) in calls
+        assert not any(
+            call[0] == "filter" and call[1][1] == "ilike" for call in calls
+        )
+
+    def test_packet_snapshot_read_falls_back_when_canonical_eq_misses(self, monkeypatch):
+        stored = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
+        row = {
+            "analysis_id": stored,
+            "user_id": "user1",
+            "tax_year": 2025,
+            "packet_payload": {"report": "legacy"},
+            "packet_session_id": "cs_legacy",
+            "paid_at": "2026-01-01T00:00:00+00:00",
+            "expires_at": None,
+        }
+        client = _OrderingSnapshotClient([row])
+        monkeypatch.setattr(db, "get_supabase", lambda: client)
+
+        snapshot, lookup_succeeded = db.get_packet_snapshot(stored.lower(), "user1")
 
         assert lookup_succeeded is True
         assert snapshot["analysis_id"] == stored
-        assert snapshot["packet_payload"] == {"report": "private"}
-        calls = client.builders[0].calls
-        assert ("filter", ("analysis_id", "ilike", canonical), {}) in calls
-        assert not any(
-            call[0] == "eq" and call[1][0] == "analysis_id" for call in calls
-        )
+        assert snapshot["packet_payload"] == {"report": "legacy"}
+        assert len(client.orders) == 6
 
     def test_snapshot_update_keeps_stored_uuid_spelling(self, monkeypatch):
         stored = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
@@ -1522,18 +1546,9 @@ class TestPacketSnapshots:
         assert not any(call[0] == "insert" for call in client.builders[1].calls)
 
     def test_snapshot_lookup_prefers_paid_row_over_expired_case_variant(self, monkeypatch):
-        stored = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
-        expired = {
-            "analysis_id": stored.lower(),
-            "user_id": "user1",
-            "tax_year": 2025,
-            "packet_payload": {"report": "expired"},
-            "packet_session_id": None,
-            "paid_at": None,
-            "expires_at": "2000-01-01T00:00:00+00:00",
-        }
+        canonical = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
         paid = {
-            "analysis_id": stored,
+            "analysis_id": canonical,
             "user_id": "user1",
             "tax_year": 2025,
             "packet_payload": {"report": "paid"},
@@ -1541,13 +1556,13 @@ class TestPacketSnapshots:
             "paid_at": "2026-01-01T00:00:00+00:00",
             "expires_at": None,
         }
-        client = _OrderingSnapshotClient([expired, paid])
+        client = _OrderingSnapshotClient([paid])
         monkeypatch.setattr(db, "get_supabase", lambda: client)
 
-        snapshot, lookup_succeeded = db.get_packet_snapshot(stored.lower(), "user1")
+        snapshot, lookup_succeeded = db.get_packet_snapshot(canonical.upper(), "user1")
 
         assert lookup_succeeded is True
-        assert snapshot["analysis_id"] == stored
+        assert snapshot["analysis_id"] == canonical
         assert snapshot["packet_payload"] == {"report": "paid"}
         assert client.orders == [
             ("paid_at", {"desc": True, "nullsfirst": False}),
@@ -1555,15 +1570,15 @@ class TestPacketSnapshots:
             ("analysis_id", {}),
         ]
 
-        save_client = _OrderingSnapshotClient([expired, paid])
+        save_client = _OrderingSnapshotClient([paid])
         monkeypatch.setattr(db, "get_supabase", lambda: save_client)
         saved = db.save_packet_snapshot(
-            stored.lower(),
+            canonical.upper(),
             "user1",
             2025,
             {"report": "should-not-replace"},
         )
-        assert saved["analysis_id"] == stored
+        assert saved["analysis_id"] == canonical
         assert save_client.updates == []
         assert save_client.inserts == []
 
@@ -1685,10 +1700,9 @@ class TestPacketSnapshots:
         assert client.row(stored)["paid_at"] == "2026-01-01T00:00:00+00:00"
 
     def test_get_packet_snapshot_skips_paid_other_year_case_variant(self, monkeypatch):
-        stored = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
-        other = stored.lower()
+        canonical = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
         other_year = {
-            "analysis_id": stored,
+            "analysis_id": canonical,
             "user_id": "user1",
             "tax_year": 2024,
             "packet_payload": {"report": "other-year"},
@@ -1696,31 +1710,20 @@ class TestPacketSnapshots:
             "paid_at": "2026-03-01T00:00:00+00:00",
             "expires_at": None,
         }
-        this_year = {
-            "analysis_id": other,
-            "user_id": "user1",
-            "tax_year": 2025,
-            "packet_payload": {"report": "this-year"},
-            "packet_session_id": None,
-            "paid_at": None,
-            "expires_at": "2099-01-01T00:00:00+00:00",
-        }
-        client = _ApplyingSnapshotClient([other_year, this_year])
+        client = _ApplyingSnapshotClient([other_year])
         monkeypatch.setattr(db, "get_supabase", lambda: client)
 
         snapshot, lookup_succeeded = db.get_packet_snapshot(
-            other, "user1", tax_year=2025
+            canonical.upper(), "user1", tax_year=2025
         )
 
         assert lookup_succeeded is True
-        assert snapshot["analysis_id"] == other
-        assert snapshot["tax_year"] == 2025
-        assert snapshot["packet_payload"] == {"report": "this-year"}
-        unscoped, unscoped_ok = db.get_packet_snapshot(other, "user1")
+        assert snapshot is None
+        unscoped, unscoped_ok = db.get_packet_snapshot(canonical, "user1")
         assert unscoped_ok is True
         assert unscoped["tax_year"] == 2024
-        assert client.row(stored)["packet_session_id"] == "cs_other_year"
-        assert client.row(other)["paid_at"] is None
+        assert client.row(canonical)["packet_session_id"] == "cs_other_year"
+        assert client.row(canonical)["paid_at"] == "2026-03-01T00:00:00+00:00"
 
     def test_mark_packet_snapshot_paid_matches_uuid_case_variant(self, monkeypatch):
         stored = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
@@ -1736,7 +1739,10 @@ class TestPacketSnapshots:
             stored.lower(), "user1", 2025, "cs_case"
         ) is True
         read_calls = client.builders[0].calls
-        assert ("filter", ("analysis_id", "ilike", stored.lower()), {}) in read_calls
+        assert ("eq", ("analysis_id", stored.lower()), {}) in read_calls
+        assert not any(
+            call[0] == "filter" and call[1][1] == "ilike" for call in read_calls
+        )
         update_calls = client.builders[1].calls
         update = next(call for call in update_calls if call[0] == "update")
         assert "analysis_id" not in update[1][0]
@@ -2160,10 +2166,18 @@ def _embedded_analysis_id(row):
 
 def _row_matches_extra_filters(row, extra_filters) -> bool:
     for column, operator, value in extra_filters:
-        if column != "result->>analysis_id" or operator != "ilike":
+        if column != "result->>analysis_id":
             return False
         embedded = _embedded_analysis_id(row)
-        if not isinstance(embedded, str) or embedded.lower() != str(value).lower():
+        if not isinstance(embedded, str):
+            return False
+        if operator == "eq":
+            if embedded != str(value):
+                return False
+        elif operator == "ilike":
+            if embedded.lower() != str(value).lower():
+                return False
+        else:
             return False
     return True
 
@@ -2271,7 +2285,7 @@ class TestCrossUserGuestAnalysisId:
         )
 
         assert saved["id"] == canonical
-        assert store.rows[0]["result"]["analysis_id"] == upper
+        assert store.rows[0]["result"]["analysis_id"] == canonical
         assert caller["analysis_id"] == upper
         with pytest.raises(db.HistoryInsertConflict):
             db.save_analysis_history(
@@ -2281,7 +2295,7 @@ class TestCrossUserGuestAnalysisId:
                 result_data={"analysis_id": canonical, "positions": []},
             )
         assert len(store.rows) == 1
-        assert store.rows[0]["result"]["analysis_id"] == upper
+        assert store.rows[0]["result"]["analysis_id"] == canonical
 
         preexisting = _SharedGuestHistory()
         preexisting.rows.append({
