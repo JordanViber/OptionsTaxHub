@@ -2675,7 +2675,9 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
             packet_payload = None
         elif isinstance(packet_payload, dict):
             saved_snapshot = _save_grant_snapshot(packet_payload)
-            if saved_snapshot == PACKET_GRANT_YEAR_CONFLICT:
+            # True is an already-granted session. Do not treat it as a saved
+            # snapshot and continue into history.
+            if saved_snapshot is True or saved_snapshot == PACKET_GRANT_YEAR_CONFLICT:
                 return saved_snapshot
             if not saved_snapshot:
                 return None
@@ -2746,7 +2748,7 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
             packet_payload = None
         else:
             saved_snapshot = _save_grant_snapshot(packet_payload, paid=True)
-            if saved_snapshot == PACKET_GRANT_YEAR_CONFLICT:
+            if saved_snapshot is True or saved_snapshot == PACKET_GRANT_YEAR_CONFLICT:
                 return saved_snapshot
             if not saved_snapshot:
                 return None
@@ -2863,7 +2865,7 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
                 return None
             return PACKET_GRANT_MISSING_SOURCE
         repaired = _save_grant_snapshot(packet_payload, paid=True)
-        if repaired == PACKET_GRANT_YEAR_CONFLICT:
+        if repaired is True or repaired == PACKET_GRANT_YEAR_CONFLICT:
             return repaired
         if not repaired:
             return None
@@ -4131,17 +4133,22 @@ def _resolve_download_tax_year(
     """Pick one tax year for a download. Never leave the snapshot read unscoped.
 
     A Stripe outage with a paid row for this session uses that row's year.
-    When Checkout metadata names a tax year, that year wins. A different body
-    year is 403. History does not veto the session year. With no metadata
+    When Checkout metadata names a tax year, that year wins. Only an explicit
+    ``analysis_tax_year`` can veto it. ``tax_profile.tax_year`` is not a body
+    year: compact download JSON omits ``analysis_tax_year`` and still carries
+    the profile year. History does not veto the session year. With no metadata
     year, the body wins, then the shared resolver.
     """
     if durable_year is not None:
         return int(durable_year)
     if session_id and metadata_year is not None:
-        body_year = (
-            _packet_result_tax_year(analysis) if isinstance(analysis, dict) else None
-        )
-        if body_year is not None and body_year != metadata_year:
+        explicit_year = None
+        if isinstance(analysis, dict) and analysis.get("analysis_tax_year") is not None:
+            try:
+                explicit_year = int(analysis.get("analysis_tax_year"))
+            except (TypeError, ValueError):
+                explicit_year = None
+        if explicit_year is not None and explicit_year != metadata_year:
             _packet_download_forbidden()
         return int(metadata_year)
 

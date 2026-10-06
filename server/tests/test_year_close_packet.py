@@ -244,6 +244,8 @@ def _clean_store(monkeypatch):
             "packet_session_id": session_id,
         }
         _FAKE_PACKET_ENTITLEMENTS[(user_id, int(tax_year), session_id)] = row
+        if _kwargs.get("conflict_receipt"):
+            return db._InsertedPacketEntitlement(row)
         return row
 
     def lookup_entitlement(user_id, tax_year):
@@ -4071,7 +4073,7 @@ def test_download_post_403_when_body_year_disagrees_with_session_year(monkeypatc
         json={
             "analysis_id": aid,
             "session_id": "cs_paid_2025",
-            "analysis": year_2026,
+            "analysis": {**year_2026, "analysis_tax_year": 2026},
         },
     )
 
@@ -4083,8 +4085,42 @@ def test_download_post_403_when_body_year_disagrees_with_session_year(monkeypatc
     assert snapshot_client.rows[0] == original
 
 
+def test_download_post_profile_year_uses_session_pdf(monkeypatch):
+    """compactAnalysis has no analysis_tax_year. Profile year must not 403."""
+    aid, snapshot_client, _year_2026 = _paid_2025_session_fixture(monkeypatch)
+    original = deepcopy(snapshot_client.rows[0])
+    compact = {
+        "analysis_id": aid,
+        "tax_profile": {"tax_year": 2024, "filing_status": "single"},
+        "supplemental_1099": None,
+        "wash_sale_flags": [],
+        "summary": {"realized_summary": None},
+        "tax_lots": [{
+            "symbol": "PROFILE2024",
+            "quantity": 1,
+            "purchase_date": "2024-01-02",
+            "wash_sale_disallowed": 0,
+        }],
+        "lot_match_report": None,
+        "suggestions": [],
+    }
+    assert "analysis_tax_year" not in compact
+
+    response = client.post(
+        "/api/year-close-packet/download",
+        json={"analysis_id": aid, "session_id": "cs_paid_2025", "analysis": compact},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("application/pdf")
+    text = _pdf_text(response.content)
+    assert "PAID2025" in text
+    assert "PROFILE2024" not in text
+    assert snapshot_client.rows[0] == original
+
+
 def test_download_rejects_second_spelling_post_with_other_sessions(monkeypatch):
-    """POST B's id and 2026 profile with A's 2025 session is not B's PDF."""
+    """A 2026 profile on a case variant still serves the paid 2025 snapshot."""
     _test_stripe_env(monkeypatch)
     stored = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
     other = stored.lower()
@@ -4121,6 +4157,7 @@ def test_download_rejects_second_spelling_post_with_other_sessions(monkeypatch):
         lambda *_args, **_kwargs: paid_session,
     )
     _forbid_download_writes(monkeypatch)
+    _marker_pdf(monkeypatch)
     original = deepcopy(snapshot_client.rows[0])
 
     response = client.post(
@@ -4136,10 +4173,10 @@ def test_download_rejects_second_spelling_post_with_other_sessions(monkeypatch):
         },
     )
 
-    assert response.status_code == 403, response.text
-    assert not response.content.startswith(b"%PDF")
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("application/pdf")
     assert b"B-UNPAID-2026" not in response.content
-    assert b"paid-A-2025" not in response.content
+    assert b"paid-A-2025" in response.content
     assert len(snapshot_client.rows) == 1
     assert snapshot_client.rows[0] == original
     assert snapshot_client.rows[0]["analysis_id"] == other
@@ -8071,6 +8108,195 @@ def test_confirm_real_entitlement_is_not_year_conflict(monkeypatch, caplog):
     assert snapshot_client.rows[0]["paid_at"] == before[0]["paid_at"]
     assert snapshot_client.rows[0]["packet_session_id"] == before[0]["packet_session_id"]
     assert snapshot_client.rows[0]["tax_year"] == before[0]["tax_year"]
+
+
+def _k21_history(aid, user, year):
+    return {
+        "id": f"hist-{aid}",
+        "user_id": user,
+        "result": {
+            "analysis_id": aid,
+            "analysis_tax_year": year,
+            "tax_profile": {"tax_year": year, "filing_status": "single"},
+            "marker": "history-stays",
+        },
+    }
+
+
+def _k21_conflict_grant(monkeypatch, *, aid, session_id, tax_year, history, snapshot):
+    """Persist a grant whose snapshot save raises and the handler returns True."""
+    _test_stripe_env(monkeypatch)
+    user = "test-user-123"
+    before = deepcopy(history["result"])
+    writes = {"save": 0, "ensure": 0, "patch": 0, "entitlement": 0}
+    real_ensure = main._ensure_packet_history_row
+
+    def save_boom(*_args, **_kwargs):
+        writes["save"] += 1
+        raise db.PacketSnapshotYearConflict(aid, 2025, tax_year)
+
+    def ensure(*args, **kwargs):
+        writes["ensure"] += 1
+        return real_ensure(*args, **kwargs)
+
+    def patch(*_args, **_kwargs):
+        writes["patch"] += 1
+        return True
+
+    def entitlement(*_args, **_kwargs):
+        writes["entitlement"] += 1
+        return {"analysis_id": aid}
+
+    monkeypatch.setattr(main, "lookup_analysis_for_entitlement", lambda *_a, **_k: (history, True))
+    monkeypatch.setattr(main, "get_packet_snapshot", lambda *_a, **_k: snapshot)
+    monkeypatch.setattr(main, "save_packet_snapshot", save_boom)
+    monkeypatch.setattr(main, "_record_packet_year_conflict", lambda *_a, **_k: True)
+    monkeypatch.setattr(main, "_ensure_packet_history_row", ensure)
+    monkeypatch.setattr(main, "patch_analysis_result", patch)
+    monkeypatch.setattr(main, "save_packet_entitlement", entitlement)
+    session = _stripe_object_session(
+        id=session_id,
+        metadata={"analysis_id": aid, "user_id": user, "tax_year": str(tax_year)},
+    )
+    granted = main._persist_packet_grant(session, aid, user)
+    assert history["result"] == before
+    return granted, writes
+
+
+def test_grant_conflict_true_on_snapshot_miss_leaves_history(monkeypatch):
+    aid = "analysis-k21-miss"
+    user = "test-user-123"
+    history = _k21_history(aid, user, 2024)
+    remember_analysis(aid, user, history["result"])
+    granted, writes = _k21_conflict_grant(
+        monkeypatch,
+        aid=aid,
+        session_id="cs_k21_miss",
+        tax_year=2026,
+        history=history,
+        snapshot=(None, True),
+    )
+    assert granted is True
+    assert writes == {"save": 1, "ensure": 0, "patch": 0, "entitlement": 0}
+    assert history["result"]["analysis_tax_year"] == 2024
+
+
+def test_grant_conflict_true_on_null_payload_leaves_history(monkeypatch):
+    aid = "analysis-k21-null"
+    user = "test-user-123"
+    history = _k21_history(aid, user, 2024)
+    remember_analysis(aid, user, history["result"])
+    granted, writes = _k21_conflict_grant(
+        monkeypatch,
+        aid=aid,
+        session_id="cs_k21_null",
+        tax_year=2026,
+        history=history,
+        snapshot=({
+            "analysis_id": aid,
+            "user_id": user,
+            "tax_year": 2026,
+            "packet_payload": None,
+            "packet_session_id": None,
+            "paid_at": None,
+        }, True),
+    )
+    assert granted is True
+    assert writes == {"save": 1, "ensure": 0, "patch": 0, "entitlement": 0}
+    assert history["result"]["analysis_tax_year"] == 2024
+
+
+def test_grant_conflict_true_on_repair_leaves_history(monkeypatch):
+    aid = "analysis-k21-repair"
+    user = "test-user-123"
+    history = _k21_history(aid, user, 2026)
+    snapshot = ({
+        "analysis_id": aid,
+        "user_id": user,
+        "tax_year": 2026,
+        "packet_payload": {"marker": "doc", "analysis_tax_year": 2026},
+        "packet_session_id": None,
+        "paid_at": None,
+    }, True)
+    monkeypatch.setattr(main, "mark_packet_snapshot_paid", lambda *_a, **_k: False)
+    granted, writes = _k21_conflict_grant(
+        monkeypatch,
+        aid=aid,
+        session_id="cs_k21_repair",
+        tax_year=2026,
+        history=history,
+        snapshot=snapshot,
+    )
+    assert granted is True
+    assert writes == {"save": 1, "ensure": 1, "patch": 0, "entitlement": 0}
+    assert history["result"]["analysis_tax_year"] == 2026
+
+
+def test_missing_source_conflict_true_grants_without_history_write(monkeypatch):
+    """Already-granted on a paid other year is success, not a 409, and writes nothing."""
+    _test_stripe_env(monkeypatch)
+    user = "test-user-123"
+    aid = "analysis-k21-missing"
+    history = _k21_history(aid, user, 2024)
+    before = deepcopy(history["result"])
+    writes = {"save": 0, "ensure": 0, "patch": 0, "entitlement": 0}
+
+    def save_boom(*_args, **_kwargs):
+        writes["save"] += 1
+        raise AssertionError("missing source must not save a snapshot")
+
+    monkeypatch.setattr(
+        main, "lookup_analysis_for_entitlement", lambda *_a, **_k: (history, True),
+    )
+    monkeypatch.setattr(
+        main,
+        "get_packet_snapshot",
+        lambda *_a, **_k: ({
+            "analysis_id": aid,
+            "user_id": user,
+            "tax_year": 2026,
+            "packet_payload": None,
+            "paid_at": None,
+        }, True),
+    )
+    monkeypatch.setattr(
+        main,
+        "list_packet_snapshots_for_identity",
+        lambda *_a, **_k: ([{
+            "analysis_id": aid,
+            "user_id": user,
+            "tax_year": 2025,
+            "paid_at": "2026-01-01T00:00:00+00:00",
+            "packet_payload": {"marker": "paid-2025"},
+            "packet_session_id": "cs_old",
+        }], True),
+    )
+    monkeypatch.setattr(main, "save_packet_snapshot", save_boom)
+    monkeypatch.setattr(main, "_record_packet_year_conflict", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        main,
+        "_ensure_packet_history_row",
+        lambda *_a, **_k: writes.__setitem__("ensure", writes["ensure"] + 1),
+    )
+    monkeypatch.setattr(
+        main,
+        "patch_analysis_result",
+        lambda *_a, **_k: writes.__setitem__("patch", writes["patch"] + 1) or True,
+    )
+    monkeypatch.setattr(
+        main,
+        "save_packet_entitlement",
+        lambda *_a, **_k: writes.__setitem__("entitlement", writes["entitlement"] + 1) or {},
+    )
+    session = _stripe_object_session(
+        id="cs_k21_missing",
+        metadata={"analysis_id": aid, "user_id": user, "tax_year": "2026"},
+    )
+    granted = main._persist_packet_grant(session, aid, user)
+    assert granted is True
+    assert granted != main.PACKET_GRANT_YEAR_CONFLICT
+    assert writes == {"save": 0, "ensure": 0, "patch": 0, "entitlement": 0}
+    assert history["result"] == before
 
 
 def test_ensure_non_int_years_are_missing_and_patch_none_is_checkout_503(monkeypatch):

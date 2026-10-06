@@ -1489,6 +1489,14 @@ class _AlreadyGrantedEntitlement:
 ALREADY_GRANTED_ENTITLEMENT = _AlreadyGrantedEntitlement()
 
 
+class _InsertedPacketEntitlement(dict):
+    """Entitlement row inserted by this call.
+
+    A unique-violation reread is a plain dict, so the receipt helper can log
+    only the insert and stay quiet when the writer hands back a stored row.
+    """
+
+
 def _is_conflict_analysis_id(value) -> bool:
     """True for a refund receipt stored in the entitlement analysis_id column."""
     return isinstance(value, str) and value.startswith("conflict:")
@@ -1629,12 +1637,18 @@ def save_packet_entitlement(
         except Exception as insert_error:
             if not _is_unique_violation(insert_error):
                 raise
+            # Stored row, not a sentinel. The receipt helper classifies it.
             return read_existing()
         current = read_existing()
         if current is STICKY_CONFLICT_RECEIPT or isinstance(current, dict):
+            if conflict_receipt and isinstance(current, dict):
+                return _InsertedPacketEntitlement(current)
             return current
         if result.data:
-            return dict(result.data[0])
+            inserted = dict(result.data[0])
+            if conflict_receipt:
+                return _InsertedPacketEntitlement(inserted)
+            return inserted
         return None
     except Exception as e:
         logger.error("Failed to save packet entitlement for %s: %s", analysis_id, e)
@@ -1651,7 +1665,7 @@ def save_packet_conflict_receipt(
     client=None,
     log_event: str = "PACKET_GRANT_YEAR_CONFLICT",
     entitlement_writer=None,
-) -> Optional[dict]:
+) -> dict | _AlreadyGrantedEntitlement | None:
     """Store one refund receipt for a charged session that must not grant.
 
     This is the only writer. It passes ``conflict_receipt=True``. A replay
@@ -1704,6 +1718,11 @@ def save_packet_conflict_receipt(
     )
     if saved is None or saved is STICKY_CONFLICT_RECEIPT or not isinstance(saved, dict):
         return None
+    # A unique-violation reread is a plain dict. This call's insert is marked.
+    if not isinstance(saved, _InsertedPacketEntitlement):
+        if not _is_conflict_analysis_id(saved.get("analysis_id")):
+            return ALREADY_GRANTED_ENTITLEMENT
+        return saved
     logger.error(
         "%s session_id=%s user_id=%s analysis_id=%s "
         "stored_tax_year=%s requested_tax_year=%s",
@@ -2321,7 +2340,7 @@ def mark_packet_snapshot_paid(
     tax_year: int,
     session_id: str,
     client=None,
-) -> Optional[bool]:
+) -> bool | str | None:
     """Mark an existing owner-scoped snapshot as paid for a settled session."""
     analysis_id = _canonical_analysis_id(analysis_id) or ""
     if not analysis_id or not user_id or tax_year is None or not session_id:

@@ -3048,6 +3048,59 @@ def test_conflict_receipt_replay_of_real_entitlement_is_already_granted(monkeypa
     assert len(receipt_client.entitlements) == 1
 
 
+def test_conflict_receipt_unique_violation_classifies_writer_return(monkeypatch, caplog):
+    """Writer return is the unique-violation path. The pre-read is empty."""
+    canonical = _LETTERED
+    client = _ApplyingSnapshotClient([])
+    monkeypatch.setattr(db, "get_supabase", lambda: client)
+
+    def writer_real(*_args, **_kwargs):
+        return {
+            "analysis_id": canonical,
+            "user_id": "user1",
+            "tax_year": 2025,
+            "packet_session_id": "cs_paid",
+        }
+
+    with caplog.at_level(40):
+        saved = db.save_packet_conflict_receipt(
+            canonical, "user1", 2025, "cs_paid", paid_tax_year=2024,
+            entitlement_writer=writer_real,
+        )
+    assert saved is db.ALREADY_GRANTED_ENTITLEMENT
+    assert client.entitlements == []
+    assert not any(record.levelno >= 40 for record in caplog.records)
+
+    def writer_conflict(*_args, **_kwargs):
+        return {
+            "analysis_id": f"conflict:{canonical}",
+            "user_id": "user1",
+            "tax_year": 2025,
+            "packet_session_id": "cs_race",
+        }
+
+    caplog.clear()
+    raced = db.save_packet_conflict_receipt(
+        canonical, "user1", 2025, "cs_race", paid_tax_year=2024,
+        entitlement_writer=writer_conflict,
+    )
+    assert raced["analysis_id"] == f"conflict:{canonical}"
+    assert raced["packet_session_id"] == "cs_race"
+    assert client.entitlements == []
+    assert not any(record.levelno >= 40 for record in caplog.records)
+
+    caplog.clear()
+    inserted = db.save_packet_conflict_receipt(
+        canonical, "user1", 2025, "cs_inserted", paid_tax_year=2024,
+    )
+    assert inserted["analysis_id"] == f"conflict:{canonical}"
+    assert len(client.entitlements) == 1
+    assert any(
+        record.levelno >= 40 and "PACKET_GRANT_YEAR_CONFLICT" in record.getMessage()
+        for record in caplog.records
+    )
+
+
 def test_save_packet_entitlement_refuses_conflict_prefix(monkeypatch):
     canonical = _LETTERED
     client = _ApplyingSnapshotClient([])
