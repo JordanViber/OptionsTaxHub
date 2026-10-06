@@ -1130,7 +1130,7 @@ def test_migration_012_collapses_snapshot_case_and_raises_on_two_paid_years(post
         )
         code, output = _psql(url, migration)
         assert code != 0
-        assert "two paid packet snapshots for one analysis UUID in different tax years" in output
+        assert "packet snapshots for one analysis UUID have more than one tax year" in output
         spellings = conn.execute(
             """
             SELECT analysis_id, tax_year
@@ -1186,7 +1186,7 @@ def test_migration_012_collapses_snapshot_case_and_raises_on_two_paid_years(post
               paid_at, updated_at
             ) VALUES
               (%s, 'mix-user', 2025, '{"marker":"paid"}'::jsonb, 'cs_paid', now(), now()),
-              (%s, 'mix-user', 2026, '{"marker":"unpaid"}'::jsonb, NULL, NULL, now())
+              (%s, 'mix-user', 2025, '{"marker":"unpaid"}'::jsonb, NULL, NULL, now())
             """,
             (paid_mix.upper(), paid_mix),
         )
@@ -1264,6 +1264,138 @@ def test_migration_012_collapses_snapshot_case_and_raises_on_two_paid_years(post
             """
         ).fetchone()
         assert history == (history_id, history_id)
+    finally:
+        conn.close()
+
+
+def test_migration_012_aborts_on_unpaid_other_year_spelling(postgres):
+    url, conn = postgres("oth_jor36_unpaid_years")
+    migration = (SERVER_DIR / "migrations" / "012_unify_analysis_identity.sql").read_text()
+    canonical = "abababab-abab-4aba-8aba-abababababab"
+    try:
+        _apply_migrations(url)
+        conn.execute(
+            """
+            INSERT INTO year_close_packet_snapshots (
+              analysis_id, user_id, tax_year, packet_payload, paid_at
+            ) VALUES
+              (%s, 'unpaid-years', 2025, '{"marker":"low"}'::jsonb, NULL),
+              (%s, 'unpaid-years', 2026, '{"marker":"up"}'::jsonb, NULL)
+            """,
+            (canonical, canonical.upper()),
+        )
+        code, output = _psql(url, migration)
+        assert code != 0
+        assert "packet snapshots for one analysis UUID have more than one tax year" in output
+        rows = conn.execute(
+            """
+            SELECT analysis_id, tax_year, packet_payload->>'marker', paid_at IS NULL
+            FROM year_close_packet_snapshots
+            WHERE user_id = 'unpaid-years'
+            ORDER BY tax_year
+            """
+        ).fetchall()
+        assert rows == [
+            (canonical, 2025, "low", True),
+            (canonical.upper(), 2026, "up", True),
+        ]
+    finally:
+        conn.close()
+
+
+def test_migration_012_aborts_on_entitlement_case_variants_in_different_years(postgres):
+    url, conn = postgres("oth_jor36_ent_years")
+    migration = (SERVER_DIR / "migrations" / "012_unify_analysis_identity.sql").read_text()
+    canonical = "bcbcbcbc-bcbc-4bcb-8bcb-bcbcbcbcbcbc"
+    try:
+        _apply_migrations(url)
+        conn.execute(
+            """
+            INSERT INTO year_close_packet_entitlements (
+              user_id, tax_year, packet_session_id, analysis_id
+            ) VALUES
+              ('ent-years', 2025, 'cs_a', %s),
+              ('ent-years', 2026, 'cs_b', %s)
+            """,
+            (canonical.upper(), canonical),
+        )
+        code, output = _psql(url, migration)
+        assert code != 0
+        assert "packet entitlements for one analysis UUID have more than one tax year" in output
+        rows = conn.execute(
+            """
+            SELECT analysis_id, tax_year, packet_session_id
+            FROM year_close_packet_entitlements
+            WHERE user_id = 'ent-years'
+            ORDER BY tax_year
+            """
+        ).fetchall()
+        assert rows == [
+            (canonical.upper(), 2025, "cs_a"),
+            (canonical, 2026, "cs_b"),
+        ]
+    finally:
+        conn.close()
+
+
+def test_migration_012_keeps_non_null_payload_when_collapsing_same_session(postgres):
+    url, conn = postgres("oth_jor36_payload_keeper")
+    migration = (SERVER_DIR / "migrations" / "012_unify_analysis_identity.sql").read_text()
+    canonical = "cdcdcdcd-cdcd-4cdc-8cdc-cdcdcdcdcdcd"
+    try:
+        _apply_migrations(url)
+        conn.execute(
+            """
+            INSERT INTO year_close_packet_snapshots (
+              analysis_id, user_id, tax_year, packet_payload, packet_session_id,
+              paid_at, updated_at
+            ) VALUES
+              (%s, 'payload-user', 2025, '{"marker":"document"}'::jsonb, 'cs_same',
+               '2024-01-01T00:00:00Z', '2020-01-01T00:00:00Z'),
+              (%s, 'payload-user', 2025, NULL, 'cs_same',
+               '2026-01-01T00:00:00Z', '2026-06-01T00:00:00Z')
+            """,
+            (canonical, canonical.upper()),
+        )
+        code, output = _psql(url, migration)
+        assert code == 0, output
+        rows = conn.execute(
+            """
+            SELECT analysis_id, packet_payload->>'marker', paid_at IS NOT NULL
+            FROM year_close_packet_snapshots
+            WHERE user_id = 'payload-user'
+            """
+        ).fetchall()
+        assert rows == [(canonical, "document", True)]
+    finally:
+        conn.close()
+
+
+def test_migration_012_leaves_conflict_entitlement_intact(postgres):
+    url, conn = postgres("oth_jor36_conflict_receipt")
+    migration = (SERVER_DIR / "migrations" / "012_unify_analysis_identity.sql").read_text()
+    canonical = "dededede-dede-4ded-8ded-dededededede"
+    receipt_id = f"conflict:{canonical}"
+    try:
+        _apply_migrations(url)
+        conn.execute(
+            """
+            INSERT INTO year_close_packet_entitlements (
+              user_id, tax_year, packet_session_id, analysis_id
+            ) VALUES ('conflict-user', 2026, 'cs_conflict', %s)
+            """,
+            (receipt_id,),
+        )
+        code, output = _psql(url, migration)
+        assert code == 0, output
+        row = conn.execute(
+            """
+            SELECT analysis_id, tax_year, packet_session_id
+            FROM year_close_packet_entitlements
+            WHERE user_id = 'conflict-user'
+            """
+        ).fetchone()
+        assert row == (receipt_id, 2026, "cs_conflict")
     finally:
         conn.close()
 

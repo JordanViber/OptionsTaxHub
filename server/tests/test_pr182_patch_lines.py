@@ -393,7 +393,6 @@ def test_save_packet_snapshot_repairs_non_null_stored_payload_then_misses(monkey
         [_snap(paid_at="2024-06-01T00:00:00+00:00", packet_payload=stored)],
         [],
         [],
-        [],
     )
     assert db.save_packet_snapshot(ANALYSIS_ID, USER_ID, TAX_YEAR, {"lots": [1]}) is None
     repair = client.builders[1]
@@ -424,7 +423,7 @@ def test_save_packet_snapshot_unpaid_update_returns_row(monkeypatch):
 
 
 def test_save_packet_snapshot_unpaid_update_reread_missing(monkeypatch):
-    client = _install(monkeypatch, [_snap()], [], [], [])
+    client = _install(monkeypatch, [_snap()], [], [])
     assert db.save_packet_snapshot(ANALYSIS_ID, USER_ID, TAX_YEAR, {"lots": [2]}) is None
     _assert_consumed(client)
 
@@ -459,7 +458,6 @@ def test_save_packet_snapshot_unpaid_reread_different_payload_returns_none(monke
 def test_save_packet_snapshot_insert_reread_paid_other_year(monkeypatch):
     client = _install(
         monkeypatch,
-        [],
         [],
         [],
         [_snap(tax_year=2023, paid_at="2024-01-01T00:00:00+00:00")],
@@ -514,7 +512,6 @@ def test_save_packet_snapshot_insert_reread_paid_same_year(monkeypatch):
         monkeypatch,
         [],
         [],
-        [],
         [_snap(paid_at="2024-01-01T00:00:00+00:00")],
     )
     assert db.save_packet_snapshot(ANALYSIS_ID, USER_ID, TAX_YEAR, {"lots": [1]}) == {
@@ -526,7 +523,7 @@ def test_save_packet_snapshot_insert_reread_paid_same_year(monkeypatch):
 
 
 def test_save_packet_snapshot_insert_reread_unpaid(monkeypatch):
-    client = _install(monkeypatch, [], [], [], [_snap(paid_at=None)])
+    client = _install(monkeypatch, [], [], [_snap(paid_at=None)])
     assert db.save_packet_snapshot(ANALYSIS_ID, USER_ID, TAX_YEAR, {"lots": [1]}) == {
         "analysis_id": ANALYSIS_ID,
         "user_id": USER_ID,
@@ -536,7 +533,7 @@ def test_save_packet_snapshot_insert_reread_unpaid(monkeypatch):
 
 
 def test_save_packet_snapshot_insert_reread_missing(monkeypatch):
-    client = _install(monkeypatch, [], [], [], [])
+    client = _install(monkeypatch, [], [], [])
     assert db.save_packet_snapshot(ANALYSIS_ID, USER_ID, TAX_YEAR, {"lots": [1]}) is None
     _assert_consumed(client)
 

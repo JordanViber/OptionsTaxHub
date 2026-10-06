@@ -1,8 +1,11 @@
 -- Unify portfolio_analyses.id with the server-owned result.analysis_id.
 -- Also canonicalizes UUID analysis_id values on year_close_packet_snapshots,
 -- year_close_packet_entitlements, and portfolio_activity_books in this
--- transaction. Snapshot case-variants collapse. Two paid years, two paid
--- sessions in one year, and two history rows for one UUID RAISE.
+-- transaction. Snapshot case-variants collapse. Any two tax years for one
+-- snapshot UUID (paid or not), two paid sessions in one year, entitlement
+-- UUID case-variants in different tax years, and two history rows for one
+-- UUID RAISE. conflict: entitlement ids fail the UUID regex and are left as
+-- they are.
 -- Stripe still checks session metadata against the stored entitlement analysis id.
 -- This file has its own transaction. apply_migrations.sh does not wrap it.
 -- Not applied to Supabase project ref vgrlucxqncajjdoaoctq here.
@@ -59,13 +62,11 @@ BEGIN
            array_agg(DISTINCT tax_year ORDER BY tax_year) AS years
     FROM public.year_close_packet_snapshots
     WHERE analysis_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-      AND paid_at IS NOT NULL
     GROUP BY user_id, (analysis_id)::uuid
-    HAVING count(*) > 1
-       AND count(DISTINCT tax_year) > 1
+    HAVING count(DISTINCT tax_year) > 1
   LOOP
     RAISE EXCEPTION
-      'two paid packet snapshots for one analysis UUID in different tax years user=% canonical=% years=%',
+      'packet snapshots for one analysis UUID have more than one tax year user=% canonical=% years=%',
       collision.user_id, collision.canonical_uuid, collision.years;
   END LOOP;
 
@@ -86,9 +87,10 @@ BEGIN
   END LOOP;
 END $$;
 
--- Paid beats unpaid. Same-year same-session duplicates keep one row.
--- Keeper: a paid row, then latest updated_at, then latest created_at, then
--- the lexicographically greatest original analysis_id.
+-- Same-year same-session duplicates keep one row. Different tax years have
+-- already RAISE'd. Keeper: a paid row, then a row that still has a payload,
+-- then latest updated_at, then latest created_at, then the lexicographically
+-- greatest original analysis_id.
 DELETE FROM public.year_close_packet_snapshots AS loser
 WHERE loser.ctid IN (
   SELECT ranked.ctid
@@ -99,6 +101,7 @@ WHERE loser.ctid IN (
         PARTITION BY snap.user_id, (snap.analysis_id)::uuid
         ORDER BY
           (snap.paid_at IS NOT NULL) DESC,
+          (snap.packet_payload IS NOT NULL) DESC,
           snap.updated_at DESC NULLS LAST,
           snap.created_at DESC NULLS LAST,
           snap.analysis_id DESC
@@ -117,6 +120,27 @@ UPDATE public.year_close_packet_snapshots
 SET analysis_id = (analysis_id)::uuid::text
 WHERE analysis_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
   AND analysis_id IS DISTINCT FROM (analysis_id)::uuid::text;
+
+-- conflict: receipts fail the UUID predicate below, so this RAISE and the
+-- following UPDATE leave them intact.
+DO $$
+DECLARE
+  collision record;
+BEGIN
+  FOR collision IN
+    SELECT user_id,
+           (analysis_id)::uuid AS canonical_uuid,
+           array_agg(DISTINCT tax_year ORDER BY tax_year) AS years
+    FROM public.year_close_packet_entitlements
+    WHERE analysis_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    GROUP BY user_id, (analysis_id)::uuid
+    HAVING count(DISTINCT tax_year) > 1
+  LOOP
+    RAISE EXCEPTION
+      'packet entitlements for one analysis UUID have more than one tax year user=% canonical=% years=%',
+      collision.user_id, collision.canonical_uuid, collision.years;
+  END LOOP;
+END $$;
 
 UPDATE public.year_close_packet_entitlements
 SET analysis_id = (analysis_id)::uuid::text

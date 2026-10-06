@@ -9,6 +9,7 @@ NOTE: Requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in .env.local.
 
 import os
 import logging
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -148,12 +149,23 @@ def get_supabase_with_token(access_token: str):
 # ---------- Portfolio History ----------
 
 
+# 012 rewrites only this 36-character hyphenated form. Braces, URN, and
+# 32-hex text are not UUIDs here, so the app and the migration agree.
+_HYPHENATED_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
+
 def _canonical_analysis_uuid(value) -> Optional[str]:
-    """Return the lowercase UUID string, or None when value is not a UUID."""
+    """Return the lowercase UUID string, or None when value is not a UUID.
+
+    Only the 36-character hyphenated form counts. ``uuid.UUID`` also accepts
+    braces, ``urn:uuid:``, and 32 hex digits; those stay non-UUID text.
+    """
     if not isinstance(value, str):
         return None
     text = value.strip()
-    if not text:
+    if not _HYPHENATED_UUID_RE.fullmatch(text):
         return None
     try:
         return str(uuid.UUID(text))
@@ -164,10 +176,11 @@ def _canonical_analysis_uuid(value) -> Optional[str]:
 def _canonical_analysis_id(value) -> Optional[str]:
     """Canonical analysis id for writes and for exact reads.
 
-    A UUID becomes ``str(uuid.UUID(text))``: lowercase and hyphenated.
-    ``uuid.UUID`` leniency is unchanged. Any other non-empty string is
-    returned stripped and is not casefolded, so ``local-analysis`` and
-    distinct test ids stay distinct. Non-strings and blank strings are None.
+    A 36-character hyphenated UUID becomes ``str(uuid.UUID(text))``:
+    lowercase and hyphenated. Braces, URN, and 32-hex text are stripped and
+    not casefolded. Any other non-empty string is returned stripped and is
+    not casefolded, so ``local-analysis`` and distinct test ids stay
+    distinct. Non-strings and blank strings are None.
     """
     if not isinstance(value, str):
         return None
@@ -309,6 +322,39 @@ def _user_has_case_insensitive_embedded_id(
     if not isinstance(data, list) or not data:
         return False
     return _stored_row_matches_uuid(data[0], user_id, canonical)
+
+
+def canonical_history_embedded_on_other_row(
+    user_id: str,
+    canonical: str,
+    row_id: str,
+) -> Optional[bool]:
+    """True when a different history row already embeds this canonical UUID.
+
+    None means the lookup failed. Used to skip re-casing an uppercase JSON id
+    onto a lowercase id that migration 008 already indexes.
+    """
+    if not user_id or not canonical or _canonical_analysis_uuid(canonical) is None:
+        return False
+    client = get_supabase()
+    if client is None:
+        return None
+    try:
+        result = _query_embedded_analysis_id(client, user_id, "eq", canonical)
+    except Exception as exc:
+        logger.error(
+            "Could not check canonical history id for user %s: %s",
+            user_id,
+            exc,
+        )
+        return None
+    data = getattr(result, "data", None)
+    if not isinstance(data, list):
+        return False
+    for row in data:
+        if isinstance(row, dict) and str(row.get("id") or "") != str(row_id or ""):
+            return True
+    return False
 
 
 def save_analysis_history(
@@ -778,13 +824,17 @@ def ensure_analysis_history(
     analysis: Optional[dict],
 ) -> Optional[dict]:
     """Ensure Checkout can only charge for an analysis with a durable row."""
-    if not analysis_id or not user_id:
+    # Canonicalize the argument and the body id before comparing, so an UPPER
+    # body still matches the caller's original spelling (and the reverse).
+    # The caller's dict is not rewritten; the insert stores the lowercase UUID.
+    canonical_id = _canonical_analysis_id(analysis_id) or ""
+    if not canonical_id or not user_id:
         return None
     client = get_supabase()
     if client is None:
         return None
     record, lookup_succeeded = _lookup_analysis_for_entitlement(
-        analysis_id,
+        canonical_id,
         user_id,
         client,
     )
@@ -792,7 +842,11 @@ def ensure_analysis_history(
         return None
     if record:
         return record
-    if not isinstance(analysis, dict) or analysis.get("analysis_id") != analysis_id:
+    if not isinstance(analysis, dict):
+        return None
+    body_raw = analysis.get("analysis_id")
+    body_id = _canonical_analysis_id(body_raw) if isinstance(body_raw, str) else None
+    if body_id != canonical_id:
         return None
     summary = analysis.get("summary")
     if not isinstance(summary, dict):
@@ -814,7 +868,7 @@ def ensure_analysis_history(
         )
     except HistoryInsertConflict:
         raced, race_ok = _lookup_analysis_for_entitlement(
-            analysis_id,
+            canonical_id,
             user_id,
             client,
         )
@@ -1267,9 +1321,14 @@ def lookup_packet_entitlement_for_tax_year(
             .execute()
         )
         for row in result.data or []:
+            if not isinstance(row, dict):
+                continue
+            # A conflict receipt records a charge that must not grant this year
+            # or shadow a real cs_ receipt ordered after it.
+            if _is_conflict_analysis_id(row.get("analysis_id")):
+                continue
             if (
-                isinstance(row, dict)
-                and isinstance(row.get("packet_session_id"), str)
+                isinstance(row.get("packet_session_id"), str)
                 and row["packet_session_id"].startswith("cs_")
             ):
                 return dict(row), True
@@ -1322,6 +1381,25 @@ def _is_missing_alias_table(exc: Exception) -> bool:
         "does not exist" in text
         and any(token in text for token in ("relation", "table"))
     )
+
+
+def _is_conflict_analysis_id(value) -> bool:
+    """True for a refund receipt stored in the entitlement analysis_id column."""
+    return isinstance(value, str) and value.startswith("conflict:")
+
+
+def conflict_receipt_analysis_id(analysis_id: str) -> str:
+    """Entitlement id for a charged session that must not grant a year.
+
+    ``conflict:`` plus the canonical analysis id fails 012's UUID regex, so
+    the migration does not rewrite the row or treat it as a year collision.
+    """
+    canonical = _canonical_analysis_id(analysis_id) or ""
+    if not canonical:
+        return ""
+    if _is_conflict_analysis_id(canonical):
+        return canonical
+    return f"conflict:{canonical}"
 
 
 def _is_unique_violation(exc: Exception) -> bool:
@@ -1429,6 +1507,54 @@ def save_packet_entitlement(
         return None
 
 
+def save_packet_conflict_receipt(
+    analysis_id: str,
+    user_id: str,
+    tax_year: int,
+    session_id: str,
+    *,
+    paid_tax_year: Optional[int] = None,
+    client=None,
+) -> Optional[dict]:
+    """Store one refund receipt for a charged session that must not grant.
+
+    Idempotent on (user_id, tax_year, packet_session_id). A webhook retry or a
+    confirm after the webhook rereads the same row. The log is the human
+    refund trail: charged session, user, analysis, paid year, and charged year.
+    """
+    receipt_id = conflict_receipt_analysis_id(analysis_id)
+    if not receipt_id or not user_id or tax_year is None or not isinstance(session_id, str):
+        return None
+    if not session_id.startswith("cs_"):
+        return None
+    try:
+        charged_year = int(tax_year)
+    except (TypeError, ValueError):
+        return None
+    stored_year = charged_year
+    if paid_tax_year is not None:
+        try:
+            stored_year = int(paid_tax_year)
+        except (TypeError, ValueError):
+            stored_year = charged_year
+    logger.error(
+        "PACKET_GRANT_YEAR_CONFLICT session_id=%s user_id=%s analysis_id=%s "
+        "stored_tax_year=%s requested_tax_year=%s",
+        session_id,
+        user_id,
+        analysis_id,
+        stored_year,
+        charged_year,
+    )
+    return save_packet_entitlement(
+        receipt_id,
+        user_id,
+        charged_year,
+        session_id,
+        client=client,
+    )
+
+
 def get_packet_grant_for_tax_year(
     user_id: str,
     tax_year: int,
@@ -1451,10 +1577,16 @@ def _load_analysis_id_rows(
     *,
     refine=None,
 ) -> tuple[list[dict], bool]:
-    """Exact ``analysis_id`` read, then a temporary UUID case fallback.
+    """Exact ``analysis_id`` read plus a temporary UUID case fallback.
 
-    The second value is False on outage, including a failed fallback. An empty
-    list with True is a real miss. Non-UUID ids never casefold.
+    UUID ids always run both queries, even when ``.eq`` already returned rows.
+    Results are merged and deduped on the stored ``analysis_id``, keeping the
+    exact-match copy. A failed ``ilike`` is an outage even if ``.eq`` hit.
+    Callers sort and limit after the merge so one query cannot drop the other
+    spelling. Non-UUID ids stay exact ``.eq`` only. The second value is False
+    on outage. An empty list with True is a real miss.
+
+    # TODO(remove after 012 applied): legacy mixed-case UUID analysis_id.
     """
     canonical = _canonical_analysis_id(analysis_id)
     if not canonical or not user_id or client is None:
@@ -1468,19 +1600,21 @@ def _load_analysis_id_rows(
             query = refine(query)
         return query.execute()
 
+    def _dicts(result):
+        return [
+            dict(row)
+            for row in (getattr(result, "data", None) or [])
+            if isinstance(row, dict)
+        ]
+
     try:
         exact = _execute(lambda query: query.eq("analysis_id", canonical))
     except Exception as exc:
         logger.error("Failed to read %s for %s: %s", table, canonical, exc)
         return [], False
-    rows = [
-        dict(row)
-        for row in (getattr(exact, "data", None) or [])
-        if isinstance(row, dict)
-    ]
-    if rows or _canonical_analysis_uuid(canonical) is None:
-        return rows, True
-    # TODO(remove after 012 applied): legacy mixed-case UUID analysis_id.
+    exact_rows = _dicts(exact)
+    if _canonical_analysis_uuid(canonical) is None:
+        return exact_rows, True
     try:
         legacy = _execute(
             lambda query: query.filter("analysis_id", "ilike", canonical)
@@ -1493,12 +1627,54 @@ def _load_analysis_id_rows(
             exc,
         )
         return [], False
-    rows = [
-        dict(row)
-        for row in (getattr(legacy, "data", None) or [])
-        if isinstance(row, dict)
-    ]
-    return rows, True
+    return _dedupe_stored_analysis_rows(exact_rows, _dicts(legacy)), True
+
+
+def _dedupe_stored_analysis_rows(exact_rows: list[dict], legacy_rows: list[dict]) -> list[dict]:
+    """Keep the first copy of each stored analysis_id. Exact rows come first."""
+    merged = []
+    seen = set()
+    for row in list(exact_rows) + list(legacy_rows):
+        key = str(row.get("analysis_id") or "")
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(row)
+    return merged
+
+
+def _snapshot_time_rank(value, *, nulls_last: bool = True):
+    """Sort key for a timestamp column. Later values sort first. Nulls last."""
+    if not value:
+        return (1, 0) if nulls_last else (0, 0)
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return (0, -parsed.timestamp())
+    except (TypeError, ValueError):
+        return (1, 0) if nulls_last else (0, 0)
+
+
+def _sort_snapshot_rows(rows: list[dict]) -> list[dict]:
+    """Paid rows first, then latest expiry (nulls last), then analysis_id.
+
+    Matches ``_order_snapshot_candidates``. Python owns the order after the
+    exact and case-insensitive reads are merged, so a SQL ``limit`` cannot
+    drop the paid spelling before the merge.
+    """
+
+    def sort_key(row):
+        paid_at = row.get("paid_at")
+        if paid_at:
+            paid_rank = (0, _snapshot_time_rank(paid_at)[1])
+        else:
+            paid_rank = (1, 0)
+        return (
+            paid_rank,
+            _snapshot_time_rank(row.get("expires_at")),
+            str(row.get("analysis_id") or ""),
+        )
+
+    return sorted(rows, key=sort_key)
 
 
 def _order_snapshot_candidates(query):
@@ -1560,10 +1736,8 @@ def save_packet_snapshot(
         def refine(query):
             if tax_year_filter is not None:
                 query = query.eq("tax_year", int(tax_year_filter))
-            query = _order_snapshot_candidates(query)
-            if limit is not None:
-                query = query.limit(limit)
-            return query
+            # No SQL limit. Both spellings are merged first, then sorted.
+            return _order_snapshot_candidates(query)
 
         rows, ok = _load_analysis_id_rows(
             client,
@@ -1575,11 +1749,10 @@ def save_packet_snapshot(
         )
         if not ok:
             raise _SnapshotReadOutage()
+        rows = _sort_snapshot_rows(rows)
+        if limit is not None:
+            return rows[:limit]
         return rows
-
-    def read_year_scoped():
-        rows = _snapshot_rows(tax_year_filter=tax_year, limit=1)
-        return rows[0] if rows else None
 
     def read_exact_key():
         # The primary key is (user_id, canonical analysis_id). This row can
@@ -1595,39 +1768,41 @@ def save_packet_snapshot(
         )
         return dict(result.data[0]) if result.data else None
 
-    def read_legacy_other_spelling():
-        """Legacy UUID spelling left by the pre-012 deploy window.
+    def _raise_paid_other_year(rows):
+        """Any paid spelling in a different year blocks the write.
 
-        Called only when the canonical key missed. No tax_year filter and no
-        limit, so a paid uppercase row in another year cannot hide. A failed
-        read is an outage and does not insert. A paid other year conflicts.
-        Any other legacy row is updated in place. The stored key is not rewritten.
-
-        # TODO(remove after 012 applied)
+        # TODO(remove after 012 applied): the scan exists so a legacy spelling
+        # cannot hide behind the canonical row. Same-year unpaid re-year of a
+        # single row stays allowed.
         """
-        if _canonical_analysis_uuid(analysis_id) is None:
-            return None
-        for row in _snapshot_rows():
-            if str(row.get("analysis_id") or "") == analysis_id:
+        for row in rows:
+            if not row.get("paid_at"):
                 continue
-            if row.get("paid_at"):
-                try:
-                    stored_year = int(row.get("tax_year"))
-                except (TypeError, ValueError):
-                    continue
-                if stored_year != int(tax_year):
-                    year_conflict(row)
-            return row
-        return None
+            try:
+                stored_year = int(row.get("tax_year"))
+            except (TypeError, ValueError):
+                continue
+            if stored_year != int(tax_year):
+                year_conflict(row)
 
     def read_existing():
-        scoped = read_year_scoped()
-        if scoped is not None:
-            return scoped
-        exact = read_exact_key()
-        if exact is not None:
-            return exact
-        return read_legacy_other_spelling()
+        # One unscoped load, no limit, every spelling. The conflict check runs
+        # before any UPDATE or INSERT.
+        rows = _snapshot_rows()
+        _raise_paid_other_year(rows)
+        for row in rows:
+            try:
+                if int(row.get("tax_year")) == int(tax_year):
+                    return row
+            except (TypeError, ValueError):
+                continue
+        for row in rows:
+            if str(row.get("analysis_id") or "") == analysis_id:
+                return row
+        for row in rows:
+            if str(row.get("analysis_id") or "") != analysis_id:
+                return row
+        return None
 
     def year_conflict(row):
         raise PacketSnapshotYearConflict(
@@ -1878,7 +2053,7 @@ def get_packet_snapshot(
     def refine(query):
         if tax_year is not None:
             query = query.eq("tax_year", int(tax_year))
-        return _order_snapshot_candidates(query).limit(1)
+        return _order_snapshot_candidates(query)
 
     rows, ok = _load_analysis_id_rows(
         client,
@@ -1890,6 +2065,7 @@ def get_packet_snapshot(
     )
     if not ok:
         return None, False
+    rows = _sort_snapshot_rows(rows)
     if not rows:
         return None, True
     snapshot = rows[0]
@@ -1927,6 +2103,7 @@ def list_packet_snapshots_for_identity(
     )
     if not ok:
         return [], False
+    rows = _sort_snapshot_rows(rows)
     return [row for row in rows if _packet_snapshot_is_current(row)], True
 
 
@@ -1957,6 +2134,8 @@ def lookup_packet_entitlements_for_analysis(
         return [], False
     kept = []
     for row in rows:
+        if _is_conflict_analysis_id(row.get("analysis_id")):
+            continue
         session_id = row.get("packet_session_id")
         if isinstance(session_id, str) and session_id.startswith("cs_"):
             kept.append(row)
@@ -1986,23 +2165,61 @@ def mark_packet_snapshot_paid(
             "year_close_packet_snapshots",
             analysis_id,
             user_id,
-            "analysis_id, user_id, tax_year, paid_at",
-            refine=lambda query: _order_snapshot_candidates(
-                query.eq("tax_year", int(tax_year))
-            ).limit(1),
+            "analysis_id, user_id, tax_year, packet_session_id, paid_at, expires_at",
+            refine=_order_snapshot_candidates,
         )
         if not ok:
             return None
-        if not rows:
+        rows = _sort_snapshot_rows(rows)
+        for row in rows:
+            if not row.get("paid_at"):
+                continue
+            try:
+                stored_year = int(row.get("tax_year"))
+            except (TypeError, ValueError):
+                continue
+            if stored_year != int(tax_year):
+                raise PacketSnapshotYearConflict(
+                    row.get("analysis_id"),
+                    row.get("tax_year"),
+                    tax_year,
+                )
+        same_year = []
+        for row in rows:
+            try:
+                if int(row.get("tax_year")) == int(tax_year):
+                    same_year.append(row)
+            except (TypeError, ValueError):
+                continue
+        if not same_year:
             return False
-        existing_row = rows[0]
+        existing_row = same_year[0]
         stored_analysis_id = existing_row.get("analysis_id")
         if not stored_analysis_id:
             return False
-        # An already-paid row is a successful replay. Returning False makes
-        # the grant treat the source as missing. Do not re-stamp it.
         if existing_row.get("paid_at"):
-            return True
+            # Same session is a replay. Do not overwrite paid_at or the
+            # stored session, and do not stamp an unpaid sibling spelling.
+            if existing_row.get("packet_session_id") == session_id:
+                return True
+            # A different session already paid this year. Keep the snapshot
+            # and record a refund receipt. Returning True would let the grant
+            # insert a normal entitlement for the new session.
+            receipt = save_packet_conflict_receipt(
+                analysis_id,
+                user_id,
+                int(tax_year),
+                session_id,
+                paid_tax_year=int(tax_year),
+                client=client,
+            )
+            if receipt is None:
+                return None
+            raise PacketSnapshotYearConflict(
+                stored_analysis_id,
+                existing_row.get("tax_year"),
+                tax_year,
+            )
         # Stamp only the row that was read, and only while it is still unpaid.
         # An ilike update would re-stamp every case variant, including one
         # that is already paid.
@@ -2022,6 +2239,8 @@ def mark_packet_snapshot_paid(
             .execute()
         )
         return bool(result.data)
+    except PacketSnapshotYearConflict:
+        raise
     except Exception as e:
         logger.error("Failed to mark packet snapshot paid for %s: %s", analysis_id, e)
         return None

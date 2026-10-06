@@ -138,6 +138,8 @@ from db import (
     lookup_packet_entitlements_for_analysis,
     list_packet_snapshots_for_identity,
     PacketSnapshotYearConflict,
+    canonical_history_embedded_on_other_row,
+    conflict_receipt_analysis_id,
     save_packet_entitlement,
     save_packet_snapshot,
     get_packet_snapshot,
@@ -1749,6 +1751,10 @@ async def persist_portfolio_history(
     analysis.pop("packet_unlocked", None)
     analysis.pop("packet_session_id", None)
     raw_analysis_id = analysis.get("analysis_id")
+    # A present non-string id is not a missing id and must not be stringified
+    # or replaced with a generated UUID.
+    if raw_analysis_id is not None and not isinstance(raw_analysis_id, str):
+        raise HTTPException(status_code=400, detail="analysis_id is required")
     analysis_id = (
         _canonical_analysis_id(raw_analysis_id)
         if isinstance(raw_analysis_id, str)
@@ -2475,6 +2481,10 @@ def _configure_packet_stripe() -> str:
 
 PACKET_GRANT_MISSING_SOURCE = "missing_source"
 PACKET_GRANT_YEAR_CONFLICT = "PACKET_GRANT_YEAR_CONFLICT"
+PACKET_PAID_OTHER_YEAR_DETAIL = (
+    "This analysis already has a paid packet for another tax year. "
+    "Start a new analysis for the year you want to buy."
+)
 PACKET_GRANT_YEAR_UNKNOWN = "PACKET_GRANT_YEAR_UNKNOWN"
 PACKET_MISSING_SOURCE_DETAIL = (
     "Payment was received, but this analysis has no source document. "
@@ -2584,16 +2594,12 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
                 paid=paid,
             )
         except PacketSnapshotYearConflict as exc:
-            logger.error(
-                "PACKET_GRANT_YEAR_CONFLICT session_id=%s user_id=%s analysis_id=%s "
-                "stored_tax_year=%s requested_tax_year=%s",
+            return _record_packet_year_conflict(
+                exc,
                 session_id,
                 session_user_id,
                 session_analysis_id,
-                exc.stored_tax_year,
-                exc.requested_tax_year,
             )
-            return PACKET_GRANT_YEAR_CONFLICT
 
     snapshot, snapshot_lookup_succeeded = get_packet_snapshot(
         session_analysis_id,
@@ -2683,6 +2689,32 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
         # Keep the settled session as a same-year entitlement, but do not tell
         # confirm/webhook that a downloadable packet exists without its private
         # source document. A fresh analysis can reuse this receipt.
+        # No document means save_packet_snapshot never runs, so the paid-other-year
+        # scan has to happen here. A normal entitlement would unlock the charged year.
+        identity_rows, identity_ok = list_packet_snapshots_for_identity(
+            session_analysis_id,
+            session_user_id,
+        )
+        if not identity_ok:
+            return None
+        for identity_row in identity_rows:
+            if not isinstance(identity_row, dict) or not identity_row.get("paid_at"):
+                continue
+            try:
+                stored_year = int(identity_row.get("tax_year"))
+            except (TypeError, ValueError):
+                continue
+            if stored_year != tax_year:
+                return _record_packet_year_conflict(
+                    PacketSnapshotYearConflict(
+                        identity_row.get("analysis_id"),
+                        stored_year,
+                        tax_year,
+                    ),
+                    session_id,
+                    session_user_id,
+                    session_analysis_id,
+                )
         saved_entitlement = save_packet_entitlement(
             session_analysis_id,
             session_user_id,
@@ -2696,11 +2728,19 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
             session_analysis_id,
         )
         return PACKET_GRANT_MISSING_SOURCE
-    history_ready = _ensure_packet_history_row(
-        session_analysis_id,
-        session_user_id,
-        tax_year,
-    )
+    try:
+        history_ready = _ensure_packet_history_row(
+            session_analysis_id,
+            session_user_id,
+            tax_year,
+        )
+    except PacketSnapshotYearConflict as exc:
+        return _record_packet_year_conflict(
+            exc,
+            session_id,
+            session_user_id,
+            session_analysis_id,
+        )
     if history_ready is None:
         return None
     if not history_ready:
@@ -2713,12 +2753,20 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
         if saved_entitlement is None:
             return None
         return PACKET_GRANT_MISSING_SOURCE
-    entitlement_saved = mark_packet_snapshot_paid(
-        session_analysis_id,
-        session_user_id,
-        tax_year,
-        session_id,
-    )
+    try:
+        entitlement_saved = mark_packet_snapshot_paid(
+            session_analysis_id,
+            session_user_id,
+            tax_year,
+            session_id,
+        )
+    except PacketSnapshotYearConflict as exc:
+        return _record_packet_year_conflict(
+            exc,
+            session_id,
+            session_user_id,
+            session_analysis_id,
+        )
     if entitlement_saved is None:
         return None
     if not entitlement_saved:
@@ -2839,18 +2887,44 @@ def _packet_result_tax_year(result: Optional[dict]) -> Optional[int]:
         return None
 
 
-def _packet_tax_year_from_session(session_id: Optional[str]) -> Optional[int]:
-    """Tax year from Checkout metadata. A miss or a missing year returns None."""
-    if not session_id:
-        return None
-    try:
-        packet_api_key = _configure_packet_stripe()
-        session = stripe.checkout.Session.retrieve(session_id, api_key=packet_api_key)
-    except Exception:
-        return None
-    return _packet_result_tax_year(
-        {"analysis_tax_year": _session_metadata(session).get("tax_year")}
+def _record_packet_year_conflict(
+    exc: PacketSnapshotYearConflict,
+    session_id: str,
+    user_id: str,
+    analysis_id: str,
+):
+    """Log the charged session and store one refund receipt.
+
+    None means the receipt insert failed. Callers then retry (webhook 500,
+    confirm 503). A later retry rereads the same primary key.
+    """
+    logger.error(
+        "PACKET_GRANT_YEAR_CONFLICT session_id=%s user_id=%s analysis_id=%s "
+        "stored_tax_year=%s requested_tax_year=%s",
+        session_id,
+        user_id,
+        analysis_id,
+        exc.stored_tax_year,
+        exc.requested_tax_year,
     )
+    try:
+        charged_year = int(exc.requested_tax_year)
+    except (TypeError, ValueError):
+        return None
+    receipt_id = conflict_receipt_analysis_id(analysis_id)
+    if not receipt_id or not session_id:
+        return None
+    # save_packet_entitlement is the app binding so tests can record the row.
+    # conflict:{canonical} is not a hyphenated UUID, so the prefix is kept.
+    saved = save_packet_entitlement(
+        receipt_id,
+        user_id,
+        charged_year,
+        session_id,
+    )
+    if saved is None:
+        return None
+    return PACKET_GRANT_YEAR_CONFLICT
 
 
 def _ensure_packet_history_row(
@@ -2889,10 +2963,9 @@ def _ensure_packet_history_row(
             and _canonical_analysis_uuid(embedded) is not None
             and embedded != _canonical_analysis_uuid(embedded)
         )
-        # A resolved year (analysis_tax_year, else tax_profile.tax_year) that
-        # already matches is enough. A missing analysis_tax_year is not a
-        # disagreement when the profile year matches. A present year that
-        # differs, or a non-canonical embedded UUID, still patches.
+        # A present int that differs is a conflict. Do not relabel the year.
+        # A missing analysis_tax_year is not a disagreement when the profile
+        # year matches. Fill year keys only when the resolved year is missing.
         stored_year = _packet_result_tax_year(result)
         analysis_disagrees = (
             stored_analysis_year is not None and stored_analysis_year != int(tax_year)
@@ -2900,21 +2973,51 @@ def _ensure_packet_history_row(
         profile_disagrees = (
             stored_profile_year is not None and stored_profile_year != int(tax_year)
         )
-        if (
-            stored_year == int(tax_year)
-            and not analysis_disagrees
-            and not profile_disagrees
-            and not embedded_needs_canonical
-        ):
+        if analysis_disagrees or profile_disagrees:
+            disagreed = (
+                stored_analysis_year if analysis_disagrees else stored_profile_year
+            )
+            raise PacketSnapshotYearConflict(
+                embedded if isinstance(embedded, str) else analysis_id,
+                disagreed,
+                int(tax_year),
+            )
+        canonical_embedded = (
+            _canonical_analysis_uuid(embedded) if embedded_needs_canonical else None
+        )
+        skip_recase = False
+        if canonical_embedded is not None:
+            other = canonical_history_embedded_on_other_row(
+                user_id,
+                canonical_embedded,
+                str(record.get("id") or ""),
+            )
+            if other is None:
+                return None
+            skip_recase = other
+        if stored_year == int(tax_year):
+            if not embedded_needs_canonical or skip_recase:
+                return True
+            patched = patch_analysis_result(
+                analysis_id,
+                user_id,
+                {"analysis_id": canonical_embedded},
+            )
+            if patched is None:
+                return None
+            return bool(patched)
+        # Resolved year is missing. Fill only the missing year keys.
+        patch = {}
+        if stored_analysis_year is None:
+            patch["analysis_tax_year"] = int(tax_year)
+        if stored_profile_year is None:
+            merged_profile = dict(profile)
+            merged_profile["tax_year"] = int(tax_year)
+            patch["tax_profile"] = merged_profile
+        if embedded_needs_canonical and not skip_recase:
+            patch["analysis_id"] = canonical_embedded
+        if not patch:
             return True
-        merged_profile = dict(profile)
-        merged_profile["tax_year"] = int(tax_year)
-        patch = {
-            "analysis_tax_year": int(tax_year),
-            "tax_profile": merged_profile,
-        }
-        if embedded_needs_canonical:
-            patch["analysis_id"] = _canonical_analysis_uuid(embedded)
         patched = patch_analysis_result(analysis_id, user_id, patch)
         if patched is None:
             return None
@@ -2939,6 +3042,24 @@ def _ensure_packet_history_row(
             return None
         return bool(raced)
     return True if saved else False
+
+
+def _ensure_checkout_history(analysis_id: str, user_id: str, tax_year: int) -> None:
+    """Fill a missing history year only after the snapshot save has succeeded.
+
+    A disagreeing year is 409 and does not patch. Called only after
+    save_packet_snapshot returns, so a paid-other-year conflict never relabels
+    history first.
+    """
+    try:
+        ready = _ensure_packet_history_row(analysis_id, user_id, tax_year)
+    except PacketSnapshotYearConflict:
+        raise HTTPException(status_code=409, detail=PACKET_PAID_OTHER_YEAR_DETAIL)
+    if not ready:
+        raise HTTPException(
+            status_code=503,
+            detail="Could not save this analysis before checkout. Please retry.",
+        )
 
 
 def _is_persisted_same_year_packet_grant(
@@ -3269,15 +3390,6 @@ async def create_year_close_packet_checkout(
     tax_year = scoped_tax_year
     if tax_year is None:
         raise HTTPException(status_code=409, detail=PACKET_SNAPSHOT_EXPIRED_DETAIL)
-    if not _ensure_packet_history_row(
-        analysis_id,
-        user_id,
-        tax_year,
-    ):
-        raise HTTPException(
-            status_code=503,
-            detail="Could not save this analysis before checkout. Please retry.",
-        )
     existing_session_id, grant_lookup_succeeded = lookup_packet_grant_for_tax_year(
         user_id,
         tax_year,
@@ -3348,18 +3460,13 @@ async def create_year_close_packet_checkout(
                 paid=True,
             )
         except PacketSnapshotYearConflict:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "This analysis already has a paid packet for another tax year. "
-                    "Start a new analysis for the year you want to buy."
-                ),
-            )
+            raise HTTPException(status_code=409, detail=PACKET_PAID_OTHER_YEAR_DETAIL)
         if not saved:
             raise HTTPException(
                 status_code=503,
                 detail="Could not save the packet snapshot. Please retry.",
             )
+        _ensure_checkout_history(analysis_id, user_id, tax_year)
         if not save_packet_entitlement(
             analysis_id,
             user_id,
@@ -3404,18 +3511,13 @@ async def create_year_close_packet_checkout(
             packet_snapshot,
         )
     except PacketSnapshotYearConflict:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "This analysis already has a paid packet for another tax year. "
-                "Start a new analysis for the year you want to buy."
-            ),
-        )
+        raise HTTPException(status_code=409, detail=PACKET_PAID_OTHER_YEAR_DETAIL)
     if not saved_checkout:
         raise HTTPException(
             status_code=503,
             detail="Could not securely save the packet before checkout. Please retry.",
         )
+    _ensure_checkout_history(analysis_id, user_id, tax_year)
 
     success_url = (
         f"{FRONTEND_URL}/dashboard?packet_session={{CHECKOUT_SESSION_ID}}"
