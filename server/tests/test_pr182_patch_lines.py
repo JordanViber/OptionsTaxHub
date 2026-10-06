@@ -417,6 +417,8 @@ def test_save_packet_snapshot_unpaid_update_returns_row(monkeypatch):
     updated = {"analysis_id": ANALYSIS_ID, "user_id": USER_ID, "tax_year": TAX_YEAR}
     client = _install(monkeypatch, [_snap()], [updated])
     assert db.save_packet_snapshot(ANALYSIS_ID, USER_ID, TAX_YEAR, {"lots": [2]}) == updated
+    update = next(call for call in client.builders[1].calls if call[0] == "update")
+    assert "analysis_id" not in update[1][0]
     _assert_consumed(client)
 
 
@@ -460,7 +462,48 @@ def test_save_packet_snapshot_insert_reread_paid_other_year(monkeypatch):
         [],
         [_snap(tax_year=2023, paid_at="2024-01-01T00:00:00+00:00")],
     )
-    assert db.save_packet_snapshot(ANALYSIS_ID, USER_ID, TAX_YEAR, {"lots": [1]}) is None
+    with pytest.raises(db.PacketSnapshotYearConflict) as raised:
+        db.save_packet_snapshot(ANALYSIS_ID, USER_ID, TAX_YEAR, {"lots": [1]})
+    assert raised.value.stored_tax_year == 2023
+    assert raised.value.requested_tax_year == TAX_YEAR
+    _assert_consumed(client)
+
+
+def test_save_packet_snapshot_unique_conflict_paid_other_year(monkeypatch):
+    client = _paid_insert_conflict(
+        monkeypatch,
+        [_snap(tax_year=2023, paid_at="2024-01-01T00:00:00+00:00", packet_payload={"lots": [9]})],
+    )
+    with pytest.raises(db.PacketSnapshotYearConflict) as raised:
+        db.save_packet_snapshot(ANALYSIS_ID, USER_ID, TAX_YEAR, {"lots": [1]})
+    assert raised.value.stored_tax_year == 2023
+    assert raised.value.requested_tax_year == TAX_YEAR
+    assert not any(call[0] == "update" for builder in client.builders for call in builder.calls)
+    _assert_consumed(client)
+
+
+def test_save_packet_snapshot_unique_conflict_unpaid_other_year_reyears(monkeypatch):
+    payload_y = {"analysis_tax_year": 2026, "tax_profile": {"tax_year": 2026}}
+    updated = {"analysis_id": ANALYSIS_ID, "user_id": USER_ID, "tax_year": 2026}
+    client = _paid_insert_conflict(
+        monkeypatch,
+        [_snap(tax_year=2023, paid_at=None, packet_payload={"analysis_tax_year": 2023})],
+        [updated],
+    )
+    assert db.save_packet_snapshot(ANALYSIS_ID, USER_ID, 2026, payload_y) == updated
+    update = next(
+        call
+        for builder in client.builders
+        for call in builder.calls
+        if call[0] == "update"
+    )
+    assert update[1][0]["tax_year"] == 2026
+    assert update[1][0]["packet_payload"] == payload_y
+    assert "analysis_id" not in update[1][0]
+    pinned = client.builders[-1]
+    assert ("eq", ("analysis_id", ANALYSIS_ID), {}) in pinned.calls
+    assert ("eq", ("user_id", USER_ID), {}) in pinned.calls
+    assert ("is_", ("paid_at", "null"), {}) in pinned.calls
     _assert_consumed(client)
 
 
@@ -499,6 +542,7 @@ def _paid_insert_conflict(monkeypatch, *after_conflict):
     return _install(
         monkeypatch,
         [],
+        [],
         _error("duplicate key value violates unique constraint", code="23505"),
         *after_conflict,
     )
@@ -519,6 +563,20 @@ def test_save_packet_snapshot_unique_conflict_promote_returns_row(monkeypatch):
         session_id="cs_promote",
         paid=True,
     ) == promoted
+    update = next(
+        call
+        for builder in client.builders
+        for call in builder.calls
+        if call[0] == "update"
+    )
+    assert "analysis_id" not in update[1][0]
+    insert = next(
+        call
+        for builder in client.builders
+        for call in builder.calls
+        if call[0] == "insert"
+    )
+    assert insert[1][0]["analysis_id"] == ANALYSIS_ID
     _assert_consumed(client)
 
 
@@ -565,6 +623,7 @@ def test_save_packet_snapshot_unique_conflict_promote_reread_raises(monkeypatch)
 def test_save_packet_snapshot_unique_conflict_same_year_paid_row(monkeypatch):
     client = _install(
         monkeypatch,
+        [],
         [],
         _error("unique constraint year_close_packet_snapshots", code=None),
         [_snap(paid_at="2024-01-01T00:00:00+00:00")],
@@ -734,7 +793,7 @@ def test_apply_sql_failure_and_success(monkeypatch):
     monkeypatch.setattr(migration.subprocess, "run", fake_run)
     with pytest.raises(AssertionError, match=r"psql failed \(1\)"):
         migration._apply_sql("postgresql:///postgres", "SELECT 1")
-    assert migration._apply_sql("postgresql:///postgres", "SELECT 1") is None
+    assert migration._apply_sql("postgresql:///postgres", "SELECT 1") == "out\nerr"
     assert calls[0][0][0] == "psql"
     assert calls[1][0][0] == "psql"
 

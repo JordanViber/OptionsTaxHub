@@ -65,6 +65,7 @@ from year_close_packet import (
     packet_store_belongs_to_user,
     paid_session_for_user_year,
     remember_analysis,
+    _analysis_ids_match,
     render_packet_pdf,
     resolve_packet_stripe_secret_key,
     session_grants_packet,
@@ -113,11 +114,14 @@ from rh_chain import (
 from ai_advisor import get_ai_suggestions, prepare_positions_for_ai
 from pdf_1099_parser import parse_robinhood_1099_pdf
 from db import (
+    _canonical_analysis_id,
+    _canonical_analysis_uuid,
     save_analysis_history,
     get_analysis_history,
     get_analysis_by_id,
     get_analysis_by_result_analysis_id,
     lookup_analysis_for_entitlement,
+    list_legacy_alias_ids,
     delete_analyses_without_result,
     delete_analysis_by_id,
     AnalysisSchemaError,
@@ -131,7 +135,17 @@ from db import (
     upsert_activity_book,
     lookup_packet_grant_for_tax_year,
     lookup_packet_entitlement_for_tax_year,
+    lookup_packet_entitlements_for_analysis,
+    list_packet_snapshots_for_identity,
+    PacketSnapshotYearConflict,
+    ALREADY_GRANTED_ENTITLEMENT,
+    PACKET_GRANT_SAME_YEAR_DUPLICATE,
+    STICKY_CONFLICT_RECEIPT,
+    canonical_history_embedded_on_other_row,
+    lookup_packet_session_entitlement,
+    save_packet_conflict_receipt,
     save_packet_entitlement,
+    _is_conflict_analysis_id,
     save_packet_snapshot,
     get_packet_snapshot,
     mark_packet_snapshot_paid,
@@ -653,7 +667,8 @@ def _save_history_best_effort(
         else:
             logger.warning("save_analysis_history returned None — check Supabase connection")
     except HistoryInsertConflict:
-        # A concurrent insert already stored this run. The row exists.
+        # This user already has the analysis. A cross-user primary-key collision
+        # is retried inside save_analysis_history and is not this exception.
         return True
     except AnalysisSchemaError:
         # A missing result column is a deploy error, not a transient outage.
@@ -1654,12 +1669,17 @@ async def _run_portfolio_analysis(
         packet_payload = get_payload(result.analysis_id)
         tax_year = _packet_result_tax_year(packet_payload)
         if packet_payload and tax_year is not None:
-            if not save_packet_snapshot(
-                result.analysis_id,
-                user_id,
-                tax_year,
-                packet_payload,
-            ):
+            try:
+                saved_unpaid = save_packet_snapshot(
+                    result.analysis_id,
+                    user_id,
+                    tax_year,
+                    packet_payload,
+                )
+            except PacketSnapshotYearConflict:
+                # A paid row for another year stays put. Analyze does not re-year it.
+                saved_unpaid = None
+            if not saved_unpaid:
                 logger.warning(
                     "Could not persist unpaid packet snapshot for analysis %s",
                     result.analysis_id,
@@ -1667,18 +1687,21 @@ async def _run_portfolio_analysis(
     if result.packet_unlocked and result.packet_session_id:
         packet_payload = get_payload(result.analysis_id)
         tax_year = _packet_result_tax_year(packet_payload)
-        snapshot_saved = bool(
-            packet_payload
-            and tax_year is not None
-            and save_packet_snapshot(
-                result.analysis_id,
-                user_id,
-                tax_year,
-                packet_payload,
-                session_id=result.packet_session_id,
-                paid=True,
-            )
-        )
+        snapshot_saved = False
+        if packet_payload and tax_year is not None:
+            try:
+                snapshot_saved = bool(
+                    save_packet_snapshot(
+                        result.analysis_id,
+                        user_id,
+                        tax_year,
+                        packet_payload,
+                        session_id=result.packet_session_id,
+                        paid=True,
+                    )
+                )
+            except PacketSnapshotYearConflict:
+                snapshot_saved = False
         if snapshot_saved:
             mark_paid(
                 result.analysis_id,
@@ -1732,7 +1755,20 @@ async def persist_portfolio_history(
     # state supplied by the client; only verified server paths may set it.
     analysis.pop("packet_unlocked", None)
     analysis.pop("packet_session_id", None)
-    analysis_id = str(analysis.get("analysis_id") or "").strip()
+    raw_analysis_id = analysis.get("analysis_id")
+    # A present non-string id is not a missing id and must not be stringified
+    # or replaced with a generated UUID.
+    if raw_analysis_id is not None and not isinstance(raw_analysis_id, str):
+        raise HTTPException(status_code=400, detail="analysis_id is required")
+    analysis_id = (
+        _canonical_analysis_id(raw_analysis_id)
+        if isinstance(raw_analysis_id, str)
+        else None
+    ) or ""
+    if _is_conflict_analysis_id(analysis_id):
+        raise HTTPException(status_code=400, detail="analysis_id is reserved")
+    if analysis_id:
+        analysis["analysis_id"] = analysis_id
     guest_packet_payload = claimable_guest_packet_payload(
         analysis_id,
         user_id,
@@ -1802,12 +1838,29 @@ async def persist_portfolio_history(
         )
     if guest_packet_payload:
         tax_year = _packet_result_tax_year(guest_packet_payload)
-        if tax_year is None or not save_packet_snapshot(
-            analysis_id,
-            user_id,
-            tax_year,
-            guest_packet_payload,
-        ):
+        saved_snapshot = None
+        year_conflict = False
+        if tax_year is not None:
+            try:
+                saved_snapshot = save_packet_snapshot(
+                    analysis_id,
+                    user_id,
+                    tax_year,
+                    guest_packet_payload,
+                )
+            except PacketSnapshotYearConflict:
+                year_conflict = True
+        if year_conflict:
+            if newly_inserted:
+                _rollback_inserted_history(saved, user_id)
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "This analysis already has a paid packet for another tax year. "
+                    "Start a new analysis for the year you want to save."
+                ),
+            )
+        if tax_year is None or not saved_snapshot:
             if newly_inserted:
                 _rollback_inserted_history(saved, user_id)
             raise HTTPException(
@@ -1873,11 +1926,15 @@ async def get_portfolio_analysis(
     Retrieve a single past portfolio analysis by ID, including the full result.
 
     Used when a user clicks a history item to reload that report.
+    ``get_analysis_by_id`` resolves portfolio_analyses.id, then the embedded
+    result.analysis_id, then portfolio_analysis_id_aliases. A missing alias
+    table is a miss.
 
     **Authentication Required**: Must provide valid Supabase JWT token.
     **Security**: user_id is extracted from the verified JWT. The query filters
     by both analysis_id and user_id so users can only access their own analyses.
     """
+    analysis_id = _require_canonical_analysis_id(analysis_id)
     # Use service role client — security enforced at app level via user_id filter.
     db_client = get_supabase()
 
@@ -1918,7 +1975,10 @@ async def cleanup_orphan_history(
 
 @app.delete(
     "/api/portfolio/analysis/{analysis_id}",
-    responses={404: {"description": "Analysis not found"}},
+    responses={
+        404: {"description": "Analysis not found"},
+        503: {"description": "Analysis lookup failed"},
+    },
 )
 async def delete_portfolio_analysis(
     analysis_id: str,
@@ -1927,22 +1987,52 @@ async def delete_portfolio_analysis(
     """
     Delete a single portfolio analysis by ID.
 
+    The id may be the row primary key, the embedded result.analysis_id, or a
+    legacy id in portfolio_analysis_id_aliases. The delete uses the resolved
+    primary key. A missing alias table is a miss and does not fail the delete.
+    Any other alias error stays an outage so a schema-cache miss cannot hide
+    a rewritten row's in-memory packet.
+
     **Authentication Required**: Must provide valid Supabase JWT token.
     **Authorization**: User can only delete their own analyses.
     """
-    record = get_analysis_by_id(analysis_id, user_id)
-    if not record:
+    analysis_id = _require_canonical_analysis_id(analysis_id)
+    record, lookup_succeeded = lookup_analysis_for_entitlement(analysis_id, user_id)
+    if not lookup_succeeded:
+        raise HTTPException(
+            status_code=503,
+            detail="Analysis could not be deleted. Please retry.",
+        )
+    if not record or not record.get("id"):
         raise HTTPException(status_code=404, detail="Analysis not found")
     result = record.get("result") if isinstance(record, dict) else None
     packet_analysis_id = (
         result.get("analysis_id") if isinstance(result, dict) else None
     )
-    deleted = delete_analysis_by_id(analysis_id, user_id)
+    # Alias and embedded lookups can resolve a caller id that is not the
+    # primary key. Read legacy ids before the delete: the row trigger removes
+    # those alias rows as it clears snapshots.
+    row_id = str(record["id"])
+    legacy_ids = list_legacy_alias_ids(row_id, user_id)
+    if legacy_ids is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Analysis could not be deleted. Please retry.",
+        )
+    deleted = delete_analysis_by_id(row_id, user_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Analysis not found")
+    forgotten = []
     if isinstance(packet_analysis_id, str) and packet_analysis_id:
-        forget_packet_payload(packet_analysis_id, user_id)
-    forget_packet_payload(analysis_id, user_id)
+        forgotten.append(packet_analysis_id)
+    forgotten.append(analysis_id)
+    if row_id not in forgotten:
+        forgotten.append(row_id)
+    for legacy_id in legacy_ids:
+        if legacy_id not in forgotten:
+            forgotten.append(legacy_id)
+    for forget_id in forgotten:
+        forget_packet_payload(forget_id, user_id)
     return {"deleted": True}
 
 
@@ -2358,6 +2448,19 @@ def _rollback_inserted_history(saved: dict, user_id: str) -> None:
         )
 
 
+def _require_canonical_analysis_id(value) -> str:
+    """Ingress helper. Blank and non-strings are the same 400 as a missing id.
+
+    ``conflict:`` is reserved for refund receipts and is a different 400.
+    """
+    canonical = _canonical_analysis_id(value) if isinstance(value, str) else None
+    if not canonical:
+        raise HTTPException(status_code=400, detail="analysis_id is required")
+    if _is_conflict_analysis_id(canonical):
+        raise HTTPException(status_code=400, detail="analysis_id is reserved")
+    return canonical
+
+
 def _packet_checkout_idempotency_key(
     user_id: str,
     analysis_id: str,
@@ -2389,10 +2492,87 @@ def _configure_packet_stripe() -> str:
 
 
 PACKET_GRANT_MISSING_SOURCE = "missing_source"
+PACKET_GRANT_YEAR_CONFLICT = "PACKET_GRANT_YEAR_CONFLICT"
+PACKET_GRANT_CONFLICT_RECEIPT = "PACKET_GRANT_CONFLICT_RECEIPT"
+PACKET_PAID_OTHER_YEAR_DETAIL = (
+    "This analysis already has a paid packet for another tax year. "
+    "Start a new analysis for the year you want to buy."
+)
+PACKET_HISTORY_YEAR_MISMATCH_DETAIL = (
+    "This analysis is already saved for a different tax year. "
+    "The unpaid packet draft was left on its original year."
+)
+PACKET_CONFLICT_RECEIPT_DETAIL = (
+    "This checkout session was already recorded as a refund and does not grant a packet."
+)
+PACKET_SAME_YEAR_DUPLICATE_DETAIL = (
+    "PACKET_GRANT_SAME_YEAR_DUPLICATE: this tax year was already paid under "
+    "another checkout session. The new charge is recorded for a refund."
+)
+PACKET_GRANT_YEAR_UNKNOWN = "PACKET_GRANT_YEAR_UNKNOWN"
 PACKET_MISSING_SOURCE_DETAIL = (
     "Payment was received, but this analysis has no source document. "
     "Run a new analysis for this tax year."
 )
+PACKET_YEAR_AMBIGUOUS_DETAIL = (
+    "We found paid packets for more than one tax year for this analysis. "
+    "Please pick the tax year and try again."
+)
+PACKET_SNAPSHOT_EXPIRED_DETAIL = (
+    "The private packet snapshot has expired. Re-run this analysis before checkout."
+)
+
+
+def _resolve_packet_tax_year_for_identity(
+    analysis_id: str,
+    user_id: str,
+) -> tuple[Optional[int], bool]:
+    """History year, else one entitlement year, else one snapshot row.
+
+    The second value is False on outage. (None, True) means no single year.
+    More than one entitlement year is unknown immediately. A snapshot does not
+    break that tie. One snapshot row is accepted when its stored id is the
+    same analysis, including a legacy spelling of the same UUID.
+    """
+    record, lookup_ok = lookup_analysis_for_entitlement(analysis_id, user_id)
+    if not lookup_ok:
+        return None, False
+    result = record.get("result") if isinstance(record, dict) else None
+    year = _packet_result_tax_year(result if isinstance(result, dict) else None)
+    if year is not None:
+        return year, True
+
+    entitlements, entitlements_ok = lookup_packet_entitlements_for_analysis(
+        user_id,
+        analysis_id,
+    )
+    if not entitlements_ok:
+        return None, False
+    years = set()
+    for row in entitlements:
+        if not isinstance(row, dict):
+            continue
+        try:
+            years.add(int(row.get("tax_year")))
+        except (TypeError, ValueError):
+            continue
+    if len(years) > 1:
+        return None, True
+    if len(years) == 1:
+        return next(iter(years)), True
+
+    snapshots, snapshots_ok = list_packet_snapshots_for_identity(analysis_id, user_id)
+    if not snapshots_ok:
+        return None, False
+    if len(snapshots) == 1 and isinstance(snapshots[0], dict):
+        row = snapshots[0]
+        stored_id = str(row.get("analysis_id") or "")
+        if _analysis_ids_match(stored_id, analysis_id):
+            try:
+                return int(row.get("tax_year")), True
+            except (TypeError, ValueError):
+                return None, True
+    return None, True
 
 
 def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[bool | str]:
@@ -2405,12 +2585,56 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
         return False
     cache_belongs_to_user = packet_store_belongs_to_user(session_analysis_id, user_id)
     session_id = packet_session_id(session)
+    metadata_year = _packet_result_tax_year(
+        {"analysis_tax_year": _session_metadata(session).get("tax_year")}
+    )
+    if metadata_year is None:
+        resolved_year, year_ok = _resolve_packet_tax_year_for_identity(
+            session_analysis_id,
+            session_user_id,
+        )
+        if not year_ok:
+            return None
+        if resolved_year is None:
+            logger.error(
+                "PACKET_GRANT_YEAR_UNKNOWN session_id=%s user_id=%s analysis_id=%s",
+                session_id,
+                session_user_id,
+                session_analysis_id,
+            )
+            return PACKET_GRANT_YEAR_UNKNOWN
+        grant_year = resolved_year
+    else:
+        grant_year = metadata_year
+
+    def _save_grant_snapshot(payload, *, paid=False):
+        try:
+            return save_packet_snapshot(
+                session_analysis_id,
+                session_user_id,
+                tax_year,
+                payload,
+                session_id=session_id if paid else None,
+                paid=paid,
+            )
+        except PacketSnapshotYearConflict as exc:
+            return _record_packet_year_conflict(
+                exc,
+                session_id,
+                session_user_id,
+                session_analysis_id,
+            )
+
     snapshot, snapshot_lookup_succeeded = get_packet_snapshot(
         session_analysis_id,
         session_user_id,
+        tax_year=grant_year,
     )
     if not snapshot_lookup_succeeded:
         return None
+    # A year-scoped miss is not another year's document. Fall through and
+    # rebuild this session's year from metadata, then history. Do not read
+    # or stamp the other year's row.
     if snapshot:
         tax_year = snapshot.get("tax_year")
         packet_payload = snapshot.get("packet_payload")
@@ -2427,36 +2651,40 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
         if not record_lookup_succeeded:
             return None
         result = record.get("result") if isinstance(record, dict) else None
-        tax_year = _packet_result_tax_year(result)
-        metadata = _session_metadata(session)
-        try:
-            tax_year = int(metadata.get("tax_year") or tax_year)
-        except (TypeError, ValueError):
-            pass
+        history_year = _packet_result_tax_year(result)
+        if metadata_year is not None:
+            tax_year = metadata_year
+        elif history_year is not None:
+            tax_year = history_year
+        else:
+            tax_year = grant_year
         packet_payload = (
             get_payload(session_analysis_id) if cache_belongs_to_user else None
         )
         if tax_year is None:
-            logger.warning("Paid packet has no recoverable tax year: %s", session_analysis_id)
-            return False
+            logger.error(
+                "PACKET_GRANT_YEAR_UNKNOWN session_id=%s user_id=%s analysis_id=%s",
+                session_id,
+                session_user_id,
+                session_analysis_id,
+            )
+            return PACKET_GRANT_YEAR_UNKNOWN
         # A deleted history row must not be replaced by a private snapshot
         # rebuilt from process memory.
         if not record:
             packet_payload = None
-        elif isinstance(packet_payload, dict) and not save_packet_snapshot(
-            session_analysis_id,
-            session_user_id,
-            tax_year,
-            packet_payload,
-        ):
-            return None
+        elif isinstance(packet_payload, dict):
+            saved_snapshot = _save_grant_snapshot(packet_payload)
+            # True is an already-granted session. Do not treat it as a saved
+            # snapshot and continue into history.
+            if saved_snapshot is True or saved_snapshot == PACKET_GRANT_YEAR_CONFLICT:
+                return saved_snapshot
+            if not saved_snapshot:
+                return None
     try:
         tax_year = int(tax_year)
     except (TypeError, ValueError):
         return False
-    metadata_year = _packet_result_tax_year(
-        {"analysis_tax_year": _session_metadata(session).get("tax_year")}
-    )
     if metadata_year is not None and metadata_year != tax_year:
         logger.warning(
             "Rejecting packet session for mismatched tax year %s (snapshot %s)",
@@ -2464,6 +2692,47 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
             tax_year,
         )
         return False
+    # A conflict receipt for this session stays a conflict. Read it before any
+    # snapshot stamp, including mark_packet_snapshot_paid below.
+    sticky_row, sticky_ok = lookup_packet_session_entitlement(
+        session_user_id,
+        tax_year,
+        session_id,
+    )
+    if not sticky_ok:
+        return None
+    if isinstance(sticky_row, dict) and _is_conflict_analysis_id(
+        sticky_row.get("analysis_id")
+    ):
+        return PACKET_GRANT_CONFLICT_RECEIPT
+
+    def _paid_other_year_conflict():
+        identity_rows, identity_ok = list_packet_snapshots_for_identity(
+            session_analysis_id,
+            session_user_id,
+        )
+        if not identity_ok:
+            return None
+        for identity_row in identity_rows:
+            if not isinstance(identity_row, dict) or not identity_row.get("paid_at"):
+                continue
+            try:
+                stored_year = int(identity_row.get("tax_year"))
+            except (TypeError, ValueError):
+                continue
+            if stored_year != tax_year:
+                return _record_packet_year_conflict(
+                    PacketSnapshotYearConflict(
+                        identity_row.get("analysis_id"),
+                        stored_year,
+                        tax_year,
+                    ),
+                    session_id,
+                    session_user_id,
+                    session_analysis_id,
+                )
+        return False
+
     if (
         snapshot
         and not isinstance(snapshot.get("packet_payload"), dict)
@@ -2477,25 +2746,31 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
             return None
         if not history_row:
             packet_payload = None
-        elif not save_packet_snapshot(
-            session_analysis_id,
-            session_user_id,
-            tax_year,
-            packet_payload,
-            session_id=session_id,
-            paid=True,
-        ):
-            return None
+        else:
+            saved_snapshot = _save_grant_snapshot(packet_payload, paid=True)
+            if saved_snapshot is True or saved_snapshot == PACKET_GRANT_YEAR_CONFLICT:
+                return saved_snapshot
+            if not saved_snapshot:
+                return None
     if not isinstance(packet_payload, dict):
         # Keep the settled session as a same-year entitlement, but do not tell
         # confirm/webhook that a downloadable packet exists without its private
         # source document. A fresh analysis can reuse this receipt.
+        # No document means save_packet_snapshot never runs, so the paid-other-year
+        # scan has to happen here. A normal entitlement would unlock the charged year.
+        paid_other_year = _paid_other_year_conflict()
+        if paid_other_year is None:
+            return None
+        if paid_other_year:
+            return paid_other_year
         saved_entitlement = save_packet_entitlement(
             session_analysis_id,
             session_user_id,
             tax_year,
             session_id,
         )
+        if saved_entitlement is STICKY_CONFLICT_RECEIPT:
+            return PACKET_GRANT_CONFLICT_RECEIPT
         if saved_entitlement is None:
             return None
         logger.error(
@@ -2503,37 +2778,71 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
             session_analysis_id,
         )
         return PACKET_GRANT_MISSING_SOURCE
-    history_ready = _ensure_packet_history_row(
+    kind, history_ok = _history_year_disagreement(
         session_analysis_id,
         session_user_id,
         tax_year,
     )
+    if not history_ok:
+        return None
+    try:
+        history_ready = _ensure_packet_history_row(
+            session_analysis_id,
+            session_user_id,
+            tax_year,
+            ignore_profile_year=(kind == "profile"),
+        )
+    except PacketSnapshotYearConflict as exc:
+        return _record_packet_year_conflict(
+            exc,
+            session_id,
+            session_user_id,
+            session_analysis_id,
+        )
     if history_ready is None:
         return None
     if not history_ready:
+        paid_other_year = _paid_other_year_conflict()
+        if paid_other_year is None:
+            return None
+        if paid_other_year:
+            return paid_other_year
         saved_entitlement = save_packet_entitlement(
             session_analysis_id,
             session_user_id,
             tax_year,
             session_id,
         )
+        if saved_entitlement is STICKY_CONFLICT_RECEIPT:
+            return PACKET_GRANT_CONFLICT_RECEIPT
         if saved_entitlement is None:
             return None
         return PACKET_GRANT_MISSING_SOURCE
-    entitlement_saved = mark_packet_snapshot_paid(
-        session_analysis_id,
-        session_user_id,
-        tax_year,
-        session_id,
-    )
+    try:
+        entitlement_saved = mark_packet_snapshot_paid(
+            session_analysis_id,
+            session_user_id,
+            tax_year,
+            session_id,
+        )
+    except PacketSnapshotYearConflict as exc:
+        return _record_packet_year_conflict(
+            exc,
+            session_id,
+            session_user_id,
+            session_analysis_id,
+        )
     if entitlement_saved is None:
         return None
+    if entitlement_saved == PACKET_GRANT_SAME_YEAR_DUPLICATE:
+        return entitlement_saved
     if not entitlement_saved:
         # The snapshot row disappeared (history delete, expiry). Do not INSERT
         # a replacement private document; keep the purchase as a receipt.
         latest_snapshot, latest_ok = get_packet_snapshot(
             session_analysis_id,
             session_user_id,
+            tax_year=tax_year,
         )
         if not latest_ok:
             return None
@@ -2550,25 +2859,25 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
                 tax_year,
                 session_id,
             )
+            if saved_entitlement is STICKY_CONFLICT_RECEIPT:
+                return PACKET_GRANT_CONFLICT_RECEIPT
             if saved_entitlement is None:
                 return None
             return PACKET_GRANT_MISSING_SOURCE
-        repaired = save_packet_snapshot(
-            session_analysis_id,
-            session_user_id,
-            tax_year,
-            packet_payload,
-            session_id=session_id,
-            paid=True,
-        )
+        repaired = _save_grant_snapshot(packet_payload, paid=True)
+        if repaired is True or repaired == PACKET_GRANT_YEAR_CONFLICT:
+            return repaired
         if not repaired:
             return None
-    if not save_packet_entitlement(
+    saved_entitlement = save_packet_entitlement(
         session_analysis_id,
         session_user_id,
         tax_year,
         session_id,
-    ):
+    )
+    if saved_entitlement is STICKY_CONFLICT_RECEIPT:
+        return PACKET_GRANT_CONFLICT_RECEIPT
+    if not saved_entitlement:
         return None
     # The independent entitlement/snapshot row is authoritative. History flags
     # help legacy clients but a deleted row or history outage cannot revoke a
@@ -2597,6 +2906,26 @@ def _grant_packet_from_session(session, analysis_id: str, user_id: str = "") -> 
         )
     if granted == PACKET_GRANT_MISSING_SOURCE:
         raise HTTPException(status_code=409, detail=PACKET_MISSING_SOURCE_DETAIL)
+    if granted == PACKET_GRANT_YEAR_CONFLICT:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "PACKET_GRANT_YEAR_CONFLICT: this analysis already has a paid "
+                "packet for a different tax year."
+            ),
+        )
+    if granted == PACKET_GRANT_SAME_YEAR_DUPLICATE:
+        raise HTTPException(status_code=409, detail=PACKET_SAME_YEAR_DUPLICATE_DETAIL)
+    if granted == PACKET_GRANT_CONFLICT_RECEIPT:
+        raise HTTPException(status_code=409, detail=PACKET_CONFLICT_RECEIPT_DETAIL)
+    if granted == PACKET_GRANT_YEAR_UNKNOWN:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "PACKET_GRANT_YEAR_UNKNOWN: this checkout session has no tax year, "
+                "and the saved packet does not name exactly one tax year."
+            ),
+        )
     return granted
 
 
@@ -2621,6 +2950,38 @@ def _analysis_with_history_suggestions(
     return merged
 
 
+def _strict_packet_tax_year(value) -> Optional[int]:
+    """Int year, or a digit string. Bool and float are not years.
+
+    ``int(True)`` is 1 and ``int(2025.9)`` truncates. Checkout metadata still
+    arrives as ``"2025"``, so strings keep parsing.
+    """
+    if isinstance(value, bool) or isinstance(value, float):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _explicit_analysis_tax_year(analysis: Optional[dict]) -> tuple[Optional[int], bool]:
+    """Parsed ``analysis_tax_year`` and whether a present value was rejected.
+
+    A missing key or JSON null is not a veto. Bool, float, and any other
+    non-integer are rejected. A digit string parses.
+    """
+    if not isinstance(analysis, dict) or analysis.get("analysis_tax_year") is None:
+        return None, False
+    parsed = _strict_packet_tax_year(analysis.get("analysis_tax_year"))
+    if parsed is None:
+        return None, True
+    return parsed, False
+
+
 def _packet_result_tax_year(result: Optional[dict]) -> Optional[int]:
     if not isinstance(result, dict):
         return None
@@ -2628,26 +2989,154 @@ def _packet_result_tax_year(result: Optional[dict]) -> Optional[int]:
     profile = result.get("tax_profile")
     if year is None and isinstance(profile, dict):
         year = profile.get("tax_year")
+    if year is None:
+        return None
+    return _strict_packet_tax_year(year)
+
+
+def _record_packet_year_conflict(
+    exc: PacketSnapshotYearConflict,
+    session_id: str,
+    user_id: str,
+    analysis_id: str,
+):
+    """Store one refund receipt for a different tax year.
+
+    The receipt helper is the only insert and the only ERROR log. None means
+    that insert failed. Callers then retry (webhook 500, confirm 503). A later
+    retry rereads the same primary key and does not log again.
+    ``save_packet_entitlement`` is passed so tests can record the row.
+    """
     try:
-        return int(year) if year is not None else None
+        charged_year = int(exc.requested_tax_year)
     except (TypeError, ValueError):
         return None
+    try:
+        stored_year = int(exc.stored_tax_year)
+    except (TypeError, ValueError):
+        stored_year = charged_year
+    if not session_id:
+        return None
+    saved = save_packet_conflict_receipt(
+        analysis_id,
+        user_id,
+        charged_year,
+        session_id,
+        paid_tax_year=stored_year,
+        log_event=PACKET_GRANT_YEAR_CONFLICT,
+        entitlement_writer=save_packet_entitlement,
+    )
+    if saved is ALREADY_GRANTED_ENTITLEMENT:
+        # The session already granted. Do not stamp a snapshot or write again.
+        return True
+    if saved is None:
+        return None
+    return PACKET_GRANT_YEAR_CONFLICT
 
 
 def _ensure_packet_history_row(
     analysis_id: str,
     user_id: str,
     tax_year: int,
+    *,
+    ignore_profile_year: bool = False,
 ) -> Optional[bool]:
-    """Create a deletable, redacted history stub without trusting checkout JSON.
+    """Create or align a deletable history stub with the checkout tax year.
 
-    True when a row is present, False when it cannot be created, None on outage.
+    True when a row is present and its year matches. False when it cannot be
+    created or patched. None on outage. Does not change portfolio_analyses.id.
+
+    ``ignore_profile_year`` is only for the grant path when the sole
+    disagreement is ``tax_profile.tax_year``. The row is still created, a
+    missing ``analysis_tax_year`` is still filled, and re-case still runs.
+    The profile year is not raised on and not patched. Other callers keep
+    the default and still treat a profile mismatch as a year conflict.
     """
     record, lookup_succeeded = lookup_analysis_for_entitlement(analysis_id, user_id)
     if not lookup_succeeded:
         return None
     if record:
-        return True
+        result = record.get("result") if isinstance(record.get("result"), dict) else {}
+        profile = result.get("tax_profile") if isinstance(result.get("tax_profile"), dict) else {}
+        try:
+            stored_analysis_year = (
+                int(result.get("analysis_tax_year"))
+                if result.get("analysis_tax_year") is not None
+                else None
+            )
+        except (TypeError, ValueError):
+            stored_analysis_year = None
+        try:
+            stored_profile_year = (
+                int(profile.get("tax_year")) if profile.get("tax_year") is not None else None
+            )
+        except (TypeError, ValueError):
+            stored_profile_year = None
+        embedded = result.get("analysis_id")
+        embedded_needs_canonical = (
+            isinstance(embedded, str)
+            and _canonical_analysis_uuid(embedded) is not None
+            and embedded != _canonical_analysis_uuid(embedded)
+        )
+        # A present int that differs is a conflict. Do not relabel the year.
+        # A missing analysis_tax_year is not a disagreement when the profile
+        # year matches. Fill year keys only when the resolved year is missing.
+        stored_year = _packet_result_tax_year(result)
+        analysis_disagrees = (
+            stored_analysis_year is not None and stored_analysis_year != int(tax_year)
+        )
+        profile_disagrees = (
+            stored_profile_year is not None and stored_profile_year != int(tax_year)
+        )
+        if analysis_disagrees or (profile_disagrees and not ignore_profile_year):
+            disagreed = (
+                stored_analysis_year if analysis_disagrees else stored_profile_year
+            )
+            raise PacketSnapshotYearConflict(
+                embedded if isinstance(embedded, str) else analysis_id,
+                disagreed,
+                int(tax_year),
+            )
+        canonical_embedded = (
+            _canonical_analysis_uuid(embedded) if embedded_needs_canonical else None
+        )
+        skip_recase = False
+        if canonical_embedded is not None:
+            other = canonical_history_embedded_on_other_row(
+                user_id,
+                canonical_embedded,
+                str(record.get("id") or ""),
+            )
+            if other is None:
+                return None
+            skip_recase = other
+        if stored_year == int(tax_year):
+            if not embedded_needs_canonical or skip_recase:
+                return True
+            patched = patch_analysis_result(
+                analysis_id,
+                user_id,
+                {"analysis_id": canonical_embedded},
+            )
+            if patched is None:
+                return None
+            return bool(patched)
+        # Resolved year is missing. Fill only the missing year keys.
+        patch = {}
+        if stored_analysis_year is None:
+            patch["analysis_tax_year"] = int(tax_year)
+        if stored_profile_year is None and not ignore_profile_year:
+            merged_profile = dict(profile)
+            merged_profile["tax_year"] = int(tax_year)
+            patch["tax_profile"] = merged_profile
+        if embedded_needs_canonical and not skip_recase:
+            patch["analysis_id"] = canonical_embedded
+        if not patch:
+            return True
+        patched = patch_analysis_result(analysis_id, user_id, patch)
+        if patched is None:
+            return None
+        return bool(patched)
     safe_result = {
         "analysis_id": analysis_id,
         "analysis_tax_year": int(tax_year),
@@ -2668,6 +3157,115 @@ def _ensure_packet_history_row(
             return None
         return bool(raced)
     return True if saved else False
+
+
+def _history_year_disagreement(
+    analysis_id: str,
+    user_id: str,
+    tax_year: int,
+) -> tuple[Optional[str], bool]:
+    """Classify a stored history year against the checkout year.
+
+    Returns ``(kind, ok)``. ``ok`` is False on outage. ``kind`` is None when
+    there is no row or no present int disagrees, ``"profile"`` when only
+    ``tax_profile.tax_year`` disagrees, ``"analysis"`` when only
+    ``analysis_tax_year`` disagrees, and ``"both"`` when both disagree.
+    This read does not patch.
+    """
+    record, lookup_succeeded = lookup_analysis_for_entitlement(analysis_id, user_id)
+    if not lookup_succeeded:
+        return None, False
+    if not isinstance(record, dict):
+        return None, True
+    result = record.get("result") if isinstance(record.get("result"), dict) else {}
+    profile = result.get("tax_profile") if isinstance(result.get("tax_profile"), dict) else {}
+    try:
+        stored_analysis_year = (
+            int(result.get("analysis_tax_year"))
+            if result.get("analysis_tax_year") is not None
+            else None
+        )
+    except (TypeError, ValueError):
+        stored_analysis_year = None
+    try:
+        stored_profile_year = (
+            int(profile.get("tax_year")) if profile.get("tax_year") is not None else None
+        )
+    except (TypeError, ValueError):
+        stored_profile_year = None
+    analysis_disagrees = (
+        stored_analysis_year is not None and stored_analysis_year != int(tax_year)
+    )
+    profile_disagrees = (
+        stored_profile_year is not None and stored_profile_year != int(tax_year)
+    )
+    if analysis_disagrees and profile_disagrees:
+        return "both", True
+    if analysis_disagrees:
+        return "analysis", True
+    if profile_disagrees:
+        return "profile", True
+    return None, True
+
+
+def _checkout_blocks_before_snapshot_save(
+    analysis_id: str,
+    user_id: str,
+    tax_year: int,
+    *,
+    paid_same_year: bool,
+) -> bool:
+    """Reject checkout conflicts before any snapshot write.
+
+    True means a paid same-year snapshot whose only mismatch is
+    ``tax_profile.tax_year``. The caller continues to ``already_paid`` and
+    does not patch that profile. A paid snapshot in another int year uses
+    ``PACKET_PAID_OTHER_YEAR_DETAIL``. Any other stored-year disagreement
+    uses ``PACKET_HISTORY_YEAR_MISMATCH_DETAIL``.
+    """
+    rows, ok = list_packet_snapshots_for_identity(analysis_id, user_id)
+    if not ok:
+        raise HTTPException(
+            status_code=503,
+            detail="Could not load the saved packet snapshot. Please retry.",
+        )
+    for row in rows or []:
+        if not isinstance(row, dict) or not row.get("paid_at"):
+            continue
+        try:
+            stored_year = int(row.get("tax_year"))
+        except (TypeError, ValueError):
+            continue
+        if stored_year != int(tax_year):
+            raise HTTPException(status_code=409, detail=PACKET_PAID_OTHER_YEAR_DETAIL)
+    kind, history_ok = _history_year_disagreement(analysis_id, user_id, int(tax_year))
+    if not history_ok:
+        raise HTTPException(
+            status_code=503,
+            detail="Could not save this analysis before checkout. Please retry.",
+        )
+    if kind is None:
+        return False
+    if paid_same_year and kind == "profile":
+        return True
+    raise HTTPException(status_code=409, detail=PACKET_HISTORY_YEAR_MISMATCH_DETAIL)
+
+
+def _ensure_checkout_history(analysis_id: str, user_id: str, tax_year: int) -> None:
+    """Fill a missing history year after the pre-save conflict check.
+
+    A disagreeing year is 409 with the history-year detail and does not patch.
+    A paid snapshot in another year is rejected before this runs.
+    """
+    try:
+        ready = _ensure_packet_history_row(analysis_id, user_id, tax_year)
+    except PacketSnapshotYearConflict:
+        raise HTTPException(status_code=409, detail=PACKET_HISTORY_YEAR_MISMATCH_DETAIL)
+    if not ready:
+        raise HTTPException(
+            status_code=503,
+            detail="Could not save this analysis before checkout. Please retry.",
+        )
 
 
 def _is_persisted_same_year_packet_grant(
@@ -2694,31 +3292,19 @@ def _is_persisted_same_year_packet_grant(
         {"analysis_tax_year": metadata.get("tax_year")}
     )
     if session_year is None:
-        source_snapshot, source_snapshot_lookup_succeeded = get_packet_snapshot(
+        session_year, year_ok = _resolve_packet_tax_year_for_identity(
             source_analysis_id,
             user_id,
         )
-        if not source_snapshot_lookup_succeeded:
+        if not year_ok:
             return None
-        if isinstance(source_snapshot, dict):
-            session_year = _packet_result_tax_year(
-                {"analysis_tax_year": source_snapshot.get("tax_year")}
-            )
-        if session_year is None:
-            source, source_lookup_succeeded = lookup_analysis_for_entitlement(
-                source_analysis_id,
-                user_id,
-            )
-            if not source_lookup_succeeded:
-                return None
-            source_result = source.get("result") if isinstance(source, dict) else None
-            session_year = _packet_result_tax_year(source_result)
     if session_year is None:
         return False
 
     packet_snapshot, snapshot_lookup_succeeded = get_packet_snapshot(
         analysis_id,
         user_id,
+        tax_year=session_year,
     )
     if not snapshot_lookup_succeeded:
         return None
@@ -2742,23 +3328,47 @@ def _is_persisted_same_year_packet_grant(
     return False
 
 
-def _payload_for_download(analysis_id: str, user_id: str, analysis: Optional[dict]):
+def _payload_for_download(
+    analysis_id: str,
+    user_id: str,
+    analysis: Optional[dict],
+    tax_year: Optional[int] = None,
+    session_id: Optional[str] = None,
+    *,
+    metadata_year: Optional[int] = None,
+):
+    """Read the paid year-scoped payload. Does not retrieve a Checkout session."""
     if isinstance(analysis, dict):
         supplied_id = str(analysis.get("analysis_id") or "").strip()
-        if supplied_id and supplied_id != "local-analysis" and supplied_id != analysis_id:
+        if (
+            supplied_id
+            and supplied_id != "local-analysis"
+            and not _analysis_ids_match(supplied_id, analysis_id)
+        ):
             raise HTTPException(
                 status_code=400,
                 detail="The analysis ID does not match the paid packet.",
             )
-    snapshot, lookup_succeeded = get_packet_snapshot(analysis_id, user_id)
+    if tax_year is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Could not determine the packet tax year. Please retry.",
+        )
+    snapshot, lookup_succeeded = get_packet_snapshot(
+        analysis_id,
+        user_id,
+        tax_year=tax_year,
+    )
     if not lookup_succeeded:
         raise HTTPException(
             status_code=503,
             detail="Could not load the saved packet snapshot. Please retry.",
         )
-    if isinstance(snapshot, dict):
-        if isinstance(snapshot.get("packet_payload"), dict):
-            return snapshot["packet_payload"]
+    # Process memory is not payment. A missing or unpaid year-scoped row is 403.
+    if not isinstance(snapshot, dict) or not snapshot.get("paid_at"):
+        _packet_download_forbidden()
+    payload = snapshot.get("packet_payload")
+    if not isinstance(payload, dict):
         raise HTTPException(
             status_code=503,
             detail=(
@@ -2766,17 +3376,27 @@ def _payload_for_download(analysis_id: str, user_id: str, analysis: Optional[dic
                 "to restore it, then download again."
             ),
         )
-    if packet_store_belongs_to_user(analysis_id, user_id):
-        stored = get_payload(analysis_id)
-        if stored:
-            return stored
-    raise HTTPException(
-        status_code=503,
-        detail=(
-            "The private packet snapshot is unavailable. Re-run the analysis "
-            "to restore it, then download again."
-        ),
-    )
+    if session_id:
+        stored_session_id = snapshot.get("packet_session_id")
+        if stored_session_id and stored_session_id != session_id:
+            # A different cs_ does not match, even when its metadata year does.
+            _packet_download_forbidden()
+        elif stored_session_id == session_id:
+            # metadata_year is None for a legacy session and for Stripe outage
+            # when the stored session already proved this row. Do not retrieve.
+            if (
+                metadata_year is not None
+                and metadata_year != int(snapshot.get("tax_year"))
+            ):
+                _packet_download_forbidden()
+        else:
+            # No stored session. Only a readable metadata year can tie this cs_.
+            if (
+                metadata_year is None
+                or metadata_year != int(snapshot.get("tax_year"))
+            ):
+                _packet_download_forbidden()
+    return payload
 
 
 @app.post(
@@ -2796,19 +3416,18 @@ async def create_year_close_packet_checkout(
     Does not reuse /api/tips/checkout or TipJar price IDs.
     Staging / local always uses Stripe TEST keys (never live).
     """
-    requested_analysis_id = (body.analysis_id or "").strip()
-    if not requested_analysis_id:
-        raise HTTPException(status_code=400, detail="analysis_id is required")
+    requested_analysis_id = _require_canonical_analysis_id(body.analysis_id)
 
     analysis = body.analysis
     guest_packet_payload = None
+    record = None
     if requested_analysis_id == "local-analysis":
         if not isinstance(analysis, dict):
             raise HTTPException(
                 status_code=400,
                 detail="This analysis has no stable ID. Reload it before starting checkout.",
             )
-        analysis_id = str(uuid.uuid4())
+        analysis_id = _canonical_analysis_id(str(uuid.uuid4()))
         if not copy_packet_payload_to_id(
             requested_analysis_id,
             analysis_id,
@@ -2835,14 +3454,18 @@ async def create_year_close_packet_checkout(
             result = record.get("result")
             if isinstance(result, dict):
                 stored_analysis_id = str(result.get("analysis_id") or "").strip()
-                if stored_analysis_id and stored_analysis_id != analysis_id:
+                if stored_analysis_id and not _analysis_ids_match(
+                    stored_analysis_id, analysis_id
+                ):
                     raise HTTPException(
                         status_code=400,
                         detail="The analysis ID does not match the saved analysis.",
                     )
                 if analysis is None:
                     analysis = result
-        elif not isinstance(analysis, dict) or analysis.get("analysis_id") != analysis_id:
+        elif not isinstance(analysis, dict) or not _analysis_ids_match(
+            str(analysis.get("analysis_id") or ""), analysis_id
+        ):
             raise HTTPException(
                 status_code=400,
                 detail="This analysis has no matching stable ID. Reload it before checkout.",
@@ -2851,11 +3474,12 @@ async def create_year_close_packet_checkout(
             analysis = {"analysis_id": analysis_id}
         elif not analysis.get("analysis_id"):
             analysis = {**analysis, "analysis_id": analysis_id}
-        elif analysis.get("analysis_id") != analysis_id:
+        elif not _analysis_ids_match(str(analysis.get("analysis_id") or ""), analysis_id):
             raise HTTPException(
                 status_code=400,
                 detail="The analysis ID does not match the checkout request.",
             )
+        analysis = {**analysis, "analysis_id": analysis_id}
         owner = packet_store_owner(analysis_id)
         if owner == "":
             # Blank guest rows are not owned by this caller. Adopt only after
@@ -2878,15 +3502,78 @@ async def create_year_close_packet_checkout(
 
     analysis = _analysis_with_history_suggestions(analysis_id, user_id, analysis)
     packet_api_key = _configure_packet_stripe()
-    durable_snapshot, snapshot_lookup_succeeded = get_packet_snapshot(
-        analysis_id,
-        user_id,
-    )
-    if not snapshot_lookup_succeeded:
-        raise HTTPException(
-            status_code=503,
-            detail="Could not load the saved packet snapshot. Please retry.",
+    scoped_tax_year = _packet_result_tax_year(analysis)
+    if scoped_tax_year is None and isinstance(record, dict):
+        history_result = record.get("result")
+        scoped_tax_year = _packet_result_tax_year(
+            history_result if isinstance(history_result, dict) else None
         )
+    if scoped_tax_year is None:
+        scoped_tax_year = _packet_result_tax_year(guest_packet_payload)
+    durable_snapshot = None
+    if scoped_tax_year is None:
+        # No caller year. More than one entitlement year is ambiguous. A
+        # snapshot must not break that tie or open Stripe.
+        entitlements, entitlements_ok = lookup_packet_entitlements_for_analysis(
+            user_id,
+            analysis_id,
+        )
+        if not entitlements_ok:
+            raise HTTPException(
+                status_code=503,
+                detail="Could not verify existing packet access. Please retry.",
+            )
+        entitlement_years = set()
+        for row in entitlements:
+            if not isinstance(row, dict):
+                continue
+            try:
+                entitlement_years.add(int(row.get("tax_year")))
+            except (TypeError, ValueError):
+                continue
+        if len(entitlement_years) > 1:
+            raise HTTPException(status_code=409, detail=PACKET_YEAR_AMBIGUOUS_DETAIL)
+        # Do not ilike + limit 1. One paid row can name the year. More than
+        # one paid row is ambiguous and must not open Stripe.
+        snapshot_rows, snapshots_ok = list_packet_snapshots_for_identity(
+            analysis_id,
+            user_id,
+        )
+        if not snapshots_ok:
+            raise HTTPException(
+                status_code=503,
+                detail="Could not load the saved packet snapshot. Please retry.",
+            )
+        paid_rows = [
+            row for row in snapshot_rows if isinstance(row, dict) and row.get("paid_at")
+        ]
+        if len(paid_rows) > 1:
+            raise HTTPException(status_code=409, detail=PACKET_YEAR_AMBIGUOUS_DETAIL)
+        if len(paid_rows) == 1:
+            durable_snapshot = paid_rows[0]
+        elif len(snapshot_rows) == 1:
+            durable_snapshot = snapshot_rows[0]
+        if isinstance(durable_snapshot, dict):
+            try:
+                scoped_tax_year = int(durable_snapshot.get("tax_year"))
+            except (TypeError, ValueError):
+                scoped_tax_year = None
+            if scoped_tax_year is None:
+                column_payload = durable_snapshot.get("packet_payload")
+                scoped_tax_year = _packet_result_tax_year(
+                    column_payload if isinstance(column_payload, dict) else None
+                )
+    else:
+        durable_snapshot, snapshot_lookup_succeeded = get_packet_snapshot(
+            analysis_id,
+            user_id,
+            tax_year=scoped_tax_year,
+        )
+        if not snapshot_lookup_succeeded:
+            raise HTTPException(
+                status_code=503,
+                detail="Could not load the saved packet snapshot. Please retry.",
+            )
     if (
         isinstance(durable_snapshot, dict)
         and durable_snapshot.get("paid_at")
@@ -2906,30 +3593,9 @@ async def create_year_close_packet_checkout(
         analysis_id, user_id
     ):
         packet_snapshot = get_payload(analysis_id)
-    tax_year = (
-        _packet_result_tax_year(packet_snapshot)
-        if isinstance(packet_snapshot, dict)
-        else None
-    )
-    if tax_year is None and isinstance(durable_snapshot, dict):
-        try:
-            tax_year = int(durable_snapshot.get("tax_year"))
-        except (TypeError, ValueError):
-            tax_year = None
+    tax_year = scoped_tax_year
     if tax_year is None:
-        raise HTTPException(
-            status_code=409,
-            detail="The private packet snapshot has expired. Re-run this analysis before checkout.",
-        )
-    if not _ensure_packet_history_row(
-        analysis_id,
-        user_id,
-        tax_year,
-    ):
-        raise HTTPException(
-            status_code=503,
-            detail="Could not save this analysis before checkout. Please retry.",
-        )
+        raise HTTPException(status_code=409, detail=PACKET_SNAPSHOT_EXPIRED_DETAIL)
     existing_session_id, grant_lookup_succeeded = lookup_packet_grant_for_tax_year(
         user_id,
         tax_year,
@@ -2971,8 +3637,10 @@ async def create_year_close_packet_checkout(
                 or packet_session_id(prior_session) != entitlement["packet_session_id"]
                 or packet_user_id_from_session(prior_session) != user_id
                 or prior_tax_year != tax_year
-                or packet_analysis_id_from_session(prior_session)
-                != entitlement.get("analysis_id")
+                or not _analysis_ids_match(
+                    packet_analysis_id_from_session(prior_session),
+                    str(entitlement.get("analysis_id") or ""),
+                )
             ):
                 raise HTTPException(
                     status_code=503,
@@ -2988,25 +3656,59 @@ async def create_year_close_packet_checkout(
                     "Run a new analysis for this tax year."
                 ),
             )
-        saved = save_packet_snapshot(
+        paid_same_year = False
+        if isinstance(durable_snapshot, dict) and durable_snapshot.get("paid_at"):
+            try:
+                paid_same_year = int(durable_snapshot.get("tax_year")) == int(tax_year)
+            except (TypeError, ValueError):
+                paid_same_year = False
+        skip_history_fill = _checkout_blocks_before_snapshot_save(
             analysis_id,
             user_id,
-            tax_year,
-            packet_snapshot,
-            session_id=existing_session_id,
-            paid=True,
+            int(tax_year),
+            paid_same_year=paid_same_year,
         )
+        sticky_row, sticky_ok = lookup_packet_session_entitlement(
+            user_id,
+            int(tax_year),
+            existing_session_id,
+        )
+        if not sticky_ok:
+            raise HTTPException(
+                status_code=503,
+                detail="Could not verify existing packet access. Please retry.",
+            )
+        if isinstance(sticky_row, dict) and _is_conflict_analysis_id(
+            sticky_row.get("analysis_id")
+        ):
+            raise HTTPException(status_code=409, detail=PACKET_CONFLICT_RECEIPT_DETAIL)
+        try:
+            saved = save_packet_snapshot(
+                analysis_id,
+                user_id,
+                tax_year,
+                packet_snapshot,
+                session_id=existing_session_id,
+                paid=True,
+            )
+        except PacketSnapshotYearConflict:
+            raise HTTPException(status_code=409, detail=PACKET_PAID_OTHER_YEAR_DETAIL)
         if not saved:
             raise HTTPException(
                 status_code=503,
                 detail="Could not save the packet snapshot. Please retry.",
             )
-        if not save_packet_entitlement(
+        if not skip_history_fill:
+            _ensure_checkout_history(analysis_id, user_id, tax_year)
+        saved_entitlement = save_packet_entitlement(
             analysis_id,
             user_id,
             tax_year,
             existing_session_id,
-        ):
+        )
+        if saved_entitlement is STICKY_CONFLICT_RECEIPT:
+            raise HTTPException(status_code=409, detail=PACKET_CONFLICT_RECEIPT_DETAIL)
+        if not saved_entitlement:
             raise HTTPException(
                 status_code=503,
                 detail="Could not save the packet entitlement. Please retry.",
@@ -3036,20 +3738,28 @@ async def create_year_close_packet_checkout(
             "amount": PACKET_AMOUNT_CENTS,
         }
     if not isinstance(packet_snapshot, dict):
-        raise HTTPException(
-            status_code=409,
-            detail="The private packet snapshot has expired. Re-run this analysis before checkout.",
-        )
-    if not save_packet_snapshot(
+        raise HTTPException(status_code=409, detail=PACKET_SNAPSHOT_EXPIRED_DETAIL)
+    _checkout_blocks_before_snapshot_save(
         analysis_id,
         user_id,
-        tax_year,
-        packet_snapshot,
-    ):
+        int(tax_year),
+        paid_same_year=False,
+    )
+    try:
+        saved_checkout = save_packet_snapshot(
+            analysis_id,
+            user_id,
+            tax_year,
+            packet_snapshot,
+        )
+    except PacketSnapshotYearConflict:
+        raise HTTPException(status_code=409, detail=PACKET_PAID_OTHER_YEAR_DETAIL)
+    if not saved_checkout:
         raise HTTPException(
             status_code=503,
             detail="Could not securely save the packet before checkout. Please retry.",
         )
+    _ensure_checkout_history(analysis_id, user_id, tax_year)
 
     success_url = (
         f"{FRONTEND_URL}/dashboard?packet_session={{CHECKOUT_SESSION_ID}}"
@@ -3135,7 +3845,12 @@ async def confirm_year_close_packet(
             detail="Checkout session does not belong to this analysis.",
         )
     for supplied_id in (body.packet_analysis, body.analysis_id):
-        if supplied_id and supplied_id != "local-analysis" and supplied_id != analysis_id:
+        if not supplied_id or supplied_id == "local-analysis":
+            continue
+        supplied_canonical = (
+            _canonical_analysis_id(supplied_id) if isinstance(supplied_id, str) else None
+        )
+        if supplied_canonical and not _analysis_ids_match(supplied_canonical, analysis_id):
             raise HTTPException(
                 status_code=400,
                 detail="The checkout session does not match this analysis.",
@@ -3165,8 +3880,11 @@ async def confirm_year_close_packet(
         )
 
     if isinstance(body.analysis, dict):
-        supplied_id = str(body.analysis.get("analysis_id") or "").strip()
-        if supplied_id and supplied_id != analysis_id:
+        raw_supplied = body.analysis.get("analysis_id")
+        supplied_id = (
+            _canonical_analysis_id(raw_supplied) if isinstance(raw_supplied, str) else ""
+        ) or ""
+        if supplied_id and not _analysis_ids_match(supplied_id, analysis_id):
             raise HTTPException(
                 status_code=400,
                 detail="The analysis ID does not match the paid packet.",
@@ -3235,126 +3953,366 @@ async def year_close_packet_webhook(request: Request):
             status_code=500,
             detail="Unable to persist packet payment; Stripe may retry this event.",
         )
+    if granted == PACKET_GRANT_YEAR_UNKNOWN:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "PACKET_GRANT_YEAR_UNKNOWN: this checkout session has no tax year, "
+                "and the saved packet does not name exactly one tax year."
+            ),
+        )
     return {"received": True, "granted": granted is True}
+
+
+def _identity_paid_snapshot(
+    analysis_id: str,
+    user_id: str,
+    session_id: Optional[str] = None,
+) -> Optional[bool]:
+    """True when this user has a live paid snapshot for the analysis.
+
+    None means the snapshot list is unavailable. A session id limits the check
+    to a row tied to that Checkout session. This is an ownership probe, not a
+    PDF source, and it does not unlock anything.
+    """
+    rows, ok = list_packet_snapshots_for_identity(analysis_id, user_id)
+    if not ok:
+        return None
+    for row in rows:
+        if not isinstance(row, dict) or not row.get("paid_at"):
+            continue
+        if session_id is not None and row.get("packet_session_id") != session_id:
+            continue
+        return True
+    return False
+
+
+def _packet_download_forbidden() -> None:
+    raise HTTPException(
+        status_code=403,
+        detail="Year-close packet download requires payment.",
+    )
+
+
+def _packet_download_entitlement_unavailable() -> None:
+    raise HTTPException(
+        status_code=503,
+        detail="Could not verify the saved packet entitlement. Please retry.",
+    )
+
+
+def _authorize_packet_download_identity(
+    analysis_id: str,
+    session_id: Optional[str],
+    user_id: str,
+    session=None,
+    *,
+    durable_year: Optional[int] = None,
+) -> str:
+    """Authorize session, user, and analysis identity. Do not resolve a tax year.
+
+    Wrong identity is 403. This does not grant, unlock, or retrieve Checkout.
+    Callers pass the one session object from the download handler. A Stripe
+    outage with durable_year set is the paid row whose packet_session_id
+    matches the caller.
+    """
+    if analysis_id == "local-analysis":
+        raise HTTPException(
+            status_code=400,
+            detail="Re-run this analysis to download its packet.",
+        )
+
+    if session_id and session is None:
+        if durable_year is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Could not verify the Checkout session. Please retry.",
+            )
+        owned = _identity_paid_snapshot(analysis_id, user_id, session_id=session_id)
+        if owned is None:
+            _packet_download_entitlement_unavailable()
+        if owned:
+            return analysis_id
+        raise HTTPException(
+            status_code=503,
+            detail="Could not verify the Checkout session. Please retry.",
+        )
+
+    if session is not None:
+        session_user = packet_user_id_from_session(session)
+        if session_user and session_user != user_id:
+            _packet_download_forbidden()
+        if session_grants_packet(session, analysis_id):
+            # Settled packet for this user and analysis. Do not unlock yet.
+            return analysis_id
+        if is_packet_paid(analysis_id, user_id=user_id):
+            return analysis_id
+        session_analysis = packet_analysis_id_from_session(session)
+        names_this_analysis = bool(session_analysis) and _analysis_ids_match(
+            session_analysis,
+            analysis_id,
+        )
+        if names_this_analysis or not session_analysis:
+            owned = _identity_paid_snapshot(analysis_id, user_id)
+            if owned is None:
+                _packet_download_entitlement_unavailable()
+            if owned:
+                return analysis_id
+            _packet_download_forbidden()
+        same_year_grant = _is_persisted_same_year_packet_grant(
+            analysis_id,
+            session_id,
+            user_id,
+            session,
+        )
+        if same_year_grant is None:
+            _packet_download_entitlement_unavailable()
+        if same_year_grant:
+            return analysis_id
+        tied = _identity_paid_snapshot(analysis_id, user_id, session_id=session_id)
+        if tied is None:
+            _packet_download_entitlement_unavailable()
+        if tied:
+            return analysis_id
+        _packet_download_forbidden()
+
+    if is_packet_paid(analysis_id, user_id=user_id):
+        return analysis_id
+    owned = _identity_paid_snapshot(analysis_id, user_id)
+    if owned is None:
+        _packet_download_entitlement_unavailable()
+    if owned:
+        return analysis_id
+    _packet_download_forbidden()
+    return analysis_id
 
 
 def _authorized_packet_download(
     analysis_id: str,
     session_id: Optional[str],
     user_id: str,
+    tax_year: Optional[int] = None,
+    session=None,
 ) -> str:
+    """Year-scoped paid check. Uses the session object already retrieved."""
     if analysis_id == "local-analysis":
         raise HTTPException(
             status_code=400,
             detail="Re-run this analysis to download its packet.",
         )
-    snapshot, lookup_succeeded = get_packet_snapshot(analysis_id, user_id)
+    if tax_year is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Could not determine the packet tax year. Please retry.",
+        )
+    snapshot, lookup_succeeded = get_packet_snapshot(
+        analysis_id,
+        user_id,
+        tax_year=tax_year,
+    )
     if not lookup_succeeded:
         raise HTTPException(
             status_code=503,
             detail="Could not verify the saved packet entitlement. Please retry.",
         )
+    # The client confirms Checkout before download. Do not grant, stamp, or
+    # rewrite the analysis id to the session spelling on this request. A
+    # sticky in-memory paid flag is not a paid snapshot for this year.
     if isinstance(snapshot, dict):
+        if not snapshot.get("paid_at"):
+            _packet_download_forbidden()
         if not isinstance(snapshot.get("packet_payload"), dict):
-            if snapshot.get("paid_at"):
-                raise HTTPException(status_code=409, detail=PACKET_MISSING_SOURCE_DETAIL)
+            raise HTTPException(status_code=409, detail=PACKET_MISSING_SOURCE_DETAIL)
         stored_session_id = snapshot.get("packet_session_id")
-        if snapshot.get("paid_at") and stored_session_id:
+        if stored_session_id:
             if session_id and session_id != stored_session_id:
-                raise HTTPException(
-                    status_code=403,
-                    detail="Year-close packet download requires payment.",
-                )
-            if (
-                not session_id
-                and isinstance(snapshot.get("packet_payload"), dict)
-            ):
-                # No conflicting session was offered. The owner-scoped paid
-                # snapshot is enough during Stripe downtime.
+                _packet_download_forbidden()
+            if not session_id or session is None:
+                # No conflicting session, or Stripe could not be read and the
+                # caller already matched this stored session. Do not retrieve.
                 return analysis_id
-            try:
-                packet_api_key = _configure_packet_stripe()
-                settled_session = stripe.checkout.Session.retrieve(
-                    stored_session_id,
-                    api_key=packet_api_key,
-                )
-            except (stripe.StripeError, HTTPException):
-                # The owner-scoped durable grant is enough during Stripe
-                # downtime when the caller echoed the stored session.
-                if isinstance(snapshot.get("packet_payload"), dict):
-                    return analysis_id
-                raise HTTPException(
-                    status_code=403,
-                    detail="Year-close packet download requires payment.",
-                )
-            metadata = _session_metadata(settled_session)
+            metadata = _session_metadata(session)
             try:
                 settled_tax_year = int(metadata.get("tax_year"))
             except (TypeError, ValueError):
                 settled_tax_year = None
             if (
-                packet_session_id(settled_session) != stored_session_id
-                or not session_is_settled_packet(settled_session)
-                or packet_user_id_from_session(settled_session) != user_id
+                packet_session_id(session) != stored_session_id
+                or not session_is_settled_packet(session)
+                or packet_user_id_from_session(session) != user_id
                 or metadata.get("product") != PACKET_METADATA_PRODUCT
                 or (
                     settled_tax_year is not None
                     and settled_tax_year != int(snapshot.get("tax_year"))
                 )
             ):
-                raise HTTPException(
-                    status_code=403,
-                    detail="Year-close packet download requires payment.",
-                )
-            return analysis_id
-    elif is_packet_paid(analysis_id, user_id=user_id):
-        # Legacy in-memory grants are usable only when no durable row exists.
-        # A durable row with a cleared payload above always wins over cache.
+                _packet_download_forbidden()
         return analysis_id
-    if not session_id:
-        raise HTTPException(
-            status_code=403,
-            detail="Year-close packet download requires payment.",
-        )
-    packet_api_key = _configure_packet_stripe()
-    try:
-        session = stripe.checkout.Session.retrieve(session_id, api_key=packet_api_key)
-    except stripe.StripeError:
-        if (
-            isinstance(snapshot, dict)
-            and snapshot.get("paid_at")
-            and isinstance(snapshot.get("packet_payload"), dict)
+    _packet_download_forbidden()
+    return analysis_id
+
+
+def _resolve_download_tax_year(
+    analysis_id: str,
+    user_id: str,
+    analysis: Optional[dict],
+    session_id: Optional[str],
+    *,
+    metadata_year: Optional[int] = None,
+    durable_year: Optional[int] = None,
+) -> int:
+    """Pick one tax year for a download. Never leave the snapshot read unscoped.
+
+    A Stripe outage with a paid row for this session uses that row's year.
+    When Checkout metadata names a tax year, that year wins. Only an explicit
+    integer ``analysis_tax_year`` can veto it. Bool and float are rejected.
+    ``tax_profile.tax_year`` is not a body year. With no session year, a
+    profile-only body uses the identity year. An explicit integer that is not
+    that identity year is a 403. History does not veto the session year.
+    """
+    if durable_year is not None:
+        return int(durable_year)
+    explicit_year, explicit_rejected = _explicit_analysis_tax_year(analysis)
+    if session_id and metadata_year is not None:
+        if explicit_rejected or (
+            explicit_year is not None and explicit_year != metadata_year
         ):
+            _packet_download_forbidden()
+        return int(metadata_year)
+
+    if explicit_rejected:
+        _packet_download_forbidden()
+    if explicit_year is not None:
+        identity_year, year_ok = _resolve_packet_tax_year_for_identity(
+            analysis_id, user_id
+        )
+        if not year_ok:
             raise HTTPException(
                 status_code=503,
-                detail="Could not verify the supplied checkout session. Please retry.",
+                detail="Could not verify the saved packet entitlement. Please retry.",
             )
-        raise HTTPException(status_code=403, detail="Year-close packet download requires payment.")
-    if _grant_packet_from_session(session, analysis_id, user_id=user_id):
-        return packet_analysis_id_from_session(session)
-    if not packet_store_belongs_to_user(analysis_id, user_id):
-        raise HTTPException(
-            status_code=403,
-            detail="Year-close packet download requires payment.",
-        )
-    same_year_grant = _is_persisted_same_year_packet_grant(
-        analysis_id,
-        session_id,
-        user_id,
-        session,
-    )
-    if same_year_grant is None:
+        if identity_year is None or explicit_year != identity_year:
+            _packet_download_forbidden()
+        return int(explicit_year)
+
+    year, year_ok = _resolve_packet_tax_year_for_identity(analysis_id, user_id)
+    if not year_ok:
         raise HTTPException(
             status_code=503,
             detail="Could not verify the saved packet entitlement. Please retry.",
         )
-    if same_year_grant and packet_store_belongs_to_user(analysis_id, user_id):
-        if mark_paid(analysis_id, session_id, user_id=user_id):
-            return analysis_id
-    raise HTTPException(
-        status_code=403,
-        detail="Year-close packet download requires payment.",
+    if year is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Could not determine the packet tax year. Please retry.",
+        )
+    return int(year)
+
+
+def _retrieve_packet_download_session(session_id: str):
+    """One Checkout retrieve for a download.
+
+    Returns ``(session, metadata_year, failed)``. ``failed`` is configure or
+    retrieve failure. Callers do not retrieve again.
+    """
+    try:
+        api_key = _configure_packet_stripe()
+    except HTTPException:
+        return None, None, True
+    try:
+        session = stripe.checkout.Session.retrieve(session_id, api_key=api_key)
+    except (stripe.StripeError, HTTPException):
+        return None, None, True
+    metadata_year = _packet_result_tax_year(
+        {"analysis_tax_year": _session_metadata(session).get("tax_year")}
     )
+    return session, metadata_year, False
+
+
+def _durable_paid_snapshot_year(analysis_id: str, user_id: str, session_id: str):
+    """Tax year of the paid row tied to this Checkout session.
+
+    ``(year, True)`` is durable proof. ``(None, True)`` is a real miss.
+    ``(None, False)`` is an outage, including a non-int tax year on the row.
+    """
+    rows, ok = list_packet_snapshots_for_identity(analysis_id, user_id)
+    if not ok:
+        return None, False
+    for row in rows:
+        if not isinstance(row, dict) or not row.get("paid_at"):
+            continue
+        if row.get("packet_session_id") != session_id:
+            continue
+        try:
+            return int(row.get("tax_year")), True
+        except (TypeError, ValueError):
+            return None, False
+    return None, True
+
+
+def _download_packet_pdf(
+    analysis_id: str,
+    user_id: str,
+    session_id: Optional[str],
+    analysis: Optional[dict],
+):
+    """Authorize and render one download. At most one Session.retrieve."""
+    analysis_id = _require_canonical_analysis_id(analysis_id)
+    if isinstance(analysis, dict):
+        raw_embedded = analysis.get("analysis_id")
+        if isinstance(raw_embedded, str) and raw_embedded.strip():
+            embedded = _canonical_analysis_id(raw_embedded)
+            if embedded:
+                analysis = {**analysis, "analysis_id": embedded}
+    session = None
+    metadata_year = None
+    durable_year = None
+    if session_id:
+        session, metadata_year, failed = _retrieve_packet_download_session(session_id)
+        if failed:
+            durable_year, proof_ok = _durable_paid_snapshot_year(
+                analysis_id,
+                user_id,
+                session_id,
+            )
+            if not proof_ok or durable_year is None:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Could not verify the Checkout session. Please retry.",
+                )
+            session = None
+            metadata_year = None
+    analysis_id = _authorize_packet_download_identity(
+        analysis_id,
+        session_id,
+        user_id,
+        session,
+        durable_year=durable_year,
+    )
+    tax_year = _resolve_download_tax_year(
+        analysis_id,
+        user_id,
+        analysis,
+        session_id,
+        metadata_year=metadata_year,
+        durable_year=durable_year,
+    )
+    analysis_id = _authorized_packet_download(
+        analysis_id,
+        session_id,
+        user_id,
+        tax_year=tax_year,
+        session=session,
+    )
+    payload = _payload_for_download(
+        analysis_id,
+        user_id,
+        analysis,
+        tax_year=tax_year,
+        session_id=session_id,
+        metadata_year=metadata_year,
+    )
+    return render_packet_pdf(payload)
 
 
 @app.get("/api/year-close-packet/download")
@@ -3364,12 +4322,7 @@ async def download_year_close_packet_get(
     session_id: Annotated[Optional[str], Query()] = None,
 ):
     """Download the paid packet PDF. Unpaid requests are 403."""
-    analysis_id = (analysis_id or "").strip()
-    if not analysis_id:
-        raise HTTPException(status_code=400, detail="analysis_id is required")
-    analysis_id = _authorized_packet_download(analysis_id, session_id, user_id)
-    payload = _payload_for_download(analysis_id, user_id, None)
-    pdf_bytes = render_packet_pdf(payload)
+    pdf_bytes = _download_packet_pdf(analysis_id, user_id, session_id, None)
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
@@ -3385,12 +4338,12 @@ async def download_year_close_packet_post(
     user_id: Annotated[str, Depends(get_current_user)],
 ):
     """Download the paid packet PDF, rebuilding from analysis JSON if needed."""
-    analysis_id = (body.analysis_id or "").strip()
-    if not analysis_id:
-        raise HTTPException(status_code=400, detail="analysis_id is required")
-    analysis_id = _authorized_packet_download(analysis_id, body.session_id, user_id)
-    payload = _payload_for_download(analysis_id, user_id, body.analysis)
-    pdf_bytes = render_packet_pdf(payload)
+    pdf_bytes = _download_packet_pdf(
+        body.analysis_id,
+        user_id,
+        body.session_id,
+        body.analysis,
+    )
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
