@@ -302,10 +302,12 @@ def _user_has_case_insensitive_embedded_id(
 ) -> Optional[bool]:
     """Whether this user already stored this UUID.
 
-    Exact match first. A case-insensitive read runs only when that misses, so
-    an unmigrated uppercase JSON id still blocks a second insert. None means
-    the lookup failed, including a failed fallback. The unique index is
-    case-sensitive, so a different spelling would otherwise insert a second row.
+    Exact match first. A case-insensitive read runs when that misses or the
+    exact row does not match, so an unmigrated uppercase JSON id still blocks
+    a second insert. A payload that is not a list is an outage (None), not a
+    miss. None means the lookup failed, including a failed fallback. The
+    unique index is case-sensitive, so a different spelling would otherwise
+    insert a second row.
     """
     try:
         result = _query_embedded_analysis_id(client, user_id, "eq", canonical)
@@ -317,8 +319,10 @@ def _user_has_case_insensitive_embedded_id(
         )
         return None
     data = getattr(result, "data", None)
-    if isinstance(data, list) and data:
-        return _stored_row_matches_uuid(data[0], user_id, canonical)
+    if not isinstance(data, list):
+        return None
+    if data and _stored_row_matches_uuid(data[0], user_id, canonical):
+        return True
     if _canonical_analysis_uuid(canonical) is None:
         return False
     # TODO(remove after 012 applied): legacy mixed-case embedded analysis_id.
@@ -332,7 +336,9 @@ def _user_has_case_insensitive_embedded_id(
         )
         return None
     data = getattr(result, "data", None)
-    if not isinstance(data, list) or not data:
+    if not isinstance(data, list):
+        return None
+    if not data:
         return False
     return _stored_row_matches_uuid(data[0], user_id, canonical)
 
@@ -2409,8 +2415,9 @@ def mark_packet_snapshot_paid(
             )
             if receipt is None:
                 return None
-            if receipt is ALREADY_GRANTED_ENTITLEMENT:
-                return True
+            # ALREADY_GRANTED_ENTITLEMENT is not True. The snapshot stays on
+            # the other session, so this session is not reported paid and
+            # history is not patched. A new conflict: row takes the same path.
             return PACKET_GRANT_SAME_YEAR_DUPLICATE
         # Stamp only the row that was read, and only while it is still unpaid.
         # An ilike update would re-stamp every case variant, including one

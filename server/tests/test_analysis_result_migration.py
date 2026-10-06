@@ -1576,3 +1576,48 @@ def test_migration_012_does_not_vacate_an_embedded_primary_key(postgres):
         ).fetchone() == (free_legacy, free_canonical)
     finally:
         conn.close()
+
+
+def test_migration_012_does_not_rewrite_32_hex_embedded_id(postgres):
+    """32-hex, braces, and urn:uuid: embedded ids stay on the original row."""
+    url, conn = postgres("oth_jor36_hex32")
+    hex_row = "12121212-1212-4121-8121-121212121212"
+    hex_embedded = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    brace_row = "13131313-1313-4131-8131-131313131313"
+    brace_embedded = "{bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb}"
+    urn_row = "14141414-1414-4141-8141-141414141414"
+    urn_embedded = "urn:uuid:cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+    try:
+        applied = _apply_migrations(url)
+        assert "Applying 012_unify_analysis_identity.sql" in applied
+        _insert_identity_row(conn, hex_row, "same-user", hex_embedded)
+        _insert_identity_row(conn, brace_row, "same-user", brace_embedded)
+        _insert_identity_row(conn, urn_row, "same-user", urn_embedded)
+        migration_sql = (
+            SERVER_DIR / "migrations" / "012_unify_analysis_identity.sql"
+        ).read_text()
+        _apply_sql(url, migration_sql)
+        for row_id, embedded in (
+            (hex_row, hex_embedded),
+            (brace_row, brace_embedded),
+            (urn_row, urn_embedded),
+        ):
+            found = conn.execute(
+                """
+                SELECT id::text, result->>'analysis_id'
+                FROM portfolio_analyses
+                WHERE user_id = 'same-user' AND result->>'analysis_id' = %s
+                """,
+                (embedded,),
+            ).fetchone()
+            assert found == (row_id, embedded)
+        assert conn.execute(
+            """
+            SELECT count(*) FROM portfolio_analysis_id_aliases
+            WHERE user_id = 'same-user'
+              AND legacy_row_id IN (%s::uuid, %s::uuid, %s::uuid)
+            """,
+            (hex_row, brace_row, urn_row),
+        ).fetchone()[0] == 0
+    finally:
+        conn.close()

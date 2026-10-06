@@ -3101,6 +3101,220 @@ def test_conflict_receipt_unique_violation_classifies_writer_return(monkeypatch,
     )
 
 
+class _UniqueViolationEntitlementClient:
+    """Pre-reads miss, insert raises 23505, then the stored row is visible."""
+
+    def __init__(self, stored):
+        self.stored = dict(stored)
+        self.rows = []
+        self.inserts = []
+        self.reads = 0
+        self.mode = "read"
+
+    def table(self, _name):
+        self.mode = "read"
+        return self
+
+    def select(self, *_args):
+        return self
+
+    def eq(self, *_args):
+        return self
+
+    def limit(self, *_args):
+        return self
+
+    def insert(self, row):
+        self.mode = "insert"
+        self.inserts.append(dict(row))
+        return self
+
+    def execute(self):
+        if self.mode == "insert":
+            self.mode = "read"
+            error = Exception("duplicate key value violates unique constraint")
+            error.code = "23505"
+            raise error
+        self.reads += 1
+        if self.reads < 3:
+            return _FakeExecuteResult([])
+        return _FakeExecuteResult([dict(self.stored)])
+
+
+def test_conflict_receipt_unique_violation_real_writer_23505(monkeypatch, caplog):
+    """Real save_packet_entitlement classifies a 23505 reread. No stub writer."""
+    canonical = _LETTERED
+    real = {
+        "analysis_id": canonical,
+        "user_id": "user1",
+        "tax_year": 2025,
+        "packet_session_id": "cs_paid",
+    }
+    real_client = _UniqueViolationEntitlementClient(real)
+    monkeypatch.setattr(db, "get_supabase", lambda: real_client)
+    with caplog.at_level(40):
+        saved = db.save_packet_conflict_receipt(
+            canonical, "user1", 2025, "cs_paid", paid_tax_year=2024
+        )
+    assert saved is db.ALREADY_GRANTED_ENTITLEMENT
+    assert real_client.rows == []
+    assert len(real_client.inserts) == 1
+    assert real_client.inserts[0]["analysis_id"].startswith("conflict:")
+    assert not any(record.levelno >= 40 for record in caplog.records)
+
+    conflict = {
+        "analysis_id": f"conflict:{canonical}",
+        "user_id": "user1",
+        "tax_year": 2025,
+        "packet_session_id": "cs_race",
+    }
+    conflict_client = _UniqueViolationEntitlementClient(conflict)
+    monkeypatch.setattr(db, "get_supabase", lambda: conflict_client)
+    caplog.clear()
+    raced = db.save_packet_conflict_receipt(
+        canonical, "user1", 2025, "cs_race", paid_tax_year=2024
+    )
+    assert raced["analysis_id"] == f"conflict:{canonical}"
+    assert raced["packet_session_id"] == "cs_race"
+    assert not isinstance(raced, db._InsertedPacketEntitlement)
+    assert conflict_client.rows == []
+    assert not any(record.levelno >= 40 for record in caplog.records)
+
+
+def test_mark_already_granted_same_year_is_duplicate_not_true(monkeypatch, caplog):
+    canonical = _LETTERED
+    paid = {
+        "analysis_id": canonical,
+        "user_id": "user1",
+        "tax_year": 2025,
+        "packet_payload": {"report": "paid"},
+        "packet_session_id": "cs_owner",
+        "paid_at": "2026-01-01T00:00:00+00:00",
+        "expires_at": None,
+    }
+    client = _ApplyingSnapshotClient([paid])
+    client.entitlements.append({
+        "analysis_id": canonical,
+        "user_id": "user1",
+        "tax_year": 2025,
+        "packet_session_id": "cs_other",
+    })
+    monkeypatch.setattr(db, "get_supabase", lambda: client)
+    with caplog.at_level(40):
+        marked = db.mark_packet_snapshot_paid(canonical, "user1", 2025, "cs_other")
+    assert marked == db.PACKET_GRANT_SAME_YEAR_DUPLICATE
+    assert marked is not True
+    assert client.row(canonical)["packet_session_id"] == "cs_owner"
+    assert client.entitlements[0]["analysis_id"] == canonical
+    assert len(client.entitlements) == 1
+    assert not any(record.levelno >= 40 for record in caplog.records)
+
+
+class _HistoryPrecheckResult:
+    def __init__(self, data):
+        self.data = data
+
+
+class _HistoryPrecheckClient:
+    def __init__(self, exact_data, ilike_data=None):
+        self.exact_data = exact_data
+        self.ilike_data = ilike_data
+        self.inserts = []
+        self.operators = []
+
+    def table(self, name):
+        return _HistoryPrecheckQuery(self, name)
+
+
+class _HistoryPrecheckQuery:
+    def __init__(self, store, name):
+        self.store = store
+        self.name = name
+        self.op = "select"
+        self.operator = "eq"
+
+    def insert(self, row):
+        self.op = "insert"
+        self.store.inserts.append(dict(row))
+        return self
+
+    def select(self, *_args, **_kwargs):
+        return self
+
+    def eq(self, *_args):
+        return self
+
+    def filter(self, _column, operator, _value):
+        self.operator = operator
+        self.store.operators.append(operator)
+        return self
+
+    def neq(self, *_args):
+        return self
+
+    def limit(self, *_args):
+        return self
+
+    def execute(self):
+        if self.op == "insert":
+            return _FakeExecuteResult([{"id": "inserted"}])
+        if self.name != "portfolio_analyses":
+            return _FakeExecuteResult([])
+        if self.operator == "ilike":
+            return _HistoryPrecheckResult(self.store.ilike_data)
+        return _HistoryPrecheckResult(self.store.exact_data)
+
+
+def test_history_precheck_non_list_exact_returns_none(monkeypatch):
+    canonical = _LETTERED
+    caller = {"analysis_id": canonical, "positions": []}
+    for exact_data in (None, {}):
+        client = _HistoryPrecheckClient(exact_data)
+        monkeypatch.setattr(db, "get_supabase", lambda client=client: client)
+        saved = db.save_analysis_history(
+            "user1", "upload.csv", {"positions_count": 1}, result_data=dict(caller)
+        )
+        assert saved is None
+        assert client.inserts == []
+
+
+def test_history_precheck_non_list_ilike_returns_none(monkeypatch):
+    canonical = _LETTERED
+    client = _HistoryPrecheckClient([], ilike_data=None)
+    monkeypatch.setattr(db, "get_supabase", lambda: client)
+    saved = db.save_analysis_history(
+        "user1",
+        "upload.csv",
+        {"positions_count": 1},
+        result_data={"analysis_id": canonical, "positions": []},
+    )
+    assert saved is None
+    assert client.inserts == []
+    assert "ilike" in client.operators
+
+
+def test_history_precheck_helper_false_still_runs_ilike(monkeypatch):
+    canonical = _LETTERED
+    client = _HistoryPrecheckClient(
+        [{"id": "echo-only"}],
+        ilike_data=[{
+            "id": "stored-row",
+            "user_id": "user1",
+            "result": {"analysis_id": canonical.upper()},
+        }],
+    )
+    monkeypatch.setattr(db, "get_supabase", lambda: client)
+    with pytest.raises(db.HistoryInsertConflict):
+        db.save_analysis_history(
+            "user1",
+            "upload.csv",
+            {"positions_count": 1},
+            result_data={"analysis_id": canonical.upper(), "positions": []},
+        )
+    assert client.inserts == []
+    assert "ilike" in client.operators
+
+
 def test_save_packet_entitlement_refuses_conflict_prefix(monkeypatch):
     canonical = _LETTERED
     client = _ApplyingSnapshotClient([])

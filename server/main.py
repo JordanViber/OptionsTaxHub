@@ -2950,6 +2950,38 @@ def _analysis_with_history_suggestions(
     return merged
 
 
+def _strict_packet_tax_year(value) -> Optional[int]:
+    """Int year, or a digit string. Bool and float are not years.
+
+    ``int(True)`` is 1 and ``int(2025.9)`` truncates. Checkout metadata still
+    arrives as ``"2025"``, so strings keep parsing.
+    """
+    if isinstance(value, bool) or isinstance(value, float):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _explicit_analysis_tax_year(analysis: Optional[dict]) -> tuple[Optional[int], bool]:
+    """Parsed ``analysis_tax_year`` and whether a present value was rejected.
+
+    A missing key or JSON null is not a veto. Bool, float, and any other
+    non-integer are rejected. A digit string parses.
+    """
+    if not isinstance(analysis, dict) or analysis.get("analysis_tax_year") is None:
+        return None, False
+    parsed = _strict_packet_tax_year(analysis.get("analysis_tax_year"))
+    if parsed is None:
+        return None, True
+    return parsed, False
+
+
 def _packet_result_tax_year(result: Optional[dict]) -> Optional[int]:
     if not isinstance(result, dict):
         return None
@@ -2957,10 +2989,9 @@ def _packet_result_tax_year(result: Optional[dict]) -> Optional[int]:
     profile = result.get("tax_profile")
     if year is None and isinstance(profile, dict):
         year = profile.get("tax_year")
-    try:
-        return int(year) if year is not None else None
-    except (TypeError, ValueError):
+    if year is None:
         return None
+    return _strict_packet_tax_year(year)
 
 
 def _record_packet_year_conflict(
@@ -4134,32 +4165,42 @@ def _resolve_download_tax_year(
 
     A Stripe outage with a paid row for this session uses that row's year.
     When Checkout metadata names a tax year, that year wins. Only an explicit
-    ``analysis_tax_year`` can veto it. ``tax_profile.tax_year`` is not a body
-    year: compact download JSON omits ``analysis_tax_year`` and still carries
-    the profile year. History does not veto the session year. With no metadata
-    year, the body wins, then the shared resolver.
+    integer ``analysis_tax_year`` can veto it. Bool and float are rejected.
+    ``tax_profile.tax_year`` is not a body year. With no session year, a
+    profile-only body uses the identity year. An explicit integer that is not
+    that identity year is a 403. History does not veto the session year.
     """
     if durable_year is not None:
         return int(durable_year)
+    explicit_year, explicit_rejected = _explicit_analysis_tax_year(analysis)
     if session_id and metadata_year is not None:
-        explicit_year = None
-        if isinstance(analysis, dict) and analysis.get("analysis_tax_year") is not None:
-            try:
-                explicit_year = int(analysis.get("analysis_tax_year"))
-            except (TypeError, ValueError):
-                explicit_year = None
-        if explicit_year is not None and explicit_year != metadata_year:
+        if explicit_rejected or (
+            explicit_year is not None and explicit_year != metadata_year
+        ):
             _packet_download_forbidden()
         return int(metadata_year)
 
-    year = _packet_result_tax_year(analysis) if isinstance(analysis, dict) else None
-    if year is None:
-        year, year_ok = _resolve_packet_tax_year_for_identity(analysis_id, user_id)
+    if explicit_rejected:
+        _packet_download_forbidden()
+    if explicit_year is not None:
+        identity_year, year_ok = _resolve_packet_tax_year_for_identity(
+            analysis_id, user_id
+        )
         if not year_ok:
             raise HTTPException(
                 status_code=503,
                 detail="Could not verify the saved packet entitlement. Please retry.",
             )
+        if identity_year is None or explicit_year != identity_year:
+            _packet_download_forbidden()
+        return int(explicit_year)
+
+    year, year_ok = _resolve_packet_tax_year_for_identity(analysis_id, user_id)
+    if not year_ok:
+        raise HTTPException(
+            status_code=503,
+            detail="Could not verify the saved packet entitlement. Please retry.",
+        )
     if year is None:
         raise HTTPException(
             status_code=503,

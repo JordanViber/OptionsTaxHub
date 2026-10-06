@@ -4119,7 +4119,7 @@ def test_download_post_profile_year_uses_session_pdf(monkeypatch):
     assert snapshot_client.rows[0] == original
 
 
-def test_download_rejects_second_spelling_post_with_other_sessions(monkeypatch):
+def test_download_post_second_spelling_serves_paid_session_pdf(monkeypatch):
     """A 2026 profile on a case variant still serves the paid 2025 snapshot."""
     _test_stripe_env(monkeypatch)
     stored = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
@@ -4180,6 +4180,313 @@ def test_download_rejects_second_spelling_post_with_other_sessions(monkeypatch):
     assert len(snapshot_client.rows) == 1
     assert snapshot_client.rows[0] == original
     assert snapshot_client.rows[0]["analysis_id"] == other
+
+
+class _MissingAnalysisYear:
+    """Sentinel so a test can omit analysis_tax_year."""
+
+
+def _compact_download_analysis(aid, *, profile_year=2024, analysis_tax_year=_MissingAnalysisYear):
+    body = {
+        "analysis_id": aid,
+        "tax_profile": {"tax_year": profile_year, "filing_status": "single"},
+        "supplemental_1099": None,
+        "wash_sale_flags": [],
+        "summary": {"realized_summary": None},
+        "tax_lots": [{
+            "symbol": "PROFILE2024",
+            "quantity": 1,
+            "purchase_date": "2024-01-02",
+            "wash_sale_disallowed": 0,
+        }],
+        "lot_match_report": None,
+        "suggestions": [],
+    }
+    if analysis_tax_year is not _MissingAnalysisYear:
+        body["analysis_tax_year"] = analysis_tax_year
+    return body
+
+
+def _paid_and_unpaid_download_rows(aid, user):
+    paid = {
+        "analysis_id": aid,
+        "user_id": user,
+        "tax_year": 2025,
+        "packet_payload": {"analysis_id": aid, "marker": "PAID2025", "tax_profile": {"tax_year": 2025}},
+        "packet_session_id": "cs_paid_2025",
+        "paid_at": "2026-01-01T00:00:00+00:00",
+        "expires_at": None,
+    }
+    unpaid = {
+        "analysis_id": aid,
+        "user_id": user,
+        "tax_year": 2024,
+        "packet_payload": {"analysis_id": aid, "marker": "UNPAID2024", "tax_profile": {"tax_year": 2024}},
+        "packet_session_id": None,
+        "paid_at": None,
+        "expires_at": "2099-01-01T00:00:00+00:00",
+    }
+    return paid, unpaid
+
+
+def _bind_no_session_download(monkeypatch, rows):
+    _test_stripe_env(monkeypatch)
+    snapshot_client = _use_ilike_snapshot_client(monkeypatch, rows)
+    monkeypatch.setattr(
+        main,
+        "list_packet_snapshots_for_identity",
+        db.list_packet_snapshots_for_identity,
+    )
+    monkeypatch.setattr(main, "lookup_analysis_for_entitlement", _no_history_lookup)
+    _forbid_download_writes(monkeypatch)
+    _marker_pdf(monkeypatch)
+    return snapshot_client
+
+
+def test_download_post_no_session_profile_year_serves_paid_snapshot(monkeypatch):
+    """Profile year on a reload POST is not the download year."""
+    aid = "analysis-2025-paid"
+    user = "test-user-123"
+    paid, unpaid = _paid_and_unpaid_download_rows(aid, user)
+    snapshot_client = _bind_no_session_download(monkeypatch, [paid, unpaid])
+    _FAKE_PACKET_ENTITLEMENTS[(user, 2025, "cs_paid_2025")] = {
+        "analysis_id": aid,
+        "user_id": user,
+        "tax_year": 2025,
+        "packet_session_id": "cs_paid_2025",
+    }
+    compact = _compact_download_analysis(aid)
+    assert "analysis_tax_year" not in compact
+    original_rows = deepcopy(snapshot_client.rows)
+
+    response = client.post(
+        "/api/year-close-packet/download",
+        json={"analysis_id": aid, "session_id": None, "analysis": compact},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("application/pdf")
+    assert b"PAID2025" in response.content
+    assert b"UNPAID2024" not in response.content
+    assert b"PROFILE2024" not in response.content
+    assert snapshot_client.rows == original_rows
+
+
+def test_download_post_no_session_unpaid_year_never_served(monkeypatch):
+    """An unpaid snapshot is not a download, including when the profile matches it."""
+    aid = "analysis-unpaid-only"
+    user = "test-user-123"
+    _test_stripe_env(monkeypatch)
+    monkeypatch.setattr(main, "lookup_analysis_for_entitlement", _no_history_lookup)
+    _forbid_download_writes(monkeypatch)
+    _FAKE_PACKET_SNAPSHOTS[(user, aid)] = {
+        "analysis_id": aid,
+        "user_id": user,
+        "tax_year": 2024,
+        "packet_payload": {"analysis_id": aid, "marker": "UNPAID2024"},
+        "packet_session_id": None,
+        "paid_at": None,
+        "expires_at": "2099-01-01T00:00:00+00:00",
+    }
+
+    response = client.post(
+        "/api/year-close-packet/download",
+        json={
+            "analysis_id": aid,
+            "session_id": None,
+            "analysis": _compact_download_analysis(aid),
+        },
+    )
+
+    assert response.status_code == 403, response.text
+    assert response.json()["detail"] == "Year-close packet download requires payment."
+    assert not response.content.startswith(b"%PDF")
+    assert b"UNPAID2024" not in response.content
+
+
+def test_download_post_no_session_explicit_year_mismatch_is_403(monkeypatch):
+    """An explicit integer year that is not the identity year is a 403."""
+    aid = "analysis-2025-paid"
+    user = "test-user-123"
+    paid, unpaid = _paid_and_unpaid_download_rows(aid, user)
+    _bind_no_session_download(monkeypatch, [paid, unpaid])
+    _FAKE_PACKET_ENTITLEMENTS[(user, 2025, "cs_paid_2025")] = {
+        "analysis_id": aid,
+        "user_id": user,
+        "tax_year": 2025,
+        "packet_session_id": "cs_paid_2025",
+    }
+
+    response = client.post(
+        "/api/year-close-packet/download",
+        json={
+            "analysis_id": aid,
+            "session_id": None,
+            "analysis": _compact_download_analysis(aid, analysis_tax_year=2024),
+        },
+    )
+
+    assert response.status_code == 403, response.text
+    assert response.json()["detail"] == "Year-close packet download requires payment."
+    assert b"PAID2025" not in response.content
+    assert b"UNPAID2024" not in response.content
+
+
+def test_download_post_bool_analysis_tax_year_is_403(monkeypatch):
+    aid, _snapshot_client, _year_2026 = _paid_2025_session_fixture(monkeypatch)
+    response = client.post(
+        "/api/year-close-packet/download",
+        json={
+            "analysis_id": aid,
+            "session_id": "cs_paid_2025",
+            "analysis": _compact_download_analysis(aid, analysis_tax_year=True),
+        },
+    )
+    assert response.status_code == 403, response.text
+    assert b"PAID2025" not in response.content
+
+
+def test_download_post_float_analysis_tax_year_is_403(monkeypatch):
+    aid, _snapshot_client, _year_2026 = _paid_2025_session_fixture(monkeypatch)
+    response = client.post(
+        "/api/year-close-packet/download",
+        json={
+            "analysis_id": aid,
+            "session_id": "cs_paid_2025",
+            "analysis": _compact_download_analysis(aid, analysis_tax_year=2025.9),
+        },
+    )
+    assert response.status_code == 403, response.text
+    assert b"PAID2025" not in response.content
+
+
+def test_download_post_no_session_bool_and_float_year_are_403(monkeypatch):
+    aid = "analysis-2025-paid"
+    user = "test-user-123"
+    paid, unpaid = _paid_and_unpaid_download_rows(aid, user)
+    _bind_no_session_download(monkeypatch, [paid, unpaid])
+    _FAKE_PACKET_ENTITLEMENTS[(user, 2025, "cs_paid_2025")] = {
+        "analysis_id": aid,
+        "user_id": user,
+        "tax_year": 2025,
+        "packet_session_id": "cs_paid_2025",
+    }
+    for raw_year in (True, 2025.9):
+        response = client.post(
+            "/api/year-close-packet/download",
+            json={
+                "analysis_id": aid,
+                "session_id": None,
+                "analysis": _compact_download_analysis(aid, analysis_tax_year=raw_year),
+            },
+        )
+        assert response.status_code == 403, response.text
+        assert b"PAID2025" not in response.content
+
+
+def test_packet_result_tax_year_rejects_bool_and_float():
+    assert main._packet_result_tax_year({"analysis_tax_year": True}) is None
+    assert main._packet_result_tax_year({"analysis_tax_year": 2025.9}) is None
+    assert main._packet_result_tax_year({"analysis_tax_year": 2025}) == 2025
+    assert main._packet_result_tax_year({"analysis_tax_year": "2025"}) == 2025
+
+
+def test_already_granted_confirm_then_download_stays_on_owner_session(monkeypatch, caplog):
+    """A real entitlement on another session is not paid and cannot download."""
+    _test_stripe_env(monkeypatch)
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_packet_test_secret")
+    aid = "analysis-owner-session"
+    user = "test-user-123"
+    payload = {
+        "analysis_id": aid,
+        "analysis_tax_year": 2025,
+        "tax_profile": {"tax_year": 2025, "filing_status": "single"},
+        "marker": "OWNER2025",
+    }
+    snapshot_client = _wire_real_snapshot_client(
+        monkeypatch,
+        [{
+            "analysis_id": aid,
+            "user_id": user,
+            "tax_year": 2025,
+            "packet_payload": payload,
+            "packet_session_id": "cs_owner",
+            "paid_at": "2026-01-01T00:00:00+00:00",
+            "expires_at": None,
+        }],
+    )
+    snapshot_client.entitlements.append({
+        "analysis_id": aid,
+        "user_id": user,
+        "tax_year": 2025,
+        "packet_session_id": "cs_other",
+    })
+    remember_analysis(aid, user, payload)
+    patches = []
+
+    def spy_patch(analysis_id, user_id, patch):
+        patches.append(dict(patch))
+        return True
+
+    monkeypatch.setattr(main, "patch_analysis_result", spy_patch)
+    sessions = {
+        session_id: _stripe_object_session(
+            id=session_id,
+            metadata={
+                "product": PACKET_METADATA_PRODUCT,
+                "analysis_id": aid,
+                "user_id": user,
+                "tax_year": "2025",
+            },
+        )
+        for session_id in ("cs_owner", "cs_other")
+    }
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda session_id, *_args, **_kwargs: sessions[session_id],
+    )
+
+    with caplog.at_level(logging.ERROR):
+        confirm = client.post(
+            "/api/year-close-packet/confirm",
+            json={"session_id": "cs_other", "analysis_id": aid},
+        )
+    assert confirm.status_code == 409, confirm.text
+    assert confirm.json()["detail"] == main.PACKET_SAME_YEAR_DUPLICATE_DETAIL
+    assert confirm.json().get("paid") is not True
+    webhook = _post_signed_webhook(
+        _packet_checkout_event(
+            tax_year=2025,
+            analysis_id=aid,
+            session_id="cs_other",
+            event_id="evt_already_granted",
+        )
+    )
+    assert webhook.status_code == 200, webhook.text
+    assert webhook.json() == {"received": True, "granted": False}
+    assert patches == []
+    assert "packet_session_id" not in PACKET_STORE[aid]["payload"]
+    assert snapshot_client.rows[0]["packet_session_id"] == "cs_owner"
+    assert snapshot_client.rows[0]["paid_at"] == "2026-01-01T00:00:00+00:00"
+    assert len(snapshot_client.entitlements) == 1
+    assert snapshot_client.entitlements[0]["analysis_id"] == aid
+    assert not any(record.levelno >= logging.ERROR for record in caplog.records)
+
+    _forbid_download_writes(monkeypatch)
+    _marker_pdf(monkeypatch)
+    other_download = client.post(
+        "/api/year-close-packet/download",
+        json={"analysis_id": aid, "session_id": "cs_other", "analysis": payload},
+    )
+    assert other_download.status_code == 403, other_download.text
+    assert b"OWNER2025" not in other_download.content
+    owner_download = client.post(
+        "/api/year-close-packet/download",
+        json={"analysis_id": aid, "session_id": "cs_owner", "analysis": payload},
+    )
+    assert owner_download.status_code == 200, owner_download.text
+    assert b"OWNER2025" in owner_download.content
 
 
 def test_download_rejects_unpaid_snapshot_despite_memory_paid_flag(monkeypatch):

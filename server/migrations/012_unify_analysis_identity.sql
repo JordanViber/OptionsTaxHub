@@ -220,6 +220,13 @@ BEGIN
       AND id::text IS DISTINCT FROM lower(result->>'analysis_id')
   LOOP
     embedded_text := rec.embedded_id;
+    -- Same hyphenated predicate as the RAISE blocks. ::uuid also accepts
+    -- braces, urn:uuid:, and 32-hex; those stay on the original row.
+    IF embedded_text !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN
+      RAISE NOTICE 'skip non-uuid analysis_id user=% row=% value=%',
+        rec.user_id, rec.id, embedded_text;
+      CONTINUE;
+    END IF;
     BEGIN
       embedded := embedded_text::uuid;
     EXCEPTION
