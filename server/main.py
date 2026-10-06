@@ -138,6 +138,7 @@ from db import (
     lookup_packet_entitlements_for_analysis,
     list_packet_snapshots_for_identity,
     PacketSnapshotYearConflict,
+    ALREADY_GRANTED_ENTITLEMENT,
     PACKET_GRANT_SAME_YEAR_DUPLICATE,
     STICKY_CONFLICT_RECEIPT,
     canonical_history_embedded_on_other_row,
@@ -2775,11 +2776,19 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
             session_analysis_id,
         )
         return PACKET_GRANT_MISSING_SOURCE
+    kind, history_ok = _history_year_disagreement(
+        session_analysis_id,
+        session_user_id,
+        tax_year,
+    )
+    if not history_ok:
+        return None
     try:
         history_ready = _ensure_packet_history_row(
             session_analysis_id,
             session_user_id,
             tax_year,
+            ignore_profile_year=(kind == "profile"),
         )
     except PacketSnapshotYearConflict as exc:
         return _record_packet_year_conflict(
@@ -2984,6 +2993,9 @@ def _record_packet_year_conflict(
         log_event=PACKET_GRANT_YEAR_CONFLICT,
         entitlement_writer=save_packet_entitlement,
     )
+    if saved is ALREADY_GRANTED_ENTITLEMENT:
+        # The session already granted. Do not stamp a snapshot or write again.
+        return True
     if saved is None:
         return None
     return PACKET_GRANT_YEAR_CONFLICT
@@ -2993,11 +3005,19 @@ def _ensure_packet_history_row(
     analysis_id: str,
     user_id: str,
     tax_year: int,
+    *,
+    ignore_profile_year: bool = False,
 ) -> Optional[bool]:
     """Create or align a deletable history stub with the checkout tax year.
 
     True when a row is present and its year matches. False when it cannot be
     created or patched. None on outage. Does not change portfolio_analyses.id.
+
+    ``ignore_profile_year`` is only for the grant path when the sole
+    disagreement is ``tax_profile.tax_year``. The row is still created, a
+    missing ``analysis_tax_year`` is still filled, and re-case still runs.
+    The profile year is not raised on and not patched. Other callers keep
+    the default and still treat a profile mismatch as a year conflict.
     """
     record, lookup_succeeded = lookup_analysis_for_entitlement(analysis_id, user_id)
     if not lookup_succeeded:
@@ -3035,7 +3055,7 @@ def _ensure_packet_history_row(
         profile_disagrees = (
             stored_profile_year is not None and stored_profile_year != int(tax_year)
         )
-        if analysis_disagrees or profile_disagrees:
+        if analysis_disagrees or (profile_disagrees and not ignore_profile_year):
             disagreed = (
                 stored_analysis_year if analysis_disagrees else stored_profile_year
             )
@@ -3072,7 +3092,7 @@ def _ensure_packet_history_row(
         patch = {}
         if stored_analysis_year is None:
             patch["analysis_tax_year"] = int(tax_year)
-        if stored_profile_year is None:
+        if stored_profile_year is None and not ignore_profile_year:
             merged_profile = dict(profile)
             merged_profile["tax_year"] = int(tax_year)
             patch["tax_profile"] = merged_profile

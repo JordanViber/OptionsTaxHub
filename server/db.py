@@ -271,15 +271,28 @@ def _stored_row_matches_uuid(row, user_id: str, canonical: str) -> bool:
     return row_id == canonical or embedded == canonical
 
 
-def _query_embedded_analysis_id(client, user_id: str, operator: str, canonical: str):
-    return (
+def _query_embedded_analysis_id(
+    client,
+    user_id: str,
+    operator: str,
+    canonical: str,
+    *,
+    exclude_id: Optional[str] = None,
+):
+    """One embedded-id read. ``exclude_id`` drops that row before ``limit(1)``.
+
+    The history re-case check passes the row being patched. Without that
+    exclusion, ``ilike`` can return the current row and hide the sibling.
+    """
+    query = (
         client.table("portfolio_analyses")
         .select("id, user_id, result")
         .eq("user_id", user_id)
         .filter("result->>analysis_id", operator, canonical)
-        .limit(1)
-        .execute()
     )
+    if exclude_id is not None:
+        query = query.neq("id", exclude_id)
+    return query.limit(1).execute()
 
 
 def _user_has_case_insensitive_embedded_id(
@@ -351,7 +364,9 @@ def canonical_history_embedded_on_other_row(
     if client is None:
         return None
     try:
-        result = _query_embedded_analysis_id(client, user_id, "eq", canonical)
+        result = _query_embedded_analysis_id(
+            client, user_id, "eq", canonical, exclude_id=row_id
+        )
     except Exception as exc:
         logger.error(
             "Could not check canonical history id for user %s: %s",
@@ -366,7 +381,9 @@ def canonical_history_embedded_on_other_row(
         return _other_history_row_embeds_uuid(data, row_id)
     # TODO(remove after 012 applied): legacy mixed-case embedded analysis_id.
     try:
-        result = _query_embedded_analysis_id(client, user_id, "ilike", canonical)
+        result = _query_embedded_analysis_id(
+            client, user_id, "ilike", canonical, exclude_id=row_id
+        )
     except Exception as exc:
         logger.error(
             "Could not check legacy canonical history id for user %s: %s",
@@ -1452,6 +1469,26 @@ STICKY_CONFLICT_RECEIPT = _StickyConflictReceipt()
 PACKET_GRANT_SAME_YEAR_DUPLICATE = "PACKET_GRANT_SAME_YEAR_DUPLICATE"
 
 
+class _AlreadyGrantedEntitlement:
+    """The charged session already has a real entitlement, not a conflict receipt.
+
+    Callers must test this sentinel by identity. It is not a receipt row and
+    not an outage (None). Truthiness is refused so a stray ``if saved`` cannot
+    treat it as a new refund row.
+    """
+
+    def __repr__(self) -> str:
+        return "ALREADY_GRANTED_ENTITLEMENT"
+
+    def __bool__(self) -> bool:
+        raise TypeError(
+            "test ALREADY_GRANTED_ENTITLEMENT by identity, not truthiness"
+        )
+
+
+ALREADY_GRANTED_ENTITLEMENT = _AlreadyGrantedEntitlement()
+
+
 def _is_conflict_analysis_id(value) -> bool:
     """True for a refund receipt stored in the entitlement analysis_id column."""
     return isinstance(value, str) and value.startswith("conflict:")
@@ -1652,6 +1689,10 @@ def save_packet_conflict_receipt(
             )
             return None
     if isinstance(already, dict):
+        # A real cs_ entitlement already granted this session. Do not rewrite
+        # it into a conflict: receipt and do not log a refund.
+        if not _is_conflict_analysis_id(already.get("analysis_id")):
+            return ALREADY_GRANTED_ENTITLEMENT
         return already
     saved = writer(
         receipt_id,
@@ -2349,6 +2390,8 @@ def mark_packet_snapshot_paid(
             )
             if receipt is None:
                 return None
+            if receipt is ALREADY_GRANTED_ENTITLEMENT:
+                return True
             return PACKET_GRANT_SAME_YEAR_DUPLICATE
         # Stamp only the row that was read, and only while it is still unpaid.
         # An ilike update would re-stamp every case variant, including one

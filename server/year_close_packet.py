@@ -18,7 +18,7 @@ from datetime import date, datetime
 from io import BytesIO
 from typing import Any, Optional
 
-from db import _canonical_analysis_id
+from db import _canonical_analysis_id, _canonical_analysis_uuid
 
 logger = logging.getLogger(__name__)
 
@@ -1411,17 +1411,18 @@ def session_is_settled_packet(session: Any) -> bool:
 
 
 def _analysis_ids_match(left: str, right: str) -> bool:
-    """UUID ids match in any letter case. Other ids stay an exact match.
+    """Hyphenated UUIDs match in any letter case. Other ids stay exact.
 
-    Stripe metadata keeps the spelling already stored on the analysis. This
-    only decides whether two strings name that same id.
+    ``uuid.UUID`` also folds braces, ``urn:uuid:``, and 32-hex. Those stay
+    distinct keys on the write path, so they do not match a hyphenated id.
     """
     if left == right:
         return True
-    try:
-        return str(uuid.UUID(left.strip())) == str(uuid.UUID(right.strip()))
-    except (ValueError, AttributeError, TypeError):
-        return False
+    left_uuid = _canonical_analysis_uuid(left)
+    right_uuid = _canonical_analysis_uuid(right)
+    if left_uuid is not None and right_uuid is not None:
+        return left_uuid == right_uuid
+    return False
 
 
 def session_grants_packet(session: Any, analysis_id: str = "") -> bool:

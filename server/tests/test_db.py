@@ -3009,6 +3009,45 @@ def test_conflict_receipt_does_not_grant_and_is_idempotent(monkeypatch):
     assert len(empty.entitlements) == 1
 
 
+def test_conflict_receipt_replay_of_real_entitlement_is_already_granted(monkeypatch, caplog):
+    canonical = _LETTERED
+    client = _ApplyingSnapshotClient([])
+    client.entitlements.append({
+        "analysis_id": canonical,
+        "user_id": "user1",
+        "tax_year": 2025,
+        "packet_session_id": "cs_paid",
+        "created_at": "2026-01-01T00:00:00+00:00",
+    })
+    monkeypatch.setattr(db, "get_supabase", lambda: client)
+    with pytest.raises(TypeError, match="identity"):
+        bool(db.ALREADY_GRANTED_ENTITLEMENT)
+    assert repr(db.ALREADY_GRANTED_ENTITLEMENT) == "ALREADY_GRANTED_ENTITLEMENT"
+    with caplog.at_level(40):
+        saved = db.save_packet_conflict_receipt(
+            canonical, "user1", 2025, "cs_paid", paid_tax_year=2024
+        )
+    assert saved is db.ALREADY_GRANTED_ENTITLEMENT
+    assert len(client.entitlements) == 1
+    assert client.entitlements[0]["analysis_id"] == canonical
+    assert not any(record.levelno >= 40 for record in caplog.records)
+
+    receipt_client = _ApplyingSnapshotClient([])
+    receipt_client.entitlements.append({
+        "analysis_id": f"conflict:{canonical}",
+        "user_id": "user1",
+        "tax_year": 2025,
+        "packet_session_id": "cs_paid",
+    })
+    monkeypatch.setattr(db, "get_supabase", lambda: receipt_client)
+    replay = db.save_packet_conflict_receipt(
+        canonical, "user1", 2025, "cs_paid", paid_tax_year=2024
+    )
+    assert replay["analysis_id"] == f"conflict:{canonical}"
+    assert replay["packet_session_id"] == "cs_paid"
+    assert len(receipt_client.entitlements) == 1
+
+
 def test_save_packet_entitlement_refuses_conflict_prefix(monkeypatch):
     canonical = _LETTERED
     client = _ApplyingSnapshotClient([])
