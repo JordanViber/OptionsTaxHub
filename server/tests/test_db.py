@@ -1707,11 +1707,13 @@ class TestPacketSnapshots:
         assert client.row(other)["packet_session_id"] is None
         assert client.entitlements == []
 
-        with pytest.raises(db.PacketSnapshotYearConflict):
-            db.mark_packet_snapshot_paid(other, "user1", 2025, "cs_restamp")
+        assert db.mark_packet_snapshot_paid(
+            other, "user1", 2025, "cs_restamp"
+        ) == db.PACKET_GRANT_SAME_YEAR_DUPLICATE
         assert client.row(stored)["packet_session_id"] == "cs_original"
         assert client.row(stored)["paid_at"] == "2026-01-01T00:00:00+00:00"
         assert client.row(other)["paid_at"] is None
+        assert len(client.entitlements) == 1
         assert client.entitlements[0]["analysis_id"] == f"conflict:{other}"
         assert client.entitlements[0]["packet_session_id"] == "cs_restamp"
         assert client.entitlements[0]["tax_year"] == 2025
@@ -3005,3 +3007,23 @@ def test_conflict_receipt_does_not_grant_and_is_idempotent(monkeypatch):
     assert first["analysis_id"] == f"conflict:{canonical}"
     assert second["packet_session_id"] == "cs_once"
     assert len(empty.entitlements) == 1
+
+
+def test_save_packet_entitlement_refuses_conflict_prefix(monkeypatch):
+    canonical = _LETTERED
+    client = _ApplyingSnapshotClient([])
+    monkeypatch.setattr(db, "get_supabase", lambda: client)
+    refused = db.save_packet_entitlement(
+        f"conflict:{canonical}", "user1", 2025, "cs_normal"
+    )
+    assert refused is None
+    assert client.entitlements == []
+    stored = db.save_packet_conflict_receipt(
+        canonical, "user1", 2025, "cs_charged", paid_tax_year=2024
+    )
+    assert stored["analysis_id"] == f"conflict:{canonical}"
+    sticky = db.save_packet_entitlement(canonical, "user1", 2025, "cs_charged")
+    assert sticky is db.STICKY_CONFLICT_RECEIPT
+    row, ok = db.lookup_packet_entitlement_for_tax_year("user1", 2025, client=client)
+    assert ok is True and row is None
+    assert len(client.entitlements) == 1

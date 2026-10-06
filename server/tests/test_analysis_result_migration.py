@@ -1371,6 +1371,86 @@ def test_migration_012_keeps_non_null_payload_when_collapsing_same_session(postg
         conn.close()
 
 
+def test_migration_012_aborts_when_paid_null_would_discard_only_payload(postgres):
+    url, conn = postgres("oth_jor36_paid_null_payload")
+    migration = (SERVER_DIR / "migrations" / "012_unify_analysis_identity.sql").read_text()
+    canonical = "efefefef-efef-4efe-8efe-efefefefefef"
+    try:
+        _apply_migrations(url)
+        conn.execute(
+            """
+            INSERT INTO year_close_packet_snapshots (
+              analysis_id, user_id, tax_year, packet_payload, packet_session_id,
+              paid_at, updated_at
+            ) VALUES
+              (%s, 'payload-pair', 2025, '{"marker":"only-pdf"}'::jsonb, NULL,
+               NULL, '2020-01-01T00:00:00Z'),
+              (%s, 'payload-pair', 2025, NULL, 'cs_paid',
+               '2026-01-01T00:00:00Z', '2026-06-01T00:00:00Z')
+            """,
+            (canonical, canonical.upper()),
+        )
+        code, output = _psql(url, migration)
+        assert code != 0
+        assert "only non-null payload" in output
+        rows = conn.execute(
+            """
+            SELECT analysis_id, packet_payload->>'marker', paid_at IS NOT NULL,
+                   packet_session_id
+            FROM year_close_packet_snapshots
+            WHERE user_id = 'payload-pair'
+            ORDER BY analysis_id
+            """
+        ).fetchall()
+        assert set(rows) == {
+            (canonical, "only-pdf", False, None),
+            (canonical.upper(), None, True, "cs_paid"),
+        }
+        entitlements = conn.execute(
+            """
+            SELECT count(*) FROM year_close_packet_entitlements
+            WHERE user_id = 'payload-pair'
+            """
+        ).fetchone()
+        assert entitlements[0] == 0
+    finally:
+        conn.close()
+
+
+def test_migration_012_applies_single_spelling_two_entitlement_years(postgres):
+    url, conn = postgres("oth_jor36_one_spelling_two_years")
+    migration = (SERVER_DIR / "migrations" / "012_unify_analysis_identity.sql").read_text()
+    canonical = "fefefefe-fefe-4fef-8fef-fefefefefefe"
+    try:
+        _apply_migrations(url)
+        conn.execute(
+            """
+            INSERT INTO year_close_packet_entitlements (
+              user_id, tax_year, packet_session_id, analysis_id
+            ) VALUES
+              ('one-spelling', 2024, 'cs_x', %s),
+              ('one-spelling', 2025, 'cs_y', %s)
+            """,
+            (canonical, canonical),
+        )
+        code, output = _psql(url, migration)
+        assert code == 0, output
+        rows = conn.execute(
+            """
+            SELECT analysis_id, tax_year, packet_session_id
+            FROM year_close_packet_entitlements
+            WHERE user_id = 'one-spelling'
+            ORDER BY tax_year
+            """
+        ).fetchall()
+        assert rows == [
+            (canonical, 2024, "cs_x"),
+            (canonical, 2025, "cs_y"),
+        ]
+    finally:
+        conn.close()
+
+
 def test_migration_012_leaves_conflict_entitlement_intact(postgres):
     url, conn = postgres("oth_jor36_conflict_receipt")
     migration = (SERVER_DIR / "migrations" / "012_unify_analysis_identity.sql").read_text()

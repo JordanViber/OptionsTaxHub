@@ -324,6 +324,16 @@ def _user_has_case_insensitive_embedded_id(
     return _stored_row_matches_uuid(data[0], user_id, canonical)
 
 
+def _other_history_row_embeds_uuid(data, row_id: str) -> Optional[bool]:
+    """True when a different row is in this payload. None when the payload is unusable."""
+    if not isinstance(data, list):
+        return None
+    for row in data:
+        if isinstance(row, dict) and str(row.get("id") or "") != str(row_id or ""):
+            return True
+    return False
+
+
 def canonical_history_embedded_on_other_row(
     user_id: str,
     canonical: str,
@@ -331,8 +341,9 @@ def canonical_history_embedded_on_other_row(
 ) -> Optional[bool]:
     """True when a different history row already embeds this canonical UUID.
 
-    None means the lookup failed. Used to skip re-casing an uppercase JSON id
-    onto a lowercase id that migration 008 already indexes.
+    None means the lookup failed, including a non-list payload. Callers must
+    not re-case on None: that can create the second history UUID migration
+    012 aborts on. An empty list is a real miss.
     """
     if not user_id or not canonical or _canonical_analysis_uuid(canonical) is None:
         return False
@@ -350,11 +361,25 @@ def canonical_history_embedded_on_other_row(
         return None
     data = getattr(result, "data", None)
     if not isinstance(data, list):
+        return None
+    if data:
+        return _other_history_row_embeds_uuid(data, row_id)
+    # TODO(remove after 012 applied): legacy mixed-case embedded analysis_id.
+    try:
+        result = _query_embedded_analysis_id(client, user_id, "ilike", canonical)
+    except Exception as exc:
+        logger.error(
+            "Could not check legacy canonical history id for user %s: %s",
+            user_id,
+            exc,
+        )
+        return None
+    data = getattr(result, "data", None)
+    if not isinstance(data, list):
+        return None
+    if not data:
         return False
-    for row in data:
-        if isinstance(row, dict) and str(row.get("id") or "") != str(row_id or ""):
-            return True
-    return False
+    return _other_history_row_embeds_uuid(data, row_id)
 
 
 def save_analysis_history(
@@ -1338,6 +1363,29 @@ def lookup_packet_entitlement_for_tax_year(
     return None, True
 
 
+def lookup_packet_session_entitlement(
+    user_id: str,
+    tax_year: int,
+    session_id: str,
+    client=None,
+) -> tuple[Optional[dict], bool]:
+    """Read the entitlement primary key, including a conflict: receipt.
+
+    The second value is False on outage. (None, True) is a real miss.
+    """
+    if not user_id or tax_year is None or not session_id:
+        return None, False
+    if client is None:
+        client = get_supabase()
+    if client is None:
+        return None, False
+    try:
+        return _read_packet_entitlement_pk(client, user_id, int(tax_year), session_id), True
+    except Exception as e:
+        logger.error("Failed to read packet entitlement for session %s: %s", session_id, e)
+        return None, False
+
+
 def _exception_code(exc: Exception) -> str:
     for attr in ("code", "sqlstate", "pgcode"):
         value = getattr(exc, attr, None)
@@ -1381,6 +1429,27 @@ def _is_missing_alias_table(exc: Exception) -> bool:
         "does not exist" in text
         and any(token in text for token in ("relation", "table"))
     )
+
+
+class _StickyConflictReceipt:
+    """An existing conflict: receipt for this checkout session.
+
+    Callers must test this sentinel by identity. It is not a saved grant and
+    not an outage (None). Truthiness is refused so a stray ``if saved`` cannot
+    treat the receipt as success.
+    """
+
+    def __repr__(self) -> str:
+        return "STICKY_CONFLICT_RECEIPT"
+
+    def __bool__(self) -> bool:
+        raise TypeError(
+            "test STICKY_CONFLICT_RECEIPT by identity, not truthiness"
+        )
+
+
+STICKY_CONFLICT_RECEIPT = _StickyConflictReceipt()
+PACKET_GRANT_SAME_YEAR_DUPLICATE = "PACKET_GRANT_SAME_YEAR_DUPLICATE"
 
 
 def _is_conflict_analysis_id(value) -> bool:
@@ -1439,21 +1508,55 @@ def _is_missing_analysis_schema(exc: Exception) -> bool:
     )
 
 
+def _read_packet_entitlement_pk(client, user_id: str, tax_year: int, session_id: str):
+    existing = (
+        client.table("year_close_packet_entitlements")
+        .select("analysis_id, user_id, tax_year, packet_session_id")
+        .eq("user_id", user_id)
+        .eq("tax_year", int(tax_year))
+        .eq("packet_session_id", session_id)
+        .limit(1)
+        .execute()
+    )
+    data = getattr(existing, "data", None)
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        return dict(data[0])
+    return None
+
+
+def _entitlement_row_or_sticky(current, *, conflict_receipt: bool):
+    """Return a stored row, the sticky sentinel, or None when the PK is empty."""
+    if not current:
+        return None
+    if _is_conflict_analysis_id(current.get("analysis_id")) and not conflict_receipt:
+        return STICKY_CONFLICT_RECEIPT
+    return current
+
+
 def save_packet_entitlement(
     analysis_id: str,
     user_id: str,
     tax_year: int,
     session_id: str,
     client=None,
-) -> Optional[dict]:
+    *,
+    conflict_receipt: bool = False,
+):
     """Persist a verified Stripe purchase separately from its private document.
 
     The receipt is immutable for (user, tax year, checkout session). A later
     analysis in that paid year gets its own snapshot and must not rewrite the
     original analysis id, or Stripe metadata checks 503.
+
+    ``conflict_receipt=True`` is only for ``save_packet_conflict_receipt``.
+    A normal grant that finds a ``conflict:`` row returns
+    ``STICKY_CONFLICT_RECEIPT`` instead of that row. A ``conflict:`` id passed
+    without the flag returns None and does not insert.
     """
     analysis_id = _canonical_analysis_id(analysis_id) or ""
-    if not analysis_id or not user_id or tax_year is None or not session_id.startswith("cs_"):
+    if _is_conflict_analysis_id(analysis_id) and not conflict_receipt:
+        return None
+    if not analysis_id or not user_id or tax_year is None or not isinstance(session_id, str) or not session_id.startswith("cs_"):
         return None
     if client is None:
         client = get_supabase()
@@ -1461,20 +1564,14 @@ def save_packet_entitlement(
         return None
 
     def read_existing():
-        existing = (
-            client.table("year_close_packet_entitlements")
-            .select("analysis_id, user_id, tax_year, packet_session_id")
-            .eq("user_id", user_id)
-            .eq("tax_year", int(tax_year))
-            .eq("packet_session_id", session_id)
-            .limit(1)
-            .execute()
+        return _entitlement_row_or_sticky(
+            _read_packet_entitlement_pk(client, user_id, int(tax_year), session_id),
+            conflict_receipt=conflict_receipt,
         )
-        return dict(existing.data[0]) if existing.data else None
 
     try:
         current = read_existing()
-        if current:
+        if current is STICKY_CONFLICT_RECEIPT or isinstance(current, dict):
             return current
         row = {
             "analysis_id": analysis_id,
@@ -1497,7 +1594,7 @@ def save_packet_entitlement(
                 raise
             return read_existing()
         current = read_existing()
-        if current:
+        if current is STICKY_CONFLICT_RECEIPT or isinstance(current, dict):
             return current
         if result.data:
             return dict(result.data[0])
@@ -1515,11 +1612,13 @@ def save_packet_conflict_receipt(
     *,
     paid_tax_year: Optional[int] = None,
     client=None,
+    log_event: str = "PACKET_GRANT_YEAR_CONFLICT",
+    entitlement_writer=None,
 ) -> Optional[dict]:
     """Store one refund receipt for a charged session that must not grant.
 
-    Idempotent on (user_id, tax_year, packet_session_id). A webhook retry or a
-    confirm after the webhook rereads the same row. The log is the human
+    This is the only writer. It passes ``conflict_receipt=True``. A replay
+    rereads the primary key and does not log again. The log is the human
     refund trail: charged session, user, analysis, paid year, and charged year.
     """
     receipt_id = conflict_receipt_analysis_id(analysis_id)
@@ -1537,22 +1636,44 @@ def save_packet_conflict_receipt(
             stored_year = int(paid_tax_year)
         except (TypeError, ValueError):
             stored_year = charged_year
+    writer = entitlement_writer or save_packet_entitlement
+    read_client = client if client is not None else get_supabase()
+    already = None
+    if read_client is not None:
+        try:
+            already = _read_packet_entitlement_pk(
+                read_client, user_id, charged_year, session_id
+            )
+        except Exception as exc:
+            logger.error(
+                "Failed to read packet conflict receipt for %s: %s",
+                session_id,
+                exc,
+            )
+            return None
+    if isinstance(already, dict):
+        return already
+    saved = writer(
+        receipt_id,
+        user_id,
+        charged_year,
+        session_id,
+        client=client,
+        conflict_receipt=True,
+    )
+    if saved is None or saved is STICKY_CONFLICT_RECEIPT or not isinstance(saved, dict):
+        return None
     logger.error(
-        "PACKET_GRANT_YEAR_CONFLICT session_id=%s user_id=%s analysis_id=%s "
+        "%s session_id=%s user_id=%s analysis_id=%s "
         "stored_tax_year=%s requested_tax_year=%s",
+        log_event,
         session_id,
         user_id,
         analysis_id,
         stored_year,
         charged_year,
     )
-    return save_packet_entitlement(
-        receipt_id,
-        user_id,
-        charged_year,
-        session_id,
-        client=client,
-    )
+    return saved
 
 
 def get_packet_grant_for_tax_year(
@@ -1576,12 +1697,15 @@ def _load_analysis_id_rows(
     columns: str,
     *,
     refine=None,
+    key_fields: tuple[str, ...] = ("analysis_id",),
 ) -> tuple[list[dict], bool]:
     """Exact ``analysis_id`` read plus a temporary UUID case fallback.
 
     UUID ids always run both queries, even when ``.eq`` already returned rows.
-    Results are merged and deduped on the stored ``analysis_id``, keeping the
-    exact-match copy. A failed ``ilike`` is an outage even if ``.eq`` hit.
+    Results are merged and deduped on ``key_fields``, keeping the exact-match
+    copy. Snapshots key on ``analysis_id``. Entitlements key on
+    ``(analysis_id, tax_year, packet_session_id)``. A failed ``ilike`` is an
+    outage even if ``.eq`` hit.
     Callers sort and limit after the merge so one query cannot drop the other
     spelling. Non-UUID ids stay exact ``.eq`` only. The second value is False
     on outage. An empty list with True is a real miss.
@@ -1627,15 +1751,22 @@ def _load_analysis_id_rows(
             exc,
         )
         return [], False
-    return _dedupe_stored_analysis_rows(exact_rows, _dicts(legacy)), True
+    return _dedupe_stored_analysis_rows(
+        exact_rows, _dicts(legacy), key_fields=key_fields
+    ), True
 
 
-def _dedupe_stored_analysis_rows(exact_rows: list[dict], legacy_rows: list[dict]) -> list[dict]:
-    """Keep the first copy of each stored analysis_id. Exact rows come first."""
+def _dedupe_stored_analysis_rows(
+    exact_rows: list[dict],
+    legacy_rows: list[dict],
+    *,
+    key_fields: tuple[str, ...] = ("analysis_id",),
+) -> list[dict]:
+    """Keep the first copy of each key. Exact rows come first."""
     merged = []
     seen = set()
     for row in list(exact_rows) + list(legacy_rows):
-        key = str(row.get("analysis_id") or "")
+        key = tuple(str(row.get(field) or "") for field in key_fields)
         if key in seen:
             continue
         seen.add(key)
@@ -2129,6 +2260,7 @@ def lookup_packet_entitlements_for_analysis(
         analysis_id,
         user_id,
         "analysis_id, packet_session_id, tax_year",
+        key_fields=("analysis_id", "tax_year", "packet_session_id"),
     )
     if not ok:
         return [], False
@@ -2203,8 +2335,9 @@ def mark_packet_snapshot_paid(
             if existing_row.get("packet_session_id") == session_id:
                 return True
             # A different session already paid this year. Keep the snapshot
-            # and record a refund receipt. Returning True would let the grant
-            # insert a normal entitlement for the new session.
+            # and record one refund receipt. Returning True would let the grant
+            # insert a normal entitlement for the new session. This is not a
+            # different tax year.
             receipt = save_packet_conflict_receipt(
                 analysis_id,
                 user_id,
@@ -2212,14 +2345,11 @@ def mark_packet_snapshot_paid(
                 session_id,
                 paid_tax_year=int(tax_year),
                 client=client,
+                log_event=PACKET_GRANT_SAME_YEAR_DUPLICATE,
             )
             if receipt is None:
                 return None
-            raise PacketSnapshotYearConflict(
-                stored_analysis_id,
-                existing_row.get("tax_year"),
-                tax_year,
-            )
+            return PACKET_GRANT_SAME_YEAR_DUPLICATE
         # Stamp only the row that was read, and only while it is still unpaid.
         # An ilike update would re-stamp every case variant, including one
         # that is already paid.

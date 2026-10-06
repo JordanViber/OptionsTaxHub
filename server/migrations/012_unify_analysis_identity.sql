@@ -2,9 +2,11 @@
 -- Also canonicalizes UUID analysis_id values on year_close_packet_snapshots,
 -- year_close_packet_entitlements, and portfolio_activity_books in this
 -- transaction. Snapshot case-variants collapse. Any two tax years for one
--- snapshot UUID (paid or not), two paid sessions in one year, entitlement
--- UUID case-variants in different tax years, and two history rows for one
--- UUID RAISE. conflict: entitlement ids fail the UUID regex and are left as
+-- snapshot UUID (paid or not), two paid sessions in one year, a collapse that
+-- would discard the only non-null payload, entitlement UUID case-variants
+-- (more than one stored spelling) in different tax years, and two history
+-- rows for one UUID RAISE. One entitlement spelling in two tax years does
+-- not RAISE. conflict: entitlement ids fail the UUID regex and are left as
 -- they are.
 -- Stripe still checks session metadata against the stored entitlement analysis id.
 -- This file has its own transaction. apply_migrations.sh does not wrap it.
@@ -85,6 +87,26 @@ BEGIN
       'two paid packet snapshots for one analysis UUID in the same tax year with different checkout sessions user=% canonical=% year=% sessions=%',
       collision.user_id, collision.canonical_uuid, collision.tax_year, collision.sessions;
   END LOOP;
+
+  -- Paid-null beats an unpaid PDF under the keeper ORDER BY. The 006 delete
+  -- trigger is case-sensitive, so that pair is reachable. Abort instead of
+  -- discarding the only payload. A lone paid-null snapshot is not this case
+  -- and is still backfilled later as a receipt.
+  FOR collision IN
+    SELECT user_id,
+           (analysis_id)::uuid AS canonical_uuid
+    FROM public.year_close_packet_snapshots
+    WHERE analysis_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    GROUP BY user_id, (analysis_id)::uuid
+    HAVING count(*) > 1
+       AND count(*) FILTER (WHERE paid_at IS NOT NULL AND packet_payload IS NOT NULL) = 0
+       AND count(*) FILTER (WHERE paid_at IS NOT NULL AND packet_payload IS NULL) > 0
+       AND count(*) FILTER (WHERE packet_payload IS NOT NULL) > 0
+  LOOP
+    RAISE EXCEPTION
+      'packet snapshot collapse would discard the only non-null payload user=% canonical=%',
+      collision.user_id, collision.canonical_uuid;
+  END LOOP;
 END $$;
 
 -- Same-year same-session duplicates keep one row. Different tax years have
@@ -122,7 +144,8 @@ WHERE analysis_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
   AND analysis_id IS DISTINCT FROM (analysis_id)::uuid::text;
 
 -- conflict: receipts fail the UUID predicate below, so this RAISE and the
--- following UPDATE leave them intact.
+-- following UPDATE leave them intact. One stored spelling in two tax years
+-- is a legitimate pair of receipts and does not RAISE. Case variants do.
 DO $$
 DECLARE
   collision record;
@@ -135,6 +158,7 @@ BEGIN
     WHERE analysis_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
     GROUP BY user_id, (analysis_id)::uuid
     HAVING count(DISTINCT tax_year) > 1
+       AND count(DISTINCT analysis_id) > 1
   LOOP
     RAISE EXCEPTION
       'packet entitlements for one analysis UUID have more than one tax year user=% canonical=% years=%',
@@ -342,6 +366,10 @@ GRANT EXECUTE ON FUNCTION public.clear_packet_payload_after_analysis_delete() TO
 
 -- Receipts for paid snapshots that never got an entitlement row. Do not
 -- replace an entitlement that already recorded the checkout analysis id.
+-- A paid-null row is still a receipt when it is the only snapshot. The RAISE
+-- above aborts before this INSERT when keeping that empty row would delete
+-- the only non-null payload, so the backfill does not adopt the empty row
+-- in place of the PDF.
 INSERT INTO public.year_close_packet_entitlements (
   user_id, tax_year, packet_session_id, analysis_id, created_at
 )
