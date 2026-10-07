@@ -53,6 +53,7 @@ from year_close_packet import (
     forget_packet_payload,
     get_payload,
     is_packet_paid,
+    packet_payload_rows_match_counts,
     mark_paid,
     packet_analysis_id_from_session,
     packet_checkout_custom_text,
@@ -2638,10 +2639,6 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
     if snapshot:
         tax_year = snapshot.get("tax_year")
         packet_payload = snapshot.get("packet_payload")
-        if not isinstance(packet_payload, dict) and cache_belongs_to_user:
-            cached_payload = get_payload(session_analysis_id)
-            if isinstance(cached_payload, dict):
-                packet_payload = cached_payload
     else:
         # Compatibility for sessions created before private snapshots existed.
         record, record_lookup_succeeded = lookup_analysis_for_entitlement(
@@ -2661,6 +2658,11 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
         packet_payload = (
             get_payload(session_analysis_id) if cache_belongs_to_user else None
         )
+        if isinstance(packet_payload, dict) and not packet_payload_rows_match_counts(
+            packet_payload
+        ):
+            # Counts without lot rows are the redacted teaser, not a packet.
+            packet_payload = None
         if tax_year is None:
             logger.error(
                 "PACKET_GRANT_YEAR_UNKNOWN session_id=%s user_id=%s analysis_id=%s",
@@ -2733,25 +2735,6 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
                 )
         return False
 
-    if (
-        snapshot
-        and not isinstance(snapshot.get("packet_payload"), dict)
-        and isinstance(packet_payload, dict)
-    ):
-        history_row, history_ok = lookup_analysis_for_entitlement(
-            session_analysis_id,
-            session_user_id,
-        )
-        if not history_ok:
-            return None
-        if not history_row:
-            packet_payload = None
-        else:
-            saved_snapshot = _save_grant_snapshot(packet_payload, paid=True)
-            if saved_snapshot is True or saved_snapshot == PACKET_GRANT_YEAR_CONFLICT:
-                return saved_snapshot
-            if not saved_snapshot:
-                return None
     if not isinstance(packet_payload, dict):
         # Keep the settled session as a same-year entitlement, but do not tell
         # confirm/webhook that a downloadable packet exists without its private
@@ -3368,7 +3351,7 @@ def _payload_for_download(
     if not isinstance(snapshot, dict) or not snapshot.get("paid_at"):
         _packet_download_forbidden()
     payload = snapshot.get("packet_payload")
-    if not isinstance(payload, dict):
+    if not isinstance(payload, dict) or not packet_payload_rows_match_counts(payload):
         raise HTTPException(
             status_code=503,
             detail=(
@@ -3593,6 +3576,10 @@ async def create_year_close_packet_checkout(
         analysis_id, user_id
     ):
         packet_snapshot = get_payload(analysis_id)
+    if isinstance(packet_snapshot, dict) and not packet_payload_rows_match_counts(
+        packet_snapshot
+    ):
+        raise HTTPException(status_code=409, detail=PACKET_SNAPSHOT_EXPIRED_DETAIL)
     tax_year = scoped_tax_year
     if tax_year is None:
         raise HTTPException(status_code=409, detail=PACKET_SNAPSHOT_EXPIRED_DETAIL)
@@ -4337,7 +4324,10 @@ async def download_year_close_packet_post(
     body: PacketDownloadRequest,
     user_id: Annotated[str, Depends(get_current_user)],
 ):
-    """Download the paid packet PDF, rebuilding from analysis JSON if needed."""
+    """Download the paid packet PDF. Unpaid requests are 403.
+
+    The JSON body is not a PDF source. The owner-year snapshot is.
+    """
     pdf_bytes = _download_packet_pdf(
         body.analysis_id,
         user_id,

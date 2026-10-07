@@ -373,8 +373,32 @@ describe("YearClosePacketPanel", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Download/i }));
     await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));
-    const downloadBody = JSON.parse(mockFetch.mock.calls[1][1].body);
-    expect(downloadBody.analysis_id).toBe(canonicalId);
+    const downloadUrl = String(mockFetch.mock.calls[1][0]);
+    const downloadInit = mockFetch.mock.calls[1][1];
+    expect(downloadInit.method).toBe("GET");
+    expect(downloadInit.body).toBeUndefined();
+    expect(downloadUrl).toContain("/api/year-close-packet/download?");
+    expect(downloadUrl).toContain(`analysis_id=${encodeURIComponent(canonicalId)}`);
+    expect(downloadUrl).toContain("session_id=cs_test_packet");
+  });
+
+  it("shows a recoverable error when the paid snapshot is missing", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      json: () =>
+        Promise.resolve({
+          detail:
+            "Payment was received, but this analysis has no source document. Run a new analysis for this tax year.",
+        }),
+    });
+
+    render(<YearClosePacketPanel analysis={analysis} />);
+    fireEvent.click(screen.getByRole("button", { name: /Download/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(/no source document/i);
+    });
   });
 
   it("unpaid download shows a blocked error from 403", async () => {

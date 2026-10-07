@@ -2336,7 +2336,7 @@ def test_custom_domain_frontend_uses_live_stripe(monkeypatch):
     assert packet_requires_test_stripe() is False
 
 
-def test_post_download_rebuilds_from_analysis_json(monkeypatch):
+def test_post_download_does_not_rebuild_from_analysis_json(monkeypatch):
     _test_stripe_env(monkeypatch)
     monkeypatch.setattr(main, "patch_analysis_result", lambda *_args: True)
     saved_analysis = {**SAMPLE_ANALYSIS, "analysis_id": "fresh-id"}
@@ -8488,7 +8488,8 @@ def test_grant_conflict_true_on_snapshot_miss_leaves_history(monkeypatch):
     assert history["result"]["analysis_tax_year"] == 2024
 
 
-def test_grant_conflict_true_on_null_payload_leaves_history(monkeypatch):
+def test_grant_null_payload_is_missing_source_and_leaves_history(monkeypatch):
+    """A null stored payload is not refilled from PACKET_STORE."""
     aid = "analysis-k21-null"
     user = "test-user-123"
     history = _k21_history(aid, user, 2024)
@@ -8508,8 +8509,8 @@ def test_grant_conflict_true_on_null_payload_leaves_history(monkeypatch):
             "paid_at": None,
         }, True),
     )
-    assert granted is True
-    assert writes == {"save": 1, "ensure": 0, "patch": 0, "entitlement": 0}
+    assert granted == main.PACKET_GRANT_MISSING_SOURCE
+    assert writes == {"save": 0, "ensure": 0, "patch": 0, "entitlement": 1}
     assert history["result"]["analysis_tax_year"] == 2024
 
 
@@ -8811,3 +8812,275 @@ def test_download_authorize_and_durable_year_edges(monkeypatch):
 
     monkeypatch.setattr(main, "list_packet_snapshots_for_identity", list_rows)
     assert main._durable_paid_snapshot_year(aid, user, "cs_bad_year") == (None, False)
+
+
+def _counts_only_from_full(payload: dict) -> dict:
+    """Keep teaser counts and drop the lot lists that were sold."""
+    thinned = deepcopy(payload)
+    report = thinned.get("lot_match_report")
+    if isinstance(report, dict):
+        thinned["lot_match_report"] = {
+            **report,
+            "matched": [],
+            "gap": [],
+            "unmatched": [],
+        }
+    return thinned
+
+
+def _assert_lot_pdf_matches_snapshot(pdf_bytes: bytes, payload: dict) -> None:
+    assert pdf_bytes.startswith(b"%PDF")
+    pdf_text = _pdf_text(pdf_bytes)
+    report = payload["lot_match_report"]
+    assert f"Matched ({len(report['matched'])})" in pdf_text
+    assert f"Gap ({len(report['gap'])})" in pdf_text
+    assert f"Unmatched ({len(report['unmatched'])})" in pdf_text
+    assert "Matched (0)" not in pdf_text
+    assert "matched AMD" in pdf_text
+    assert "matched_settlement_gap NVDA" in pdf_text
+    assert "1099_only SPX" in pdf_text
+    assert "csv_only META" in pdf_text
+    assert "Short-term proceeds" in pdf_text
+    assert "Long-term proceeds" in pdf_text
+    assert "Wash-sale disallowed" in pdf_text
+    assert "281,823.83" in pdf_text
+    assert "108.56" in pdf_text
+    assert "17,442.80" in pdf_text
+
+
+def test_analyze_checkout_confirm_download_survives_restart_between_steps(monkeypatch):
+    """Analyze save, then checkout, confirm, and download each on an empty store."""
+    _test_stripe_env(monkeypatch)
+    analysis_id = "analysis-lot-match-2024"
+    user = "test-user-123"
+    full = {**LOT_MATCH_ANALYSIS, "analysis_id": analysis_id}
+    remember_analysis(analysis_id, user, full)
+    original = get_payload(analysis_id)
+    assert original is not None
+    report = original["lot_match_report"]
+    assert len(report["matched"]) == report["matched_count"] == 1
+    assert len(report["gap"]) == report["gap_count"] == 1
+    assert len(report["unmatched"]) == report["unmatched_count"] == 2
+    tax_year = original["analysis_tax_year"]
+    assert main.save_packet_snapshot(analysis_id, user, tax_year, original)
+
+    reset_packet_store()
+    assert analysis_id not in PACKET_STORE
+    assert _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)]["packet_payload"]["lot_match_report"][
+        "matched"
+    ]
+
+    created = []
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "create",
+        lambda **kwargs: created.append(kwargs) or FakeCheckoutSession(**kwargs),
+    )
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda session_id, **_kwargs: _stripe_object_session(
+            id=session_id,
+            metadata={
+                "product": PACKET_METADATA_PRODUCT,
+                "analysis_id": analysis_id,
+                "user_id": user,
+                "tax_year": str(tax_year),
+            },
+        ),
+    )
+    counts_only = _counts_only_from_full(full)
+    checkout = client.post(
+        "/api/year-close-packet/checkout",
+        json={"analysis_id": analysis_id, "analysis": counts_only},
+    )
+    assert checkout.status_code == 200, checkout.text
+    assert created
+    session_id = checkout.json()["session_id"]
+    stored_report = _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)]["packet_payload"][
+        "lot_match_report"
+    ]
+    assert stored_report["matched"] == report["matched"]
+    assert stored_report["gap"] == report["gap"]
+    assert stored_report["unmatched"] == report["unmatched"]
+
+    reset_packet_store()
+    confirm = client.post(
+        "/api/year-close-packet/confirm",
+        json={
+            "analysis_id": analysis_id,
+            "session_id": session_id,
+            "analysis": counts_only,
+        },
+    )
+    assert confirm.status_code == 200, confirm.text
+    assert confirm.json()["paid"] is True
+    paid_row = _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)]
+    assert paid_row["paid_at"]
+    assert paid_row.get("expires_at") is None
+    assert paid_row["packet_payload"]["lot_match_report"]["matched"] == report["matched"]
+    assert paid_row["packet_payload"]["lot_match_report"]["unmatched"] == report["unmatched"]
+
+    reset_packet_store()
+    downloaded = client.post(
+        "/api/year-close-packet/download",
+        json={
+            "analysis_id": analysis_id,
+            "session_id": session_id,
+            "analysis": counts_only,
+        },
+    )
+    assert downloaded.status_code == 200, downloaded.text
+    assert downloaded.headers["content-type"].startswith("application/pdf")
+    _assert_lot_pdf_matches_snapshot(downloaded.content, original)
+
+    via_get = client.get(
+        "/api/year-close-packet/download",
+        params={"analysis_id": analysis_id, "session_id": session_id},
+    )
+    assert via_get.status_code == 200, via_get.text
+    _assert_lot_pdf_matches_snapshot(via_get.content, original)
+    assert analysis_id not in PACKET_STORE or PACKET_STORE[analysis_id].get("payload") in (
+        None,
+        original,
+    )
+
+
+def test_compact_analysis_body_cannot_render_empty_paid_pdf(monkeypatch):
+    _test_stripe_env(monkeypatch)
+    analysis_id = "analysis-counts-only-paid"
+    user = "test-user-123"
+    full_payload = build_packet_payload(
+        {**LOT_MATCH_ANALYSIS, "analysis_id": analysis_id},
+        analysis_id=analysis_id,
+    )
+    counts_payload = _counts_only_from_full(full_payload)
+    assert counts_payload["lot_match_report"]["matched_count"] == 1
+    assert counts_payload["lot_match_report"]["matched"] == []
+    _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)] = {
+        "analysis_id": analysis_id,
+        "user_id": user,
+        "tax_year": 2024,
+        "packet_payload": counts_payload,
+        "packet_session_id": "cs_test_counts_only",
+        "paid_at": "2026-09-30T00:00:00+00:00",
+    }
+    reset_packet_store()
+    downloaded = client.post(
+        "/api/year-close-packet/download",
+        json={
+            "analysis_id": analysis_id,
+            "analysis": {**LOT_MATCH_ANALYSIS, "analysis_id": analysis_id},
+        },
+    )
+    assert downloaded.status_code == 503, downloaded.text
+    assert downloaded.json()["detail"] == (
+        "The private packet snapshot is unavailable. Re-run this analysis "
+        "to restore it, then download again."
+    )
+    assert not downloaded.content.startswith(b"%PDF")
+
+    _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)] = {
+        "analysis_id": analysis_id,
+        "user_id": user,
+        "tax_year": 2024,
+        "packet_payload": counts_payload,
+        "paid_at": None,
+    }
+    created = []
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "create",
+        lambda **kwargs: created.append(kwargs) or pytest.fail("must not open Stripe"),
+    )
+    checkout = client.post(
+        "/api/year-close-packet/checkout",
+        json={
+            "analysis_id": analysis_id,
+            "analysis": {
+                "analysis_id": analysis_id,
+                "tax_profile": {"tax_year": 2024, "filing_status": "single"},
+                "lot_match_report": counts_payload["lot_match_report"],
+            },
+        },
+    )
+    assert checkout.status_code == 409, checkout.text
+    assert checkout.json()["detail"] == main.PACKET_SNAPSHOT_EXPIRED_DETAIL
+    assert created == []
+
+
+def test_cleared_snapshot_is_not_refilled_from_packet_store(monkeypatch):
+    _test_stripe_env(monkeypatch)
+    analysis_id = "analysis-cleared-source"
+    user = "test-user-123"
+    remember_analysis(analysis_id, user, {**LOT_MATCH_ANALYSIS, "analysis_id": analysis_id})
+    memory_payload = get_payload(analysis_id)
+    assert memory_payload is not None
+    assert memory_payload["lot_match_report"]["matched"]
+
+    saved_calls = []
+    original_save = main.save_packet_snapshot
+
+    def recording_save(*args, **kwargs):
+        saved_calls.append((args, kwargs))
+        return original_save(*args, **kwargs)
+
+    monkeypatch.setattr(main, "save_packet_snapshot", recording_save)
+    session = _stripe_object_session(
+        id="cs_test_cleared_source",
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": analysis_id,
+            "user_id": user,
+            "tax_year": "2024",
+        },
+    )
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda *_args, **_kwargs: session,
+    )
+
+    for paid_at in (None, "2026-09-30T00:00:00+00:00"):
+        saved_calls.clear()
+        _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)] = {
+            "analysis_id": analysis_id,
+            "user_id": user,
+            "tax_year": 2024,
+            "packet_payload": None,
+            "packet_session_id": None,
+            "paid_at": paid_at,
+        }
+        granted = main._persist_packet_grant(session, analysis_id, user)
+        assert granted == main.PACKET_GRANT_MISSING_SOURCE
+        assert saved_calls == []
+        assert _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)]["packet_payload"] is None
+
+        confirm = client.post(
+            "/api/year-close-packet/confirm",
+            json={
+                "analysis_id": analysis_id,
+                "session_id": session.id,
+                "analysis": {**LOT_MATCH_ANALYSIS, "analysis_id": analysis_id},
+            },
+        )
+        assert confirm.status_code == 409, confirm.text
+        assert confirm.json()["detail"] == main.PACKET_MISSING_SOURCE_DETAIL
+        assert saved_calls == []
+        assert _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)]["packet_payload"] is None
+
+        downloaded = client.post(
+            "/api/year-close-packet/download",
+            json={
+                "analysis_id": analysis_id,
+                "session_id": session.id,
+                "analysis": {**LOT_MATCH_ANALYSIS, "analysis_id": analysis_id},
+            },
+        )
+        assert not downloaded.content.startswith(b"%PDF")
+        if paid_at:
+            assert downloaded.status_code == 409, downloaded.text
+            assert downloaded.json()["detail"] == main.PACKET_MISSING_SOURCE_DETAIL
+        else:
+            assert downloaded.status_code == 403, downloaded.text
+        assert _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)]["packet_payload"] is None

@@ -529,15 +529,19 @@ function YearClosePacketPanelForAnalysis({
     setError(null);
     try {
       const headers = await authHeaders();
-      const response = await fetch(`${API_URL}/api/year-close-packet/download`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          analysis_id: canonicalAnalysisId,
-          session_id: sessionId,
-          analysis: compactAnalysis(analysis),
-        }),
+      const params = new URLSearchParams({
+        analysis_id: canonicalAnalysisId,
       });
+      if (sessionId) {
+        params.set("session_id", sessionId);
+      }
+      const response = await fetch(
+        `${API_URL}/api/year-close-packet/download?${params.toString()}`,
+        {
+          method: "GET",
+          headers,
+        },
+      );
       if (response.status === 403) {
         throw new Error("Pay $49 to download the year-close packet.");
       }

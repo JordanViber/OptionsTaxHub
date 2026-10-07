@@ -94,9 +94,13 @@ COMPARE_GAP_COPY = (
     "a $542 loss."
 )
 
-# In-memory entitlement + snapshot store. Sufficient for staging accept
-# (pay then immediately download) and unit tests. Download can also rebuild
-# from a client-supplied packet payload after Stripe session verification.
+# Process-local cache for guest rows and same-worker tests. Signed-in
+# checkout, confirm, and download read year_close_packet_snapshots.
+# Download renders that owner-year snapshot only.
+# Unpaid durable rows expire after 24h. Paid rows keep packet_payload
+# until the user deletes the source analysis, which nulls the payload
+# and keeps the receipt. A cleared paid snapshot is a recoverable error.
+# Guest rows here: 1h unpaid, 24h after pay, cap 64.
 PACKET_STORE: dict[str, dict[str, Any]] = {}
 
 
@@ -884,6 +888,37 @@ def _lot_report_has_rows(report: Any) -> bool:
     if not isinstance(report, dict):
         return False
     return bool(report.get("matched") or report.get("gap") or report.get("unmatched"))
+
+
+def packet_payload_rows_match_counts(payload: Any) -> bool:
+    """True when lot-list lengths are not shorter than the stored counts.
+
+    A missing lot report has nothing to contradict. A positive matched, gap,
+    or unmatched count with fewer dict rows is a counts-only teaser and must
+    not be sold or rendered as the paid packet. Bool counts are rejected.
+    """
+    if not isinstance(payload, dict):
+        return False
+    report = payload.get("lot_match_report")
+    if not isinstance(report, dict):
+        return True
+    for list_key, count_key in (
+        ("matched", "matched_count"),
+        ("gap", "gap_count"),
+        ("unmatched", "unmatched_count"),
+    ):
+        count = report.get(count_key)
+        if isinstance(count, bool):
+            return False
+        if not isinstance(count, int):
+            continue
+        rows = report.get(list_key) or []
+        if not isinstance(rows, list):
+            return False
+        dict_rows = sum(1 for row in rows if isinstance(row, dict))
+        if count > dict_rows:
+            return False
+    return True
 
 
 def _analysis_preserving_lot_rows(
