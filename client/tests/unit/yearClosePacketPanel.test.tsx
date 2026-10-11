@@ -382,6 +382,101 @@ describe("YearClosePacketPanel", () => {
     expect(downloadUrl).toContain("session_id=cs_test_packet");
   });
 
+  it("shows missing-source detail on a fresh download with no session", async () => {
+    const detail =
+      "Payment was received, but this analysis has no source document. Run a new analysis for this tax year.";
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      json: () => Promise.resolve({ detail }),
+    });
+
+    render(<YearClosePacketPanel analysis={analysis} />);
+    expect(store["optionstaxhub-packet-pending:analysis-1"]).toBeUndefined();
+    expect(store["optionstaxhub-packet-pending-confirm:analysis-1"]).toBeUndefined();
+    expect(store["optionstaxhub-packet-paid:analysis-1"]).toBeUndefined();
+
+    fireEvent.click(screen.getByRole("button", { name: /Download/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(detail);
+    });
+    expect(screen.getByRole("alert")).not.toHaveTextContent(
+      /Pay \$49 to download the year-close packet/i,
+    );
+    const downloadUrl = String(mockFetch.mock.calls[0][0]);
+    expect(downloadUrl).toContain("/api/year-close-packet/download?");
+    expect(downloadUrl).toContain("analysis_id=analysis-1");
+    expect(downloadUrl).not.toContain("session_id=");
+    expect(mockFetch.mock.calls[0][1].method).toBe("GET");
+    expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
+  });
+
+  it("shows Download failed when a fresh 409 download has no detail", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      json: () => Promise.resolve({ detail: null }),
+    });
+
+    render(<YearClosePacketPanel analysis={analysis} />);
+    fireEvent.click(screen.getByRole("button", { name: /Download/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent("Download failed.");
+    });
+    expect(screen.getByRole("alert")).not.toHaveTextContent(
+      /Pay \$49 to download the year-close packet/i,
+    );
+    expect(String(mockFetch.mock.calls[0][0])).not.toContain("session_id=");
+  });
+
+  it("shows Download failed when a fresh 409 download body cannot be read", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      json: () => Promise.reject(new Error("bad json")),
+    });
+
+    render(<YearClosePacketPanel analysis={analysis} />);
+    fireEvent.click(screen.getByRole("button", { name: /Download/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent("Download failed.");
+    });
+    expect(screen.getByRole("alert")).not.toHaveTextContent(
+      /Pay \$49 to download the year-close packet/i,
+    );
+  });
+
+  it("does not keep a non-missing-source 409 across a later 403", async () => {
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        json: () => Promise.resolve({ detail: "Payment was received." }),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 403,
+        json: () =>
+          Promise.resolve({ detail: "Year-close packet download requires payment." }),
+      });
+
+    render(<YearClosePacketPanel analysis={analysis} />);
+    fireEvent.click(screen.getByRole("button", { name: /Download/i }));
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent("Payment was received.");
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /Download/i }));
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        /Pay \$49 to download the year-close packet/i,
+      );
+    });
+  });
+
   it("shows a recoverable error when the paid snapshot is missing", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: false,

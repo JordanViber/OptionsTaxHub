@@ -4116,6 +4116,29 @@ def _refuse_download_without_paid_source(
     _packet_download_forbidden()
 
 
+def _owner_has_real_download_entitlement(analysis_id: str, user_id: str) -> bool:
+    """True when this authenticated user holds a real receipt for the year.
+
+    The key is (user, canonical analysis id, tax year). A conflict receipt,
+    another analysis, and another user are not a match. False is a real miss.
+    An outage raises 503. This does not render a PDF and does not grant.
+    """
+    tax_year, year_ok = _resolve_packet_tax_year_for_identity(analysis_id, user_id)
+    if not year_ok:
+        _packet_download_entitlement_unavailable()
+    if tax_year is None:
+        return False
+    entitled = _download_has_matching_entitlement(
+        analysis_id,
+        user_id,
+        int(tax_year),
+        None,
+    )
+    if entitled is None:
+        _packet_download_entitlement_unavailable()
+    return bool(entitled)
+
+
 def _authorize_packet_download_identity(
     analysis_id: str,
     session_id: Optional[str],
@@ -4124,12 +4147,14 @@ def _authorize_packet_download_identity(
     *,
     durable_year: Optional[int] = None,
 ) -> str:
-    """Authorize session, user, and analysis identity. Do not resolve a tax year.
+    """Authorize session, user, and analysis identity.
 
     Wrong identity is 403. This does not grant, unlock, or retrieve Checkout.
     Callers pass the one session object from the download handler. A Stripe
     outage with durable_year set is the paid row whose packet_session_id
-    matches the caller.
+    matches the caller. A request with no session id resolves a tax year only
+    to tell a real receipt from a miss. The snapshot check still refuses a PDF
+    when that receipt has no usable document.
     """
     if analysis_id == "local-analysis":
         raise HTTPException(
@@ -4198,8 +4223,13 @@ def _authorize_packet_download_identity(
         _packet_download_entitlement_unavailable()
     if owned:
         return analysis_id
+    # No session id reached this tail. Look up the owner's receipt before 403.
+    # A real receipt continues into the year-scoped snapshot check, which
+    # returns 409 for a missing, unpaid, null, or counts-only document and
+    # still does not render a PDF. No receipt stays 403.
+    if _owner_has_real_download_entitlement(analysis_id, user_id):
+        return analysis_id
     _packet_download_forbidden()
-    return analysis_id
 
 
 def _authorized_packet_download(
@@ -4250,26 +4280,30 @@ def _authorized_packet_download(
         if stored_session_id:
             if session_id and session_id != stored_session_id:
                 _packet_download_forbidden()
-            if not session_id or session is None:
-                # No conflicting session, or Stripe could not be read and the
-                # caller already matched this stored session. Do not retrieve.
-                return analysis_id
-            metadata = _session_metadata(session)
-            try:
-                settled_tax_year = int(metadata.get("tax_year"))
-            except (TypeError, ValueError):
-                settled_tax_year = None
-            if (
-                packet_session_id(session) != stored_session_id
-                or not session_is_settled_packet(session)
-                or packet_user_id_from_session(session) != user_id
-                or metadata.get("product") != PACKET_METADATA_PRODUCT
-                or (
-                    settled_tax_year is not None
-                    and settled_tax_year != int(snapshot.get("tax_year"))
-                )
-            ):
-                _packet_download_forbidden()
+            # No session, or Stripe could not be read and the caller already
+            # matched this stored session: do not retrieve. A readable session
+            # is checked against the row before a PDF is authorized.
+            if session_id and session is not None:
+                metadata = _session_metadata(session)
+                try:
+                    settled_tax_year = int(metadata.get("tax_year"))
+                except (TypeError, ValueError):
+                    settled_tax_year = None
+                if (
+                    packet_session_id(session) != stored_session_id
+                    or not session_is_settled_packet(session)
+                    or packet_user_id_from_session(session) != user_id
+                    or metadata.get("product") != PACKET_METADATA_PRODUCT
+                    or (
+                        settled_tax_year is not None
+                        and settled_tax_year != int(snapshot.get("tax_year"))
+                    )
+                ):
+                    _packet_download_forbidden()
+        if not packet_payload_rows_match_counts(snapshot.get("packet_payload")):
+            # A paid counts-only teaser is not a source document. 409, not a PDF.
+            # A mismatched session already returned 403 above.
+            raise HTTPException(status_code=409, detail=PACKET_MISSING_SOURCE_DETAIL)
         return analysis_id
     _refuse_download_without_paid_source(
         analysis_id,
