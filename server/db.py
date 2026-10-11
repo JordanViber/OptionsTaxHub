@@ -274,21 +274,20 @@ def _stored_row_matches_uuid(row, user_id: str, canonical: str) -> bool:
 def _query_embedded_analysis_id(
     client,
     user_id: str,
-    operator: str,
     canonical: str,
     *,
     exclude_id: Optional[str] = None,
 ):
-    """One embedded-id read. ``exclude_id`` drops that row before ``limit(1)``.
+    """One exact embedded-id read. ``exclude_id`` drops that row before ``limit(1)``.
 
     The history re-case check passes the row being patched. Without that
-    exclusion, ``ilike`` can return the current row and hide the sibling.
+    exclusion, the current row can fill ``limit(1)`` and hide the sibling.
     """
     query = (
         client.table("portfolio_analyses")
         .select("id, user_id, result")
         .eq("user_id", user_id)
-        .filter("result->>analysis_id", operator, canonical)
+        .filter("result->>analysis_id", "eq", canonical)
     )
     if exclude_id is not None:
         query = query.neq("id", exclude_id)
@@ -300,37 +299,16 @@ def _user_has_case_insensitive_embedded_id(
     user_id: str,
     canonical: str,
 ) -> Optional[bool]:
-    """Whether this user already stored this UUID.
+    """Whether this user already stored this canonical UUID.
 
-    Exact match first. A case-insensitive read runs when that misses or the
-    exact row does not match, so an unmigrated uppercase JSON id still blocks
-    a second insert. A payload that is not a list is an outage (None), not a
-    miss. None means the lookup failed, including a failed fallback. The
-    unique index is case-sensitive, so a different spelling would otherwise
-    insert a second row.
+    Exact match on the canonical embedded id. A payload that is not a list
+    is an outage (None), not a miss. None means the lookup failed.
     """
     try:
-        result = _query_embedded_analysis_id(client, user_id, "eq", canonical)
+        result = _query_embedded_analysis_id(client, user_id, canonical)
     except Exception as exc:
         logger.error(
-            "Could not compare analysis id case for user %s: %s",
-            user_id,
-            exc,
-        )
-        return None
-    data = getattr(result, "data", None)
-    if not isinstance(data, list):
-        return None
-    if data and _stored_row_matches_uuid(data[0], user_id, canonical):
-        return True
-    if _canonical_analysis_uuid(canonical) is None:
-        return False
-    # TODO(remove after 012 applied): legacy mixed-case embedded analysis_id.
-    try:
-        result = _query_embedded_analysis_id(client, user_id, "ilike", canonical)
-    except Exception as exc:
-        logger.error(
-            "Could not compare legacy analysis id case for user %s: %s",
+            "Could not compare analysis id for user %s: %s",
             user_id,
             exc,
         )
@@ -371,28 +349,11 @@ def canonical_history_embedded_on_other_row(
         return None
     try:
         result = _query_embedded_analysis_id(
-            client, user_id, "eq", canonical, exclude_id=row_id
+            client, user_id, canonical, exclude_id=row_id
         )
     except Exception as exc:
         logger.error(
             "Could not check canonical history id for user %s: %s",
-            user_id,
-            exc,
-        )
-        return None
-    data = getattr(result, "data", None)
-    if not isinstance(data, list):
-        return None
-    if data:
-        return _other_history_row_embeds_uuid(data, row_id)
-    # TODO(remove after 012 applied): legacy mixed-case embedded analysis_id.
-    try:
-        result = _query_embedded_analysis_id(
-            client, user_id, "ilike", canonical, exclude_id=row_id
-        )
-    except Exception as exc:
-        logger.error(
-            "Could not check legacy canonical history id for user %s: %s",
             user_id,
             exc,
         )
@@ -450,9 +411,9 @@ def save_analysis_history(
         if isinstance(row.get("result"), dict):
             embedded_id = row["result"].get("analysis_id")
         if row.get("id"):
-            # The per-user unique index compares embedded text as written.
-            # A pre-existing row can spell the same UUID differently and use
-            # a different primary key, so check before inserting.
+            # The per-user unique index is on the embedded id. Another row
+            # can already store this canonical UUID under a different primary
+            # key, so check before inserting.
             already_saved = _user_has_case_insensitive_embedded_id(
                 client,
                 user_id,
@@ -640,10 +601,8 @@ def _fetch_analysis_by_primary_key(client, analysis_id: str, user_id: str, colum
 def _fetch_analysis_by_embedded_id(client, analysis_id: str, user_id: str, columns: str):
     """Find a row by result.analysis_id.
 
-    UUID ids use an exact match on the canonical text. A case-insensitive
-    read runs only when that misses, so an unmigrated uppercase JSON id is
-    still found. A failed fallback is an outage, not a miss. Non-UUID ids
-    stay an exact contains match and are not casefolded.
+    UUID ids use an exact match on the canonical text. Non-UUID ids stay an
+    exact contains match and are not casefolded.
     """
     canonical = _canonical_analysis_id(analysis_id) or analysis_id
 
@@ -658,14 +617,8 @@ def _fetch_analysis_by_embedded_id(client, analysis_id: str, user_id: str, colum
 
     if _canonical_analysis_uuid(canonical) is None:
         return _run(lambda query: query.contains("result", {"analysis_id": canonical}))
-    exact = _run(
-        lambda query: query.filter("result->>analysis_id", "eq", canonical)
-    )
-    if getattr(exact, "data", None):
-        return exact
-    # TODO(remove after 012 applied): legacy mixed-case embedded analysis_id.
     return _run(
-        lambda query: query.filter("result->>analysis_id", "ilike", canonical)
+        lambda query: query.filter("result->>analysis_id", "eq", canonical)
     )
 
 
@@ -1763,20 +1716,11 @@ def _load_analysis_id_rows(
     columns: str,
     *,
     refine=None,
-    key_fields: tuple[str, ...] = ("analysis_id",),
 ) -> tuple[list[dict], bool]:
-    """Exact ``analysis_id`` read plus a temporary UUID case fallback.
+    """Exact ``analysis_id`` read of the canonical id.
 
-    UUID ids always run both queries, even when ``.eq`` already returned rows.
-    Results are merged and deduped on ``key_fields``, keeping the exact-match
-    copy. Snapshots key on ``analysis_id``. Entitlements key on
-    ``(analysis_id, tax_year, packet_session_id)``. A failed ``ilike`` is an
-    outage even if ``.eq`` hit.
-    Callers sort and limit after the merge so one query cannot drop the other
-    spelling. Non-UUID ids stay exact ``.eq`` only. The second value is False
-    on outage. An empty list with True is a real miss.
-
-    # TODO(remove after 012 applied): legacy mixed-case UUID analysis_id.
+    Callers sort and limit. Non-UUID ids stay exact ``.eq`` as well. The
+    second value is False on outage. An empty list with True is a real miss.
     """
     canonical = _canonical_analysis_id(analysis_id)
     if not canonical or not user_id or client is None:
@@ -1790,54 +1734,16 @@ def _load_analysis_id_rows(
             query = refine(query)
         return query.execute()
 
-    def _dicts(result):
-        return [
-            dict(row)
-            for row in (getattr(result, "data", None) or [])
-            if isinstance(row, dict)
-        ]
-
     try:
         exact = _execute(lambda query: query.eq("analysis_id", canonical))
     except Exception as exc:
         logger.error("Failed to read %s for %s: %s", table, canonical, exc)
         return [], False
-    exact_rows = _dicts(exact)
-    if _canonical_analysis_uuid(canonical) is None:
-        return exact_rows, True
-    try:
-        legacy = _execute(
-            lambda query: query.filter("analysis_id", "ilike", canonical)
-        )
-    except Exception as exc:
-        logger.error(
-            "Failed legacy case read of %s for %s: %s",
-            table,
-            canonical,
-            exc,
-        )
-        return [], False
-    return _dedupe_stored_analysis_rows(
-        exact_rows, _dicts(legacy), key_fields=key_fields
-    ), True
-
-
-def _dedupe_stored_analysis_rows(
-    exact_rows: list[dict],
-    legacy_rows: list[dict],
-    *,
-    key_fields: tuple[str, ...] = ("analysis_id",),
-) -> list[dict]:
-    """Keep the first copy of each key. Exact rows come first."""
-    merged = []
-    seen = set()
-    for row in list(exact_rows) + list(legacy_rows):
-        key = tuple(str(row.get(field) or "") for field in key_fields)
-        if key in seen:
-            continue
-        seen.add(key)
-        merged.append(row)
-    return merged
+    return [
+        dict(row)
+        for row in (getattr(exact, "data", None) or [])
+        if isinstance(row, dict)
+    ], True
 
 
 def _snapshot_time_rank(value, *, nulls_last: bool = True):
@@ -1855,8 +1761,8 @@ def _sort_snapshot_rows(rows: list[dict]) -> list[dict]:
     """Paid rows first, then latest expiry (nulls last), then analysis_id.
 
     Matches ``_order_snapshot_candidates``. Python owns the order after the
-    exact and case-insensitive reads are merged, so a SQL ``limit`` cannot
-    drop the paid spelling before the merge.
+    exact read, so a SQL ``limit`` cannot drop a paid row before the caller
+    chooses one.
     """
 
     def sort_key(row):
@@ -1875,7 +1781,7 @@ def _sort_snapshot_rows(rows: list[dict]) -> list[dict]:
 
 
 def _order_snapshot_candidates(query):
-    """Pick one snapshot when two spellings of the same UUID both exist.
+    """Order canonical snapshot rows when more than one is returned.
 
     DESC in PostgREST is NULLS FIRST unless nullsfirst is false, which would
     let an expired unpaid row hide a paid row. Paid rows come first, then the
@@ -1953,8 +1859,7 @@ def save_packet_snapshot(
 
     def read_exact_key():
         # The primary key is (user_id, canonical analysis_id). This row can
-        # sit in another tax year. Exact eq only; the legacy spelling scan
-        # is separate and has no limit.
+        # sit in another tax year. Exact eq only.
         result = (
             client.table("year_close_packet_snapshots")
             .select(snapshot_columns)
@@ -1966,11 +1871,9 @@ def save_packet_snapshot(
         return dict(result.data[0]) if result.data else None
 
     def _raise_paid_other_year(rows):
-        """Any paid spelling in a different year blocks the write.
+        """Any paid canonical row in a different year blocks the write.
 
-        # TODO(remove after 012 applied): the scan exists so a legacy spelling
-        # cannot hide behind the canonical row. Same-year unpaid re-year of a
-        # single row stays allowed.
+        Same-year unpaid re-year of that row stays allowed.
         """
         for row in rows:
             if not row.get("paid_at"):
@@ -1983,7 +1886,7 @@ def save_packet_snapshot(
                 year_conflict(row)
 
     def read_existing():
-        # One unscoped load, no limit, every spelling. The conflict check runs
+        # One unscoped exact load, no limit. The conflict check runs
         # before any UPDATE or INSERT.
         rows = _snapshot_rows()
         _raise_paid_other_year(rows)
@@ -1995,9 +1898,6 @@ def save_packet_snapshot(
                 continue
         for row in rows:
             if str(row.get("analysis_id") or "") == analysis_id:
-                return row
-        for row in rows:
-            if str(row.get("analysis_id") or "") != analysis_id:
                 return row
         return None
 
@@ -2049,7 +1949,7 @@ def save_packet_snapshot(
             update_row = row
             # Repair only the null payload we just read. A concurrent delete or
             # a payload written after this read must not be upserted over.
-            # Pin the stored key: an ilike match would rewrite every case variant.
+            # Pin the stored key so the update hits the row that was read.
             repair = (
                 client.table("year_close_packet_snapshots")
                 .update(row)
@@ -2089,8 +1989,7 @@ def save_packet_snapshot(
             "expires_at": expires_at.isoformat() if expires_at else None,
             "updated_at": now.isoformat(),
         }
-        # Leave the stored primary-key spelling alone. The ilike match can see
-        # another case of the same UUID, and writing analysis_id would rename it.
+        # Do not write analysis_id. The row keeps the canonical key it was stored with.
         update_row = {key: value for key, value in row.items() if key != "analysis_id"}
 
         if existing_row:
@@ -2129,7 +2028,7 @@ def save_packet_snapshot(
                 return result_row(result, latest_row)
             return None
 
-        # No canonical row and no legacy spelling. INSERT preserves any row
+        # No canonical row. INSERT preserves any row
         # created by a concurrent webhook/checkout;
         # unlike UPSERT it can never replace a just-paid snapshot.
         result = (
@@ -2326,7 +2225,6 @@ def lookup_packet_entitlements_for_analysis(
         analysis_id,
         user_id,
         "analysis_id, packet_session_id, tax_year",
-        key_fields=("analysis_id", "tax_year", "packet_session_id"),
     )
     if not ok:
         return [], False
@@ -2420,8 +2318,6 @@ def mark_packet_snapshot_paid(
             # history is not patched. A new conflict: row takes the same path.
             return PACKET_GRANT_SAME_YEAR_DUPLICATE
         # Stamp only the row that was read, and only while it is still unpaid.
-        # An ilike update would re-stamp every case variant, including one
-        # that is already paid.
         result = (
             client.table("year_close_packet_snapshots")
             .update({

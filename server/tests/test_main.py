@@ -3596,13 +3596,12 @@ class _ApiBookQuery:
             for col, val in self.filters:
                 filtered = [row for row in filtered if row.get(col) == val]
         for column, op, value in self.extra_filters:
-            if column == "result->>analysis_id" and op == "ilike":
-                needle = str(value).lower()
+            if column == "result->>analysis_id" and op == "eq":
+                needle = str(value)
                 filtered = [
                     row for row in filtered
                     if isinstance(row.get("result"), dict)
-                    and isinstance(row["result"].get("analysis_id"), str)
-                    and row["result"]["analysis_id"].lower() == needle
+                    and row["result"].get("analysis_id") == needle
                 ]
             else:
                 filtered = []

@@ -751,10 +751,10 @@ class _YearScopedSnapshotQuery:
 
 
 def test_history_restore_finds_private_packet_for_uuid_case_variant(monkeypatch):
-    stored = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
-    requested = stored.lower()
+    canonical = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    requested = canonical.upper()
     payload = {
-        "analysis_id": stored,
+        "analysis_id": canonical,
         "tax_profile": {"tax_year": 2025},
         "summary": {},
     }
@@ -762,7 +762,7 @@ def test_history_restore_finds_private_packet_for_uuid_case_variant(monkeypatch)
         db,
         "get_supabase",
         lambda: _UuidSnapshotClient([{
-            "analysis_id": stored,
+            "analysis_id": canonical,
             "user_id": "test-user-123",
             "tax_year": 2025,
             "packet_payload": payload,
@@ -778,7 +778,7 @@ def test_history_restore_finds_private_packet_for_uuid_case_variant(monkeypatch)
         lambda *_args: ({
             "id": "history-row",
             "user_id": "test-user-123",
-            "result": {"analysis_id": stored},
+            "result": {"analysis_id": canonical},
         }, True),
     )
 
@@ -2853,7 +2853,7 @@ _LEGACY_PAYMENT_ANALYSIS = "11111111-1111-4111-8111-111111111111"
 
 
 class _AliasStepClient:
-    """Primary-key miss, embedded eq miss, embedded ilike miss, then alias fails."""
+    """Primary-key miss, embedded eq miss, then the alias table fails."""
 
     def __init__(self, alias_error):
         self.alias_error = alias_error
@@ -2882,9 +2882,8 @@ class _AliasStepClient:
 
     def execute(self):
         self.calls += 1
-        # UUID lookup is primary key, embedded eq, then the temporary ilike
-        # fallback, and only then the alias table.
-        if self.calls < 4:
+        # UUID lookup is primary key, then embedded eq, then the alias table.
+        if self.calls < 3:
             return SimpleNamespace(data=[])
         raise self.alias_error
 
@@ -4714,104 +4713,6 @@ def test_unpaid_upper_reyear_then_pay_leaves_one_paid_year(monkeypatch):
     assert snapshot_client.rows[0]["analysis_id"] == lower
 
 
-def test_download_get_serves_unmigrated_upper_paid_row(monkeypatch):
-    """New code reads a legacy UPPER paid row when the canonical eq misses."""
-    _test_stripe_env(monkeypatch)
-    upper = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
-    lower = upper.lower()
-    user = "test-user-123"
-    payload = build_packet_payload(
-        {**SAMPLE_ANALYSIS, "analysis_id": lower},
-        analysis_id=lower,
-    )
-    snapshot_client = _wire_real_snapshot_client(
-        monkeypatch,
-        [{
-            "analysis_id": upper,
-            "user_id": user,
-            "tax_year": 2025,
-            "packet_payload": payload,
-            "packet_session_id": "cs_upper_paid",
-            "paid_at": "2026-01-01T00:00:00+00:00",
-            "expires_at": None,
-        }],
-    )
-    session = _stripe_object_session(
-        id="cs_upper_paid",
-        metadata={
-            "analysis_id": upper,
-            "user_id": user,
-            "tax_year": "2025",
-        },
-    )
-    calls = {"n": 0}
-
-    def retrieve(*_args, **_kwargs):
-        calls["n"] += 1
-        return session
-
-    monkeypatch.setattr(main.stripe.checkout.Session, "retrieve", retrieve)
-    _forbid_download_writes(monkeypatch)
-
-    response = client.get(
-        "/api/year-close-packet/download",
-        params={"analysis_id": lower, "session_id": "cs_upper_paid"},
-    )
-
-    assert response.status_code == 200, response.text
-    assert response.headers["content-type"] == "application/pdf"
-    assert response.content.startswith(b"%PDF")
-    assert calls["n"] == 1
-    assert len(snapshot_client.rows) == 1
-    assert snapshot_client.rows[0]["analysis_id"] == upper
-
-
-def test_checkout_other_year_conflicts_with_unmigrated_upper_paid_row(monkeypatch):
-    """Do not insert a lowercase row beside a legacy UPPER paid year."""
-    _test_stripe_env(monkeypatch)
-    upper = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
-    lower = upper.lower()
-    user = "test-user-123"
-    snapshot_client = _wire_real_snapshot_client(
-        monkeypatch,
-        [{
-            "analysis_id": upper,
-            "user_id": user,
-            "tax_year": 2025,
-            "packet_payload": {"marker": "paid-A", "analysis_id": upper},
-            "packet_session_id": "cs_upper_paid",
-            "paid_at": "2026-01-01T00:00:00+00:00",
-            "expires_at": None,
-        }],
-    )
-    year_2026 = {
-        **SAMPLE_ANALYSIS,
-        "analysis_id": lower,
-        "analysis_tax_year": 2026,
-        "tax_profile": {"tax_year": 2026, "filing_status": "single"},
-    }
-    remember_analysis(lower, user, year_2026)
-    created = []
-    monkeypatch.setattr(
-        main.stripe.checkout.Session,
-        "create",
-        lambda **kwargs: created.append(kwargs) or FakeCheckoutSession(**kwargs),
-    )
-
-    response = client.post(
-        "/api/year-close-packet/checkout",
-        json={"analysis_id": upper, "analysis": year_2026},
-    )
-
-    assert response.status_code == 409, response.text
-    assert response.json()["detail"] == _PAID_OTHER_YEAR_DETAIL
-    assert created == []
-    assert len(snapshot_client.rows) == 1
-    assert snapshot_client.rows[0]["analysis_id"] == upper
-    assert snapshot_client.rows[0]["tax_year"] == 2025
-    assert snapshot_client.rows[0]["paid_at"]
-
-
 def test_download_serves_pdf_when_stripe_outage_has_matching_paid_session(monkeypatch):
     _test_stripe_env(monkeypatch)
     analysis_id = "analysis-durable-proof"
@@ -5000,7 +4901,7 @@ def test_legacy_webhook_uses_single_snapshot_year(monkeypatch, caplog):
     user = "test-user-123"
     canonical = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
     monkeypatch.setattr(main, "lookup_analysis_for_entitlement", _no_history_lookup)
-    stored = canonical.upper()
+    stored = canonical
     snapshot_client = _wire_real_snapshot_client(
         monkeypatch,
         [{
@@ -7248,41 +7149,10 @@ class _HistoryEmbedQuery:
         return SimpleNamespace(data=data)
 
 
-def test_canonical_history_ilike_fallback_skips_recase(monkeypatch):
-    canonical = _FOLLOWUP_UUID
-    user = "test-user-123"
-    upper_row = {
-        "id": "row-upper",
-        "user_id": user,
-        "result": {
-            "analysis_id": canonical.upper(),
-            "analysis_tax_year": 2025,
-            "tax_profile": {"tax_year": 2025, "filing_status": "single"},
-        },
-    }
-    other = {
-        "id": "row-other",
-        "user_id": user,
-        "result": {"analysis_id": canonical.upper()},
-    }
-    patches = []
-    monkeypatch.setattr(db, "get_supabase", lambda: _HistoryEmbedClient([], [other]))
-    monkeypatch.setattr(main, "lookup_analysis_for_entitlement", lambda *_a: (upper_row, True))
-    monkeypatch.setattr(
-        main,
-        "patch_analysis_result",
-        lambda *_a: patches.append(True) or True,
-    )
-    assert db.canonical_history_embedded_on_other_row(user, canonical, "row-upper") is True
-    assert main._ensure_packet_history_row(canonical, user, 2025) is True
-    assert patches == []
-    assert upper_row["result"]["analysis_id"] == canonical.upper()
+def test_canonical_history_eq_excludes_current_row_and_finds_sibling(monkeypatch):
+    """Exact read drops the row being patched before limit(1).
 
-
-def test_canonical_history_ilike_excludes_current_row_and_finds_sibling(monkeypatch):
-    """ilike must drop the row being patched before limit(1).
-
-    The current row is first and embeds the same uppercase UUID as the
+    The current row is first and embeds the same canonical UUID as the
     sibling. Without neq, limit(1) returns only that row and re-case runs.
     """
     canonical = _FOLLOWUP_UUID
@@ -7299,15 +7169,15 @@ def test_canonical_history_ilike_excludes_current_row_and_finds_sibling(monkeypa
     current = {
         "id": "row-upper",
         "user_id": user,
-        "result": {"analysis_id": canonical.upper()},
+        "result": {"analysis_id": canonical},
     }
     sibling = {
         "id": "row-other",
         "user_id": user,
-        "result": {"analysis_id": canonical.upper()},
+        "result": {"analysis_id": canonical},
     }
     patches = []
-    client_embed = _HistoryEmbedClient([], [current, sibling])
+    client_embed = _HistoryEmbedClient([current, sibling], [])
     monkeypatch.setattr(db, "get_supabase", lambda: client_embed)
     monkeypatch.setattr(main, "lookup_analysis_for_entitlement", lambda *_a: (upper_row, True))
     monkeypatch.setattr(
@@ -7317,8 +7187,6 @@ def test_canonical_history_ilike_excludes_current_row_and_finds_sibling(monkeypa
     )
     assert db.canonical_history_embedded_on_other_row(user, canonical, "row-upper") is True
     assert client_embed.steps == [
-        ("neq", "id", "row-upper"),
-        ("limit", 1),
         ("neq", "id", "row-upper"),
         ("limit", 1),
     ]
@@ -7464,14 +7332,12 @@ def test_checkout_scan_outage_is_503_and_does_not_open_stripe(monkeypatch):
             if self.op == "insert":
                 return SimpleNamespace(data=[{"analysis_id": aid}])
             self.owner.selects += 1
-            if "ilike" in self.filters:
-                raise RuntimeError("paid-other-spelling scan down")
-            return SimpleNamespace(data=[])
+            raise RuntimeError("packet snapshot read down")
 
     outage = _ScanOutageClient()
     monkeypatch.setattr(db, "get_supabase", lambda: outage)
     # The year is already known, so the preliminary snapshot read is the autouse
-    # miss. The legacy ilike that fails is the unscoped save scan.
+    # miss. The canonical save read is the one that fails.
     monkeypatch.setattr(main, "save_packet_snapshot", db.save_packet_snapshot)
     created = []
     monkeypatch.setattr(
@@ -7873,7 +7739,7 @@ def test_history_not_ready_grant_scans_paid_other_year(monkeypatch):
                 session_id=None, paid_at=None, expires_at="2099-01-01T00:00:00+00:00",
             ),
             _snapshot_row(
-                canonical.upper(), user, 2025,
+                canonical, user, 2025,
                 {"marker": "paid-2025", "analysis_tax_year": 2025},
                 session_id="cs_paid", paid_at="2026-01-01T00:00:00+00:00",
             ),
@@ -7909,7 +7775,7 @@ def test_download_two_paid_spellings_without_session_is_503(monkeypatch):
         monkeypatch,
         [
             _snapshot_row(
-                canonical.upper(), user, 2024,
+                canonical, user, 2024,
                 {"marker": "YEAR:2024", "analysis_tax_year": 2024},
                 session_id="cs_2024", paid_at="2026-01-01T00:00:00+00:00",
             ),
@@ -7934,7 +7800,7 @@ def test_both_spellings_same_year_download_checkout_confirm_mark(monkeypatch):
     monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_packet_test_secret")
     user = "test-user-123"
     canonical = _FOLLOWUP_UUID
-    paid_payload = {"analysis_id": canonical.upper(), "marker": "PAID", "analysis_tax_year": 2025}
+    paid_payload = {"analysis_id": canonical, "marker": "PAID", "analysis_tax_year": 2025}
     unpaid_payload = {"analysis_id": canonical, "marker": "UNPAID", "analysis_tax_year": 2025}
     snapshot_client = _wire_real_snapshot_client(
         monkeypatch,
@@ -7944,7 +7810,7 @@ def test_both_spellings_same_year_download_checkout_confirm_mark(monkeypatch):
                 session_id=None, paid_at=None, expires_at="2099-01-01T00:00:00+00:00",
             ),
             _snapshot_row(
-                canonical.upper(), user, 2025, paid_payload,
+                canonical, user, 2025, paid_payload,
                 session_id="cs_test_paid_1", paid_at="2026-01-01T00:00:00+00:00",
             ),
         ],
@@ -8028,7 +7894,7 @@ def test_different_session_same_year_mark_keeps_unpaid_sibling_and_one_conflict_
                 session_id=None, paid_at=None, expires_at="2099-01-01T00:00:00+00:00",
             ),
             _snapshot_row(
-                canonical.upper(), user, 2025,
+                canonical, user, 2025,
                 {"marker": "PAID", "analysis_tax_year": 2025},
                 session_id="cs_test_paid_1", paid_at="2026-01-01T00:00:00+00:00",
             ),
@@ -8095,7 +7961,7 @@ def test_both_spellings_cross_year_download_checkout_webhook_mark(monkeypatch):
                 session_id="cs_a", paid_at="2026-01-01T00:00:00+00:00",
             ),
             _snapshot_row(
-                canonical.upper(), user, 2026,
+                canonical, user, 2026,
                 {"marker": "Y2026", "analysis_tax_year": 2026},
                 session_id="cs_b", paid_at="2026-02-01T00:00:00+00:00",
             ),
@@ -8162,7 +8028,7 @@ def test_checkout_upper_paid_blocks_canonical_other_year(monkeypatch):
                 session_id=None, paid_at=None, expires_at="2099-01-01T00:00:00+00:00",
             ),
             _snapshot_row(
-                canonical.upper(), user, 2025,
+                canonical, user, 2025,
                 {"marker": "paid-2025", "analysis_tax_year": 2025},
                 session_id="cs_A", paid_at="2026-01-01T00:00:00+00:00",
             ),
