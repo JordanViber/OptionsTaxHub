@@ -4019,6 +4019,103 @@ def _packet_download_entitlement_unavailable() -> None:
     )
 
 
+def _download_entitlement_row_matches(
+    row: Any,
+    analysis_id: str,
+    tax_year: int,
+    session_id: Optional[str],
+) -> bool:
+    """True for this user's analysis when the row is the same year or this cs_."""
+    if not isinstance(row, dict) or _is_conflict_analysis_id(row.get("analysis_id")):
+        return False
+    stored_id = str(row.get("analysis_id") or "").strip()
+    if not stored_id or not _analysis_ids_match(stored_id, analysis_id):
+        return False
+    stored_session = row.get("packet_session_id")
+    if not isinstance(stored_session, str) or not stored_session.startswith("cs_"):
+        return False
+    if session_id and stored_session == session_id:
+        return True
+    try:
+        return int(row.get("tax_year")) == int(tax_year)
+    except (TypeError, ValueError):
+        return False
+
+
+def _download_session_entitlement_matches(
+    row: Any,
+    analysis_id: str,
+    session_id: str,
+) -> bool:
+    """True when the (user, year, cs_) primary key is this analysis, not a refund."""
+    if not isinstance(row, dict) or _is_conflict_analysis_id(row.get("analysis_id")):
+        return False
+    stored_id = str(row.get("analysis_id") or "").strip()
+    if not stored_id or not _analysis_ids_match(stored_id, analysis_id):
+        return False
+    stored_session = row.get("packet_session_id")
+    if isinstance(stored_session, str) and stored_session != session_id:
+        return False
+    return True
+
+
+def _download_has_matching_entitlement(
+    analysis_id: str,
+    user_id: str,
+    tax_year: int,
+    session_id: Optional[str],
+) -> Optional[bool]:
+    """Same-year receipt or this cs_ receipt for this user and analysis.
+
+    None is an outage. A conflict receipt and another analysis's year receipt
+    are not a match. A live Checkout object is not a receipt.
+    """
+    rows, rows_ok = lookup_packet_entitlements_for_analysis(user_id, analysis_id)
+    if rows_ok:
+        for row in rows or []:
+            if _download_entitlement_row_matches(row, analysis_id, tax_year, session_id):
+                return True
+    session_ok = True
+    if isinstance(session_id, str) and session_id.startswith("cs_"):
+        sticky, session_ok = lookup_packet_session_entitlement(
+            user_id,
+            int(tax_year),
+            session_id,
+        )
+        if session_ok and _download_session_entitlement_matches(
+            sticky,
+            analysis_id,
+            session_id,
+        ):
+            return True
+    if not rows_ok or not session_ok:
+        return None
+    return False
+
+
+def _refuse_download_without_paid_source(
+    analysis_id: str,
+    user_id: str,
+    tax_year: int,
+    session_id: Optional[str],
+) -> None:
+    """403 when nobody paid. 409 when they paid and this year has no document.
+
+    Does not render a PDF. An unpaid or missing snapshot is not a paid source.
+    """
+    entitled = _download_has_matching_entitlement(
+        analysis_id,
+        user_id,
+        tax_year,
+        session_id,
+    )
+    if entitled is None:
+        _packet_download_entitlement_unavailable()
+    if entitled:
+        raise HTTPException(status_code=409, detail=PACKET_MISSING_SOURCE_DETAIL)
+    _packet_download_forbidden()
+
+
 def _authorize_packet_download_identity(
     analysis_id: str,
     session_id: Optional[str],
@@ -4136,9 +4233,17 @@ def _authorized_packet_download(
     # The client confirms Checkout before download. Do not grant, stamp, or
     # rewrite the analysis id to the session spelling on this request. A
     # sticky in-memory paid flag is not a paid snapshot for this year.
+    # An unpaid or missing row is 403 only when this user has no receipt for
+    # the analysis. A same-year or cs_ entitlement with no usable document is
+    # 409, and it is still not a PDF.
     if isinstance(snapshot, dict):
         if not snapshot.get("paid_at"):
-            _packet_download_forbidden()
+            _refuse_download_without_paid_source(
+                analysis_id,
+                user_id,
+                int(tax_year),
+                session_id,
+            )
         if not isinstance(snapshot.get("packet_payload"), dict):
             raise HTTPException(status_code=409, detail=PACKET_MISSING_SOURCE_DETAIL)
         stored_session_id = snapshot.get("packet_session_id")
@@ -4166,7 +4271,12 @@ def _authorized_packet_download(
             ):
                 _packet_download_forbidden()
         return analysis_id
-    _packet_download_forbidden()
+    _refuse_download_without_paid_source(
+        analysis_id,
+        user_id,
+        int(tax_year),
+        session_id,
+    )
     return analysis_id
 
 

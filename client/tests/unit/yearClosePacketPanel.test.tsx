@@ -401,6 +401,40 @@ describe("YearClosePacketPanel", () => {
     });
   });
 
+  it("keeps the missing-source alert on a 409 download and reserves Pay $49 for a real 403", async () => {
+    const detail =
+      "Payment was received, but this analysis has no source document. Run a new analysis for this tax year.";
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        json: () => Promise.resolve({ detail }),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 403,
+        json: () =>
+          Promise.resolve({ detail: "Year-close packet download requires payment." }),
+      });
+
+    render(<YearClosePacketPanel analysis={analysis} />);
+    fireEvent.click(screen.getByRole("button", { name: /Download/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(detail);
+    });
+    expect(screen.getByRole("alert")).not.toHaveTextContent(
+      /Pay \$49 to download the year-close packet/i,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Download/i }));
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("alert")).toHaveTextContent(detail);
+    expect(screen.getByRole("alert")).not.toHaveTextContent(
+      /Pay \$49 to download the year-close packet/i,
+    );
+  });
+
   it("unpaid download shows a blocked error from 403", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: false,
@@ -680,6 +714,8 @@ describe("YearClosePacketPanel", () => {
       "",
       "/dashboard?packet_session=cs_test_missing_source&packet_analysis=analysis-1",
     );
+    const checkoutUrl = "https://checkout.stripe.com/c/pay/cs_test_new";
+    const consoleError = jest.spyOn(console, "error").mockImplementation(() => {});
     mockFetch
       .mockResolvedValueOnce({
         ok: false,
@@ -687,29 +723,58 @@ describe("YearClosePacketPanel", () => {
         json: () => Promise.resolve({ detail }),
       })
       .mockResolvedValueOnce({
-        ok: true,
-        json: () =>
-          Promise.resolve({
-            checkout_url: "https://checkout.stripe.com/c/pay/cs_test_new",
-            session_id: "cs_test_new",
-          }),
+        ok: false,
+        status: 409,
+        json: () => Promise.resolve({ detail }),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        json: () => Promise.resolve({ detail }),
       });
 
     render(<YearClosePacketPanel analysis={analysis} />);
 
-    await waitFor(() => {
-      expect(screen.getByRole("alert")).toHaveTextContent(detail);
-    });
-    expect(window.location.search).not.toContain("packet_session");
-    expect(store["optionstaxhub-packet-pending-confirm:analysis-1"]).toBeUndefined();
-    expect(mockFetch).toHaveBeenCalledTimes(1);
+    try {
+      await waitFor(() => {
+        expect(screen.getByRole("alert")).toHaveTextContent(detail);
+      });
+      expect(window.location.search).not.toContain("packet_session");
+      expect(store["optionstaxhub-packet-pending-confirm:analysis-1"]).toBeUndefined();
+      expect(mockFetch).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(screen.getByRole("button", { name: /Pay \$49/i }));
-    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));
-    expect(String(mockFetch.mock.calls[1][0])).toContain(
-      "/api/year-close-packet/checkout",
-    );
-    expect(String(mockFetch.mock.calls[1][0])).not.toContain("/confirm");
+      fireEvent.click(screen.getByRole("button", { name: /Pay \$49/i }));
+      await waitFor(() => {
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+        expect(screen.getByRole("alert")).toHaveTextContent(detail);
+        expect(screen.getByRole("button", { name: /Download/i })).toBeEnabled();
+      });
+      expect(String(mockFetch.mock.calls[1][0])).toContain(
+        "/api/year-close-packet/checkout",
+      );
+      expect(String(mockFetch.mock.calls[1][0])).not.toContain("/confirm");
+      expect(window.location.href).not.toContain(checkoutUrl);
+      expect(window.location.href).not.toContain("checkout.stripe.com");
+      expect(
+        consoleError.mock.calls.some((call) =>
+          call.some((arg) => String(arg?.message || arg).includes("Not implemented: navigation")),
+        ),
+      ).toBe(false);
+      expect(screen.getByRole("alert")).not.toHaveTextContent(
+        /Pay \$49 to download the year-close packet/i,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: /Download/i }));
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(3));
+      expect(String(mockFetch.mock.calls[2][0])).toContain("/api/year-close-packet/download");
+      expect(screen.getByRole("alert")).toHaveTextContent(detail);
+      expect(screen.getByRole("alert")).not.toHaveTextContent(
+        /Pay \$49 to download the year-close packet/i,
+      );
+      expect(window.location.href).not.toContain("checkout.stripe.com");
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it("does not confirm a return URL for a different analysis", async () => {

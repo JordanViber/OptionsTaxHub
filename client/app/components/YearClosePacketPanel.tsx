@@ -36,6 +36,10 @@ export const PACKET_CHECKOUT_INFLIGHT_KEY =
 export const PACKET_CHECKOUT_CANCELED_COPY =
   "Checkout was closed without payment. Pay $49 when you are ready.";
 
+function isPacketMissingSourceDetail(detail: string): boolean {
+  return /payment was received/i.test(detail) && /no source document/i.test(detail);
+}
+
 function paidStorageKey(analysisId: string): string {
   return `optionstaxhub-packet-paid:${analysisId}`;
 }
@@ -319,9 +323,7 @@ function YearClosePacketPanelForAnalysis({
         checkoutStillOpen = response.status === 409 && /still open/i.test(detail);
         // PACKET_MISSING_SOURCE_DETAIL is terminal. Pay must not poll confirm.
         const missingSource =
-          response.status === 409 &&
-          /payment was received/i.test(detail) &&
-          /no source document/i.test(detail);
+          response.status === 409 && isPacketMissingSourceDetail(detail);
         retryableFailure =
           !missingSource && (response.status >= 500 || checkoutStillOpen);
         throw new Error(errData?.detail || "Could not confirm packet payment.");
@@ -529,7 +531,10 @@ function YearClosePacketPanelForAnalysis({
 
   const handleDownload = async () => {
     setBusy("download");
-    setError(null);
+    const preservedMissingSource = isPacketMissingSourceDetail(error ?? "");
+    if (!preservedMissingSource) {
+      setError(null);
+    }
     try {
       const headers = await authHeaders();
       const params = new URLSearchParams({
@@ -545,7 +550,15 @@ function YearClosePacketPanelForAnalysis({
           headers,
         },
       );
+      if (response.status === 409) {
+        const errData = await response.json().catch(() => null);
+        const detail = typeof errData?.detail === "string" ? errData.detail : "";
+        throw new Error(detail || "Download failed.");
+      }
       if (response.status === 403) {
+        if (preservedMissingSource) {
+          return;
+        }
         throw new Error("Pay $49 to download the year-close packet.");
       }
       if (!response.ok) {

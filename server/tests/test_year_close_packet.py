@@ -3104,7 +3104,8 @@ def test_grant_records_separate_entitlement_without_claiming_missing_document_is
     )
     assert confirm.status_code == 409
     assert confirm.json()["detail"] == main.PACKET_MISSING_SOURCE_DETAIL
-    # Unpaid null payload is 403. The paid null-payload 409 stays on confirm.
+    # The grant saved a same-year entitlement and left the row unpaid. Download
+    # is 409, not a paywall, and still not a PDF.
     unavailable = client.get(
         "/api/year-close-packet/download",
         params={
@@ -3112,8 +3113,8 @@ def test_grant_records_separate_entitlement_without_claiming_missing_document_is
             "session_id": "cs_test_missing_packet_document",
         },
     )
-    assert unavailable.status_code == 403
-    assert unavailable.json()["detail"] == "Year-close packet download requires payment."
+    assert unavailable.status_code == 409
+    assert unavailable.json()["detail"] == main.PACKET_MISSING_SOURCE_DETAIL
     assert not unavailable.content.startswith(b"%PDF")
 
     monkeypatch.setattr(
@@ -8942,11 +8943,8 @@ def test_cleared_snapshot_is_not_refilled_from_packet_store(monkeypatch):
             },
         )
         assert not downloaded.content.startswith(b"%PDF")
-        if paid_at:
-            assert downloaded.status_code == 409, downloaded.text
-            assert downloaded.json()["detail"] == main.PACKET_MISSING_SOURCE_DETAIL
-        else:
-            assert downloaded.status_code == 403, downloaded.text
+        assert downloaded.status_code == 409, downloaded.text
+        assert downloaded.json()["detail"] == main.PACKET_MISSING_SOURCE_DETAIL
         assert _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)]["packet_payload"] is None
 
 
@@ -9029,7 +9027,8 @@ def test_existing_counts_only_unpaid_snapshot_is_missing_source(monkeypatch):
     """A stored unpaid teaser is not granted or marked paid.
 
     PACKET_STORE is empty. Confirm is 409 PACKET_MISSING_SOURCE_DETAIL and
-    mark_packet_snapshot_paid is not called.
+    mark_packet_snapshot_paid is not called. The saved cs_ entitlement makes
+    download 409 as well, with no PDF.
     """
     _test_stripe_env(monkeypatch)
     analysis_id = "analysis-existing-counts-only"
@@ -9100,11 +9099,19 @@ def test_existing_counts_only_unpaid_snapshot_is_missing_source(monkeypatch):
             "analysis": counts_only,
         },
     )
-    assert downloaded.status_code == 403, downloaded.text
-    assert downloaded.json()["detail"] == "Year-close packet download requires payment."
+    assert downloaded.status_code == 409, downloaded.text
+    assert downloaded.json()["detail"] == main.PACKET_MISSING_SOURCE_DETAIL
     assert not downloaded.content.startswith(b"%PDF")
     assert _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)]["paid_at"] is None
     assert _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)]["packet_payload"] == counts_only
+
+    via_get = client.get(
+        "/api/year-close-packet/download",
+        params={"analysis_id": analysis_id, "session_id": session.id},
+    )
+    assert via_get.status_code == 409, via_get.text
+    assert via_get.json()["detail"] == main.PACKET_MISSING_SOURCE_DETAIL
+    assert not via_get.content.startswith(b"%PDF")
 
     monkeypatch.setattr(
         main.stripe.checkout.Session,
@@ -9120,6 +9127,70 @@ def test_existing_counts_only_unpaid_snapshot_is_missing_source(monkeypatch):
     assert _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)]["paid_at"] is None
     assert _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)]["packet_session_id"] is None
     assert _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)]["packet_payload"] == counts_only
+
+
+def test_unpaid_snapshot_without_entitlement_download_is_403(monkeypatch):
+    """No same-year or cs_ receipt stays 403. A settled session object is not one.
+
+    The unpaid teaser is not a PDF, and download does not write an entitlement.
+    """
+    _test_stripe_env(monkeypatch)
+    analysis_id = "analysis-unpaid-no-entitlement"
+    user = "test-user-123"
+    full = build_packet_payload(
+        {**LOT_MATCH_ANALYSIS, "analysis_id": analysis_id},
+        analysis_id=analysis_id,
+    )
+    counts_only = _counts_only_from_full(full)
+    assert packet_payload_rows_match_counts(counts_only) is False
+    _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)] = {
+        "analysis_id": analysis_id,
+        "user_id": user,
+        "tax_year": 2024,
+        "packet_payload": counts_only,
+        "packet_session_id": None,
+        "paid_at": None,
+    }
+    reset_packet_store()
+    assert _FAKE_PACKET_ENTITLEMENTS == {}
+    session = _stripe_object_session(
+        id="cs_unpaid_no_entitlement",
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": analysis_id,
+            "user_id": user,
+            "tax_year": "2024",
+        },
+    )
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda *_args, **_kwargs: session,
+    )
+
+    downloaded = client.post(
+        "/api/year-close-packet/download",
+        json={
+            "analysis_id": analysis_id,
+            "session_id": session.id,
+            "analysis": counts_only,
+        },
+    )
+
+    assert downloaded.status_code == 403, downloaded.text
+    assert downloaded.json()["detail"] == "Year-close packet download requires payment."
+    assert not downloaded.content.startswith(b"%PDF")
+    assert _FAKE_PACKET_ENTITLEMENTS == {}
+    assert _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)]["paid_at"] is None
+    assert _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)]["packet_payload"] == counts_only
+
+    via_get = client.get(
+        "/api/year-close-packet/download",
+        params={"analysis_id": analysis_id},
+    )
+    assert via_get.status_code == 403, via_get.text
+    assert via_get.json()["detail"] == "Year-close packet download requires payment."
+    assert not via_get.content.startswith(b"%PDF")
 
 
 def test_unpaid_teaser_grant_overwrites_from_owned_memory(monkeypatch):
