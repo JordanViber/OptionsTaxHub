@@ -51,6 +51,7 @@ from year_close_packet import (
     packet_requires_test_stripe,
     purge_packet_store,
     get_payload,
+    packet_payload_rows_match_counts,
     remember_analysis,
     render_packet_pdf,
     reset_packet_store,
@@ -9084,3 +9085,139 @@ def test_cleared_snapshot_is_not_refilled_from_packet_store(monkeypatch):
         else:
             assert downloaded.status_code == 403, downloaded.text
         assert _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)]["packet_payload"] is None
+
+
+@pytest.mark.parametrize("row_lists", ["empty", "missing"])
+def test_legacy_no_row_grant_rejects_counts_only_packet_store(monkeypatch, row_lists):
+    """No private snapshot row: counts without lot rows are not a source document.
+
+    The compatibility branch reads PACKET_STORE via get_payload. Positive
+    matched/gap/unmatched counts with empty or missing row lists must return
+    PACKET_GRANT_MISSING_SOURCE and must not insert a snapshot.
+    """
+    _test_stripe_env(monkeypatch)
+    analysis_id = "analysis-legacy-counts-only"
+    user = "test-user-123"
+    analysis = deepcopy({**LOT_MATCH_ANALYSIS, "analysis_id": analysis_id})
+    report = analysis["lot_match_report"]
+    assert report["matched_count"] > 0
+    assert report["gap_count"] > 0
+    assert report["unmatched_count"] > 0
+    if row_lists == "missing":
+        for key in ("matched", "gap", "unmatched"):
+            report.pop(key, None)
+    else:
+        report["matched"] = []
+        report["gap"] = []
+        report["unmatched"] = []
+    remember_analysis(analysis_id, user, analysis)
+    stored = get_payload(analysis_id)
+    assert stored is not None
+    assert stored["lot_match_report"]["matched_count"] == report["matched_count"]
+    assert stored["lot_match_report"]["gap_count"] == report["gap_count"]
+    assert stored["lot_match_report"]["unmatched_count"] == report["unmatched_count"]
+    assert packet_payload_rows_match_counts(stored) is False
+    record, record_ok = main.lookup_analysis_for_entitlement(analysis_id, user)
+    assert record_ok is True and record
+    snapshot, snapshot_ok = main.get_packet_snapshot(analysis_id, user, tax_year=2024)
+    assert snapshot_ok is True and snapshot is None
+
+    save_calls = []
+    original_save = main.save_packet_snapshot
+
+    def recording_save(*args, **kwargs):
+        save_calls.append((args, kwargs))
+        return original_save(*args, **kwargs)
+
+    monkeypatch.setattr(main, "save_packet_snapshot", recording_save)
+    session = _stripe_object_session(
+        id="cs_legacy_counts_only",
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": analysis_id,
+            "user_id": user,
+            "tax_year": "2024",
+        },
+    )
+
+    granted = main._persist_packet_grant(session, analysis_id, user)
+
+    assert granted == main.PACKET_GRANT_MISSING_SOURCE
+    assert save_calls == []
+    assert (user, analysis_id) not in _FAKE_PACKET_SNAPSHOTS
+    assert PACKET_STORE[analysis_id]["paid"] is not True
+
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda *_args, **_kwargs: session,
+    )
+    confirm = client.post(
+        "/api/year-close-packet/confirm",
+        json={"session_id": session.id, "analysis_id": analysis_id},
+    )
+    assert confirm.status_code == 409, confirm.text
+    assert confirm.json()["detail"] == main.PACKET_MISSING_SOURCE_DETAIL
+    assert save_calls == []
+    assert (user, analysis_id) not in _FAKE_PACKET_SNAPSHOTS
+
+
+@pytest.mark.parametrize("payload", [[], None, "counts-only"])
+def test_packet_payload_rows_match_counts_rejects_non_dict(payload):
+    assert packet_payload_rows_match_counts(payload) is False
+
+
+@pytest.mark.parametrize(
+    "count_key,list_key",
+    [
+        ("matched_count", "matched"),
+        ("gap_count", "gap"),
+        ("unmatched_count", "unmatched"),
+    ],
+)
+def test_packet_payload_rows_match_counts_rejects_bool_count(count_key, list_key):
+    """True is an int, but a bool count is rejected before the row-length check."""
+    payload = {
+        "lot_match_report": {
+            count_key: True,
+            list_key: [{"symbol": "AMD"}],
+        }
+    }
+    assert packet_payload_rows_match_counts(payload) is False
+
+
+@pytest.mark.parametrize("rows", [{"symbol": "AMD"}, "AMD"])
+@pytest.mark.parametrize(
+    "count_key,list_key",
+    [
+        ("matched_count", "matched"),
+        ("gap_count", "gap"),
+        ("unmatched_count", "unmatched"),
+    ],
+)
+def test_packet_payload_rows_match_counts_rejects_non_list_rows(
+    count_key, list_key, rows
+):
+    payload = {
+        "lot_match_report": {
+            count_key: 1,
+            list_key: rows,
+        }
+    }
+    assert packet_payload_rows_match_counts(payload) is False
+
+
+@pytest.mark.parametrize("count", ["3", 1.5])
+def test_packet_payload_rows_match_counts_skips_non_int_count(count):
+    """A non-int count is ignored, including when its rows would otherwise fail."""
+    payload = {
+        "lot_match_report": {
+            "matched_count": count,
+            "matched": "not-a-list",
+            "gap_count": count,
+            "gap": {"symbol": "NVDA"},
+            "unmatched_count": count,
+            "unmatched": "SPX",
+        }
+    }
+    assert packet_payload_rows_match_counts(payload) is True
