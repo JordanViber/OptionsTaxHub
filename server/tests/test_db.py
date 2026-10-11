@@ -674,11 +674,8 @@ class TestPatchAnalysisResult:
             "00000000-0000-4000-8000-000000000001", "user1", {"packet_unlocked": True}
         ) is False
         builder.select.return_value.eq.assert_any_call("user_id", "user1")
-        builder.select.return_value.eq.return_value.filter.assert_any_call(
+        builder.select.return_value.eq.return_value.filter.assert_called_once_with(
             "result->>analysis_id", "eq", "00000000-0000-4000-8000-000000000001"
-        )
-        builder.select.return_value.eq.return_value.filter.assert_any_call(
-            "result->>analysis_id", "ilike", "00000000-0000-4000-8000-000000000001"
         )
         builder.select.return_value.eq.return_value.filter.return_value.order.assert_any_call(
             "uploaded_at", desc=True
@@ -853,7 +850,6 @@ class TestEnsureAnalysisHistory:
         client = _ScriptedClient([
             [],
             [],
-            [],
             [{"canonical_analysis_id": canonical}],
             [row],
         ])
@@ -871,12 +867,12 @@ class TestEnsureAnalysisHistory:
             'relation "portfolio_analysis_id_aliases" does not exist'
         )
         missing.code = "42P01"
-        client = _ScriptedClient([[], [], [], missing])
+        client = _ScriptedClient([[], [], missing])
         monkeypatch.setattr(db, "get_supabase", lambda: client)
 
         assert db.lookup_analysis_for_entitlement(legacy, "user1") == (None, True)
 
-        again = _ScriptedClient([[], [], [], missing])
+        again = _ScriptedClient([[], [], missing])
         monkeypatch.setattr(db, "get_supabase", lambda: again)
         assert db.get_analysis_by_id(legacy, "user1") is None
 
@@ -884,7 +880,7 @@ class TestEnsureAnalysisHistory:
             "Could not find the table 'public.portfolio_analysis_id_aliases' in the schema cache"
         )
         cache_miss.code = "PGRST205"
-        cached = _ScriptedClient([[], [], [], cache_miss])
+        cached = _ScriptedClient([[], [], cache_miss])
         monkeypatch.setattr(db, "get_supabase", lambda: cached)
         assert db.lookup_analysis_for_entitlement(legacy, "user1") == (None, False)
 
@@ -902,13 +898,13 @@ class TestEnsureAnalysisHistory:
         )
         other_table.code = "PGRST205"
         for error in (unnamed, column, other_table):
-            client = _ScriptedClient([[], [], [], error])
+            client = _ScriptedClient([[], [], error])
             monkeypatch.setattr(db, "get_supabase", lambda client=client: client)
             assert db.lookup_analysis_for_entitlement(legacy, "user1") == (None, False)
 
     def test_alias_outage_is_not_a_miss_for_entitlement_lookup(self, monkeypatch):
         legacy = "11111111-1111-4111-8111-111111111111"
-        client = _ScriptedClient([[], [], [], Exception("timeout")])
+        client = _ScriptedClient([[], [], Exception("timeout")])
         monkeypatch.setattr(db, "get_supabase", lambda: client)
 
         assert db.lookup_analysis_for_entitlement(legacy, "user1") == (None, False)
@@ -1497,33 +1493,12 @@ class TestPacketSnapshots:
         assert snapshot["packet_payload"] == {"report": "private"}
         calls = [call for builder in client.builders for call in builder.calls]
         assert ("eq", ("analysis_id", canonical), {}) in calls
-        assert any(
+        assert not any(
             call[0] == "filter" and call[1][1] == "ilike" for call in calls
         )
 
-    def test_packet_snapshot_read_falls_back_when_canonical_eq_misses(self, monkeypatch):
-        stored = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
-        row = {
-            "analysis_id": stored,
-            "user_id": "user1",
-            "tax_year": 2025,
-            "packet_payload": {"report": "legacy"},
-            "packet_session_id": "cs_legacy",
-            "paid_at": "2026-01-01T00:00:00+00:00",
-            "expires_at": None,
-        }
-        client = _OrderingSnapshotClient([row])
-        monkeypatch.setattr(db, "get_supabase", lambda: client)
-
-        snapshot, lookup_succeeded = db.get_packet_snapshot(stored.lower(), "user1")
-
-        assert lookup_succeeded is True
-        assert snapshot["analysis_id"] == stored
-        assert snapshot["packet_payload"] == {"report": "legacy"}
-        assert len(client.orders) == 6
-
-    def test_snapshot_update_keeps_stored_uuid_spelling(self, monkeypatch):
-        stored = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
+    def test_snapshot_update_keeps_stored_analysis_id(self, monkeypatch):
+        stored = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
         existing = {
             "analysis_id": stored,
             "user_id": "user1",
@@ -1537,7 +1512,7 @@ class TestPacketSnapshots:
         monkeypatch.setattr(db, "get_supabase", lambda: client)
 
         saved = db.save_packet_snapshot(
-            stored.lower(),
+            stored.upper(),
             "user1",
             2025,
             {"report": "refreshed"},
@@ -1581,9 +1556,6 @@ class TestPacketSnapshots:
             ("paid_at", {"desc": True, "nullsfirst": False}),
             ("expires_at", {"desc": True, "nullsfirst": False}),
             ("analysis_id", {}),
-            ("paid_at", {"desc": True, "nullsfirst": False}),
-            ("expires_at", {"desc": True, "nullsfirst": False}),
-            ("analysis_id", {}),
         ]
 
         save_client = _OrderingSnapshotClient([paid])
@@ -1598,58 +1570,10 @@ class TestPacketSnapshots:
         assert save_client.updates == []
         assert save_client.inserts == []
 
-    def test_unpaid_snapshot_update_changes_only_the_selected_case_variant(self, monkeypatch):
-        stored = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
-        other = stored.lower()
-        selected = {
-            "analysis_id": stored,
-            "user_id": "user1",
-            "tax_year": 2025,
-            "packet_payload": {"report": "selected"},
-            "packet_session_id": None,
-            "paid_at": None,
-            "expires_at": "2099-12-01T00:00:00+00:00",
-        }
-        untouched = {
-            "analysis_id": other,
-            "user_id": "user1",
-            "tax_year": 2024,
-            "packet_payload": {"report": "other-year"},
-            "packet_session_id": None,
-            "paid_at": None,
-            "expires_at": "2099-01-01T00:00:00+00:00",
-        }
-        client = _ApplyingSnapshotClient([untouched, selected])
-        monkeypatch.setattr(db, "get_supabase", lambda: client)
-
-        saved = db.save_packet_snapshot(
-            other,
-            "user1",
-            2025,
-            {"report": "updated"},
-        )
-
-        assert saved["analysis_id"] == stored
-        assert client.row(stored)["packet_payload"] == {"report": "updated"}
-        assert client.row(stored)["tax_year"] == 2025
-        assert client.row(other)["packet_payload"] == {"report": "other-year"}
-        assert client.row(other)["tax_year"] == 2024
-        assert client.row(other)["analysis_id"] == other
-
-    def test_paid_payload_repair_does_not_overwrite_the_other_spelling(self, monkeypatch):
-        stored = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
-        other = stored.lower()
-        selected = {
-            "analysis_id": stored,
-            "user_id": "user1",
-            "tax_year": 2025,
-            "packet_payload": None,
-            "packet_session_id": "cs_selected",
-            "paid_at": "2026-02-01T00:00:00+00:00",
-            "expires_at": None,
-        }
-        untouched = {
-            "analysis_id": other,
+    def test_paid_other_year_blocks_payload_repair(self, monkeypatch):
+        canonical = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        paid = {
+            "analysis_id": canonical,
             "user_id": "user1",
             "tax_year": 2024,
             "packet_payload": None,
@@ -1657,28 +1581,26 @@ class TestPacketSnapshots:
             "paid_at": "2026-01-01T00:00:00+00:00",
             "expires_at": None,
         }
-        client = _ApplyingSnapshotClient([untouched, selected])
+        client = _ApplyingSnapshotClient([paid])
         monkeypatch.setattr(db, "get_supabase", lambda: client)
 
         with pytest.raises(db.PacketSnapshotYearConflict):
             db.save_packet_snapshot(
-                other,
+                canonical.upper(),
                 "user1",
                 2025,
                 {"report": "repaired"},
             )
 
-        assert client.row(stored)["packet_payload"] is None
-        assert client.row(stored)["packet_session_id"] == "cs_selected"
-        assert client.row(other)["packet_payload"] is None
-        assert client.row(other)["packet_session_id"] == "cs_other"
-        assert client.row(other)["paid_at"] == "2026-01-01T00:00:00+00:00"
+        assert client.row(canonical)["packet_payload"] is None
+        assert client.row(canonical)["packet_session_id"] == "cs_other"
+        assert client.row(canonical)["paid_at"] == "2026-01-01T00:00:00+00:00"
+        assert client.row(canonical)["tax_year"] == 2024
 
     def test_mark_packet_snapshot_paid_does_not_restamp_paid_row(self, monkeypatch):
-        stored = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
-        other = stored.lower()
+        canonical = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
         paid = {
-            "analysis_id": stored,
+            "analysis_id": canonical,
             "user_id": "user1",
             "tax_year": 2025,
             "packet_payload": {"report": "paid"},
@@ -1686,45 +1608,31 @@ class TestPacketSnapshots:
             "paid_at": "2026-01-01T00:00:00+00:00",
             "expires_at": None,
         }
-        unpaid = {
-            "analysis_id": other,
-            "user_id": "user1",
-            "tax_year": 2024,
-            "packet_payload": {"report": "unpaid"},
-            "packet_session_id": None,
-            "paid_at": None,
-            "expires_at": "2099-01-01T00:00:00+00:00",
-        }
-        client = _ApplyingSnapshotClient([unpaid, paid])
+        client = _ApplyingSnapshotClient([paid])
         monkeypatch.setattr(db, "get_supabase", lambda: client)
 
         assert db.mark_packet_snapshot_paid(
-            other, "user1", 2025, "cs_original"
+            canonical.upper(), "user1", 2025, "cs_original"
         ) is True
-        assert client.row(stored)["packet_session_id"] == "cs_original"
-        assert client.row(stored)["paid_at"] == "2026-01-01T00:00:00+00:00"
-        assert client.row(other)["paid_at"] is None
-        assert client.row(other)["packet_session_id"] is None
+        assert client.row(canonical)["packet_session_id"] == "cs_original"
+        assert client.row(canonical)["paid_at"] == "2026-01-01T00:00:00+00:00"
         assert client.entitlements == []
 
         assert db.mark_packet_snapshot_paid(
-            other, "user1", 2025, "cs_restamp"
+            canonical, "user1", 2025, "cs_restamp"
         ) == db.PACKET_GRANT_SAME_YEAR_DUPLICATE
-        assert client.row(stored)["packet_session_id"] == "cs_original"
-        assert client.row(stored)["paid_at"] == "2026-01-01T00:00:00+00:00"
-        assert client.row(other)["paid_at"] is None
+        assert client.row(canonical)["packet_session_id"] == "cs_original"
+        assert client.row(canonical)["paid_at"] == "2026-01-01T00:00:00+00:00"
         assert len(client.entitlements) == 1
-        assert client.entitlements[0]["analysis_id"] == f"conflict:{other}"
+        assert client.entitlements[0]["analysis_id"] == f"conflict:{canonical}"
         assert client.entitlements[0]["packet_session_id"] == "cs_restamp"
         assert client.entitlements[0]["tax_year"] == 2025
 
         with pytest.raises(db.PacketSnapshotYearConflict):
-            db.mark_packet_snapshot_paid(stored, "user1", 2024, "cs_new")
-        assert client.row(other)["paid_at"] is None
-        assert client.row(other)["packet_session_id"] is None
-        assert client.row(other)["analysis_id"] == other
-        assert client.row(stored)["packet_session_id"] == "cs_original"
-        assert client.row(stored)["paid_at"] == "2026-01-01T00:00:00+00:00"
+            db.mark_packet_snapshot_paid(canonical, "user1", 2024, "cs_new")
+        assert client.row(canonical)["packet_session_id"] == "cs_original"
+        assert client.row(canonical)["paid_at"] == "2026-01-01T00:00:00+00:00"
+        assert client.row(canonical)["tax_year"] == 2025
 
     def test_get_packet_snapshot_skips_paid_other_year_case_variant(self, monkeypatch):
         canonical = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
@@ -1753,7 +1661,7 @@ class TestPacketSnapshots:
         assert client.row(canonical)["paid_at"] == "2026-03-01T00:00:00+00:00"
 
     def test_mark_packet_snapshot_paid_matches_uuid_case_variant(self, monkeypatch):
-        stored = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
+        stored = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
         client = _FakeClient(table_data=[{
             "analysis_id": stored,
             "user_id": "user1",
@@ -1763,11 +1671,11 @@ class TestPacketSnapshots:
         monkeypatch.setattr(db, "get_supabase", lambda: client)
 
         assert db.mark_packet_snapshot_paid(
-            stored.lower(), "user1", 2025, "cs_case"
+            stored.upper(), "user1", 2025, "cs_case"
         ) is True
         read_calls = [call for builder in client.builders for call in builder.calls]
-        assert ("eq", ("analysis_id", stored.lower()), {}) in read_calls
-        assert any(
+        assert ("eq", ("analysis_id", stored), {}) in read_calls
+        assert not any(
             call[0] == "filter" and call[1][1] == "ilike" for call in read_calls
         )
         update_builder = next(
@@ -2327,33 +2235,14 @@ class TestCrossUserGuestAnalysisId:
             )
         assert len(store.rows) == 1
         assert store.rows[0]["result"]["analysis_id"] == canonical
-
-        preexisting = _SharedGuestHistory()
-        preexisting.rows.append({
-            "id": "99999999-9999-4999-8999-999999999999",
-            "user_id": "user-a",
-            "result": {"analysis_id": upper, "positions": []},
-        })
-        monkeypatch.setattr(db, "get_supabase", lambda: preexisting)
-        with pytest.raises(db.HistoryInsertConflict):
-            db.save_analysis_history(
-                "user-a",
-                "guest.csv",
-                {"positions_count": 1},
-                result_data={"analysis_id": canonical, "positions": [{"symbol": "AAPL"}]},
-            )
-        assert len(preexisting.rows) == 1
-        assert preexisting.attempted == []
-        assert preexisting.rows[0]["id"] == "99999999-9999-4999-8999-999999999999"
-        assert preexisting.rows[0]["result"]["analysis_id"] == upper
         found, ok = db.lookup_analysis_for_entitlement(canonical, "user-a")
         assert ok is True
-        assert found["id"] == "99999999-9999-4999-8999-999999999999"
-        assert found["result"]["analysis_id"] == upper
+        assert found["id"] == canonical
+        assert found["result"]["analysis_id"] == canonical
         found_upper, ok_upper = db.lookup_analysis_for_entitlement(upper, "user-a")
         assert ok_upper is True
-        assert found_upper["id"] == found["id"]
-        assert found_upper["result"]["analysis_id"] == upper
+        assert found_upper["id"] == canonical
+        assert found_upper["result"]["analysis_id"] == canonical
 
     def test_case_check_attribute_error_does_not_insert(self, monkeypatch):
         class _NoFilter:
@@ -2877,7 +2766,7 @@ def test_ensure_analysis_history_matches_both_spellings(monkeypatch):
     assert swapped["analysis_id"] == canonical
 
 
-def test_merged_spelling_read_prefers_paid_upper_same_year(monkeypatch):
+def test_snapshot_read_prefers_paid_row_same_year(monkeypatch):
     canonical = _LETTERED
     unpaid = {
         "analysis_id": canonical,
@@ -2889,7 +2778,7 @@ def test_merged_spelling_read_prefers_paid_upper_same_year(monkeypatch):
         "expires_at": "2099-01-01T00:00:00+00:00",
     }
     paid = {
-        "analysis_id": canonical.upper(),
+        "analysis_id": canonical,
         "user_id": "user1",
         "tax_year": 2025,
         "packet_payload": {"marker": "paid"},
@@ -2899,39 +2788,30 @@ def test_merged_spelling_read_prefers_paid_upper_same_year(monkeypatch):
     }
     client = _ApplyingSnapshotClient([unpaid, paid])
     monkeypatch.setattr(db, "get_supabase", lambda: client)
-    snapshot, ok = db.get_packet_snapshot(canonical, "user1", tax_year=2025)
+    snapshot, ok = db.get_packet_snapshot(canonical.upper(), "user1", tax_year=2025)
     assert ok is True
-    assert snapshot["analysis_id"] == canonical.upper()
+    assert snapshot["analysis_id"] == canonical
     assert snapshot["packet_session_id"] == "cs_real"
     assert snapshot["packet_payload"]["marker"] == "paid"
-    assert client.row(canonical)["paid_at"] is None
+    assert client.rows[0]["paid_at"] is None
 
 
-def _two_year_spellings(canonical, *, first_paid):
-    """first_paid True: canonical unpaid 2026 and UPPER paid 2025.
-
-    False: UPPER unpaid 2026 and canonical paid 2025.
-    """
-    if first_paid:
-        unpaid_id, unpaid_year = canonical, 2026
-        paid_id, paid_year = canonical.upper(), 2025
-    else:
-        unpaid_id, unpaid_year = canonical.upper(), 2026
-        paid_id, paid_year = canonical, 2025
+def _canonical_two_year_rows(canonical):
+    """Unpaid 2026 and paid 2025, both stored under the canonical id."""
     return [
         {
-            "analysis_id": unpaid_id,
+            "analysis_id": canonical,
             "user_id": "user1",
-            "tax_year": unpaid_year,
+            "tax_year": 2026,
             "packet_payload": {"marker": "unpaid"},
             "packet_session_id": None,
             "paid_at": None,
             "expires_at": "2099-01-01T00:00:00+00:00",
         },
         {
-            "analysis_id": paid_id,
+            "analysis_id": canonical,
             "user_id": "user1",
-            "tax_year": paid_year,
+            "tax_year": 2025,
             "packet_payload": {"marker": "paid"},
             "packet_session_id": "cs_paid",
             "paid_at": "2026-01-01T00:00:00+00:00",
@@ -2940,19 +2820,9 @@ def _two_year_spellings(canonical, *, first_paid):
     ]
 
 
-def test_save_conflicts_canonical_unpaid_2026_upper_paid_2025(monkeypatch):
+def test_save_conflicts_when_canonical_paid_row_is_another_year(monkeypatch):
     canonical = _LETTERED
-    client = _ApplyingSnapshotClient(_two_year_spellings(canonical, first_paid=True))
-    monkeypatch.setattr(db, "get_supabase", lambda: client)
-    before = [dict(row) for row in client.rows]
-    with pytest.raises(db.PacketSnapshotYearConflict):
-        db.save_packet_snapshot(canonical, "user1", 2026, {"marker": "new"})
-    assert client.rows == before
-
-
-def test_save_conflicts_upper_unpaid_2026_canonical_paid_2025(monkeypatch):
-    canonical = _LETTERED
-    client = _ApplyingSnapshotClient(_two_year_spellings(canonical, first_paid=False))
+    client = _ApplyingSnapshotClient(_canonical_two_year_rows(canonical))
     monkeypatch.setattr(db, "get_supabase", lambda: client)
     before = [dict(row) for row in client.rows]
     with pytest.raises(db.PacketSnapshotYearConflict):
@@ -2960,16 +2830,15 @@ def test_save_conflicts_upper_unpaid_2026_canonical_paid_2025(monkeypatch):
     assert client.rows == before
 
 
-def test_mark_paid_conflicts_both_spelling_orders(monkeypatch):
+def test_mark_paid_conflicts_when_canonical_paid_row_is_another_year(monkeypatch):
     canonical = _LETTERED
-    for first_paid in (True, False):
-        client = _ApplyingSnapshotClient(_two_year_spellings(canonical, first_paid=first_paid))
-        monkeypatch.setattr(db, "get_supabase", lambda: client)
-        before = [dict(row) for row in client.rows]
-        with pytest.raises(db.PacketSnapshotYearConflict):
-            db.mark_packet_snapshot_paid(canonical, "user1", 2026, "cs_new")
-        assert client.rows == before
-        assert client.entitlements == []
+    client = _ApplyingSnapshotClient(list(reversed(_canonical_two_year_rows(canonical))))
+    monkeypatch.setattr(db, "get_supabase", lambda: client)
+    before = [dict(row) for row in client.rows]
+    with pytest.raises(db.PacketSnapshotYearConflict):
+        db.mark_packet_snapshot_paid(canonical, "user1", 2026, "cs_new")
+    assert client.rows == before
+    assert client.entitlements == []
 
 
 def test_conflict_receipt_does_not_grant_and_is_idempotent(monkeypatch):
@@ -3278,9 +3147,9 @@ def test_history_precheck_non_list_exact_returns_none(monkeypatch):
         assert client.inserts == []
 
 
-def test_history_precheck_non_list_ilike_returns_none(monkeypatch):
+def test_history_precheck_exact_miss_inserts(monkeypatch):
     canonical = _LETTERED
-    client = _HistoryPrecheckClient([], ilike_data=None)
+    client = _HistoryPrecheckClient([])
     monkeypatch.setattr(db, "get_supabase", lambda: client)
     saved = db.save_analysis_history(
         "user1",
@@ -3288,31 +3157,12 @@ def test_history_precheck_non_list_ilike_returns_none(monkeypatch):
         {"positions_count": 1},
         result_data={"analysis_id": canonical, "positions": []},
     )
-    assert saved is None
-    assert client.inserts == []
-    assert "ilike" in client.operators
-
-
-def test_history_precheck_helper_false_still_runs_ilike(monkeypatch):
-    canonical = _LETTERED
-    client = _HistoryPrecheckClient(
-        [{"id": "echo-only"}],
-        ilike_data=[{
-            "id": "stored-row",
-            "user_id": "user1",
-            "result": {"analysis_id": canonical.upper()},
-        }],
-    )
-    monkeypatch.setattr(db, "get_supabase", lambda: client)
-    with pytest.raises(db.HistoryInsertConflict):
-        db.save_analysis_history(
-            "user1",
-            "upload.csv",
-            {"positions_count": 1},
-            result_data={"analysis_id": canonical.upper(), "positions": []},
-        )
-    assert client.inserts == []
-    assert "ilike" in client.operators
+    assert saved == {"id": "inserted"}
+    assert len(client.inserts) == 1
+    assert client.inserts[0]["id"] == canonical
+    assert client.inserts[0]["result"]["analysis_id"] == canonical
+    assert "ilike" not in client.operators
+    assert client.operators == ["eq"]
 
 
 def test_save_packet_entitlement_refuses_conflict_prefix(monkeypatch):
