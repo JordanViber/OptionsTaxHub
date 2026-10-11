@@ -645,7 +645,7 @@ describe("YearClosePacketPanel", () => {
     expect(store["optionstaxhub-packet-pending:analysis-1"]).toBe("cs_test_open");
   });
 
-  it("retains the paid checkout receipt when its source document is missing", async () => {
+  it("stops polling confirm when the paid source document is missing", async () => {
     store["optionstaxhub-packet-pending:analysis-1"] = "cs_test_paid_missing_source";
     window.history.replaceState(
       null,
@@ -667,10 +667,49 @@ describe("YearClosePacketPanel", () => {
     await waitFor(() =>
       expect(screen.getByRole("alert")).toHaveTextContent("source document"),
     );
-    expect(window.location.search).toContain("packet_session=cs_test_paid_missing_source");
-    expect(store["optionstaxhub-packet-pending:analysis-1"]).toBe(
-      "cs_test_paid_missing_source",
+    expect(window.location.search).not.toContain("packet_session");
+    expect(store["optionstaxhub-packet-pending-confirm:analysis-1"]).toBeUndefined();
+    expect(store["optionstaxhub-packet-pending:analysis-1"]).toBeUndefined();
+  });
+
+  it("stops confirming when the source document is missing", async () => {
+    const detail =
+      "Payment was received, but this analysis has no source document. Run a new analysis for this tax year.";
+    window.history.replaceState(
+      null,
+      "",
+      "/dashboard?packet_session=cs_test_missing_source&packet_analysis=analysis-1",
     );
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        json: () => Promise.resolve({ detail }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            checkout_url: "https://checkout.stripe.com/c/pay/cs_test_new",
+            session_id: "cs_test_new",
+          }),
+      });
+
+    render(<YearClosePacketPanel analysis={analysis} />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(detail);
+    });
+    expect(window.location.search).not.toContain("packet_session");
+    expect(store["optionstaxhub-packet-pending-confirm:analysis-1"]).toBeUndefined();
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: /Pay \$49/i }));
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));
+    expect(String(mockFetch.mock.calls[1][0])).toContain(
+      "/api/year-close-packet/checkout",
+    );
+    expect(String(mockFetch.mock.calls[1][0])).not.toContain("/confirm");
   });
 
   it("does not confirm a return URL for a different analysis", async () => {

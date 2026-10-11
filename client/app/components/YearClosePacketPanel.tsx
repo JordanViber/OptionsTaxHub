@@ -317,10 +317,13 @@ function YearClosePacketPanelForAnalysis({
         const errData = await response.json().catch(() => null);
         const detail = String(errData?.detail || "");
         checkoutStillOpen = response.status === 409 && /still open/i.test(detail);
+        // PACKET_MISSING_SOURCE_DETAIL is terminal. Pay must not poll confirm.
+        const missingSource =
+          response.status === 409 &&
+          /payment was received/i.test(detail) &&
+          /no source document/i.test(detail);
         retryableFailure =
-          response.status >= 500 ||
-          checkoutStillOpen ||
-          (response.status === 409 && /payment was received/i.test(detail));
+          !missingSource && (response.status >= 500 || checkoutStillOpen);
         throw new Error(errData?.detail || "Could not confirm packet payment.");
       }
       const confirmData = await response.json();

@@ -2642,9 +2642,25 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
         if isinstance(packet_payload, dict) and not packet_payload_rows_match_counts(
             packet_payload
         ):
-            # Counts without lot rows are the redacted teaser, not a packet.
-            # Leave the row unpaid. The missing-source path keeps the receipt.
-            packet_payload = None
+            # A counts-only teaser is not a packet. An unpaid row can still take
+            # this worker's owned full copy. A null payload is not this branch
+            # and is never refilled from PACKET_STORE. A paid dict is not replaced.
+            memory_payload = (
+                get_payload(session_analysis_id) if cache_belongs_to_user else None
+            )
+            if (
+                not snapshot.get("paid_at")
+                and isinstance(memory_payload, dict)
+                and packet_payload_rows_match_counts(memory_payload)
+            ):
+                saved_snapshot = _save_grant_snapshot(memory_payload)
+                if saved_snapshot is True or saved_snapshot == PACKET_GRANT_YEAR_CONFLICT:
+                    return saved_snapshot
+                if not saved_snapshot:
+                    return None
+                packet_payload = memory_payload
+            else:
+                packet_payload = None
     else:
         # Compatibility for sessions created before private snapshots existed.
         record, record_lookup_succeeded = lookup_analysis_for_entitlement(
@@ -3559,14 +3575,15 @@ async def create_year_close_packet_checkout(
                 status_code=503,
                 detail="Could not load the saved packet snapshot. Please retry.",
             )
-    if (
-        isinstance(durable_snapshot, dict)
-        and durable_snapshot.get("paid_at")
-        and not isinstance(durable_snapshot.get("packet_payload"), dict)
-    ):
-        # A cleared paid row is a deleted source. Do not rebuild it from
-        # PACKET_STORE or the guest body and report already_paid.
-        raise HTTPException(status_code=409, detail=PACKET_MISSING_SOURCE_DETAIL)
+    if isinstance(durable_snapshot, dict) and durable_snapshot.get("paid_at"):
+        paid_payload = durable_snapshot.get("packet_payload")
+        if (
+            not isinstance(paid_payload, dict)
+            or not packet_payload_rows_match_counts(paid_payload)
+        ):
+            # A cleared or counts-only paid row is not a source document.
+            # Do not rebuild it from PACKET_STORE and do not call it expired.
+            raise HTTPException(status_code=409, detail=PACKET_MISSING_SOURCE_DETAIL)
     packet_snapshot = (
         durable_snapshot.get("packet_payload")
         if isinstance(durable_snapshot, dict)
@@ -3578,10 +3595,19 @@ async def create_year_close_packet_checkout(
         analysis_id, user_id
     ):
         packet_snapshot = get_payload(analysis_id)
-    if isinstance(packet_snapshot, dict) and not packet_payload_rows_match_counts(
-        packet_snapshot
+    if (
+        isinstance(durable_snapshot, dict)
+        and not durable_snapshot.get("paid_at")
+        and isinstance(durable_snapshot.get("packet_payload"), dict)
+        and not packet_payload_rows_match_counts(durable_snapshot.get("packet_payload"))
+        and packet_store_belongs_to_user(analysis_id, user_id)
     ):
-        raise HTTPException(status_code=409, detail=PACKET_SNAPSHOT_EXPIRED_DETAIL)
+        memory_payload = get_payload(analysis_id)
+        if isinstance(memory_payload, dict) and packet_payload_rows_match_counts(
+            memory_payload
+        ):
+            # The unpaid save below overwrites the teaser with this full copy.
+            packet_snapshot = memory_payload
     tax_year = scoped_tax_year
     if tax_year is None:
         raise HTTPException(status_code=409, detail=PACKET_SNAPSHOT_EXPIRED_DETAIL)
@@ -3637,14 +3663,14 @@ async def create_year_close_packet_checkout(
                 )
             existing_session_id = entitlement["packet_session_id"]
     if existing_session_id:
-        if not isinstance(packet_snapshot, dict):
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "Payment was received, but this analysis has no source document. "
-                    "Run a new analysis for this tax year."
-                ),
-            )
+        if (
+            not isinstance(packet_snapshot, dict)
+            or not packet_payload_rows_match_counts(packet_snapshot)
+        ):
+            # Year entitlement is known before the counts-only 409 below, so a
+            # paid user is not told the snapshot expired. An unsellable copy
+            # is still not stored as the paid packet.
+            raise HTTPException(status_code=409, detail=PACKET_MISSING_SOURCE_DETAIL)
         paid_same_year = False
         if isinstance(durable_snapshot, dict) and durable_snapshot.get("paid_at"):
             try:
@@ -3726,7 +3752,10 @@ async def create_year_close_packet_checkout(
             "product": PACKET_PRODUCT_NAME,
             "amount": PACKET_AMOUNT_CENTS,
         }
-    if not isinstance(packet_snapshot, dict):
+    if (
+        not isinstance(packet_snapshot, dict)
+        or not packet_payload_rows_match_counts(packet_snapshot)
+    ):
         raise HTTPException(status_code=409, detail=PACKET_SNAPSHOT_EXPIRED_DETAIL)
     _checkout_blocks_before_snapshot_save(
         analysis_id,
@@ -4316,7 +4345,8 @@ async def download_year_close_packet_get(
         content=pdf_bytes,
         media_type="application/pdf",
         headers={
-            "Content-Disposition": 'attachment; filename="year-close-packet.pdf"'
+            "Content-Disposition": 'attachment; filename="year-close-packet.pdf"',
+            "Cache-Control": "private, no-store",
         },
     )
 

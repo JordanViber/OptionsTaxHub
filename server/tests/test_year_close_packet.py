@@ -9226,6 +9226,276 @@ def test_existing_counts_only_unpaid_snapshot_is_missing_source(monkeypatch):
     assert _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)]["paid_at"] is None
     assert _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)]["packet_payload"] == counts_only
 
+    downloaded = client.post(
+        "/api/year-close-packet/download",
+        json={
+            "analysis_id": analysis_id,
+            "session_id": session.id,
+            "analysis": counts_only,
+        },
+    )
+    assert downloaded.status_code == 403, downloaded.text
+    assert downloaded.json()["detail"] == "Year-close packet download requires payment."
+    assert not downloaded.content.startswith(b"%PDF")
+    assert _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)]["paid_at"] is None
+    assert _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)]["packet_payload"] == counts_only
+
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "create",
+        lambda **_kwargs: pytest.fail("must not open Stripe"),
+    )
+    retry_checkout = client.post(
+        "/api/year-close-packet/checkout",
+        json={"analysis_id": analysis_id, "analysis": counts_only},
+    )
+    assert retry_checkout.status_code == 409, retry_checkout.text
+    assert retry_checkout.json()["detail"] == main.PACKET_MISSING_SOURCE_DETAIL
+    assert _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)]["paid_at"] is None
+    assert _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)]["packet_session_id"] is None
+    assert _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)]["packet_payload"] == counts_only
+
+
+def test_unpaid_teaser_grant_overwrites_from_owned_memory(monkeypatch):
+    """A counts-only unpaid row is replaced by the owned full PACKET_STORE payload.
+
+    A null row payload is not refilled, even when that memory copy passes.
+    """
+    _test_stripe_env(monkeypatch)
+    analysis_id = "analysis-teaser-memory-grant"
+    user = "test-user-123"
+    remember_analysis(analysis_id, user, {**LOT_MATCH_ANALYSIS, "analysis_id": analysis_id})
+    memory_payload = get_payload(analysis_id)
+    assert memory_payload is not None
+    assert packet_payload_rows_match_counts(memory_payload) is True
+    assert memory_payload["lot_match_report"]["matched"]
+    counts_only = _counts_only_from_full(memory_payload)
+    assert packet_payload_rows_match_counts(counts_only) is False
+    _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)] = {
+        "analysis_id": analysis_id,
+        "user_id": user,
+        "tax_year": 2024,
+        "packet_payload": counts_only,
+        "packet_session_id": None,
+        "paid_at": None,
+    }
+    session = _stripe_object_session(
+        id="cs_teaser_memory_grant",
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": analysis_id,
+            "user_id": user,
+            "tax_year": "2024",
+        },
+    )
+
+    granted = main._persist_packet_grant(session, analysis_id, user)
+
+    assert granted is True
+    row = _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)]
+    assert row["paid_at"]
+    assert row["packet_session_id"] == session.id
+    assert row["packet_payload"]["lot_match_report"]["matched"] == (
+        memory_payload["lot_match_report"]["matched"]
+    )
+    assert row["packet_payload"]["lot_match_report"]["gap"] == (
+        memory_payload["lot_match_report"]["gap"]
+    )
+    assert row["packet_payload"]["lot_match_report"]["unmatched"] == (
+        memory_payload["lot_match_report"]["unmatched"]
+    )
+    assert packet_payload_rows_match_counts(row["packet_payload"]) is True
+
+    _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)] = {
+        "analysis_id": analysis_id,
+        "user_id": user,
+        "tax_year": 2024,
+        "packet_payload": None,
+        "packet_session_id": None,
+        "paid_at": None,
+    }
+    refused = main._persist_packet_grant(session, analysis_id, user)
+    assert refused == main.PACKET_GRANT_MISSING_SOURCE
+    assert _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)]["packet_payload"] is None
+    assert _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)]["paid_at"] is None
+
+
+def test_checkout_overwrites_unpaid_teaser_from_owned_memory(monkeypatch):
+    """An unpaid counts-only row is replaced when owned memory passes the check."""
+    _test_stripe_env(monkeypatch)
+    analysis_id = "analysis-checkout-teaser-memory"
+    user = "test-user-123"
+    remember_analysis(analysis_id, user, {**LOT_MATCH_ANALYSIS, "analysis_id": analysis_id})
+    memory_payload = get_payload(analysis_id)
+    assert memory_payload is not None
+    assert packet_payload_rows_match_counts(memory_payload) is True
+    counts_only = _counts_only_from_full(memory_payload)
+    _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)] = {
+        "analysis_id": analysis_id,
+        "user_id": user,
+        "tax_year": 2024,
+        "packet_payload": counts_only,
+        "paid_at": None,
+    }
+    created = []
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "create",
+        lambda **kwargs: created.append(kwargs) or FakeCheckoutSession(**kwargs),
+    )
+
+    checkout = client.post(
+        "/api/year-close-packet/checkout",
+        json={"analysis_id": analysis_id, "analysis": counts_only},
+    )
+
+    assert checkout.status_code == 200, checkout.text
+    assert checkout.json()["checkout_url"]
+    assert created
+    stored = _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)]
+    assert stored["paid_at"] is None
+    assert stored["packet_payload"]["lot_match_report"]["matched"] == (
+        memory_payload["lot_match_report"]["matched"]
+    )
+    assert stored["packet_payload"]["lot_match_report"]["unmatched"] == (
+        memory_payload["lot_match_report"]["unmatched"]
+    )
+    assert packet_payload_rows_match_counts(stored["packet_payload"]) is True
+
+
+def test_checkout_year_entitlement_uses_memory_before_expired_detail(monkeypatch):
+    """A paid year with an unpaid teaser uses owned memory and returns already_paid."""
+    _test_stripe_env(monkeypatch)
+    analysis_id = "analysis-checkout-paid-memory"
+    user = "test-user-123"
+    remember_analysis(analysis_id, user, {**LOT_MATCH_ANALYSIS, "analysis_id": analysis_id})
+    memory_payload = get_payload(analysis_id)
+    counts_only = _counts_only_from_full(memory_payload)
+    _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)] = {
+        "analysis_id": analysis_id,
+        "user_id": user,
+        "tax_year": 2024,
+        "packet_payload": counts_only,
+        "paid_at": None,
+    }
+    _FAKE_PACKET_ENTITLEMENTS[(user, 2024, "cs_paid_year_memory")] = {
+        "analysis_id": analysis_id,
+        "user_id": user,
+        "tax_year": 2024,
+        "packet_session_id": "cs_paid_year_memory",
+    }
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda *_args, **_kwargs: _stripe_object_session(
+            id="cs_paid_year_memory",
+            metadata={
+                "product": PACKET_METADATA_PRODUCT,
+                "analysis_id": analysis_id,
+                "user_id": user,
+                "tax_year": "2024",
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "create",
+        lambda **_kwargs: pytest.fail("must not open Stripe"),
+    )
+
+    checkout = client.post(
+        "/api/year-close-packet/checkout",
+        json={"analysis_id": analysis_id, "analysis": counts_only},
+    )
+
+    assert checkout.status_code == 200, checkout.text
+    assert checkout.json()["already_paid"] is True
+    assert checkout.json()["session_id"] == "cs_paid_year_memory"
+    stored = _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)]
+    assert stored["paid_at"]
+    assert stored["packet_payload"]["lot_match_report"]["matched"] == (
+        memory_payload["lot_match_report"]["matched"]
+    )
+    assert packet_payload_rows_match_counts(stored["packet_payload"]) is True
+
+
+def test_checkout_paid_teaser_is_missing_source_not_expired(monkeypatch):
+    """A paid counts-only row is not rebuilt from memory and is not called expired."""
+    _test_stripe_env(monkeypatch)
+    analysis_id = "analysis-paid-teaser-checkout"
+    user = "test-user-123"
+    remember_analysis(analysis_id, user, {**LOT_MATCH_ANALYSIS, "analysis_id": analysis_id})
+    memory_payload = get_payload(analysis_id)
+    counts_only = _counts_only_from_full(memory_payload)
+    _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)] = {
+        "analysis_id": analysis_id,
+        "user_id": user,
+        "tax_year": 2024,
+        "packet_payload": deepcopy(counts_only),
+        "packet_session_id": "cs_paid_teaser",
+        "paid_at": "2026-09-30T00:00:00+00:00",
+    }
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "create",
+        lambda **_kwargs: pytest.fail("must not open Stripe"),
+    )
+
+    checkout = client.post(
+        "/api/year-close-packet/checkout",
+        json={"analysis_id": analysis_id, "analysis": counts_only},
+    )
+
+    assert checkout.status_code == 409, checkout.text
+    assert checkout.json()["detail"] == main.PACKET_MISSING_SOURCE_DETAIL
+    assert checkout.json()["detail"] != main.PACKET_SNAPSHOT_EXPIRED_DETAIL
+    stored = _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)]
+    assert stored["packet_payload"] == counts_only
+    assert stored["paid_at"] == "2026-09-30T00:00:00+00:00"
+    assert get_payload(analysis_id) == memory_payload
+
+
+def test_get_download_cache_control_is_private_no_store(monkeypatch):
+    """GET keeps session_id in the query and is not cacheable."""
+    _test_stripe_env(monkeypatch)
+    analysis_id = "analysis-cache-control"
+    user = "test-user-123"
+    payload = build_packet_payload(
+        {**SAMPLE_ANALYSIS, "analysis_id": analysis_id},
+        analysis_id=analysis_id,
+    )
+    session_id = "cs_test_cache"
+    _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)] = {
+        "analysis_id": analysis_id,
+        "user_id": user,
+        "tax_year": 2025,
+        "packet_payload": payload,
+        "packet_session_id": session_id,
+        "paid_at": "2026-09-30T00:00:00+00:00",
+    }
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda *_args, **_kwargs: _stripe_object_session(
+            id=session_id,
+            metadata={
+                "product": PACKET_METADATA_PRODUCT,
+                "analysis_id": analysis_id,
+                "user_id": user,
+                "tax_year": "2025",
+            },
+        ),
+    )
+
+    response = client.get(
+        "/api/year-close-packet/download",
+        params={"analysis_id": analysis_id, "session_id": session_id},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.headers["cache-control"] == "private, no-store"
+    assert f"session_id={session_id}" in str(response.request.url)
+
 
 @pytest.mark.parametrize("payload", [[], None, "counts-only"])
 def test_packet_payload_rows_match_counts_rejects_non_dict(payload):
