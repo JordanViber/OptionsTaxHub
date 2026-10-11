@@ -8974,11 +8974,8 @@ def test_compact_analysis_body_cannot_render_empty_paid_pdf(monkeypatch):
             "analysis": {**LOT_MATCH_ANALYSIS, "analysis_id": analysis_id},
         },
     )
-    assert downloaded.status_code == 503, downloaded.text
-    assert downloaded.json()["detail"] == (
-        "The private packet snapshot is unavailable. Re-run this analysis "
-        "to restore it, then download again."
-    )
+    assert downloaded.status_code == 409, downloaded.text
+    assert downloaded.json()["detail"] == main.PACKET_MISSING_SOURCE_DETAIL
     assert not downloaded.content.startswith(b"%PDF")
 
     _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)] = {
@@ -9162,6 +9159,74 @@ def test_legacy_no_row_grant_rejects_counts_only_packet_store(monkeypatch, row_l
     assert (user, analysis_id) not in _FAKE_PACKET_SNAPSHOTS
 
 
+def test_existing_counts_only_unpaid_snapshot_is_missing_source(monkeypatch):
+    """A stored unpaid teaser is not granted or marked paid.
+
+    PACKET_STORE is empty. Confirm is 409 PACKET_MISSING_SOURCE_DETAIL and
+    mark_packet_snapshot_paid is not called.
+    """
+    _test_stripe_env(monkeypatch)
+    analysis_id = "analysis-existing-counts-only"
+    user = "test-user-123"
+    full = build_packet_payload(
+        {**LOT_MATCH_ANALYSIS, "analysis_id": analysis_id},
+        analysis_id=analysis_id,
+    )
+    counts_only = _counts_only_from_full(full)
+    assert packet_payload_rows_match_counts(counts_only) is False
+    _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)] = {
+        "analysis_id": analysis_id,
+        "user_id": user,
+        "tax_year": 2024,
+        "packet_payload": counts_only,
+        "packet_session_id": None,
+        "paid_at": None,
+    }
+    reset_packet_store()
+    assert analysis_id not in PACKET_STORE
+
+    mark_calls = []
+
+    def recording_mark(*args, **kwargs):
+        mark_calls.append((args, kwargs))
+        raise AssertionError("mark_packet_snapshot_paid must not run")
+
+    monkeypatch.setattr(main, "mark_packet_snapshot_paid", recording_mark)
+    session = _stripe_object_session(
+        id="cs_existing_counts_only",
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": analysis_id,
+            "user_id": user,
+            "tax_year": "2024",
+        },
+    )
+
+    granted = main._persist_packet_grant(session, analysis_id, user)
+
+    assert granted == main.PACKET_GRANT_MISSING_SOURCE
+    assert mark_calls == []
+    row = _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)]
+    assert row["paid_at"] is None
+    assert row["packet_session_id"] is None
+    assert row["packet_payload"] == counts_only
+
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda *_args, **_kwargs: session,
+    )
+    confirm = client.post(
+        "/api/year-close-packet/confirm",
+        json={"session_id": session.id, "analysis_id": analysis_id},
+    )
+    assert confirm.status_code == 409, confirm.text
+    assert confirm.json()["detail"] == main.PACKET_MISSING_SOURCE_DETAIL
+    assert mark_calls == []
+    assert _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)]["paid_at"] is None
+    assert _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)]["packet_payload"] == counts_only
+
+
 @pytest.mark.parametrize("payload", [[], None, "counts-only"])
 def test_packet_payload_rows_match_counts_rejects_non_dict(payload):
     assert packet_payload_rows_match_counts(payload) is False
@@ -9208,8 +9273,8 @@ def test_packet_payload_rows_match_counts_rejects_non_list_rows(
 
 
 @pytest.mark.parametrize("count", ["3", 1.5])
-def test_packet_payload_rows_match_counts_skips_non_int_count(count):
-    """A non-int count is ignored, including when its rows would otherwise fail."""
+def test_packet_payload_rows_match_counts_rejects_non_int_count(count):
+    """A present string or float count is not a sellable packet."""
     payload = {
         "lot_match_report": {
             "matched_count": count,
@@ -9218,6 +9283,33 @@ def test_packet_payload_rows_match_counts_skips_non_int_count(count):
             "gap": {"symbol": "NVDA"},
             "unmatched_count": count,
             "unmatched": "SPX",
+        }
+    }
+    assert packet_payload_rows_match_counts(payload) is False
+
+
+def test_packet_payload_rows_match_counts_rejects_none_count():
+    """None is present and is not a real int, even when the row list matches."""
+    payload = {
+        "lot_match_report": {
+            "matched_count": None,
+            "matched": [{"symbol": "AMD"}],
+            "gap_count": 0,
+            "gap": [],
+            "unmatched_count": 0,
+            "unmatched": [],
+        }
+    }
+    assert packet_payload_rows_match_counts(payload) is False
+
+
+def test_packet_payload_rows_match_counts_absent_count_keys_are_true():
+    """Missing count keys stay valid. Cover text falls back to len(rows)."""
+    payload = {
+        "lot_match_report": {
+            "matched": [],
+            "gap": [],
+            "unmatched": [],
         }
     }
     assert packet_payload_rows_match_counts(payload) is True

@@ -896,6 +896,9 @@ def packet_payload_rows_match_counts(payload: Any) -> bool:
     A missing lot report has nothing to contradict. A positive matched, gap,
     or unmatched count with fewer dict rows is a counts-only teaser and must
     not be sold or rendered as the paid packet. Bool counts are rejected.
+    A count key that is present but not a real int (string, float, or None)
+    is rejected. A count key that is absent is left alone; cover text falls
+    back to len(rows).
     """
     if not isinstance(payload, dict):
         return False
@@ -907,11 +910,11 @@ def packet_payload_rows_match_counts(payload: Any) -> bool:
         ("gap", "gap_count"),
         ("unmatched", "unmatched_count"),
     ):
-        count = report.get(count_key)
-        if isinstance(count, bool):
-            return False
-        if not isinstance(count, int):
+        if count_key not in report:
             continue
+        count = report[count_key]
+        if isinstance(count, bool) or not isinstance(count, int):
+            return False
         rows = report.get(list_key) or []
         if not isinstance(rows, list):
             return False

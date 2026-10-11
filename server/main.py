@@ -2639,6 +2639,12 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
     if snapshot:
         tax_year = snapshot.get("tax_year")
         packet_payload = snapshot.get("packet_payload")
+        if isinstance(packet_payload, dict) and not packet_payload_rows_match_counts(
+            packet_payload
+        ):
+            # Counts without lot rows are the redacted teaser, not a packet.
+            # Leave the row unpaid. The missing-source path keeps the receipt.
+            packet_payload = None
     else:
         # Compatibility for sessions created before private snapshots existed.
         record, record_lookup_succeeded = lookup_analysis_for_entitlement(
@@ -3352,13 +3358,9 @@ def _payload_for_download(
         _packet_download_forbidden()
     payload = snapshot.get("packet_payload")
     if not isinstance(payload, dict) or not packet_payload_rows_match_counts(payload):
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "The private packet snapshot is unavailable. Re-run this analysis "
-                "to restore it, then download again."
-            ),
-        )
+        # A paid teaser cannot be repaired in place. 409 matches a cleared row
+        # and is not retried as an outage.
+        raise HTTPException(status_code=409, detail=PACKET_MISSING_SOURCE_DETAIL)
     if session_id:
         stored_session_id = snapshot.get("packet_session_id")
         if stored_session_id and stored_session_id != session_id:
