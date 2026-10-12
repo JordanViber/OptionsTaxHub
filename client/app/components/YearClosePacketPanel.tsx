@@ -707,21 +707,23 @@ function YearClosePacketPanelForAnalysis({
           >
             Pay $49
           </Button>
-          <Button
-            variant={paid || existingPacketDownload ? "contained" : "outlined"}
-            color={paid || existingPacketDownload ? "success" : "primary"}
-            startIcon={
-              busy === "download" ? (
-                <CircularProgress size={16} color="inherit" />
-              ) : (
-                <DownloadIcon />
-              )
-            }
-            onClick={handleDownload}
-            disabled={busy !== null || missingAnalysisId}
-          >
-            Download
-          </Button>
+          {!extraChargeRefund && (
+            <Button
+              variant={paid || existingPacketDownload ? "contained" : "outlined"}
+              color={paid || existingPacketDownload ? "success" : "primary"}
+              startIcon={
+                busy === "download" ? (
+                  <CircularProgress size={16} color="inherit" />
+                ) : (
+                  <DownloadIcon />
+                )
+              }
+              onClick={handleDownload}
+              disabled={busy !== null || missingAnalysisId}
+            >
+              Download
+            </Button>
+          )}
         </Stack>
         {missingAnalysisId && (
           <Typography role="status" variant="caption" color="text.secondary">
