@@ -2375,6 +2375,41 @@ async def get_tip_tiers():
     ]
 
 
+def _configure_tip_stripe() -> str:
+    """Return the request-scoped tip key. Staging and local are TEST-only.
+
+    Copy stays tip-specific. The packet helper names the year-close product.
+    """
+    key, reason = resolve_packet_stripe_secret_key(STRIPE_SECRET_KEY)
+    if not key:
+        if reason == "refused_live_key":
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Tip checkout on staging/local needs STRIPE_SECRET_KEY_TEST "
+                    "as an sk_test_ key."
+                ),
+            )
+        raise HTTPException(status_code=503, detail="Stripe is not configured")
+    return key
+
+
+def _tip_checkout_line_items(tier: dict) -> list[dict]:
+    """Live Price ids cannot be loaded with a test secret."""
+    if packet_requires_test_stripe():
+        return [
+            {
+                "price_data": {
+                    "currency": "usd",
+                    "unit_amount": tier["amount"],
+                    "product_data": {"name": tier["label"]},
+                },
+                "quantity": 1,
+            }
+        ]
+    return [{"price": tier["price_id"], "quantity": 1}]
+
+
 @app.post(
     "/api/tips/checkout",
     responses={
@@ -2396,16 +2431,15 @@ async def create_tip_checkout(tip: TipRequest):
             detail=f"Invalid tier '{tip.tier}'. Choose: {', '.join(TIP_TIERS.keys())}",
         )
 
-    if not STRIPE_SECRET_KEY:
-        raise HTTPException(status_code=503, detail="Stripe is not configured")
+    resolved_key = _configure_tip_stripe()
 
     try:
         session = stripe.checkout.Session.create(
             mode="payment",
-            line_items=[{"price": tier["price_id"], "quantity": 1}],
+            line_items=_tip_checkout_line_items(tier),
             success_url=f"{FRONTEND_URL}/tips/success",
             cancel_url=f"{FRONTEND_URL}/tips/cancel",
-            api_key=STRIPE_SECRET_KEY,
+            api_key=resolved_key,
         )
         return {"checkout_url": session.url}
     except stripe.StripeError as e:
