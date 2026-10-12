@@ -3,6 +3,9 @@
 Builds a display model from wash flags, FIFO realized events, and same-year
 1099-B lot matches. Does not rewrite wash_sale.py, lot basis, or tax totals.
 Does not set WashSaleFlag.purchase_date (that field feeds ST/LT wash splits).
+
+v1 explains stock sales only. An option flag, option sale, or option 1099
+row is one not-compared hop: the instrument and the engine disallowance.
 """
 
 from __future__ import annotations
@@ -11,7 +14,6 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 from csv_parser import RealizedEvent
-from leap_rank import CONTRACT_MULTIPLIER
 from lot_matcher import CENTS, QTY_EPS
 from models import (
     AssetType,
@@ -84,7 +86,7 @@ class _HopDraft:
     hop_index: int = 0
     from_engine: bool = True
     # Why a hop was not compared. Drives copy only; not a tax field.
-    # "" | "no_1099" | "ambiguous" | "over_cap" | "undetermined" | "unidentified"
+    # "" | "no_1099" | "ambiguous" | "over_cap" | "undetermined" | "unidentified" | "option"
     not_compared_reason: str = ""
     # Display-only link bookkeeping. Not copied onto the API model.
     sale_unresolved: bool = False
@@ -136,17 +138,6 @@ def _buys_sorted(transactions: list[Transaction]) -> list[Transaction]:
     return sorted(buys, key=lambda txn: (txn.activity_date, _symbol(txn.instrument)))
 
 
-def _display_scale(asset_type: str) -> float:
-    """Option flag dollars are per-share premiums. Realized events are contract dollars.
-
-    CONTRACT_MULTIPLIER is the engine's contract size. Apply it only to copies
-    on the display chain. Do not rewrite flags, lots, or tax totals.
-    """
-    if asset_type == AssetType.OPTION.value:
-        return float(CONTRACT_MULTIPLIER)
-    return 1.0
-
-
 def _attach_flag_sale(
     transactions: list[Transaction],
     events: list[RealizedEvent],
@@ -176,6 +167,9 @@ def _attach_flag_sale(
         if txn.activity_date != sale_date:
             continue
         if not _qty_close(txn.quantity, quantity):
+            continue
+        # An option sell is not this stock sale, even on the same day and size.
+        if _is_option_asset(txn.asset_type):
             continue
         candidates.append((index, txn))
     confirmed: list[tuple[int, Transaction, list[tuple[int, RealizedEvent]]]] = []
@@ -235,6 +229,7 @@ def _event_candidates(
         and _symbol(event.symbol) == symbol
         and event.sale_date == sale_date
         and float(event.quantity) > QTY_EPS
+        and not _is_option_asset(event.asset_type)
     ]
 
 
@@ -252,16 +247,6 @@ def _qty_subsets(items: list, quantity: float, qty_of) -> list[list]:
         if _qty_close(total, quantity):
             found.append(chosen)
     return found
-
-
-def _subset_scale(
-    subset: list[tuple[int, RealizedEvent]],
-    sell: Transaction | None,
-) -> float:
-    asset = _asset_type(sell)
-    if sell is None and subset:
-        asset = _named_asset(subset[0][1].asset_type)
-    return _display_scale(asset)
 
 
 def _claim_event_set(
@@ -288,7 +273,7 @@ def _claim_event_set(
     subsets = _qty_subsets(candidates, quantity, lambda item: item[1].quantity)
     good: list[list[tuple[int, RealizedEvent]]] = []
     for subset in subsets:
-        scale = _subset_scale(subset, sell)
+        scale = 1.0
         proceeds = sum(float(event.sale_proceeds) for _, event in subset)
         basis = sum(float(event.cost_basis) for _, event in subset)
         if abs((basis - proceeds) - float(sale_loss) * scale) > CENTS:
@@ -437,24 +422,21 @@ def _apply_display_scale(
     raw_buys: list[Transaction],
     *,
     scale_disallowed: bool = True,
-    per_buy: bool = True,
 ) -> None:
-    """Put each buy on its own contract scale.
+    """Round each stock buy. Option buys are not passed in.
 
-    ``price`` becomes premium × that buy's multiplier. 1099 wash amounts are
-    already dollars, so a 1099-only hop passes scale_disallowed=False.
-    An undetermined sale passes per_buy=False and stays on the share scale.
+    1099 wash amounts are already dollars, so a 1099-only hop passes
+    scale_disallowed=False.
     """
-    for draft, txn in zip(drafts, raw_buys):
-        scale = _display_scale(_named_asset(txn.asset_type)) if per_buy else 1.0
+    for draft, _txn in zip(drafts, raw_buys):
         raw_price = draft.price
-        draft.cash_cost = _cents(raw_price * draft.quantity * scale)
+        draft.cash_cost = _cents(raw_price * draft.quantity)
         if scale_disallowed:
-            draft.allocated_disallowed = _cents(draft.allocated_disallowed * scale)
+            draft.allocated_disallowed = _cents(draft.allocated_disallowed)
         draft.explained_basis = _cents(
-            raw_price * draft.allocated_quantity * scale + draft.allocated_disallowed
+            raw_price * draft.allocated_quantity + draft.allocated_disallowed
         )
-        draft.price = _cents(raw_price * scale)
+        draft.price = _cents(raw_price)
 
 
 def _holding_from_event(
@@ -470,14 +452,10 @@ def _open_lot_numbers(
     tax_lots: list[TaxLot],
     symbol: str,
     purchase_date: date | None,
-    scale: float,
 ) -> tuple[float | None, float | None]:
-    """Open-lot basis and wash on the same contract-dollar scale as the hop.
+    """Stock open-lot basis and wash for this replacement date.
 
-    csv_parser already stores option total_cost_basis × CONTRACT_MULTIPLIER.
-    adjust_lots_for_wash_sales rewrites it as per-share premium × quantity.
-    Scale the premium form up. Leave an already-scaled basis alone.
-    The wash amount on the lot is the engine's unscaled disallowance.
+    An option lot with the same symbol and date is not the stock lot.
     """
     if purchase_date is None:
         return None, None
@@ -486,18 +464,9 @@ def _open_lot_numbers(
             continue
         if lot.purchase_date != purchase_date:
             continue
-        basis = float(lot.total_cost_basis)
-        wash = float(lot.wash_sale_disallowed)
-        if scale != 1.0:
-            premium = float(lot.cost_basis_per_share) * float(lot.quantity)
-            contract = premium * scale
-            already_contract = (
-                abs(basis - contract) <= CENTS and abs(basis - premium) > CENTS
-            )
-            if not already_contract:
-                basis = basis * scale
-            wash = wash * scale
-        return _cents(basis), _cents(wash)
+        if _named_asset(lot.asset_type) != AssetType.STOCK.value:
+            continue
+        return _cents(float(lot.total_cost_basis)), _cents(float(lot.wash_sale_disallowed))
     return None, None
 
 
@@ -595,10 +564,9 @@ def _group_rows(
 def _target_unit_proceeds(
     sell: Transaction | None,
     events: list[RealizedEvent],
-    scale: float,
 ) -> float | None:
     if sell is not None and float(sell.quantity) > QTY_EPS:
-        return float(sell.price) * scale
+        return float(sell.price)
     total_qty = sum(float(event.quantity) for event in events)
     if events and total_qty > QTY_EPS:
         proceeds = sum(float(event.sale_proceeds) for event in events)
@@ -734,6 +702,107 @@ def _asset_type(txn: Transaction | None) -> str:
     return _named_asset(txn.asset_type)
 
 
+def _is_option_asset(asset: object) -> bool:
+    return _named_asset(asset) == AssetType.OPTION.value
+
+
+_OPTION_WASH_LINE = "Option wash sales aren't explained here yet."
+
+
+def _flag_sale_is_option(
+    transactions: list[Transaction],
+    events: list[RealizedEvent],
+    *,
+    symbol: str,
+    sale_date: date,
+    quantity: float,
+) -> bool:
+    """True when this flag's sale is an option.
+
+    A stock sell of the same symbol keeps the flag on the stock path.
+    Option events are not stock lots, and a stock lot is not an option sale.
+    """
+    saw_stock_sell = False
+    saw_option_sell = False
+    for txn in transactions:
+        if txn.trans_code not in _SELL_CODES:
+            continue
+        if _symbol(txn.instrument) != symbol or txn.activity_date != sale_date:
+            continue
+        if not _qty_close(txn.quantity, quantity):
+            continue
+        if _is_option_asset(txn.asset_type):
+            saw_option_sell = True
+        else:
+            saw_stock_sell = True
+    if saw_stock_sell:
+        return False
+    if saw_option_sell:
+        return True
+    stock_events: list[RealizedEvent] = []
+    option_events: list[RealizedEvent] = []
+    for event in events:
+        if _symbol(event.symbol) != symbol or event.sale_date != sale_date:
+            continue
+        if float(event.quantity) <= QTY_EPS:
+            continue
+        if _is_option_asset(event.asset_type):
+            option_events.append(event)
+        else:
+            stock_events.append(event)
+    if not option_events:
+        return False
+    if not stock_events:
+        return True
+    if any(_qty_close(float(event.quantity), quantity) for event in stock_events):
+        return False
+    return any(_qty_close(float(event.quantity), quantity) for event in option_events)
+
+
+def _option_hop(
+    *,
+    hop_id: str,
+    symbol: str,
+    sale_date: date,
+    sale_quantity: float,
+    engine_disallowed: float | None,
+) -> _HopDraft:
+    """One option entry. No basis, carry, replacement buys, or 1099 figure."""
+    amount = None if engine_disallowed is None else _cents(engine_disallowed)
+    return _HopDraft(
+        hop_id=hop_id,
+        symbol=symbol,
+        asset_type=AssetType.OPTION.value,
+        sale_date=sale_date,
+        sale_quantity=float(sale_quantity),
+        proceeds=0.0,
+        cost_basis=0.0,
+        loss=0.0,
+        buys=[],
+        disallowed_loss=0.0 if amount is None else amount,
+        engine_disallowed_loss=amount,
+        form_1099_wash=None,
+        engine_adjusted_cost_basis=None,
+        open_lot_total_cost_basis=None,
+        open_lot_wash_sale_disallowed=None,
+        original_purchase_date=None,
+        original_holding_days=None,
+        carryover_days=None,
+        tacked_acquisition_date=None,
+        closed_lots=[],
+        carried_in_disallowed=None,
+        engine_sale_loss=None,
+        explained_loss_with_carry=None,
+        plain_english=_OPTION_WASH_LINE,
+        reconcile_status="not_compared",
+        difference=None,
+        from_engine=amount is not None,
+        not_compared_reason="option",
+        compare_1099=False,
+        carry_withheld=True,
+    )
+
+
 def _hop_from_flag(
     flag: WashSaleFlag,
     *,
@@ -746,6 +815,25 @@ def _hop_from_flag(
     same_year: bool,
 ) -> _HopDraft:
     symbol = _symbol(flag.symbol)
+    if _flag_sale_is_option(
+        transactions,
+        events,
+        symbol=symbol,
+        sale_date=flag.sale_date,
+        quantity=float(flag.sale_quantity),
+    ):
+        return _option_hop(
+            hop_id=_hop_id(
+                symbol,
+                flag.sale_date,
+                flag.sale_quantity,
+                f"f{flag_index}",
+            ),
+            symbol=symbol,
+            sale_date=flag.sale_date,
+            sale_quantity=float(flag.sale_quantity),
+            engine_disallowed=float(flag.disallowed_loss),
+        )
     sell_index, sell, event_set, unresolved = _attach_flag_sale(
         transactions,
         events,
@@ -760,7 +848,7 @@ def _hop_from_flag(
     asset = _asset_type(sell)
     if sell is None and event_set:
         asset = _named_asset(event_set[0][1].asset_type)
-    scale = _display_scale(asset)
+    scale = 1.0
     closed = _closed_lots_from_events(event_set, flag.sale_date) if event_set else []
     acquired, held_days = _shared_acquisition(closed)
     if unresolved:
@@ -783,7 +871,6 @@ def _hop_from_flag(
         else []
     )
     raw_buys = _buys_for_asset(raw_buys, asset)
-    # Split the engine's unscaled disallowance, then scale each buy by its type.
     buys = _allocate_buys(
         raw_buys,
         repurchase_quantity=float(flag.repurchase_quantity),
@@ -793,7 +880,7 @@ def _hop_from_flag(
     loss = _cents(float(flag.sale_loss) * scale)
     disallowed = _cents(float(flag.disallowed_loss) * scale)
     open_basis, open_wash = _open_lot_numbers(
-        tax_lots, symbol, flag.repurchase_date, scale
+        tax_lots, symbol, flag.repurchase_date
     )
     status: WashReconcileStatus = "not_compared"
     not_compared_reason = "unidentified" if unresolved else "no_1099"
@@ -835,7 +922,6 @@ def _hop_from_flag(
         row_target=_target_unit_proceeds(
             sell,
             [event for _index, event in event_set],
-            scale,
         ),
         compare_1099=same_year and not unresolved,
     )
@@ -889,11 +975,13 @@ def _option_text(value: str | None) -> bool:
     return " call " in padded or " put " in padded or " option " in padded
 
 
-def _description_allows(txn: Transaction, row_text: str) -> bool:
-    """Reject a numeric match whose descriptions name a different instrument."""
+def _description_allows(txn: Transaction, _row_text: str) -> bool:
+    """Reject a stock sale whose own description names an option.
+
+    A 1099 row that says call, put, or option is already an option entry,
+    so this match does not read that row text.
+    """
     is_option = _named_asset(txn.asset_type) == AssetType.OPTION.value
-    if _option_text(row_text) and not is_option:
-        return False
     if _option_text(txn.description) and not is_option:
         return False
     return True
@@ -915,8 +1003,7 @@ def _sale_matches_txn(
         return False
     if not _qty_close(txn.quantity, quantity):
         return False
-    scale = _display_scale(_named_asset(txn.asset_type))
-    target = float(txn.quantity) * float(txn.price) * scale
+    target = float(txn.quantity) * float(txn.price)
     return abs(target - proceeds) <= CENTS
 
 
@@ -936,6 +1023,50 @@ def _sale_matches_event(
     if not _qty_close(event.quantity, quantity):
         return False
     return abs(float(event.sale_proceeds) - proceeds) <= CENTS
+
+
+def _row_involves_option(
+    row: LotMatchRow,
+    *,
+    transactions: list[Transaction],
+    events: list[RealizedEvent],
+) -> bool:
+    """True when this 1099 row is an option sale.
+
+    Call, put, or option wording counts. So does a matching option trade.
+    An option somewhere else on the symbol does not.
+    """
+    if _option_text(row.description):
+        return True
+    symbol = _symbol(row.symbol)
+    sale_date = row.export_trade_date or row.date_sold_1099
+    if not symbol or sale_date is None:
+        return False
+    quantity = float(row.quantity or 0.0)
+    proceeds = float(row.proceeds_1099 or 0.0)
+    for txn in transactions:
+        if not _is_option_asset(txn.asset_type):
+            continue
+        if _sale_matches_txn(
+            txn,
+            symbol=symbol,
+            sale_date=sale_date,
+            quantity=quantity,
+            proceeds=proceeds,
+        ):
+            return True
+    for event in events:
+        if not _is_option_asset(event.asset_type):
+            continue
+        if _sale_matches_event(
+            event,
+            symbol=symbol,
+            sale_date=sale_date,
+            quantity=quantity,
+            proceeds=proceeds,
+        ):
+            return True
+    return False
 
 
 def _symbol_has_option(
@@ -1048,22 +1179,18 @@ def _hop_from_1099_group(
         events=events,
         tax_lots=tax_lots,
     )
-    # Undetermined stays on the share scale. Do not multiply by the contract
-    # size just because an option exists for the symbol. A determined sale
-    # keeps only buys of that asset, each scaled by its own type.
-    scale = _display_scale(asset) if determined else 1.0
-    raw_buys = _window_buys(transactions, symbol, sale_date)
+    # Option buys are not stock replacements. A determined sale also keeps
+    # only buys of its own asset. Nothing here is scaled by contract size.
+    raw_buys = [
+        buy
+        for buy in _window_buys(transactions, symbol, sale_date)
+        if not _is_option_asset(buy.asset_type)
+    ]
     if determined:
         raw_buys = _buys_for_asset(raw_buys, asset)
     cap = _repurchase_cap(raw_buys, quantity)
     buys = _allocate_buys(raw_buys, repurchase_quantity=cap, disallowed=wash)
-    # 1099 wash is already dollars. Scale only the premium paid for the buy.
-    _apply_display_scale(
-        buys,
-        raw_buys,
-        scale_disallowed=False,
-        per_buy=determined,
-    )
+    _apply_display_scale(buys, raw_buys, scale_disallowed=False)
     closed: list[_ClosedLot] = []
     if determined:
         export_dates = {row.export_trade_date for _, row in items}
@@ -1076,7 +1203,7 @@ def _hop_from_1099_group(
                 symbol,
                 export_date,
                 quantity,
-                sale_loss=(dollar_loss / scale) if scale else dollar_loss,
+                sale_loss=dollar_loss,
                 sell=matched_sell,
             )
             closed = _closed_lots_from_events(event_set, export_date)
@@ -1085,7 +1212,7 @@ def _hop_from_1099_group(
         (buy.activity_date for buy in buys if buy.allocated_quantity > QTY_EPS),
         None,
     )
-    open_basis, open_wash = _open_lot_numbers(tax_lots, symbol, earliest, scale)
+    open_basis, open_wash = _open_lot_numbers(tax_lots, symbol, earliest)
     status: WashReconcileStatus = "on_1099_only" if determined else "not_compared"
     return _HopDraft(
         hop_id=_hop_id(symbol, sale_date, quantity, f"r{first_index}"),
@@ -1210,8 +1337,10 @@ def _link_engine_hops(hops: list[_HopDraft]) -> list[list[_HopDraft]]:
             parent[root_right] = root_left
 
     def _is_later(earlier: _HopDraft, later: _HopDraft) -> bool:
+        # Same ticker is not the same instrument. Stock does not link to an option.
         return (
             later.symbol == earlier.symbol
+            and later.asset_type == earlier.asset_type
             and later.sale_date > earlier.sale_date
         )
 
@@ -1342,10 +1471,6 @@ def _needs_year(sale: date, buys: list[_BuyDraft]) -> bool:
     return len(years) > 1
 
 
-def _contracts(asset_type: str) -> str:
-    return " contracts" if asset_type == AssetType.OPTION.value else ""
-
-
 def _listed_buys(hop: _HopDraft) -> list[_BuyDraft]:
     allocated = [buy for buy in hop.buys if buy.allocated_quantity > QTY_EPS]
     return allocated or list(hop.buys)
@@ -1370,9 +1495,11 @@ def _basis_split_is_illustrative(hop: _HopDraft) -> bool:
 
 def plain_english_line(hop: _HopDraft) -> str:
     """One sentence for a hop. Hop 0 is also the chain headline."""
+    if hop.not_compared_reason == "option":
+        return _OPTION_WASH_LINE
     listed = _listed_buys(hop)
     with_year = _needs_year(hop.sale_date, listed)
-    unit = _contracts(hop.asset_type)
+    unit = ""
     qty = _fmt_qty(hop.sale_quantity)
     symbol = hop.symbol
     sale_on = _fmt_date(hop.sale_date, with_year=with_year)
@@ -1628,6 +1755,44 @@ def _refuse_same_day_1099_ties(
                     used_rows.add(index)
 
 
+def _option_1099_hops(
+    rows: list[LotMatchRow],
+    used: set[int],
+    *,
+    transactions: list[Transaction],
+    events: list[RealizedEvent],
+) -> list[_HopDraft]:
+    """One not-compared hop per option 1099 row. Those rows are then used."""
+    hops: list[_HopDraft] = []
+    for index, row in enumerate(rows):
+        if index in used:
+            continue
+        if float(row.wash_sale_disallowed or 0.0) < 0.01:
+            continue
+        if not _row_involves_option(row, transactions=transactions, events=events):
+            continue
+        symbol = _symbol(row.symbol)
+        sale_date = row.export_trade_date or row.date_sold_1099
+        if not symbol or sale_date is None:
+            continue
+        used.add(index)
+        hops.append(
+            _option_hop(
+                hop_id=_hop_id(
+                    symbol,
+                    sale_date,
+                    float(row.quantity or 0.0),
+                    f"r{index}",
+                ),
+                symbol=symbol,
+                sale_date=sale_date,
+                sale_quantity=float(row.quantity or 0.0),
+                engine_disallowed=None,
+            )
+        )
+    return hops
+
+
 def build_wash_sale_chains(
     *,
     transactions: list[Transaction],
@@ -1673,6 +1838,13 @@ def build_wash_sale_chains(
             _apply_1099_match(hop, rows, used_rows)
     chains = [_finish(group) for group in _link_engine_hops(engine_hops)]
     if comparable:
+        for hop in _option_1099_hops(
+            rows,
+            used_rows,
+            transactions=transactions,
+            events=realized_events,
+        ):
+            chains.append(_finish([hop]))
         leftover = _group_rows(
             rows,
             used=used_rows,

@@ -146,7 +146,57 @@ function carryoverCopy(hop: WashSaleHop): string {
   return CARRYOVER_MISSING;
 }
 
+function OptionHopDetails({ hop }: Readonly<{ hop: WashSaleHop }>) {
+  const showDisallowed = hop.engine_disallowed_loss != null;
+  return (
+    <Stack
+      spacing={1.25}
+      data-testid={`wash-sale-hop-${hop.hop_id}`}
+      sx={{ minWidth: 0, maxWidth: "100%" }}
+    >
+      <Stack
+        direction={{ xs: "column", sm: "row" }}
+        spacing={1}
+        sx={{ alignItems: { sm: "center" } }}
+      >
+        <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+          {hop.hop_index > 0 ? `Hop ${hop.hop_index + 1}` : "This sale"}
+        </Typography>
+        <Chip
+          size="small"
+          color={chipColor(hop.reconcile_status)}
+          label={washChainStatusLabel(hop.reconcile_status, hop.difference)}
+        />
+      </Stack>
+      <Typography
+        variant="body2"
+        sx={{ whiteSpace: "normal", overflowWrap: "anywhere" }}
+      >
+        {hop.plain_english}
+      </Typography>
+      <Box
+        sx={{
+          display: "grid",
+          gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" },
+          gap: 1.25,
+          minWidth: 0,
+        }}
+      >
+        <Fact label="Symbol" value={hop.symbol} />
+        <Fact label="Instrument" value="Option" />
+        {showDisallowed && (
+          <Fact
+            label="Disallowed"
+            value={formatUsd(hop.engine_disallowed_loss ?? 0)}
+          />
+        )}
+      </Box>
+    </Stack>
+  );
+}
+
 function HopDetails({ hop }: Readonly<{ hop: WashSaleHop }>) {
+  if (hop.asset_type === "option") return <OptionHopDetails hop={hop} />;
   const perLot = differingClosedLots(hop);
   const showCarry =
     hop.hop_index > 0 &&

@@ -534,4 +534,100 @@ describe("WashSaleChainPanel", () => {
     expect(screen.getByText(/explained basis \$640\.00/)).toBeInTheDocument();
     expect(screen.queryByText(/in your tax totals/i)).not.toBeInTheDocument();
   });
+
+  it("renders an option wash as the instrument and engine disallowance", () => {
+    const copy = "Option wash sales aren't explained here yet.";
+    const withEngine = chain({
+      chain_id: "SPX:2026-06-10:1:f0",
+      symbol: "SPX",
+      reconcile_status: "not_compared",
+      plain_english: copy,
+      hops: [
+        hop({
+          hop_id: "SPX:2026-06-10:1:f0",
+          symbol: "SPX",
+          asset_type: "option",
+          sale_date: "2026-06-10",
+          sale_quantity: 1,
+          proceeds: 0,
+          cost_basis: 0,
+          loss: 0,
+          replacement_buys: [],
+          disallowed_loss: 6,
+          engine_disallowed_loss: 6,
+          form_1099_wash: null,
+          engine_adjusted_cost_basis: null,
+          open_lot_total_cost_basis: null,
+          open_lot_wash_sale_disallowed: null,
+          original_purchase_date: null,
+          carryover_days: null,
+          tacked_acquisition_date: null,
+          carried_in_disallowed: null,
+          engine_sale_loss: null,
+          explained_loss_with_carry: null,
+          plain_english: copy,
+          reconcile_status: "not_compared",
+        }),
+      ],
+    });
+    const brokerOnly = chain({
+      chain_id: "SPX:2026-06-10:1:r0",
+      symbol: "SPX",
+      reconcile_status: "not_compared",
+      plain_english: copy,
+      hops: [
+        hop({
+          hop_id: "SPX:2026-06-10:1:r0",
+          symbol: "SPX",
+          asset_type: "option",
+          sale_date: "2026-06-10",
+          sale_quantity: 1,
+          proceeds: 0,
+          cost_basis: 0,
+          loss: 0,
+          replacement_buys: [],
+          disallowed_loss: 0,
+          engine_disallowed_loss: null,
+          form_1099_wash: null,
+          engine_adjusted_cost_basis: null,
+          open_lot_total_cost_basis: null,
+          carried_in_disallowed: null,
+          engine_sale_loss: null,
+          explained_loss_with_carry: null,
+          plain_english: copy,
+          reconcile_status: "not_compared",
+        }),
+      ],
+    });
+    render(<WashSaleChainPanel chains={[withEngine, brokerOnly]} />);
+    expect(screen.getAllByText(copy).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByTestId("wash-sale-chain-open-SPX:2026-06-10:1:f0"));
+    expect(screen.getByText("Instrument")).toBeInTheDocument();
+    expect(screen.getByText("Option")).toBeInTheDocument();
+    expect(screen.getByText("Disallowed")).toBeInTheDocument();
+    expect(screen.getByText("$6.00")).toBeInTheDocument();
+    expect(screen.queryByText("Proceeds")).not.toBeInTheDocument();
+    expect(screen.queryByText("Basis")).not.toBeInTheDocument();
+    expect(screen.queryByText("Loss")).not.toBeInTheDocument();
+    expect(screen.queryByText("Replacement buys")).not.toBeInTheDocument();
+    expect(screen.queryByText("1099 wash adjustment")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("No replacement buy in this Robinhood export."),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/Holding period starts/),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Holding-period carryover is not in this export."),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Close wash-sale chain"));
+    fireEvent.click(screen.getByTestId("wash-sale-chain-open-SPX:2026-06-10:1:r0"));
+    expect(screen.getByText("Option")).toBeInTheDocument();
+    expect(screen.queryByText("Disallowed")).not.toBeInTheDocument();
+    expect(screen.queryByText("Proceeds")).not.toBeInTheDocument();
+    expect(screen.queryByText("Basis")).not.toBeInTheDocument();
+    expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
+    expect(screen.queryByText("1099 wash adjustment")).not.toBeInTheDocument();
+  });
 });
