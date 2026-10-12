@@ -968,4 +968,99 @@ describe("YearClosePacketPanel", () => {
     expect(mockFetch).not.toHaveBeenCalled();
     expect(window.location.search).toContain("packet_analysis=analysis-2");
   });
+
+  it("offers a session-less download instead of Pay when the packet is already paid", async () => {
+    const detail =
+      "This tax year is already paid; download your existing packet.";
+    window.history.replaceState(
+      null,
+      "",
+      "/dashboard?packet_session=cs_test_other&packet_analysis=analysis-1",
+    );
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        json: () => Promise.resolve({ detail }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        blob: () => Promise.resolve(new Blob(["%PDF"])),
+      });
+
+    render(<YearClosePacketPanel analysis={analysis} />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(detail);
+    });
+    expect(screen.getByRole("alert")).not.toHaveTextContent(/refund/i);
+    expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Download/i })).toBeEnabled();
+    expect(store["optionstaxhub-packet-pending:analysis-1"]).toBeUndefined();
+    expect(store["optionstaxhub-packet-pending-confirm:analysis-1"]).toBeUndefined();
+    expect(store["optionstaxhub-packet-paid:analysis-1"]).toBeUndefined();
+    expect(window.location.href).not.toContain("checkout.stripe.com");
+
+    fireEvent.click(screen.getByRole("button", { name: /Pay \$49/i }));
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: /Download/i }));
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));
+    const downloadUrl = String(mockFetch.mock.calls[1][0]);
+    expect(mockFetch.mock.calls[1][1].method).toBe("GET");
+    expect(downloadUrl).toContain("/api/year-close-packet/download?");
+    expect(downloadUrl).toContain("analysis_id=analysis-1");
+    expect(downloadUrl).not.toContain("session_id=");
+    expect(window.location.href).not.toContain("checkout.stripe.com");
+  });
+
+  it("retries confirm and does not open Stripe while the packet is still being finalized", async () => {
+    const detail =
+      "Payment is on file and the packet is still being finalized. Retry confirming the payment.";
+    store["optionstaxhub-packet-pending:analysis-1"] = "cs_test_finalizing";
+    store["optionstaxhub-packet-pending-url:analysis-1"] =
+      "https://checkout.stripe.com/c/pay/cs_test_finalizing";
+    store["optionstaxhub-packet-pending-open:analysis-1"] = "1";
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        json: () => Promise.resolve({ detail }),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        json: () => Promise.resolve({ detail }),
+      });
+
+    render(<YearClosePacketPanel analysis={analysis} />);
+    fireEvent.click(screen.getByRole("button", { name: /Download/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(detail);
+    });
+    expect(String(mockFetch.mock.calls[0][0])).toContain("/api/year-close-packet/download");
+    expect(String(mockFetch.mock.calls[0][0])).toContain("session_id=cs_test_finalizing");
+    expect(store["optionstaxhub-packet-pending:analysis-1"]).toBe("cs_test_finalizing");
+    expect(store["optionstaxhub-packet-pending-confirm:analysis-1"]).toBe("1");
+    expect(store["optionstaxhub-packet-pending-open:analysis-1"]).toBeUndefined();
+    expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
+
+    const consoleError = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      fireEvent.click(screen.getByRole("button", { name: /Pay \$49/i }));
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));
+      expect(String(mockFetch.mock.calls[1][0])).toContain("/api/year-close-packet/confirm");
+      expect(String(mockFetch.mock.calls[1][0])).not.toContain("/checkout");
+      expect(JSON.parse(mockFetch.mock.calls[1][1].body).session_id).toBe(
+        "cs_test_finalizing",
+      );
+      expect(window.location.href).not.toContain("checkout.stripe.com");
+      expect(screen.getByRole("alert")).toHaveTextContent(detail);
+      expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
 });

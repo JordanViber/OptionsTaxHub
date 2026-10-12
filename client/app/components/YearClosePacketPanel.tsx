@@ -40,6 +40,14 @@ function isPacketMissingSourceDetail(detail: string): boolean {
   return /payment was received/i.test(detail) && /no source document/i.test(detail);
 }
 
+function isPacketAlreadyPaidExistingDetail(detail: string): boolean {
+  return /already paid/i.test(detail) && /download your existing packet/i.test(detail);
+}
+
+function isPacketFinalizingDetail(detail: string): boolean {
+  return /still being finalized/i.test(detail) && /confirming the payment/i.test(detail);
+}
+
 function paidStorageKey(analysisId: string): string {
   return `optionstaxhub-packet-paid:${analysisId}`;
 }
@@ -258,6 +266,7 @@ function YearClosePacketPanelForAnalysis({
   const [resumeOpenCheckout, setResumeOpenCheckout] = useState(
     () => readSessionItem(pendingOpenStorageKey(analysisStorageId)) === "1",
   );
+  const [existingPacketDownload, setExistingPacketDownload] = useState(false);
   const confirmAttempt = useRef(0);
   const missingAnalysisId = canonicalAnalysisId === "local-analysis";
 
@@ -305,6 +314,8 @@ function YearClosePacketPanelForAnalysis({
     setError(null);
     let retryableFailure = true;
     let checkoutStillOpen = false;
+    let alreadyPaidExisting = false;
+    let finalizing = false;
     try {
       const headers = await authHeaders();
       const response = await fetch(`${API_URL}/api/year-close-packet/confirm`, {
@@ -324,11 +335,18 @@ function YearClosePacketPanelForAnalysis({
         const errData = await response.json().catch(() => null);
         const detail = String(errData?.detail || "");
         checkoutStillOpen = response.status === 409 && /still open/i.test(detail);
-        // PACKET_MISSING_SOURCE_DETAIL is terminal. Pay must not poll confirm.
+        // Missing source and an already-paid packet are terminal. Finalizing
+        // keeps this checkout session so Pay retries confirm and does not open Stripe.
         const missingSource =
           response.status === 409 && isPacketMissingSourceDetail(detail);
+        alreadyPaidExisting =
+          response.status === 409 && isPacketAlreadyPaidExistingDetail(detail);
+        finalizing = response.status === 409 && isPacketFinalizingDetail(detail);
         retryableFailure =
-          !missingSource && (response.status >= 500 || checkoutStillOpen);
+          !missingSource &&
+          !alreadyPaidExisting &&
+          !finalizing &&
+          (response.status >= 500 || checkoutStillOpen);
         throw new Error(errData?.detail || "Could not confirm packet payment.");
       }
       const confirmData = await response.json();
@@ -339,6 +357,7 @@ function YearClosePacketPanelForAnalysis({
       setCanonicalAnalysisId(canonicalId);
       writeSessionItem(canonicalStorageKey(analysisStorageId), canonicalId);
       setPaid(true);
+      setExistingPacketDownload(false);
       persistConfirmFlag(false);
       persistResumeFlag(false);
       setCheckoutUrl(null);
@@ -352,7 +371,20 @@ function YearClosePacketPanelForAnalysis({
         return;
       }
       setError(err instanceof Error ? err.message : "Could not confirm payment.");
-      if (checkoutStillOpen) {
+      if (alreadyPaidExisting) {
+        setExistingPacketDownload(true);
+        persistConfirmFlag(false);
+        persistResumeFlag(false);
+        setSessionId(null);
+        setCheckoutUrl(null);
+        clearSessionItem(pendingSessionStorageKey(analysisStorageId));
+        clearSessionItem(pendingCheckoutUrlStorageKey(analysisStorageId));
+        stripPacketQueryParams();
+      } else if (finalizing) {
+        setExistingPacketDownload(false);
+        persistConfirmFlag(true);
+        persistResumeFlag(false);
+      } else if (checkoutStillOpen) {
         persistConfirmFlag(false);
         persistResumeFlag(true);
         stripPacketQueryParams();
@@ -360,6 +392,7 @@ function YearClosePacketPanelForAnalysis({
         persistConfirmFlag(true);
         persistResumeFlag(false);
       } else {
+        setExistingPacketDownload(false);
         persistConfirmFlag(false);
         persistResumeFlag(false);
         setSessionId(null);
@@ -445,6 +478,15 @@ function YearClosePacketPanelForAnalysis({
   }, [analysis, analysisId, analysisStorageId]);
 
   const handlePay = async () => {
+    if (existingPacketDownload) {
+      return;
+    }
+    if (isPacketFinalizingDetail(error ?? "")) {
+      if (sessionId) {
+        await confirmPacketSession(sessionId, canonicalAnalysisId);
+      }
+      return;
+    }
     if (sessionId && confirmPending) {
       await confirmPacketSession(sessionId, canonicalAnalysisId);
       return;
@@ -543,7 +585,7 @@ function YearClosePacketPanelForAnalysis({
       const params = new URLSearchParams({
         analysis_id: canonicalAnalysisId,
       });
-      if (sessionId) {
+      if (sessionId && !existingPacketDownload) {
         params.set("session_id", sessionId);
       }
       const response = await fetch(
@@ -556,6 +598,12 @@ function YearClosePacketPanelForAnalysis({
       if (response.status === 409) {
         const errData = await response.json().catch(() => null);
         const detail = typeof errData?.detail === "string" ? errData.detail : "";
+        if (isPacketFinalizingDetail(detail)) {
+          persistResumeFlag(false);
+          if (sessionId) {
+            persistConfirmFlag(true);
+          }
+        }
         throw new Error(detail || "Download failed.");
       }
       if (response.status === 403) {
@@ -612,13 +660,13 @@ function YearClosePacketPanelForAnalysis({
               )
             }
             onClick={handlePay}
-            disabled={busy !== null || paid || missingAnalysisId}
+            disabled={busy !== null || paid || missingAnalysisId || existingPacketDownload}
           >
             Pay $49
           </Button>
           <Button
-            variant={paid ? "contained" : "outlined"}
-            color={paid ? "success" : "primary"}
+            variant={paid || existingPacketDownload ? "contained" : "outlined"}
+            color={paid || existingPacketDownload ? "success" : "primary"}
             startIcon={
               busy === "download" ? (
                 <CircularProgress size={16} color="inherit" />

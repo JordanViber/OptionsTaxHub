@@ -4393,11 +4393,12 @@ def test_packet_result_tax_year_rejects_bool_and_float():
 
 
 def test_already_granted_confirm_then_download_stays_on_owner_session(monkeypatch, caplog):
-    """This cs_ already owns the entitlement. The paid row belongs to another session.
+    """This cs_ already owns the entitlement. The paid full row belongs to another session.
 
-    That is missing source, not a duplicate charge. No conflict receipt is
-    inserted and confirm does not use refund wording. Download for this cs_
-    is 403. The owner session still downloads.
+    That is already paid, not a missing document and not a duplicate charge.
+    No conflict receipt is inserted and nothing uses refund wording. Download
+    for this cs_ is 403. A session-less GET returns the PDF. The owner session
+    still downloads.
     """
     _test_stripe_env(monkeypatch)
     monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_packet_test_secret")
@@ -4459,11 +4460,14 @@ def test_already_granted_confirm_then_download_stays_on_owner_session(monkeypatc
             "/api/year-close-packet/confirm",
             json={"session_id": "cs_other", "analysis_id": aid},
         )
-    assert granted == main.PACKET_GRANT_MISSING_SOURCE
+    assert granted == main.PACKET_GRANT_ALREADY_PAID_EXISTING
+    assert granted != main.PACKET_GRANT_MISSING_SOURCE
+    assert granted != main.PACKET_GRANT_SAME_YEAR_DUPLICATE
     assert confirm.status_code == 409, confirm.text
-    assert confirm.json()["detail"] == main.PACKET_MISSING_SOURCE_DETAIL
+    assert confirm.json()["detail"] == main.PACKET_ALREADY_PAID_EXISTING_DETAIL
     assert confirm.json().get("paid") is not True
     _assert_no_refund_copy(confirm.text)
+    _assert_no_refund_copy(main.PACKET_ALREADY_PAID_EXISTING_DETAIL)
     assert _conflict_analysis_ids(snapshot_client) == []
     webhook = _post_signed_webhook(
         _packet_checkout_event(
@@ -4475,6 +4479,8 @@ def test_already_granted_confirm_then_download_stays_on_owner_session(monkeypatc
     )
     assert webhook.status_code == 200, webhook.text
     assert webhook.json() == {"received": True, "granted": False}
+    _assert_no_refund_copy(webhook.text)
+    _assert_no_refund_copy(caplog.text)
     assert patches == []
     assert "packet_session_id" not in PACKET_STORE[aid]["payload"]
     assert snapshot_client.rows[0]["packet_session_id"] == "cs_owner"
@@ -4484,6 +4490,14 @@ def test_already_granted_confirm_then_download_stays_on_owner_session(monkeypatc
     assert not any(record.levelno >= logging.ERROR for record in caplog.records)
 
     _forbid_download_writes(monkeypatch)
+    sessionless = client.get(
+        "/api/year-close-packet/download",
+        params={"analysis_id": aid},
+    )
+    assert sessionless.status_code == 200, sessionless.text
+    assert sessionless.content.startswith(b"%PDF")
+    assert "session_id" not in str(sessionless.request.url)
+    _assert_no_refund_copy(sessionless.content.decode("latin-1", errors="ignore"))
     _marker_pdf(monkeypatch)
     other_download = client.post(
         "/api/year-close-packet/download",
@@ -4492,6 +4506,7 @@ def test_already_granted_confirm_then_download_stays_on_owner_session(monkeypatc
     assert other_download.status_code == 403, other_download.text
     assert not other_download.content.startswith(b"%PDF")
     assert b"OWNER2025" not in other_download.content
+    _assert_no_refund_copy(other_download.text)
     owner_download = client.post(
         "/api/year-close-packet/download",
         json={"analysis_id": aid, "session_id": "cs_owner", "analysis": payload},
@@ -10148,7 +10163,6 @@ def test_sessionless_download_409s_for_unusable_snapshots_and_403s_without_recei
     shapes = {
         "missing": None,
         "null": {"packet_payload": None},
-        "unpaid_full": {"packet_payload": full},
         "counts_only": {"packet_payload": counts_only},
     }
     for name, shape in shapes.items():
@@ -10180,6 +10194,34 @@ def test_sessionless_download_409s_for_unusable_snapshots_and_403s_without_recei
             stored = _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)]
             assert stored["paid_at"] is None
             assert stored["packet_payload"] == shape["packet_payload"]
+
+    _FAKE_PACKET_SNAPSHOTS.clear()
+    _FAKE_PACKET_ENTITLEMENTS.clear()
+    reset_packet_store()
+    _unpaid_snapshot(analysis_id, full)
+    _owner_entitlement(analysis_id, "cs_unpaid_full")
+    for method, send in (
+        ("get", lambda: client.get(
+            "/api/year-close-packet/download",
+            params={"analysis_id": analysis_id},
+        )),
+        ("post", lambda: client.post(
+            "/api/year-close-packet/download",
+            json={"analysis_id": analysis_id},
+        )),
+    ):
+        response = send()
+        assert response.status_code == 409, (method, response.text)
+        assert response.json()["detail"] == main.PACKET_FINALIZING_DETAIL
+        assert response.json()["detail"] != main.PACKET_MISSING_SOURCE_DETAIL
+        assert not response.content.startswith(b"%PDF")
+        if method == "get":
+            assert "session_id" not in str(response.request.url)
+        else:
+            assert b"session_id" not in response.request.content
+    stored_full = _FAKE_PACKET_SNAPSHOTS[(user, analysis_id)]
+    assert stored_full["paid_at"] is None
+    assert stored_full["packet_payload"] == full
 
     _FAKE_PACKET_ENTITLEMENTS.clear()
     _unpaid_snapshot(analysis_id, counts_only)
@@ -10425,7 +10467,7 @@ def test_download_session_entitlement_match_outage_and_mismatches(monkeypatch):
         params={"analysis_id": analysis_id, "session_id": session_id},
     )
     assert matched.status_code == 409, matched.text
-    assert matched.json()["detail"] == main.PACKET_MISSING_SOURCE_DETAIL
+    assert matched.json()["detail"] == main.PACKET_FINALIZING_DETAIL
     assert not matched.content.startswith(b"%PDF")
 
     monkeypatch.setattr(

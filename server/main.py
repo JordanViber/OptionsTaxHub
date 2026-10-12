@@ -2511,9 +2511,17 @@ PACKET_SAME_YEAR_DUPLICATE_DETAIL = (
     "another checkout session. The new charge is recorded for a refund."
 )
 PACKET_GRANT_YEAR_UNKNOWN = "PACKET_GRANT_YEAR_UNKNOWN"
+PACKET_GRANT_ALREADY_PAID_EXISTING = "PACKET_GRANT_ALREADY_PAID_EXISTING"
 PACKET_MISSING_SOURCE_DETAIL = (
     "Payment was received, but this analysis has no source document. "
     "Run a new analysis for this tax year."
+)
+PACKET_ALREADY_PAID_EXISTING_DETAIL = (
+    "This tax year is already paid; download your existing packet."
+)
+PACKET_FINALIZING_DETAIL = (
+    "Payment is on file and the packet is still being finalized. "
+    "Retry confirming the payment."
 )
 PACKET_YEAR_AMBIGUOUS_DETAIL = (
     "We found paid packets for more than one tax year for this analysis. "
@@ -2591,8 +2599,10 @@ def _already_owned_session_grant(analysis_id, user_id, tax_year, session_id):
     entitlement. No ``conflict:`` receipt was inserted and no refund line was
     logged. That is not a second charge. True requires
     ``packet_session_id ==`` this session and a payload that passes
-    ``packet_payload_rows_match_counts``. Anything else, including an unpaid
-    row, a counts-only row, or a snapshot owned by another ``cs_``, is
+    ``packet_payload_rows_match_counts``. A paid full snapshot owned by a
+    different ``cs_`` is ``PACKET_GRANT_ALREADY_PAID_EXISTING``: the document
+    is already on the row, so it is not missing and it is not a new refund.
+    An unpaid row, a counts-only row, or any other owner is
     ``PACKET_GRANT_MISSING_SOURCE``. A failed re-read is an outage.
     """
     try:
@@ -2602,12 +2612,12 @@ def _already_owned_session_grant(analysis_id, user_id, tax_year, session_id):
     stored, stored_ok = get_packet_snapshot(analysis_id, user_id, tax_year=year)
     if not stored_ok:
         return None
-    if (
-        isinstance(stored, dict)
-        and stored.get("packet_session_id") == session_id
-        and _snapshot_is_paid_full(stored)
-    ):
-        return True
+    if isinstance(stored, dict) and _snapshot_is_paid_full(stored):
+        owner = stored.get("packet_session_id")
+        if owner == session_id:
+            return True
+        if isinstance(owner, str) and owner.startswith("cs_") and owner != session_id:
+            return PACKET_GRANT_ALREADY_PAID_EXISTING
     return PACKET_GRANT_MISSING_SOURCE
 
 
@@ -2620,6 +2630,8 @@ def _same_year_duplicate_grant(analysis_id, user_id, tax_year, session_id):
     refuses the grant. ``ALREADY_GRANTED_ENTITLEMENT`` is this ``cs_`` already
     owning the entitlement — never the duplicate sentinel and never refund
     wording. Paid (True) only when this session's own snapshot is paid and full.
+    A paid full snapshot owned by a different ``cs_`` is
+    ``PACKET_GRANT_ALREADY_PAID_EXISTING`` and writes no receipt.
     """
     try:
         year = int(tax_year)
@@ -2656,7 +2668,9 @@ def _conflict_grant_result(result, analysis_id, user_id, tax_year, session_id):
     document. ``mark`` returns ``ALREADY_GRANTED_ENTITLEMENT`` when this
     ``cs_`` already owns the entitlement and nothing was written; that is
     paid only for this session's own paid full snapshot, otherwise missing
-    source. A ``conflict:`` insert is ``PACKET_GRANT_SAME_YEAR_DUPLICATE``.
+    source. A paid full row owned by a different ``cs_`` is
+    ``PACKET_GRANT_ALREADY_PAID_EXISTING``. A ``conflict:`` insert is
+    ``PACKET_GRANT_SAME_YEAR_DUPLICATE``.
     A re-read paid under a different ``cs_`` uses the same receipt helper.
     A first-time other-year conflict writes a receipt and stays
     ``PACKET_GRANT_YEAR_CONFLICT``. An already-owned other-year conflict
@@ -3053,8 +3067,9 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
         return None
     # Do not return the duplicate string blindly. mark used to collapse an
     # already-owned cs_ into that string without inserting a receipt. The
-    # helper returns the duplicate sentinel only for a conflict: receipt, and
-    # missing source or paid for ALREADY_GRANTED_ENTITLEMENT.
+    # helper returns the duplicate sentinel only for a conflict: receipt.
+    # ALREADY_GRANTED_ENTITLEMENT is paid, already-paid existing, or missing
+    # source. It does not write a receipt.
     if (
         entitlement_saved is ALREADY_GRANTED_ENTITLEMENT
         or entitlement_saved == PACKET_GRANT_SAME_YEAR_DUPLICATE
@@ -3152,6 +3167,8 @@ def _grant_packet_from_session(session, analysis_id: str, user_id: str = "") -> 
         )
     if granted == PACKET_GRANT_MISSING_SOURCE:
         raise HTTPException(status_code=409, detail=PACKET_MISSING_SOURCE_DETAIL)
+    if granted == PACKET_GRANT_ALREADY_PAID_EXISTING:
+        raise HTTPException(status_code=409, detail=PACKET_ALREADY_PAID_EXISTING_DETAIL)
     if granted == PACKET_GRANT_YEAR_CONFLICT:
         raise HTTPException(
             status_code=409,
@@ -4220,6 +4237,9 @@ async def year_close_packet_webhook(request: Request):
                 "and the saved packet does not name exactly one tax year."
             ),
         )
+    # Non-grant results, including a paid full packet already owned by another
+    # cs_, ack like a duplicate or a missing source: granted is false and this
+    # handler writes no receipt.
     return {"received": True, "granted": granted is True}
 
 
@@ -4339,10 +4359,14 @@ def _refuse_download_without_paid_source(
     user_id: str,
     tax_year: int,
     session_id: Optional[str],
+    payload: Any = None,
 ) -> None:
-    """403 when nobody paid. 409 when they paid and this year has no document.
+    """403 when nobody paid. 409 when a receipt has no downloadable PDF.
 
-    Does not render a PDF. An unpaid or missing snapshot is not a paid source.
+    Does not render a PDF. An unpaid row whose payload passes
+    ``packet_payload_rows_match_counts`` is still being finalized: the receipt
+    is on file and confirm must stamp ``paid_at``. Missing, null, and
+    counts-only rows stay ``PACKET_MISSING_SOURCE_DETAIL``.
     """
     entitled = _download_has_matching_entitlement(
         analysis_id,
@@ -4352,6 +4376,8 @@ def _refuse_download_without_paid_source(
     )
     if entitled is None:
         _packet_download_entitlement_unavailable()
+    if entitled and packet_payload_rows_match_counts(payload):
+        raise HTTPException(status_code=409, detail=PACKET_FINALIZING_DETAIL)
     if entitled:
         raise HTTPException(status_code=409, detail=PACKET_MISSING_SOURCE_DETAIL)
     _packet_download_forbidden()
@@ -4505,8 +4531,9 @@ def _authorized_packet_download(
     # rewrite the analysis id to the session spelling on this request. A
     # sticky in-memory paid flag is not a paid snapshot for this year.
     # An unpaid or missing row is 403 only when this user has no receipt for
-    # the analysis. A same-year or cs_ entitlement with no usable document is
-    # 409, and it is still not a PDF.
+    # the analysis. A receipt plus a payload that already passes the row check
+    # is 409 finalizing, still not a PDF. Missing, null, and counts-only stay
+    # the missing-source 409.
     if isinstance(snapshot, dict):
         if not snapshot.get("paid_at"):
             _refuse_download_without_paid_source(
@@ -4514,6 +4541,7 @@ def _authorized_packet_download(
                 user_id,
                 int(tax_year),
                 session_id,
+                snapshot.get("packet_payload"),
             )
         if not isinstance(snapshot.get("packet_payload"), dict):
             raise HTTPException(status_code=409, detail=PACKET_MISSING_SOURCE_DETAIL)
