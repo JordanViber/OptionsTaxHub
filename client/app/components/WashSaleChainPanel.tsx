@@ -192,12 +192,66 @@ function QuietHopDetails({
   );
 }
 
+function SparseHopDetails({ hop }: Readonly<{ hop: WashSaleHop }>) {
+  return (
+    <Stack
+      spacing={1.25}
+      data-testid={`wash-sale-hop-${hop.hop_id}`}
+      sx={{ minWidth: 0, maxWidth: "100%" }}
+    >
+      <Stack
+        direction={{ xs: "column", sm: "row" }}
+        spacing={1}
+        sx={{ alignItems: { sm: "center" } }}
+      >
+        <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+          {hop.hop_index > 0 ? `Hop ${hop.hop_index + 1}` : "This sale"}
+        </Typography>
+        <Chip
+          size="small"
+          color={chipColor(hop.reconcile_status)}
+          label={washChainStatusLabel(hop.reconcile_status, hop.difference)}
+        />
+      </Stack>
+      <Typography
+        variant="body2"
+        sx={{ whiteSpace: "normal", overflowWrap: "anywhere" }}
+      >
+        {hop.plain_english}
+      </Typography>
+      <Box
+        sx={{
+          display: "grid",
+          gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" },
+          gap: 1.25,
+          minWidth: 0,
+        }}
+      >
+        <Fact label="Symbol" value={hop.symbol} />
+        <Fact label="Sale date" value={formatChainDate(hop.sale_date)} />
+        {hop.form_1099_wash != null && (
+          <Fact
+            label="1099 wash adjustment"
+            value={formatUsd(hop.form_1099_wash)}
+          />
+        )}
+      </Box>
+    </Stack>
+  );
+}
+
 function HopDetails({ hop }: Readonly<{ hop: WashSaleHop }>) {
   if (hop.asset_type === "option") {
     return <QuietHopDetails hop={hop} instrument="Option" />;
   }
   if (hop.asset_type === "unclassified") {
     return <QuietHopDetails hop={hop} instrument="Unclassified" />;
+  }
+  if (
+    hop.not_compared_reason === "overlap" ||
+    hop.not_compared_reason === "unassigned"
+  ) {
+    return <SparseHopDetails hop={hop} />;
   }
   const perLot = differingClosedLots(hop);
   const showCarry =

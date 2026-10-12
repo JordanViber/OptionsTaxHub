@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { PortfolioAnalysis, Supplemental1099Summary } from "../../lib/types";
 
@@ -497,6 +497,80 @@ describe("DashboardPage", () => {
       expect(screen.getByTestId("wash-sale-chain-hint")).toBeInTheDocument();
     });
     expect(mockFetchWashSaleChains).toHaveBeenCalledTimes(1);
+  });
+
+  it("fetches wash-sale chains again after a cancelled in-flight request", async () => {
+    const resolvers: Array<
+      (value: {
+        chains: Array<{
+          chain_id: string;
+          symbol: string;
+          reconcile_status: "matches";
+          difference: null;
+          plain_english: string;
+          hops: [];
+        }>;
+        hint: string | null;
+      }) => void
+    > = [];
+    mockFetchWashSaleChains.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolvers.push(resolve);
+        }),
+    );
+    const paidChain = {
+      chain_id: "AMD:2026-07-15:10:e0",
+      symbol: "AMD",
+      reconcile_status: "matches" as const,
+      difference: null,
+      plain_english:
+        "You sold 10 AMD at a $300 loss on Jul 15 and bought 10 back on Jul 24, so $300 moved into the new lot's basis. This matches your 1099 wash adjustment of $300.",
+      hops: [] as [],
+    };
+    const paid = {
+      ...baseAnalysis,
+      sample_run: false,
+      packet_unlocked: false,
+      wash_sale_chains: [],
+    };
+    const sample = {
+      ...baseAnalysis,
+      analysis_id: "sample-analysis",
+      sample_run: true,
+      wash_sale_chains: [],
+    };
+    mockAnalyzeData = paid;
+
+    const { rerender } = render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(mockFetchWashSaleChains).toHaveBeenCalledTimes(1);
+    });
+
+    mockAnalyzeData = sample;
+    rerender(<DashboardPage />);
+    await waitFor(() => {
+      expect(screen.queryByTestId("wash-sale-chain-card")).not.toBeInTheDocument();
+    });
+
+    await act(async () => {
+      resolvers[0]?.({ chains: [paidChain], hint: null });
+    });
+    expect(screen.queryByText(/You sold 10 AMD/)).not.toBeInTheDocument();
+
+    mockAnalyzeData = paid;
+    rerender(<DashboardPage />);
+    await waitFor(() => {
+      expect(mockFetchWashSaleChains).toHaveBeenCalledTimes(2);
+    });
+    await act(async () => {
+      resolvers[1]?.({ chains: [paidChain], hint: null });
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("wash-sale-chain-card")).toBeInTheDocument();
+    });
+    expect(screen.getByText(/You sold 10 AMD/)).toBeInTheDocument();
   });
 
   it("shows wash-sale-chain-hint when a paid packet's chain fetch is forbidden", async () => {

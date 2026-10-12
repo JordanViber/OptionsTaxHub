@@ -685,4 +685,120 @@ describe("WashSaleChainPanel", () => {
     expect(screen.queryByText("Disallowed")).not.toBeInTheDocument();
     expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
   });
+
+  it("renders overlap and unassigned hops without a dollar grid", () => {
+    const overlapCopy =
+      "AAPL on Jun 1, 2026 has a stock sale and an option close of the same quantity, so neither was compared.";
+    const unassignedCopy =
+      "AAPL on Jun 1, 2026 overlapped more than one possible sale, so it was not compared.";
+    const quietHop = (
+      hopId: string,
+      copy: string,
+      reason: string,
+      formWash: number | null,
+    ) =>
+      hop({
+        hop_id: hopId,
+        symbol: "AAPL",
+        asset_type: "stock",
+        sale_date: "2026-06-01",
+        sale_quantity: 25,
+        proceeds: 250,
+        cost_basis: 300,
+        loss: 50,
+        replacement_buys: [],
+        disallowed_loss: 0,
+        engine_disallowed_loss: null,
+        form_1099_wash: formWash,
+        engine_adjusted_cost_basis: null,
+        open_lot_total_cost_basis: null,
+        carried_in_disallowed: null,
+        engine_sale_loss: null,
+        explained_loss_with_carry: null,
+        plain_english: copy,
+        reconcile_status: "not_compared",
+        not_compared_reason: reason,
+      });
+    render(
+      <WashSaleChainPanel
+        chains={[
+          chain({
+            chain_id: "AAPL:2026-06-01:10:f0",
+            symbol: "AAPL",
+            reconcile_status: "not_compared",
+            plain_english: overlapCopy,
+            hops: [
+              quietHop("AAPL:2026-06-01:10:f0", overlapCopy, "overlap", null),
+            ],
+          }),
+          chain({
+            chain_id: "AAPL:2026-06-01:25:u2",
+            symbol: "AAPL",
+            reconcile_status: "not_compared",
+            plain_english: unassignedCopy,
+            hops: [
+              quietHop(
+                "AAPL:2026-06-01:25:u2",
+                unassignedCopy,
+                "unassigned",
+                null,
+              ),
+            ],
+          }),
+          chain({
+            chain_id: "AAPL:2026-06-01:25:u3",
+            symbol: "AAPL",
+            reconcile_status: "not_compared",
+            plain_english: unassignedCopy,
+            hops: [
+              quietHop("AAPL:2026-06-01:25:u3", unassignedCopy, "unassigned", 5),
+            ],
+          }),
+        ]}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByTestId("wash-sale-chain-open-AAPL:2026-06-01:10:f0"),
+    );
+    expect(screen.getAllByText(overlapCopy).length).toBeGreaterThan(0);
+    expect(screen.getByText("Symbol")).toBeInTheDocument();
+    expect(screen.getByText("Jun 1, 2026")).toBeInTheDocument();
+    expect(screen.queryByText("Proceeds")).not.toBeInTheDocument();
+    expect(screen.queryByText("Disallowed")).not.toBeInTheDocument();
+    expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
+    expect(screen.queryByText("1099 wash adjustment")).not.toBeInTheDocument();
+    expect(screen.queryByText("$5.00")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("No replacement buy in this Robinhood export."),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Instrument")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Close wash-sale chain"));
+
+    fireEvent.click(
+      screen.getByTestId("wash-sale-chain-open-AAPL:2026-06-01:25:u2"),
+    );
+    expect(screen.getAllByText(unassignedCopy).length).toBeGreaterThan(0);
+    expect(screen.queryByText("Proceeds")).not.toBeInTheDocument();
+    expect(screen.queryByText("Disallowed")).not.toBeInTheDocument();
+    expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
+    expect(screen.queryByText("1099 wash adjustment")).not.toBeInTheDocument();
+    expect(screen.queryByText("$5.00")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("No replacement buy in this Robinhood export."),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Close wash-sale chain"));
+
+    fireEvent.click(
+      screen.getByTestId("wash-sale-chain-open-AAPL:2026-06-01:25:u3"),
+    );
+    expect(screen.getByText("1099 wash adjustment")).toBeInTheDocument();
+    expect(screen.getByText("$5.00")).toBeInTheDocument();
+    expect(screen.queryByText("Proceeds")).not.toBeInTheDocument();
+    expect(screen.queryByText("Disallowed")).not.toBeInTheDocument();
+    expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("No replacement buy in this Robinhood export."),
+    ).not.toBeInTheDocument();
+  });
 });

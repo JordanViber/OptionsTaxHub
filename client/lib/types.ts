@@ -128,6 +128,8 @@ export interface WashSaleHop {
   plain_english: string;
   reconcile_status: WashReconcileStatus;
   difference?: number | null;
+  // Display only. "" when the hop was compared.
+  not_compared_reason?: string;
 }
 
 export interface WashSaleChain {

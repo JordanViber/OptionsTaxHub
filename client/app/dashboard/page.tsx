@@ -1369,9 +1369,10 @@ export default function DashboardPage() {
     if (washChainFetchedFor.current === washChainAnalysisId) {
       return;
     }
-    washChainFetchedFor.current = washChainAnalysisId;
+    const requestedId = washChainAnalysisId;
+    washChainFetchedFor.current = requestedId;
     let cancelled = false;
-    fetchWashSaleChains(washChainAnalysisId)
+    fetchWashSaleChains(requestedId)
       .then((result) => {
         if (cancelled) return;
         const chains = result.chains;
@@ -1382,7 +1383,7 @@ export default function DashboardPage() {
         setWashChainHint(null);
         setLoadedAnalysis((current) => {
           const base = current ?? displayedAnalysisRef.current;
-          if (!base || base.analysis_id !== washChainAnalysisId) return current;
+          if (!base || base.analysis_id !== requestedId) return current;
           if ((base.wash_sale_chains?.length ?? 0) > 0) return current;
           return { ...base, wash_sale_chains: chains };
         });
@@ -1394,6 +1395,10 @@ export default function DashboardPage() {
       });
     return () => {
       cancelled = true;
+      // A cancelled request must not block the next fetch of this id.
+      if (washChainFetchedFor.current === requestedId) {
+        washChainFetchedFor.current = null;
+      }
     };
   }, [packetPaid, washChainAnalysisId, washChainIsSample, washChainCount]);
 

@@ -236,6 +236,9 @@ class WashSaleHop(BaseModel):
     plain_english: str = ""
     reconcile_status: WashReconcileStatus = "not_on_1099"
     difference: Optional[float] = None
+    # Display only. "" | "no_1099" | "ambiguous" | "over_cap" | "unidentified"
+    # | "option" | "unclassified" | "overlap" | "unassigned". Not a tax field.
+    not_compared_reason: str = ""
 
 
 class WashSaleChain(BaseModel):
@@ -243,8 +246,9 @@ class WashSaleChain(BaseModel):
 
     The chip uses the worst hop (differs, then on_1099_only, then
     not_on_1099, then not_compared, then matches). A one-hop chain's
-    headline is that hop. A longer chain's headline is the symbol, the
-    first sale date, and the status. chain_id stays the first hop.
+    headline is that hop. A longer chain's headline is the symbol and the
+    status, without pinning that status to the first sale's date.
+    chain_id stays the first hop.
     """
 
     chain_id: str
