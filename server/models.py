@@ -173,7 +173,15 @@ class WashSaleFlag(BaseModel):
     purchase_date: Optional[date] = None
 
 
-WashReconcileStatus = Literal["matches", "differs", "not_on_1099", "on_1099_only"]
+# Worst-first rollup used by the chain chip: differs, then on_1099_only,
+# then not_on_1099, then not_compared, then matches.
+WashReconcileStatus = Literal[
+    "matches",
+    "differs",
+    "not_on_1099",
+    "on_1099_only",
+    "not_compared",
+]
 
 
 class WashReplacementBuy(BaseModel):
@@ -220,7 +228,12 @@ class WashSaleHop(BaseModel):
 
 
 class WashSaleChain(BaseModel):
-    """A wash-sale chain for the explainer. Headline is the first hop."""
+    """A wash-sale chain for the explainer.
+
+    The chip and headline use the worst hop (differs, then on_1099_only,
+    then not_on_1099, then not_compared, then matches). chain_id stays the
+    first hop so links do not move when a later hop is worse.
+    """
 
     chain_id: str
     symbol: str

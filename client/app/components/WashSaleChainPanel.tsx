@@ -56,6 +56,7 @@ export function washChainStatusLabel(
   }
   if (status === "not_on_1099") return "Not on your 1099";
   if (status === "on_1099_only") return "On your 1099 only";
+  if (status === "not_compared") return "Not compared";
   return status;
 }
 
@@ -115,6 +116,16 @@ function Fact({
 
 function isIsoDate(value: string | null | undefined): value is string {
   return Boolean(value && /^\d{4}-\d{2}-\d{2}/.test(value));
+}
+
+const BASIS_SPLIT_CENTS = 0.02;
+
+export function basisSplitIsIllustrative(hop: WashSaleHop): boolean {
+  if (hop.engine_adjusted_cost_basis == null) return false;
+  const split = hop.replacement_buys
+    .filter((buy) => buy.allocated_quantity > 0)
+    .reduce((sum, buy) => sum + buy.explained_basis, 0);
+  return Math.abs(split - hop.engine_adjusted_cost_basis) > BASIS_SPLIT_CENTS;
 }
 
 function carryoverCopy(hop: WashSaleHop): string {
@@ -178,7 +189,7 @@ function HopDetails({ hop }: Readonly<{ hop: WashSaleHop }>) {
         )}
         {hop.engine_adjusted_cost_basis != null && (
           <Fact
-            label="Basis on this lot in your tax totals"
+            label="Engine adjusted basis (source of truth)"
             value={formatUsd(hop.engine_adjusted_cost_basis)}
           />
         )}
@@ -192,23 +203,28 @@ function HopDetails({ hop }: Readonly<{ hop: WashSaleHop }>) {
       <Typography variant="caption" color="text.secondary">
         Replacement buys
       </Typography>
-      {hop.replacement_buys.length === 0 ? (
+      {hop.replacement_buys.every((buy) => buy.allocated_quantity === 0) ? (
         <Typography variant="body2">
           No replacement buy in this Robinhood export.
         </Typography>
       ) : (
-        hop.replacement_buys.map((buy) => (
-          <Typography
-            key={`${hop.hop_id}-${buy.activity_date}-${buy.quantity}`}
-            variant="body2"
-            sx={{ whiteSpace: "normal", overflowWrap: "anywhere" }}
-          >
-            {formatChainDate(buy.activity_date)} · {formatQty(buy.quantity)}
-            {buy.allocated_quantity > 0
-              ? ` · explained basis ${formatUsd(buy.explained_basis)}`
-              : ""}
-          </Typography>
-        ))
+        hop.replacement_buys.map((buy, index) =>
+          buy.allocated_quantity === 0 ? null : (
+            <Typography
+              key={`${hop.hop_id}-${index}-${buy.activity_date}-${buy.quantity}`}
+              variant="body2"
+              sx={{ whiteSpace: "normal", overflowWrap: "anywhere" }}
+            >
+              {formatChainDate(buy.activity_date)} · {formatQty(buy.quantity)}
+              {` · explained basis ${formatUsd(buy.explained_basis)}`}
+            </Typography>
+          ),
+        )
+      )}
+      {basisSplitIsIllustrative(hop) && (
+        <Typography variant="caption" color="text.secondary">
+          Per-buy basis split is illustrative.
+        </Typography>
       )}
       <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>
         {carryoverCopy(hop)}
@@ -363,7 +379,7 @@ export default function WashSaleChainPanel({
               <Typography
                 variant="caption"
                 color="text.secondary"
-                data-testid="wash-sale-chain-disclaimer"
+                data-testid="wash-sale-chain-dialog-disclaimer"
                 sx={{ whiteSpace: "normal", overflowWrap: "anywhere" }}
               >
                 {WASH_SALE_CHAIN_DISCLAIMER}

@@ -61,6 +61,7 @@ let mockHistoryData: Array<{
 }> = [];
 const mockAnalyzeMutate = jest.fn();
 const mockFetchAnalysisById = jest.fn();
+const mockFetchWashSaleChains = jest.fn(() => Promise.resolve([]));
 const mockCleanupOrphanHistory = jest.fn(() => Promise.resolve());
 const mockDeleteAnalysis = jest.fn(() => Promise.resolve(true));
 
@@ -86,6 +87,7 @@ jest.mock("../../lib/api", () => ({
     isFetched: true,
   }),
   fetchAnalysisById: mockFetchAnalysisById,
+  fetchWashSaleChains: mockFetchWashSaleChains,
   cleanupOrphanHistory: mockCleanupOrphanHistory,
   deleteAnalysis: mockDeleteAnalysis,
   persistGuestAnalysis: jest.fn(() => Promise.resolve(true)),
@@ -244,6 +246,8 @@ describe("DashboardPage", () => {
     mockHistoryData = [];
     mockAnalyzeMutate.mockReset();
     mockFetchAnalysisById.mockReset();
+    mockFetchWashSaleChains.mockReset();
+    mockFetchWashSaleChains.mockResolvedValue([]);
     mockCleanupOrphanHistory.mockClear();
     mockDeleteAnalysis.mockClear();
     mockSessionValue = null;
@@ -362,6 +366,80 @@ describe("DashboardPage", () => {
     });
     expect(screen.getByText("Wash-sale chains")).toBeInTheDocument();
     expect(screen.getByText(/You sold 10 AMD/)).toBeInTheDocument();
+    expect(mockFetchWashSaleChains).not.toHaveBeenCalled();
+  });
+
+  it("shows wash-sale chains after packet confirm without a new upload", async () => {
+    const store = new Map<string, string>();
+    Object.defineProperty(globalThis, "sessionStorage", {
+      value: {
+        getItem: jest.fn((key: string) => store.get(key) ?? null),
+        setItem: jest.fn((key: string, value: string) => {
+          store.set(key, value);
+        }),
+        removeItem: jest.fn((key: string) => {
+          store.delete(key);
+        }),
+        clear: jest.fn(() => {
+          store.clear();
+        }),
+      },
+      writable: true,
+    });
+    const paidChain = {
+      chain_id: "AMD:2026-07-15:10:e0",
+      symbol: "AMD",
+      reconcile_status: "matches" as const,
+      difference: null,
+      plain_english:
+        "You sold 10 AMD at a $300 loss on Jul 15 and bought 10 back on Jul 24, so $300 moved into the new lot's basis. This matches your 1099 wash adjustment of $300.",
+      hops: [],
+    };
+    mockFetchWashSaleChains.mockResolvedValue([paidChain]);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/year-close-packet/checkout")) {
+        return {
+          ok: true,
+          json: async () => ({
+            already_paid: true,
+            session_id: "cs_test_confirm",
+            analysis_id: "analysis-test-1",
+          }),
+        };
+      }
+      return { ok: false, status: 404, json: async () => ({}) };
+    }) as unknown as typeof fetch;
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      sample_run: false,
+      packet_unlocked: false,
+      wash_sale_chains: [],
+    };
+
+    try {
+      render(<DashboardPage />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(
+          screen.getByRole("button", { name: /Pay \$49/i }),
+        ).toBeEnabled();
+      });
+      expect(screen.queryByTestId("wash-sale-chain-card")).not.toBeInTheDocument();
+      expect(mockFetchWashSaleChains).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole("button", { name: /Pay \$49/i }));
+
+      await waitFor(() => {
+        expect(screen.getByTestId("wash-sale-chain-card")).toBeInTheDocument();
+      });
+      expect(screen.getByText(/You sold 10 AMD/)).toBeInTheDocument();
+      expect(mockFetchWashSaleChains).toHaveBeenCalledWith("analysis-test-1");
+      expect(mockAnalyzeMutate).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it("shows restored-session messaging when analysis is recovered from browser storage", async () => {

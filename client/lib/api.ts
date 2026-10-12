@@ -10,6 +10,7 @@ import type {
   LeapRankResponse,
   RhChainResponse,
   RhStatusResponse,
+  WashSaleChain,
 } from "@/lib/types";
 import { getSession } from "./supabase";
 
@@ -604,6 +605,27 @@ export async function fetchAnalysisById(
   }
 
   return response.json();
+}
+
+/**
+ * Load display wash-sale chains after the year-close packet is paid.
+ *
+ * Unpaid history JSON omits chains. A non-OK response (including 403) yields
+ * an empty list so the desk stays quiet until payment is confirmed.
+ */
+export async function fetchWashSaleChains(
+  analysisId: string,
+): Promise<WashSaleChain[]> {
+  const headers = await getAuthHeaders();
+  const response = await fetch(
+    apiPath(`/api/portfolio/analysis/${analysisId}/wash-sale-chains`),
+    { headers },
+  );
+  if (!response.ok) {
+    return [];
+  }
+  const body = await response.json();
+  return Array.isArray(body?.wash_sale_chains) ? body.wash_sale_chains : [];
 }
 
 /**

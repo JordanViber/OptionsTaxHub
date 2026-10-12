@@ -112,6 +112,7 @@ describe("washChainStatusLabel", () => {
     expect(washChainStatusLabel("differs", null)).toBe("Differs by $0");
     expect(washChainStatusLabel("not_on_1099", null)).toBe("Not on your 1099");
     expect(washChainStatusLabel("on_1099_only", null)).toBe("On your 1099 only");
+    expect(washChainStatusLabel("not_compared", null)).toBe("Not compared");
     expect(washChainStatusLabel("other", null)).toBe("other");
   });
 });
@@ -153,10 +154,19 @@ describe("WashSaleChainPanel", () => {
     expect(
       screen.getByText(/44 days carried from the sold lot/),
     ).toHaveTextContent("Jun 1, 2026");
-    expect(screen.getByText("Basis on this lot in your tax totals")).toBeInTheDocument();
+    expect(
+      screen.getByText("Engine adjusted basis (source of truth)"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/in your tax totals/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Per-buy basis split is illustrative."),
+    ).not.toBeInTheDocument();
     expect(screen.getByText("Open lot basis now")).toBeInTheDocument();
     expect(screen.getByText("1099 wash adjustment")).toBeInTheDocument();
-    expect(screen.getAllByTestId("wash-sale-chain-disclaimer")).toHaveLength(2);
+    expect(screen.getAllByTestId("wash-sale-chain-disclaimer")).toHaveLength(1);
+    expect(
+      screen.getByTestId("wash-sale-chain-dialog-disclaimer"),
+    ).toHaveTextContent(WASH_SALE_CHAIN_DISCLAIMER);
   });
 
   it("labels Differs, Not on your 1099, and On your 1099 only", () => {
@@ -227,14 +237,27 @@ describe("WashSaleChainPanel", () => {
       screen.getByText("No replacement buy in this Robinhood export."),
     ).toBeInTheDocument();
     expect(
-      screen.queryByText("Basis on this lot in your tax totals"),
+      screen.queryByText("Engine adjusted basis (source of truth)"),
     ).not.toBeInTheDocument();
+    expect(screen.queryByText(/in your tax totals/i)).not.toBeInTheDocument();
     fireEvent.click(screen.getByLabelText("Close wash-sale chain"));
     expect(
       screen.queryByText("Holding-period carryover is not in this export."),
     ).not.toBeInTheDocument();
     expect(
       screen.queryByText("No replacement buy in this Robinhood export."),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("wash-sale-chain-open-MISS"));
+    expect(
+      screen.getByText("Holding-period carryover is not in this export."),
+    ).toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole("dialog"), {
+      key: "Escape",
+      code: "Escape",
+    });
+    expect(
+      screen.queryByText("Holding-period carryover is not in this export."),
     ).not.toBeInTheDocument();
   });
 
@@ -298,7 +321,7 @@ describe("WashSaleChainPanel", () => {
       explained_loss_with_carry: 400,
       carried_in_disallowed: 200,
       plain_english:
-        "Hop 2: You bought 10 AAPL on Jun 10 and sold 10 at a $200 loss on Jun 20. The prior hop carried $200 into this lot. The engine still reports a $200 loss on this sale, and the tax totals use that engine figure.",
+        "Hop 2: You bought 10 AAPL on Jun 10 and sold 10 at a $200 loss on Jun 20. The prior hop carried $200 into this lot. The engine still reports a $200 loss on this sale. That engine figure is the source of truth.",
     });
     render(
       <WashSaleChainPanel
@@ -313,7 +336,10 @@ describe("WashSaleChainPanel", () => {
     );
     expect(screen.getByText("Hop one headline")).toBeInTheDocument();
     fireEvent.click(screen.getByTestId(`wash-sale-chain-open-${first.hop_id}`));
-    expect(screen.getByText(/tax totals use that engine figure/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/That engine figure is the source of truth/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/in your tax totals/i)).not.toBeInTheDocument();
     expect(screen.getByText("Carried in")).toBeInTheDocument();
     expect(screen.getByText("Engine loss on this sale")).toBeInTheDocument();
     expect(screen.getByText("Explained loss with carry")).toBeInTheDocument();
@@ -354,6 +380,15 @@ describe("WashSaleChainPanel", () => {
                     quantity: 1.5,
                     price: 1,
                     cash_cost: 1.5,
+                    allocated_quantity: 1.5,
+                    allocated_disallowed: 0,
+                    explained_basis: 1.5,
+                  },
+                  {
+                    activity_date: "2026-06-02",
+                    quantity: 4,
+                    price: 1,
+                    cash_cost: 0,
                     allocated_quantity: 0,
                     allocated_disallowed: 0,
                     explained_basis: 0,
@@ -371,5 +406,52 @@ describe("WashSaleChainPanel", () => {
       screen.getByText("Holding-period carryover is not in this export."),
     ).toBeInTheDocument();
     expect(screen.getByText(/nope · 1.5/)).toBeInTheDocument();
+    expect(screen.queryByText(/Jun 2, 2026 · 4/)).not.toBeInTheDocument();
+  });
+
+  it("marks a per-buy split as illustrative and keeps duplicate buy keys", () => {
+    render(
+      <WashSaleChainPanel
+        chains={[
+          chain({
+            reconcile_status: "not_compared",
+            hops: [
+              hop({
+                reconcile_status: "not_compared",
+                engine_adjusted_cost_basis: 1550,
+                replacement_buys: [
+                  {
+                    activity_date: "2026-07-24",
+                    quantity: 10,
+                    price: 125,
+                    cash_cost: 1250,
+                    allocated_quantity: 6,
+                    allocated_disallowed: 180,
+                    explained_basis: 930,
+                  },
+                  {
+                    activity_date: "2026-07-24",
+                    quantity: 10,
+                    price: 130,
+                    cash_cost: 1300,
+                    allocated_quantity: 4,
+                    allocated_disallowed: 120,
+                    explained_basis: 640,
+                  },
+                ],
+              }),
+            ],
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByText("Not compared")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("wash-sale-chain-open-AMD:2026-07-15:10:e0"));
+    expect(
+      screen.getByText("Per-buy basis split is illustrative."),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/explained basis \$930\.00/)).toBeInTheDocument();
+    expect(screen.getByText(/explained basis \$640\.00/)).toBeInTheDocument();
+    expect(screen.queryByText(/in your tax totals/i)).not.toBeInTheDocument();
   });
 });

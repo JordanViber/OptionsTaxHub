@@ -65,7 +65,9 @@ from year_close_packet import (
     _session_metadata,
     packet_store_belongs_to_user,
     paid_session_for_user_year,
+    paid_wash_sale_chains,
     remember_analysis,
+    stash_wash_sale_chains,
     _analysis_ids_match,
     render_packet_pdf,
     resolve_packet_stripe_secret_key,
@@ -1652,6 +1654,14 @@ async def _run_portfolio_analysis(
         else dict(result)
     )
     remember_analysis(analysis_id, user_id, full_dump)
+    # Chains are stripped from unpaid JSON and are not part of the PDF payload.
+    # Keep them on the in-memory packet record so a paid confirm can read them
+    # back without a second upload. A process restart drops the stash.
+    stash_wash_sale_chains(
+        analysis_id,
+        user_id or "",
+        full_dump.get("wash_sale_chains") or [],
+    )
     public_result = _public_analysis(result, keep_lot_rows=keep_lot_rows)
 
     # History is always redacted. Lot rows stay in PACKET_STORE and the paid
@@ -1977,6 +1987,30 @@ async def get_portfolio_analysis(
             "result": strip_book_transactions_dict(record["result"]),
         }
     return record
+
+
+@app.get(
+    "/api/portfolio/analysis/{analysis_id}/wash-sale-chains",
+    responses={
+        403: {"description": "Year-close packet is not paid"},
+    },
+)
+async def get_wash_sale_chains(
+    analysis_id: str,
+    user_id: Annotated[str, Depends(get_current_user)],
+):
+    """Return display wash-sale chains after the year-close packet is paid.
+
+    History JSON stays redacted. This read does not rebuild tax figures.
+    """
+    analysis_id = _require_canonical_analysis_id(analysis_id)
+    chains = paid_wash_sale_chains(analysis_id, user_id)
+    if chains is None:
+        raise HTTPException(
+            status_code=403,
+            detail="Wash-sale chains are available after the year-close packet is paid.",
+        )
+    return {"wash_sale_chains": chains}
 
 
 @app.delete("/api/portfolio/history/cleanup")

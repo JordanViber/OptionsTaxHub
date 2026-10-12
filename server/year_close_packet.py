@@ -978,14 +978,50 @@ def remember_analysis(analysis_id: str, user_id: str, analysis: dict[str, Any]) 
         existing_payload,
         build_packet_payload(preserved, analysis_id=analysis_id),
     )
-    PACKET_STORE[analysis_id] = _new_packet_record(
+    record = _new_packet_record(
         user_id,
         payload=payload,
         paid=bool(existing.get("paid")),
         session_ids=set(existing.get("session_ids") or []),
         created_at=existing.get("created_at"),
     )
+    # Display chains live beside the snapshot. Rebuilding the PDF payload
+    # must not drop a stash already stored for this analysis.
+    prior_chains = existing.get("wash_sale_chains")
+    if isinstance(prior_chains, list):
+        record["wash_sale_chains"] = deepcopy(prior_chains)
+    PACKET_STORE[analysis_id] = record
     purge_packet_store()
+
+
+def stash_wash_sale_chains(analysis_id: str, user_id: str, chains: Any) -> None:
+    """Store display chains beside the packet record, not inside the PDF payload.
+
+    Process memory only. A restart drops them. The owner must already match.
+    """
+    analysis_id = _packet_store_id(analysis_id)
+    if not analysis_id or not isinstance(chains, list):
+        return
+    rec = PACKET_STORE.get(analysis_id)
+    if rec is None or not _same_packet_owner(rec.get("user_id"), user_id):
+        return
+    rec["wash_sale_chains"] = deepcopy(chains)
+
+
+def paid_wash_sale_chains(analysis_id: str, user_id: str | None) -> list[Any] | None:
+    """Return stashed chains only after this user has paid for the packet.
+
+    None when the packet is unpaid or missing. An empty list when it is paid
+    but this process has no stash, for example after a restart.
+    """
+    if not is_packet_paid(analysis_id, user_id):
+        return None
+    analysis_id = _packet_store_id(analysis_id)
+    rec = PACKET_STORE.get(analysis_id) or {}
+    chains = rec.get("wash_sale_chains")
+    if isinstance(chains, list):
+        return deepcopy(chains)
+    return []
 
 
 def upsert_payload(analysis_id: str, user_id: str, analysis: dict[str, Any] | None) -> dict[str, Any]:

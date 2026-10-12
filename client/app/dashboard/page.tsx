@@ -70,6 +70,7 @@ import {
   usePortfolioHistory,
   useBackendHealth,
   fetchAnalysisById,
+  fetchWashSaleChains,
   cleanupOrphanHistory,
   deleteAnalysis,
   persistGuestAnalysis,
@@ -1329,6 +1330,36 @@ export default function DashboardPage() {
     }
     setPacketPaid(isYearClosePacketPaid(analysisId));
   }, [displayedAnalysis?.analysis_id, displayedAnalysis]);
+
+  // Unpaid analyze strips chains. After the packet is paid, load the stashed
+  // chains so the explainer appears without another CSV upload.
+  useEffect(() => {
+    const analysisId = displayedAnalysis?.analysis_id;
+    const chainCount = displayedAnalysis?.wash_sale_chains?.length ?? 0;
+    if (
+      !packetPaid ||
+      !analysisId ||
+      displayedAnalysis?.sample_run ||
+      chainCount > 0
+    ) {
+      return;
+    }
+    let cancelled = false;
+    fetchWashSaleChains(analysisId)
+      .then((chains) => {
+        if (cancelled || chains.length === 0) return;
+        setLoadedAnalysis((current) => {
+          const base = current ?? displayedAnalysis;
+          if (!base || base.analysis_id !== analysisId) return current;
+          if ((base.wash_sale_chains?.length ?? 0) > 0) return current;
+          return { ...base, wash_sale_chains: chains };
+        });
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [packetPaid, displayedAnalysis]);
 
   useEffect(() => {
     if (displayedAnalysis) {

@@ -74,6 +74,9 @@ class _HopDraft:
     difference: float | None = None
     hop_index: int = 0
     from_engine: bool = True
+    # Why a hop was not compared. Drives copy only; not a tax field.
+    # "" | "no_1099" | "ambiguous" | "over_cap"
+    not_compared_reason: str = ""
 
 
 def _cents(value: float) -> float:
@@ -152,6 +155,11 @@ def _claim_sell(
     return None, None
 
 
+# Subset search stays exhaustive only up to this many rows or lots.
+# Past the cap the explainer says not_compared instead of guessing.
+_MAX_MATCH_CANDIDATES = 12
+
+
 def _claim_event(
     events: list[RealizedEvent],
     used: set[int],
@@ -159,6 +167,7 @@ def _claim_event(
     sale_date: date | None,
     quantity: float,
 ) -> tuple[int | None, RealizedEvent | None]:
+    """One unused event whose quantity equals the sale. 1099-only carryover."""
     if sale_date is None:
         return None, None
     for index, event in enumerate(events):
@@ -173,6 +182,103 @@ def _claim_event(
         used.add(index)
         return index, event
     return None, None
+
+
+def _event_candidates(
+    events: list[RealizedEvent],
+    used: set[int],
+    symbol: str,
+    sale_date: date | None,
+) -> list[tuple[int, RealizedEvent]]:
+    if sale_date is None:
+        return []
+    return [
+        (index, event)
+        for index, event in enumerate(events)
+        if index not in used
+        and _symbol(event.symbol) == symbol
+        and event.sale_date == sale_date
+        and float(event.quantity) > QTY_EPS
+    ]
+
+
+def _qty_subsets(items: list, quantity: float, qty_of) -> list[list]:
+    """Every subset whose quantities sum to ``quantity`` within QTY_EPS."""
+    count = len(items)
+    found: list[list] = []
+    for mask in range(1, 1 << count):
+        chosen = []
+        total = 0.0
+        for bit in range(count):
+            if mask & (1 << bit):
+                chosen.append(items[bit])
+                total += float(qty_of(items[bit]))
+        if _qty_close(total, quantity):
+            found.append(chosen)
+    return found
+
+
+def _subset_scale(
+    subset: list[tuple[int, RealizedEvent]],
+    sell: Transaction | None,
+) -> float:
+    asset = _asset_type(sell)
+    if sell is None and subset:
+        asset = _named_asset(subset[0][1].asset_type)
+    return _display_scale(asset)
+
+
+def _claim_event_set(
+    events: list[RealizedEvent],
+    used: set[int],
+    symbol: str,
+    sale_date: date | None,
+    quantity: float,
+    *,
+    sale_loss: float,
+    sell: Transaction | None,
+) -> list[tuple[int, RealizedEvent]]:
+    """Lots closed by one sale.
+
+    A 100-share sell is often two FIFO events (40 and 60). Attach a set only
+    when the quantities add up to the flag and the set's proceeds and basis
+    imply the flag loss within CENTS. When a sell is known, the set's proceeds
+    must also match that sell, so two same-day sales do not take each other's
+    lots. More than 12 candidate lots are left unattached.
+    """
+    candidates = _event_candidates(events, used, symbol, sale_date)
+    if not candidates or len(candidates) > _MAX_MATCH_CANDIDATES:
+        return []
+    subsets = _qty_subsets(candidates, quantity, lambda item: item[1].quantity)
+    good: list[list[tuple[int, RealizedEvent]]] = []
+    for subset in subsets:
+        scale = _subset_scale(subset, sell)
+        proceeds = sum(float(event.sale_proceeds) for _, event in subset)
+        basis = sum(float(event.cost_basis) for _, event in subset)
+        if abs((basis - proceeds) - float(sale_loss) * scale) > CENTS:
+            continue
+        if sell is not None and float(sell.quantity) > QTY_EPS:
+            target = float(sell.quantity) * float(sell.price) * scale
+            if abs(proceeds - target) > CENTS:
+                continue
+        good.append(subset)
+    if not good:
+        return []
+    chosen = min(good, key=lambda subset: tuple(index for index, _event in subset))
+    for index, _event in chosen:
+        used.add(index)
+    return chosen
+
+
+def _earliest_purchase(
+    subset: list[tuple[int, RealizedEvent]],
+) -> date | None:
+    dates = [
+        event.purchase_date
+        for _index, event in subset
+        if event.purchase_date is not None
+    ]
+    return min(dates) if dates else None
 
 
 def _hop_discriminator(
@@ -263,14 +369,27 @@ def _allocate_buys(
     return drafts
 
 
-def _apply_display_scale(drafts: list[_BuyDraft], scale: float) -> None:
-    """Put buy dollars on the same scale as the hop's basis and proceeds."""
+def _apply_display_scale(
+    drafts: list[_BuyDraft],
+    scale: float,
+    *,
+    scale_disallowed: bool = True,
+) -> None:
+    """Put buy dollars on the contract scale used for basis and proceeds.
+
+    ``price`` on the draft becomes the same dollars (option premium × the
+    contract multiplier). 1099 wash amounts are already dollars, so a
+    1099-only hop passes scale_disallowed=False and does not multiply them.
+    """
     for draft in drafts:
-        draft.cash_cost = _cents(draft.price * draft.quantity * scale)
-        draft.allocated_disallowed = _cents(draft.allocated_disallowed * scale)
+        raw_price = draft.price
+        draft.cash_cost = _cents(raw_price * draft.quantity * scale)
+        if scale_disallowed:
+            draft.allocated_disallowed = _cents(draft.allocated_disallowed * scale)
         draft.explained_basis = _cents(
-            draft.price * draft.allocated_quantity * scale + draft.allocated_disallowed
+            raw_price * draft.allocated_quantity * scale + draft.allocated_disallowed
         )
+        draft.price = _cents(raw_price * scale)
 
 
 def _holding_from_event(
@@ -286,7 +405,15 @@ def _open_lot_numbers(
     tax_lots: list[TaxLot],
     symbol: str,
     purchase_date: date | None,
+    scale: float,
 ) -> tuple[float | None, float | None]:
+    """Open-lot basis and wash on the same contract-dollar scale as the hop.
+
+    csv_parser already stores option total_cost_basis × CONTRACT_MULTIPLIER.
+    adjust_lots_for_wash_sales rewrites it as per-share premium × quantity.
+    Scale the premium form up. Leave an already-scaled basis alone.
+    The wash amount on the lot is the engine's unscaled disallowance.
+    """
     if purchase_date is None:
         return None, None
     for lot in tax_lots:
@@ -294,7 +421,18 @@ def _open_lot_numbers(
             continue
         if lot.purchase_date != purchase_date:
             continue
-        return float(lot.total_cost_basis), float(lot.wash_sale_disallowed)
+        basis = float(lot.total_cost_basis)
+        wash = float(lot.wash_sale_disallowed)
+        if scale != 1.0:
+            premium = float(lot.cost_basis_per_share) * float(lot.quantity)
+            contract = premium * scale
+            already_contract = (
+                abs(basis - contract) <= CENTS and abs(basis - premium) > CENTS
+            )
+            if not already_contract:
+                basis = basis * scale
+            wash = wash * scale
+        return _cents(basis), _cents(wash)
     return None, None
 
 
@@ -320,9 +458,8 @@ def _unit_proceeds(proceeds: float, quantity: float) -> float | None:
     return _cents(proceeds / quantity)
 
 
-def _row_sale_date(row: LotMatchRow, *, trade_date_only: bool) -> date | None:
-    if trade_date_only:
-        return row.export_trade_date
+def _row_sale_date(row: LotMatchRow) -> date | None:
+    """Leftover 1099 rows may only have a settlement date."""
     return row.export_trade_date or row.date_sold_1099
 
 
@@ -330,22 +467,16 @@ def _group_rows(
     rows: list[LotMatchRow],
     *,
     used: set[int],
-    symbol: str | None,
-    sale_date: date | None,
-    trade_date_only: bool,
     require_wash: bool,
 ) -> list[_SaleGroup]:
+    """Group unused 1099 rows that still carry a wash amount."""
     buckets: dict[tuple, list[tuple[int, LotMatchRow]]] = {}
     order: list[tuple] = []
     for index, row in enumerate(rows):
         if index in used:
             continue
         row_symbol = _symbol(row.symbol)
-        if symbol is not None and row_symbol != symbol:
-            continue
-        row_date = _row_sale_date(row, trade_date_only=trade_date_only)
-        if sale_date is not None and row_date != sale_date:
-            continue
+        row_date = _row_sale_date(row)
         if row_date is None:
             continue
         if require_wash and float(row.wash_sale_disallowed or 0.0) < 0.01:
@@ -367,39 +498,51 @@ def _group_rows(
     ]
 
 
-def _greedy_fill(
-    group: _SaleGroup,
-    quantity: float,
-) -> list[tuple[int, LotMatchRow]] | None:
-    """Take whole rows until quantity matches. Skip a row that would overshoot."""
-    remaining = float(quantity)
-    taken: list[tuple[int, LotMatchRow]] = []
-    for index, row in group.items:
-        row_qty = float(row.quantity or 0.0)
-        if row_qty <= QTY_EPS:
-            continue
-        if row_qty > remaining + QTY_EPS:
-            continue
-        taken.append((index, row))
-        remaining -= row_qty
-        if remaining <= QTY_EPS:
-            break
-    filled = sum(float(row.quantity or 0.0) for _, row in taken)
-    if taken and _qty_close(filled, quantity):
-        return taken
-    return None
-
-
 def _target_unit_proceeds(
     sell: Transaction | None,
-    event: RealizedEvent | None,
+    events: list[RealizedEvent],
     scale: float,
 ) -> float | None:
     if sell is not None and float(sell.quantity) > QTY_EPS:
-        return _cents(float(sell.price) * scale)
-    if event is not None and float(event.quantity) > QTY_EPS:
-        return _cents(float(event.sale_proceeds) / float(event.quantity))
+        return float(sell.price) * scale
+    total_qty = sum(float(event.quantity) for event in events)
+    if events and total_qty > QTY_EPS:
+        proceeds = sum(float(event.sale_proceeds) for event in events)
+        return proceeds / total_qty
     return None
+
+
+def _row_unit_proceeds(row: LotMatchRow) -> float | None:
+    quantity = float(row.quantity or 0.0)
+    if abs(quantity) <= QTY_EPS:
+        return None
+    return float(row.proceeds_1099 or 0.0) / quantity
+
+
+def _match_candidates(
+    rows: list[LotMatchRow],
+    *,
+    used: set[int],
+    symbol: str,
+    sale_date: date,
+    target: float | None,
+) -> list[tuple[int, LotMatchRow]]:
+    """Same-symbol trade-date rows whose per-share proceeds are within CENTS."""
+    candidates: list[tuple[int, LotMatchRow]] = []
+    for index, row in enumerate(rows):
+        if index in used:
+            continue
+        if _symbol(row.symbol) != symbol:
+            continue
+        if row.export_trade_date != sale_date:
+            continue
+        unit = _row_unit_proceeds(row)
+        if unit is None:
+            continue
+        if target is not None and abs(unit - target) > CENTS:
+            continue
+        candidates.append((index, row))
+    return candidates
 
 
 def _match_sale_rows(
@@ -410,51 +553,61 @@ def _match_sale_rows(
     sale_date: date,
     quantity: float,
     sell: Transaction | None,
-    event: RealizedEvent | None,
+    events: list[RealizedEvent],
     scale: float,
-) -> list[tuple[int, LotMatchRow]] | None:
-    """Pair a flag to the proceeds group whose per-share price is closest.
+) -> tuple[list[tuple[int, LotMatchRow]] | None, str]:
+    """Bounded subset-sum of 1099 rows for one flag.
 
-    One FIFO sell closes several lots, so the 1099 has several rows. Compare
-    the flag to the sum of that sale, not to any single row's quantity.
+    Returns (rows, reason). reason is "" when a single wash total fits,
+    "ambiguous" when two subsets sum to the quantity but their wash totals
+    differ by more than CENTS, and "over_cap" when more than 12 rows are
+    close enough on per-share proceeds to be candidates. Neither of those
+    consumes rows. None rows and reason "" means nothing matched.
     """
-    groups = _group_rows(
+    target = _target_unit_proceeds(sell, events, scale)
+    candidates = _match_candidates(
         rows,
         used=used,
         symbol=symbol,
         sale_date=sale_date,
-        trade_date_only=True,
-        require_wash=False,
+        target=target,
     )
-    if not groups:
-        return None
-    target = _target_unit_proceeds(sell, event, scale)
-    if target is None:
-        ordered = groups
-    else:
-        known = [group for group in groups if group.unit_proceeds is not None]
-        if not known:
-            return None
-        best = min(_cents(abs(group.unit_proceeds - target)) for group in known)
-        ordered = [
-            group
-            for group in known
-            if _cents(abs((group.unit_proceeds or 0.0) - target)) == best
-        ]
-    for group in ordered:
-        taken = _greedy_fill(group, quantity)
-        if taken is not None:
-            return taken
-    return None
+    if not candidates:
+        return None, ""
+    if len(candidates) > _MAX_MATCH_CANDIDATES:
+        return None, "over_cap"
+    subsets = _qty_subsets(
+        candidates,
+        quantity,
+        lambda item: float(item[1].quantity or 0.0),
+    )
+    if not subsets:
+        return None, ""
+    totals = [
+        _cents(sum(float(row.wash_sale_disallowed or 0.0) for _index, row in subset))
+        for subset in subsets
+    ]
+    distinct: list[float] = []
+    for total in totals:
+        if any(abs(total - seen) <= CENTS for seen in distinct):
+            continue
+        distinct.append(total)
+    if len(distinct) > 1:
+        return None, "ambiguous"
+    chosen = min(subsets, key=lambda subset: tuple(index for index, _row in subset))
+    return chosen, ""
 
 
 def _status_for_wash(
     disallowed: float,
-    wash: float | None,
+    wash: float,
 ) -> tuple[WashReconcileStatus, float | None, float | None]:
-    if wash is None or wash < 0.01:
-        return "not_on_1099", None, None
-    gap = abs(float(disallowed) - wash)
+    """A matched 1099 row. A $0 wash column differs by the full disallowance.
+
+    ``not_on_1099`` is not used here. That status is only for a same-year
+    1099 that was compared and had no row for this sale.
+    """
+    gap = abs(float(disallowed) - float(wash))
     if gap <= CENTS:
         return "matches", None, _cents(wash)
     return "differs", _cents(gap), _cents(wash)
@@ -491,24 +644,34 @@ def _hop_from_flag(
     sell_index, sell = _claim_sell(
         transactions, used_txns, symbol, flag.sale_date, flag.sale_quantity
     )
-    event_index, event = _claim_event(
-        events, used_events, symbol, flag.sale_date, flag.sale_quantity
+    event_set = _claim_event_set(
+        events,
+        used_events,
+        symbol,
+        flag.sale_date,
+        float(flag.sale_quantity),
+        sale_loss=float(flag.sale_loss),
+        sell=sell,
     )
+    event_index = min((index for index, _event in event_set), default=None)
     asset = _asset_type(sell)
-    if sell is None and event is not None:
-        asset = _named_asset(event.asset_type)
+    if sell is None and event_set:
+        asset = _named_asset(event_set[0][1].asset_type)
     scale = _display_scale(asset)
-    if event is not None:
+    if event_set:
         # RealizedEvent basis and proceeds are already contract dollars.
-        proceeds = _cents(event.sale_proceeds)
-        cost_basis = _cents(event.cost_basis)
+        proceeds = _cents(sum(float(event.sale_proceeds) for _index, event in event_set))
+        cost_basis = _cents(sum(float(event.cost_basis) for _index, event in event_set))
+        acquired = _earliest_purchase(event_set)
+        held_days = (flag.sale_date - acquired).days if acquired is not None else None
     elif sell is not None:
         proceeds = _cents(float(sell.quantity) * float(sell.price) * scale)
         cost_basis = _cents(proceeds + float(flag.sale_loss) * scale)
+        acquired, held_days = None, None
     else:
         proceeds = 0.0
         cost_basis = _cents(float(flag.sale_loss) * scale)
-    acquired, held_days = _holding_from_event(event, flag.sale_date)
+        acquired, held_days = None, None
     raw_buys = (
         [buy for _, buy in _find_qualifying_repurchases(sell, _buys_sorted(transactions))]
         if sell is not None
@@ -524,30 +687,37 @@ def _hop_from_flag(
     loss = _cents(float(flag.sale_loss) * scale)
     disallowed = _cents(float(flag.disallowed_loss) * scale)
     open_basis, open_wash = _open_lot_numbers(
-        tax_lots, symbol, flag.repurchase_date
+        tax_lots, symbol, flag.repurchase_date, scale
     )
-    status: WashReconcileStatus = "not_on_1099"
+    status: WashReconcileStatus = "not_compared"
     difference: float | None = None
     form_wash: float | None = None
+    not_compared_reason = "no_1099"
     if same_year:
-        taken = _match_sale_rows(
+        taken, blocked = _match_sale_rows(
             rows,
             used=used_rows,
             symbol=symbol,
             sale_date=flag.sale_date,
             quantity=float(flag.sale_quantity),
             sell=sell,
-            event=event,
+            events=[event for _index, event in event_set],
             scale=scale,
         )
-        wash_total = None
-        if taken is not None:
+        if blocked:
+            status = "not_compared"
+            not_compared_reason = blocked
+        elif taken is None:
+            status = "not_on_1099"
+            not_compared_reason = ""
+        else:
             for index, _row in taken:
                 used_rows.add(index)
             wash_total = _cents(
                 sum(float(row.wash_sale_disallowed or 0.0) for _, row in taken)
             )
-        status, difference, form_wash = _status_for_wash(disallowed, wash_total)
+            status, difference, form_wash = _status_for_wash(disallowed, wash_total)
+            not_compared_reason = ""
     return _HopDraft(
         hop_id=_hop_id(
             symbol,
@@ -581,7 +751,31 @@ def _hop_from_flag(
         from_engine=True,
         reconcile_status=status,
         difference=difference,
+        not_compared_reason=not_compared_reason,
     )
+
+
+def _infer_asset_type(
+    symbol: str,
+    transactions: list[Transaction],
+    events: list[RealizedEvent],
+    tax_lots: list[TaxLot],
+) -> str:
+    """Option vs stock from the export, the realized lots, or an open lot.
+
+    1099 rows do not carry an asset type. A hardcoded stock label would show
+    an option replacement at the per-share premium instead of contract dollars.
+    """
+    for txn in transactions:
+        if _symbol(txn.instrument) == symbol and _named_asset(txn.asset_type) == AssetType.OPTION.value:
+            return AssetType.OPTION.value
+    for event in events:
+        if _symbol(event.symbol) == symbol and _named_asset(event.asset_type) == AssetType.OPTION.value:
+            return AssetType.OPTION.value
+    for lot in tax_lots:
+        if _symbol(lot.symbol) == symbol and _named_asset(lot.asset_type) == AssetType.OPTION.value:
+            return AssetType.OPTION.value
+    return AssetType.STOCK.value
 
 
 def _repurchase_cap(buys: list[Transaction], sale_quantity: float) -> float:
@@ -597,6 +791,7 @@ def _hop_from_1099_group(
     transactions: list[Transaction],
     events: list[RealizedEvent],
     tax_lots: list[TaxLot],
+    used_events: set[int] | None = None,
 ) -> _HopDraft | None:
     if not items:
         return None
@@ -610,14 +805,24 @@ def _hop_from_1099_group(
     proceeds = _cents(sum(float(row.proceeds_1099 or 0.0) for _, row in items))
     cost_basis = _cents(sum(float(row.cost_basis_1099 or 0.0) for _, row in items))
     loss = _cents(max(0.0, cost_basis - proceeds))
+    asset = _infer_asset_type(symbol, transactions, events, tax_lots)
+    scale = _display_scale(asset)
     raw_buys = _window_buys(transactions, symbol, sale_date)
     cap = _repurchase_cap(raw_buys, quantity)
     buys = _allocate_buys(raw_buys, repurchase_quantity=cap, disallowed=wash)
+    # 1099 wash is already dollars. Scale only the premium paid for the buy.
+    _apply_display_scale(buys, scale, scale_disallowed=False)
     export_dates = {row.export_trade_date for _, row in items}
     event = None
     export_date = next(iter(export_dates)) if len(export_dates) == 1 else None
     if export_date is not None:
-        _index, event = _claim_event(events, set(), symbol, export_date, quantity)
+        _index, event = _claim_event(
+            events,
+            used_events if used_events is not None else set(),
+            symbol,
+            export_date,
+            quantity,
+        )
     acquired, held_days = (
         _holding_from_event(event, export_date)
         if export_date is not None and event is not None
@@ -627,11 +832,11 @@ def _hop_from_1099_group(
         (buy.activity_date for buy in buys if buy.allocated_quantity > QTY_EPS),
         None,
     )
-    open_basis, open_wash = _open_lot_numbers(tax_lots, symbol, earliest)
+    open_basis, open_wash = _open_lot_numbers(tax_lots, symbol, earliest, scale)
     return _HopDraft(
         hop_id=_hop_id(symbol, sale_date, quantity, f"r{first_index}"),
         symbol=symbol,
-        asset_type=AssetType.STOCK.value,
+        asset_type=asset,
         sale_date=sale_date,
         sale_quantity=quantity,
         proceeds=proceeds,
@@ -738,6 +943,16 @@ def _reconcile_clause(hop: _HopDraft) -> str:
             "wash adjustment on this sale. This Robinhood export did not flag "
             "a matching wash."
         )
+    if hop.reconcile_status == "not_compared":
+        if hop.not_compared_reason == "ambiguous":
+            return (
+                "More than one 1099 grouping fits this sale, so no wash total was chosen."
+            )
+        if hop.not_compared_reason == "over_cap":
+            return (
+                "Too many 1099 rows match this sale to compare them without guessing."
+            )
+        return "No same-year 1099-B was compared for this sale."
     return (
         "This wash is not on your 1099. It was found only in this Robinhood export."
     )
@@ -756,6 +971,23 @@ def _contracts(asset_type: str) -> str:
 def _listed_buys(hop: _HopDraft) -> list[_BuyDraft]:
     allocated = [buy for buy in hop.buys if buy.allocated_quantity > QTY_EPS]
     return allocated or list(hop.buys)
+
+
+def _basis_split(hop: _HopDraft) -> float:
+    return _cents(
+        sum(
+            buy.explained_basis
+            for buy in hop.buys
+            if buy.allocated_quantity > QTY_EPS
+        )
+    )
+
+
+def _basis_split_is_illustrative(hop: _HopDraft) -> bool:
+    """True when the per-buy split is not the engine's adjusted basis."""
+    if hop.engine_adjusted_cost_basis is None:
+        return False
+    return abs(_basis_split(hop) - hop.engine_adjusted_cost_basis) > CENTS
 
 
 def plain_english_line(hop: _HopDraft) -> str:
@@ -832,8 +1064,13 @@ def plain_english_line(hop: _HopDraft) -> str:
         line += (
             f" The prior hop carried {_fmt_money(hop.carried_in_disallowed)} "
             f"into this lot. The engine still reports a "
-            f"{_fmt_money(hop.engine_sale_loss)} loss on this sale, and the "
-            "tax totals use that engine figure."
+            f"{_fmt_money(hop.engine_sale_loss)} loss on this sale. "
+            "That engine figure is the source of truth."
+        )
+    if _basis_split_is_illustrative(hop):
+        line += (
+            " The per-buy basis split is illustrative. "
+            "The engine's adjusted basis is the source of truth."
         )
     return line
 
@@ -880,18 +1117,43 @@ def _to_model(hop: _HopDraft) -> WashSaleHop:
     )
 
 
+# Worst first. on_1099_only outranks not_on_1099: a 1099 wash the engine
+# missed is a stronger mismatch than an export wash the 1099 does not list.
+# not_compared is milder than either, because no same-year figure was chosen.
+_STATUS_RANK = {
+    "differs": 4,
+    "on_1099_only": 3,
+    "not_on_1099": 2,
+    "not_compared": 1,
+    "matches": 0,
+}
+
+
+def _worst_hop(hops: list[_HopDraft]) -> _HopDraft:
+    """Highest rank, then the larger dollar gap, then the earlier hop."""
+    return max(
+        hops,
+        key=lambda hop: (
+            _STATUS_RANK.get(hop.reconcile_status, 0),
+            abs(hop.difference or 0.0),
+            -hop.hop_index,
+        ),
+    )
+
+
 def _finish(group: list[_HopDraft]) -> WashSaleChain:
     ordered = sorted(group, key=lambda hop: (hop.sale_date, hop.hop_id))
     _apply_carry(ordered)
     for hop in ordered:
         hop.plain_english = plain_english_line(hop)
     head = ordered[0]
+    worst = _worst_hop(ordered)
     return WashSaleChain(
         chain_id=head.hop_id,
         symbol=head.symbol,
-        reconcile_status=head.reconcile_status,
-        difference=head.difference,
-        plain_english=head.plain_english,
+        reconcile_status=worst.reconcile_status,
+        difference=worst.difference,
+        plain_english=worst.plain_english,
         hops=[_to_model(hop) for hop in ordered],
     )
 
@@ -937,9 +1199,6 @@ def build_wash_sale_chains(
         leftover = _group_rows(
             rows,
             used=used_rows,
-            symbol=None,
-            sale_date=None,
-            trade_date_only=False,
             require_wash=True,
         )
         for group in leftover:
@@ -948,6 +1207,7 @@ def build_wash_sale_chains(
                 transactions=transactions,
                 events=realized_events,
                 tax_lots=tax_lots,
+                used_events=used_events,
             )
             if hop is None:
                 continue

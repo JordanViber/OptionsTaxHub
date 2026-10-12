@@ -1122,7 +1122,9 @@ test.describe("Wash-sale chain explainer", () => {
       const dialog = page.getByTestId("wash-sale-chain-dialog");
       await expect(dialog).toBeVisible();
       await expect(dialog.getByText(amdSentence)).toBeVisible();
-      await expect(page.getByTestId("wash-sale-chain-disclaimer").last()).toBeVisible();
+      await expect(
+        page.getByTestId("wash-sale-chain-dialog-disclaimer"),
+      ).toBeVisible();
       await expect(dialog.getByText(/Jul 24, 2026/)).toBeVisible();
       await expect(dialog.getByText(/· 10/)).toBeVisible();
       if (viewport.width === 390) {

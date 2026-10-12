@@ -76,11 +76,13 @@ export interface WashSaleFlag {
   purchase_date?: string | null;
 }
 
+// Worst-first rollup: differs, on_1099_only, not_on_1099, not_compared, matches.
 export type WashReconcileStatus =
   | "matches"
   | "differs"
   | "not_on_1099"
-  | "on_1099_only";
+  | "on_1099_only"
+  | "not_compared";
 
 export interface WashReplacementBuy {
   activity_date: string;
