@@ -152,15 +152,18 @@ function stripPacketQueryParams(): void {
   }
 }
 
-async function authHeaders(): Promise<HeadersInit> {
+async function authHeaders(options?: { json?: boolean }): Promise<Record<string, string>> {
   const session = await getSession();
   if (!session?.access_token) {
     throw new Error("Authentication required. Please sign in.");
   }
-  return {
+  const headers: Record<string, string> = {
     Authorization: `Bearer ${session.access_token}`,
-    "Content-Type": "application/json",
   };
+  if (options?.json !== false) {
+    headers["Content-Type"] = "application/json";
+  }
+  return headers;
 }
 
 export function purchaseDateFromSuggestionId(
@@ -536,7 +539,7 @@ function YearClosePacketPanelForAnalysis({
       setError(null);
     }
     try {
-      const headers = await authHeaders();
+      const headers = await authHeaders({ json: false });
       const params = new URLSearchParams({
         analysis_id: canonicalAnalysisId,
       });
@@ -562,6 +565,7 @@ function YearClosePacketPanelForAnalysis({
         const errData = await response.json().catch(() => null);
         throw new Error(errData?.detail || "Download failed.");
       }
+      setError(null);
       const blob = await response.blob();
       triggerPdfDownload(blob);
     } catch (err) {

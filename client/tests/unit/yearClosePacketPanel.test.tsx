@@ -532,6 +532,87 @@ describe("YearClosePacketPanel", () => {
     expect(screen.getByRole("alert")).not.toHaveTextContent(/no source document/i);
   });
 
+  it("clears the missing-source alert when download is ok, before the PDF starts", async () => {
+    const detail =
+      "Payment was received, but this analysis has no source document. Run a new analysis for this tax year.";
+    let releaseBlob: (blob: Blob) => void = () => {};
+    const blobGate = new Promise<Blob>((resolve) => {
+      releaseBlob = resolve;
+    });
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        json: () => Promise.resolve({ detail }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        blob: () => blobGate,
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        json: () => Promise.resolve({ detail }),
+      });
+
+    render(<YearClosePacketPanel analysis={analysis} />);
+    fireEvent.click(screen.getByRole("button", { name: /Download/i }));
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(detail);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /Download/i }));
+    await waitFor(() => {
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+    expect(globalThis.URL.createObjectURL).not.toHaveBeenCalled();
+
+    releaseBlob!(new Blob(["pdf"]));
+    await waitFor(() => {
+      expect(globalThis.URL.createObjectURL).toHaveBeenCalled();
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Download/i }));
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(detail);
+    });
+  });
+
+  it("sends only the bearer header on download and keeps JSON content type on checkout", async () => {
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        blob: () => Promise.resolve(new Blob(["pdf"])),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            checkout_url: "https://checkout.stripe.com/c/pay/cs_test_packet",
+            session_id: "cs_test_packet",
+          }),
+      });
+
+    render(<YearClosePacketPanel analysis={analysis} />);
+    fireEvent.click(screen.getByRole("button", { name: /Download/i }));
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+    const downloadHeaders = mockFetch.mock.calls[0][1].headers;
+    expect(downloadHeaders.Authorization).toBe("Bearer mock-jwt-token");
+    expect(downloadHeaders["Content-Type"]).toBeUndefined();
+    expect(mockFetch.mock.calls[0][1].method).toBe("GET");
+    expect(mockFetch.mock.calls[0][1].body).toBeUndefined();
+
+    fireEvent.click(screen.getByRole("button", { name: /Pay \$49/i }));
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));
+    const checkoutHeaders = mockFetch.mock.calls[1][1].headers;
+    expect(checkoutHeaders.Authorization).toBe("Bearer mock-jwt-token");
+    expect(checkoutHeaders["Content-Type"]).toBe("application/json");
+    expect(mockFetch.mock.calls[1][1].method).toBe("POST");
+  });
+
   it("unpaid download shows a blocked error from 403", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: false,
