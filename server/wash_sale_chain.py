@@ -561,8 +561,10 @@ def _match_sale_rows(
     Returns (rows, reason). reason is "" when a single wash total fits,
     "ambiguous" when two subsets sum to the quantity but their wash totals
     differ by more than CENTS, and "over_cap" when more than 12 rows are
-    close enough on per-share proceeds to be candidates. Neither of those
-    consumes rows. None rows and reason "" means nothing matched.
+    close enough on per-share proceeds to be candidates. Those two reasons
+    do not choose a wash total, but they reserve every candidate row so the
+    leftover pass cannot rebuild them as an on_1099_only chain. None rows
+    and reason "" means nothing matched, and those rows stay available.
     """
     target = _target_unit_proceeds(sell, events, scale)
     candidates = _match_candidates(
@@ -575,6 +577,8 @@ def _match_sale_rows(
     if not candidates:
         return None, ""
     if len(candidates) > _MAX_MATCH_CANDIDATES:
+        for index, _row in candidates:
+            used.add(index)
         return None, "over_cap"
     subsets = _qty_subsets(
         candidates,
@@ -593,6 +597,8 @@ def _match_sale_rows(
             continue
         distinct.append(total)
     if len(distinct) > 1:
+        for index, _row in candidates:
+            used.add(index)
         return None, "ambiguous"
     chosen = min(subsets, key=lambda subset: tuple(index for index, _row in subset))
     return chosen, ""
@@ -861,6 +867,26 @@ def _hop_from_1099_group(
     )
 
 
+def _covering_replacement_buys(
+    earlier: _HopDraft,
+    later_purchase: date | None,
+) -> list[_BuyDraft]:
+    """Replacement buys whose combined allocation can cover a later sale.
+
+    The later sale's original purchase date has to match one of the buys.
+    Quantity is the sum of every allocated replacement on that hop, so a
+    40-share buy and a 60-share buy together cover a later 100-share sale.
+    """
+    if later_purchase is None:
+        return []
+    positive = [
+        buy for buy in earlier.buys if buy.allocated_quantity > QTY_EPS
+    ]
+    if not any(buy.activity_date == later_purchase for buy in positive):
+        return []
+    return positive
+
+
 def _link_engine_hops(hops: list[_HopDraft]) -> list[list[_HopDraft]]:
     count = len(hops)
     parent = list(range(count))
@@ -887,14 +913,12 @@ def _link_engine_hops(hops: list[_HopDraft]) -> list[list[_HopDraft]]:
                 continue
             if later.sale_date <= earlier.sale_date:
                 continue
-            if later.original_purchase_date is None:
-                continue
-            for buy in earlier.buys:
-                if buy.activity_date != later.original_purchase_date:
-                    continue
-                if later.sale_quantity <= buy.allocated_quantity + QTY_EPS:
-                    union(left, right)
-                    break
+            covering = _covering_replacement_buys(
+                earlier, later.original_purchase_date
+            )
+            covered = sum(buy.allocated_quantity for buy in covering)
+            if covering and later.sale_quantity <= covered + QTY_EPS:
+                union(left, right)
     groups: dict[int, list[_HopDraft]] = {}
     for index, hop in enumerate(hops):
         groups.setdefault(find(index), []).append(hop)
@@ -907,18 +931,17 @@ def _apply_carry(ordered: list[_HopDraft]) -> None:
         carried = 0.0
         if index > 0 and hop.original_purchase_date is not None:
             for earlier in reversed(ordered[:index]):
-                matched = False
-                for buy in earlier.buys:
-                    if buy.activity_date != hop.original_purchase_date:
-                        continue
-                    if buy.allocated_quantity <= QTY_EPS:
-                        continue
-                    scale = min(1.0, hop.sale_quantity / buy.allocated_quantity)
-                    carried = _cents(buy.allocated_disallowed * scale)
-                    matched = True
-                    break
-                if matched:
-                    break
+                covering = _covering_replacement_buys(
+                    earlier, hop.original_purchase_date
+                )
+                covered = sum(buy.allocated_quantity for buy in covering)
+                if covered <= QTY_EPS:
+                    continue
+                scale = min(1.0, hop.sale_quantity / covered)
+                carried = _cents(
+                    sum(buy.allocated_disallowed for buy in covering) * scale
+                )
+                break
         hop.carried_in_disallowed = carried
         hop.explained_loss_with_carry = _cents(
             max(0.0, hop.cost_basis + carried - hop.proceeds)
@@ -1158,6 +1181,23 @@ def _finish(group: list[_HopDraft]) -> WashSaleChain:
     )
 
 
+def _supplemental_has_totals(supplemental: Supplemental1099Summary | None) -> bool:
+    """True when the 1099 summary has broker totals, even with no lot rows."""
+    if supplemental is None:
+        return False
+    amounts = (
+        supplemental.short_term_proceeds,
+        supplemental.short_term_cost_basis,
+        supplemental.short_term_wash_sale_disallowed,
+        supplemental.short_term_net_gain,
+        supplemental.long_term_proceeds,
+        supplemental.long_term_cost_basis,
+        supplemental.long_term_wash_sale_disallowed,
+        supplemental.long_term_net_gain,
+    )
+    return any(abs(float(value or 0.0)) >= 0.01 for value in amounts)
+
+
 def build_wash_sale_chains(
     *,
     transactions: list[Transaction],
@@ -1172,7 +1212,12 @@ def build_wash_sale_chains(
     same_year = False
     if supplemental is not None:
         same_year = is_same_year_1099_compare(supplemental.tax_year, tax_year)
-    rows = _report_rows(lot_match_report) if same_year else []
+    # Totals with no lot report were not compared row by row. An empty search
+    # would otherwise say the sale was missing from the 1099.
+    has_totals = _supplemental_has_totals(supplemental)
+    rows_unusable = same_year and lot_match_report is None and has_totals
+    comparable = same_year and not rows_unusable
+    rows = _report_rows(lot_match_report) if comparable else []
     used_rows: set[int] = set()
     used_events: set[int] = set()
     used_txns: set[int] = set()
@@ -1191,11 +1236,11 @@ def build_wash_sale_chains(
                 used_rows=used_rows,
                 used_events=used_events,
                 used_txns=used_txns,
-                same_year=same_year,
+                same_year=comparable,
             )
         )
     chains = [_finish(group) for group in _link_engine_hops(engine_hops)]
-    if same_year:
+    if comparable:
         leftover = _group_rows(
             rows,
             used=used_rows,

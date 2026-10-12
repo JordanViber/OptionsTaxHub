@@ -61,7 +61,9 @@ let mockHistoryData: Array<{
 }> = [];
 const mockAnalyzeMutate = jest.fn();
 const mockFetchAnalysisById = jest.fn();
-const mockFetchWashSaleChains = jest.fn(() => Promise.resolve([]));
+const mockFetchWashSaleChains = jest.fn(() =>
+  Promise.resolve({ chains: [], hint: null }),
+);
 const mockCleanupOrphanHistory = jest.fn(() => Promise.resolve());
 const mockDeleteAnalysis = jest.fn(() => Promise.resolve(true));
 
@@ -247,7 +249,7 @@ describe("DashboardPage", () => {
     mockAnalyzeMutate.mockReset();
     mockFetchAnalysisById.mockReset();
     mockFetchWashSaleChains.mockReset();
-    mockFetchWashSaleChains.mockResolvedValue([]);
+    mockFetchWashSaleChains.mockResolvedValue({ chains: [], hint: null });
     mockCleanupOrphanHistory.mockClear();
     mockDeleteAnalysis.mockClear();
     mockSessionValue = null;
@@ -395,7 +397,10 @@ describe("DashboardPage", () => {
         "You sold 10 AMD at a $300 loss on Jul 15 and bought 10 back on Jul 24, so $300 moved into the new lot's basis. This matches your 1099 wash adjustment of $300.",
       hops: [],
     };
-    mockFetchWashSaleChains.mockResolvedValue([paidChain]);
+    mockFetchWashSaleChains.mockResolvedValue({
+      chains: [paidChain],
+      hint: null,
+    });
     const originalFetch = globalThis.fetch;
     globalThis.fetch = jest.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -440,6 +445,29 @@ describe("DashboardPage", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+
+  it("shows the re-analyze hint when a paid snapshot has no chains", async () => {
+    mockFetchWashSaleChains.mockResolvedValue({
+      chains: [],
+      hint: "Re-analyze to see wash-sale chains",
+    });
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      sample_run: false,
+      packet_unlocked: false,
+      wash_sale_chains: [],
+    };
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("wash-sale-chain-hint")).toHaveTextContent(
+        "Re-analyze to see wash-sale chains",
+      );
+    });
+    expect(screen.queryByTestId("wash-sale-chain-card")).not.toBeInTheDocument();
+    expect(mockFetchWashSaleChains).toHaveBeenCalledWith("analysis-test-1");
   });
 
   it("shows restored-session messaging when analysis is recovered from browser storage", async () => {

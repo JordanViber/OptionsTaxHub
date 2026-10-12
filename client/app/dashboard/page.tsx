@@ -759,6 +759,7 @@ function ResultsSection({
   guest,
   packetUnlocked,
   onPacketPaidChange,
+  washChainHint,
 }: Readonly<{
   displayedAnalysis: PortfolioAnalysis;
   analysisSource: AnalysisSource | null;
@@ -772,6 +773,7 @@ function ResultsSection({
   guest?: boolean;
   packetUnlocked: boolean;
   onPacketPaidChange?: (paid: boolean) => void;
+  washChainHint?: string | null;
 }>) {
   const harvestTeasers = buildHarvestTeasers(
     displayedAnalysis.suggestions,
@@ -782,6 +784,9 @@ function ResultsSection({
     ? displayedAnalysis.suggestions.length
     : harvestTeasers.length;
   const washSaleChains = displayedAnalysis.wash_sale_chains ?? [];
+  const showChainHint =
+    Boolean(washChainHint) &&
+    !washChainsVisible(displayedAnalysis, packetUnlocked);
 
   return (
     <>
@@ -931,6 +936,16 @@ function ResultsSection({
 
       {washChainsVisible(displayedAnalysis, packetUnlocked) && (
         <WashSaleChainPanel chains={washSaleChains} />
+      )}
+
+      {showChainHint && (
+        <Alert
+          severity="info"
+          variant="outlined"
+          data-testid="wash-sale-chain-hint"
+        >
+          {washChainHint}
+        </Alert>
       )}
 
       <Card sx={{ overflow: "hidden", maxWidth: "100%" }}>
@@ -1238,6 +1253,7 @@ export default function DashboardPage() {
   );
   const [isSampleRun, setIsSampleRun] = useState(false);
   const [packetPaid, setPacketPaid] = useState(false);
+  const [washChainHint, setWashChainHint] = useState<string | null>(null);
   const [replaceBook, setReplaceBook] = useState(false);
   const [sampleLoading, setSampleLoading] = useState(false);
   const [sampleLoadError, setSampleLoadError] = useState<string | null>(null);
@@ -1331,8 +1347,9 @@ export default function DashboardPage() {
     setPacketPaid(isYearClosePacketPaid(analysisId));
   }, [displayedAnalysis?.analysis_id, displayedAnalysis]);
 
-  // Unpaid analyze strips chains. After the packet is paid, load the stashed
-  // chains so the explainer appears without another CSV upload.
+  // Unpaid analyze strips chains. After the packet is paid, load them from
+  // the durable snapshot so the explainer appears without another CSV upload.
+  // A legacy snapshot returns a hint instead of chains.
   useEffect(() => {
     const analysisId = displayedAnalysis?.analysis_id;
     const chainCount = displayedAnalysis?.wash_sale_chains?.length ?? 0;
@@ -1342,12 +1359,19 @@ export default function DashboardPage() {
       displayedAnalysis?.sample_run ||
       chainCount > 0
     ) {
+      setWashChainHint(null);
       return;
     }
     let cancelled = false;
     fetchWashSaleChains(analysisId)
-      .then((chains) => {
-        if (cancelled || chains.length === 0) return;
+      .then((result) => {
+        if (cancelled) return;
+        const chains = result.chains;
+        if (chains.length === 0) {
+          setWashChainHint(result.hint);
+          return;
+        }
+        setWashChainHint(null);
         setLoadedAnalysis((current) => {
           const base = current ?? displayedAnalysis;
           if (!base || base.analysis_id !== analysisId) return current;
@@ -2267,6 +2291,7 @@ export default function DashboardPage() {
               guest={!user}
               packetUnlocked={packetUnlocked}
               onPacketPaidChange={setPacketPaid}
+              washChainHint={washChainHint}
             />
           )}
 

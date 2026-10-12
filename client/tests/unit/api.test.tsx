@@ -34,6 +34,7 @@ import {
   useSaveTaxProfile,
   useTaxBrackets,
   fetchAnalysisById,
+  fetchWashSaleChains,
   deleteAnalysis,
   cleanupOrphanHistory,
   persistGuestAnalysis,
@@ -896,6 +897,64 @@ describe("api hooks", () => {
       expect(result.result).toBeDefined();
       const call = (globalThis.fetch as jest.Mock).mock.calls[0];
       expect(call[1].headers.Authorization).toBe("Bearer mock-jwt-token");
+    });
+
+    it("fetchWashSaleChains returns chains from a paid snapshot", async () => {
+      const chain = {
+        chain_id: "AMD:2026-07-15:10:e0",
+        symbol: "AMD",
+        reconcile_status: "matches",
+        difference: null,
+        plain_english: "You sold 10 AMD.",
+        hops: [],
+      };
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ wash_sale_chains: [chain] }),
+      } as Response);
+
+      const result = await fetchWashSaleChains("analysis-test-1");
+
+      expect(result.chains).toEqual([chain]);
+      expect(result.hint).toBeNull();
+      const call = (globalThis.fetch as jest.Mock).mock.calls[0];
+      expect(call[0]).toContain(
+        "/api/portfolio/analysis/analysis-test-1/wash-sale-chains",
+      );
+      expect(call[1].headers.Authorization).toBe("Bearer mock-jwt-token");
+    });
+
+    it("fetchWashSaleChains returns the re-analyze hint when chains are absent", async () => {
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          wash_sale_chains: [],
+          hint: "Re-analyze to see wash-sale chains",
+        }),
+      } as Response);
+
+      const result = await fetchWashSaleChains("legacy-1");
+
+      expect(result.chains).toEqual([]);
+      expect(result.hint).toBe("Re-analyze to see wash-sale chains");
+    });
+
+    it("fetchWashSaleChains returns empty chains on 403 and on a non-array body", async () => {
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: false,
+        status: 403,
+      } as Response);
+
+      const denied = await fetchWashSaleChains("unpaid-1");
+      expect(denied).toEqual({ chains: [], hint: null });
+
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ wash_sale_chains: { symbol: "AMD" }, hint: "  " }),
+      } as Response);
+
+      const malformed = await fetchWashSaleChains("bad-1");
+      expect(malformed).toEqual({ chains: [], hint: null });
     });
 
     it("fetchAnalysisById throws on error", async () => {

@@ -84,7 +84,7 @@ jest.mock("../../lib/api", () => ({
   usePortfolioHistory: () => mockUsePortfolioHistory(),
   useBackendHealth: () => ({ isError: false, isFetched: true }),
   fetchAnalysisById: jest.fn().mockResolvedValue(null),
-  fetchWashSaleChains: jest.fn().mockResolvedValue([]),
+  fetchWashSaleChains: jest.fn().mockResolvedValue({ chains: [], hint: null }),
   cleanupOrphanHistory: jest.fn().mockResolvedValue(0),
   persistGuestAnalysis: jest.fn(() => Promise.resolve(true)),
   useLeapRankMutation: () => ({

@@ -3164,10 +3164,21 @@ def test_unpaid_analyze_strips_wash_chains_from_response_and_history(monkeypatch
         captured.setdefault("built", []).append(built)
         return built
 
+    saved_payloads = []
+
+    def capture_save(analysis_id, _user_id, _tax_year, packet_payload, **_kwargs):
+        saved_payloads.append(packet_payload)
+        return {"analysis_id": analysis_id}
+
     _stub_analyze_network(monkeypatch)
     monkeypatch.setattr("main.save_analysis_history", fake_save_analysis_history)
     monkeypatch.setattr("main._save_history_best_effort", real_history)
     monkeypatch.setattr("main.build_wash_sale_chains", spy_build)
+    monkeypatch.setattr("main.save_packet_snapshot", capture_save)
+    monkeypatch.setattr(
+        "main.list_packet_snapshots_for_identity",
+        lambda *_args, **_kwargs: ([], True),
+    )
 
     csv_2024 = (
         Path(__file__).resolve().parent / "fixtures" / "year_close_2024.csv"
@@ -3196,15 +3207,17 @@ def test_unpaid_analyze_strips_wash_chains_from_response_and_history(monkeypatch
     )
     assert unpaid_chains.status_code == 403
 
-    mark_paid(body["analysis_id"], "cs_test_wash_redaction", user_id="test-user-123")
-    paid_chains = client.get(
-        f"/api/portfolio/analysis/{body['analysis_id']}/wash-sale-chains"
-    )
-    assert paid_chains.status_code == 200
-    assert paid_chains.json()["wash_sale_chains"]
     from year_close_packet import get_payload
 
+    assert saved_payloads
+    assert saved_payloads[0]["wash_sale_chains"]
     assert "wash_sale_chains" not in (get_payload(body["analysis_id"]) or {})
+    # In-memory payment is not the chain source. No paid snapshot stays 403.
+    mark_paid(body["analysis_id"], "cs_test_wash_redaction", user_id="test-user-123")
+    still_unpaid = client.get(
+        f"/api/portfolio/analysis/{body['analysis_id']}/wash-sale-chains"
+    )
+    assert still_unpaid.status_code == 403
     captured.clear()
     paid_response = client.post("/api/portfolio/analyze?tax_year=2024", files=files)
     assert paid_response.status_code == 200, paid_response.text
@@ -3213,55 +3226,6 @@ def test_unpaid_analyze_strips_wash_chains_from_response_and_history(monkeypatch
     assert paid_body["wash_sale_chains"]
     assert captured["result_data"]["wash_sale_chains"]
     assert captured["built"][-1]
-
-
-def test_wash_sale_chains_route_is_paid_only():
-    """Chains stay off the PDF payload and are readable only after payment."""
-    from uuid import uuid4
-
-    from year_close_packet import (
-        get_payload,
-        mark_paid,
-        remember_analysis,
-        stash_wash_sale_chains,
-    )
-
-    aid = str(uuid4())
-    chain = {
-        "chain_id": "AMD:2026-07-15:10:e0",
-        "symbol": "AMD",
-        "reconcile_status": "matches",
-        "difference": None,
-        "plain_english": "You sold 10 AMD.",
-        "hops": [],
-    }
-    remember_analysis(aid, "test-user-123", {"analysis_id": aid})
-    payload = get_payload(aid)
-    assert payload is not None
-    assert "wash_sale_chains" not in payload
-    stash_wash_sale_chains(aid, "other-user", [chain])
-    stash_wash_sale_chains(aid, "test-user-123", [chain])
-    denied = client.get(f"/api/portfolio/analysis/{aid}/wash-sale-chains")
-    assert denied.status_code == 403
-    assert mark_paid(aid, "cs_wrong", user_id="other-user") is False
-    assert (
-        client.get(f"/api/portfolio/analysis/{aid}/wash-sale-chains").status_code
-        == 403
-    )
-    assert mark_paid(aid, "cs_test_wash_chains", user_id="test-user-123") is True
-    # A later snapshot refresh must keep the sibling stash.
-    remember_analysis(aid, "test-user-123", {"analysis_id": aid, "positions": []})
-    paid = client.get(f"/api/portfolio/analysis/{aid}/wash-sale-chains")
-    assert paid.status_code == 200
-    assert paid.json()["wash_sale_chains"][0]["symbol"] == "AMD"
-    assert "wash_sale_chains" not in (get_payload(aid) or {})
-
-    empty_id = str(uuid4())
-    remember_analysis(empty_id, "test-user-123", {"analysis_id": empty_id})
-    assert mark_paid(empty_id, "cs_test_empty_chains", user_id="test-user-123")
-    empty = client.get(f"/api/portfolio/analysis/{empty_id}/wash-sale-chains")
-    assert empty.status_code == 200
-    assert empty.json()["wash_sale_chains"] == []
 
 
 def test_guest_non_sample_analyze_lot_match_report_is_counts_only(monkeypatch):

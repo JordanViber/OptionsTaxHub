@@ -2048,3 +2048,207 @@ def test_sample_2026_wash_total_stays_924_and_amd_chain(monkeypatch):
     amd_direct = next(chain for chain in direct if chain.symbol == "AMD")
     assert amd_direct.plain_english == AMD_LINE
     assert round(sum(flag.disallowed_loss for flag in direct_flags), 2) == 924
+
+
+def test_ambiguous_candidate_rows_are_not_leftover_on_1099_only():
+    """60+40 and 10+50+40 both fill 100 shares. Do not invent a 160-share chain."""
+    flag = WashSaleFlag(
+        symbol="AAPL",
+        sale_date=date(2026, 6, 1),
+        sale_quantity=100,
+        sale_loss=500,
+        repurchase_date=date(2026, 6, 6),
+        repurchase_quantity=100,
+        disallowed_loss=500,
+        adjusted_cost_basis=1500,
+    )
+    txns = [
+        _txn("AAPL", TransCode.BUY, date(2026, 1, 1), 100, 20),
+        _txn("AAPL", TransCode.SELL, date(2026, 6, 1), 100, 15),
+        _txn("AAPL", TransCode.BUY, date(2026, 6, 6), 100, 16),
+    ]
+    report = _report(
+        _row(
+            symbol="AAPL",
+            quantity=10,
+            export_trade_date=date(2026, 6, 1),
+            proceeds_1099=150,
+            wash_sale_disallowed=10,
+        ),
+        _row(
+            symbol="AAPL",
+            quantity=60,
+            export_trade_date=date(2026, 6, 1),
+            proceeds_1099=900,
+            wash_sale_disallowed=200,
+        ),
+        _row(
+            symbol="AAPL",
+            quantity=50,
+            export_trade_date=date(2026, 6, 1),
+            proceeds_1099=750,
+            wash_sale_disallowed=40,
+        ),
+        _row(
+            symbol="AAPL",
+            quantity=40,
+            export_trade_date=date(2026, 6, 1),
+            proceeds_1099=600,
+            wash_sale_disallowed=80,
+        ),
+    )
+    chains = _build(
+        transactions=txns,
+        wash_sale_flags=[flag],
+        supplemental=_supplemental(2026),
+        lot_match_report=report,
+    )
+    assert len(chains) == 1
+    hop = chains[0].hops[0]
+    assert hop.reconcile_status == "not_compared"
+    assert hop.form_1099_wash is None
+    assert hop.sale_quantity == pytest.approx(100)
+    assert "no wash total was chosen" in hop.plain_english
+    assert all(chain.reconcile_status != "on_1099_only" for chain in chains)
+    assert all(chain.hops[0].sale_quantity != pytest.approx(160) for chain in chains)
+
+
+def test_later_sale_links_union_of_replacement_buys_with_carry():
+    """40 and 60 replacement buys together cover a later 100-share wash."""
+    txns = [
+        _txn("AAPL", TransCode.BUY, date(2026, 1, 1), 100, 80),
+        _txn("AAPL", TransCode.SELL, date(2026, 6, 1), 100, 50),
+        _txn("AAPL", TransCode.BUY, date(2026, 6, 5), 40, 55),
+        _txn("AAPL", TransCode.BUY, date(2026, 6, 8), 60, 56),
+        _txn("AAPL", TransCode.SELL, date(2026, 7, 20), 100, 40),
+        _txn("AAPL", TransCode.BUY, date(2026, 7, 25), 100, 42),
+    ]
+    first = WashSaleFlag(
+        symbol="AAPL",
+        sale_date=date(2026, 6, 1),
+        sale_quantity=100,
+        sale_loss=3000,
+        repurchase_date=date(2026, 6, 5),
+        repurchase_quantity=100,
+        disallowed_loss=1000,
+        adjusted_cost_basis=6500,
+    )
+    second = WashSaleFlag(
+        symbol="AAPL",
+        sale_date=date(2026, 7, 20),
+        sale_quantity=100,
+        sale_loss=500,
+        repurchase_date=date(2026, 7, 25),
+        repurchase_quantity=100,
+        disallowed_loss=500,
+        adjusted_cost_basis=4700,
+    )
+    chains = _build(
+        transactions=txns,
+        wash_sale_flags=[first, second],
+        realized_events=[
+            _event("AAPL", date(2026, 6, 1), 100, 8000, 5000, date(2026, 1, 1)),
+            _event("AAPL", date(2026, 7, 20), 100, 4500, 4000, date(2026, 6, 5)),
+        ],
+    )
+    assert len(chains) == 1
+    assert len(chains[0].hops) == 2
+    earlier, later = chains[0].hops
+    allocated = {
+        buy.activity_date: buy.allocated_quantity for buy in earlier.replacement_buys
+    }
+    assert allocated[date(2026, 6, 5)] == pytest.approx(40)
+    assert allocated[date(2026, 6, 8)] == pytest.approx(60)
+    assert later.hop_index == 1
+    assert later.sale_quantity == pytest.approx(100)
+    assert later.carried_in_disallowed == pytest.approx(1000)
+    assert "Hop 2:" in later.plain_english
+    assert "carried" in later.plain_english
+    assert first.disallowed_loss == pytest.approx(1000)
+
+
+def test_carry_skips_an_earlier_hop_whose_replacements_do_not_match():
+    """Hop 3's purchase matches hop 1, not hop 2, so carry comes from hop 1."""
+    txns = [
+        _txn("AAPL", TransCode.BUY, date(2026, 1, 1), 100, 80),
+        _txn("AAPL", TransCode.SELL, date(2026, 6, 1), 100, 50),
+        _txn("AAPL", TransCode.BUY, date(2026, 6, 5), 100, 55),
+        _txn("AAPL", TransCode.SELL, date(2026, 8, 10), 100, 40),
+        _txn("AAPL", TransCode.BUY, date(2026, 8, 15), 100, 42),
+        _txn("AAPL", TransCode.SELL, date(2026, 9, 20), 100, 30),
+        _txn("AAPL", TransCode.BUY, date(2026, 9, 25), 100, 32),
+    ]
+    first = WashSaleFlag(
+        symbol="AAPL",
+        sale_date=date(2026, 6, 1),
+        sale_quantity=100,
+        sale_loss=3000,
+        repurchase_date=date(2026, 6, 5),
+        repurchase_quantity=100,
+        disallowed_loss=1000,
+        adjusted_cost_basis=6500,
+    )
+    middle = WashSaleFlag(
+        symbol="AAPL",
+        sale_date=date(2026, 8, 10),
+        sale_quantity=100,
+        sale_loss=500,
+        repurchase_date=date(2026, 8, 15),
+        repurchase_quantity=100,
+        disallowed_loss=400,
+        adjusted_cost_basis=4600,
+    )
+    last = WashSaleFlag(
+        symbol="AAPL",
+        sale_date=date(2026, 9, 20),
+        sale_quantity=100,
+        sale_loss=500,
+        repurchase_date=date(2026, 9, 25),
+        repurchase_quantity=100,
+        disallowed_loss=200,
+        adjusted_cost_basis=3400,
+    )
+    chains = _build(
+        transactions=txns,
+        wash_sale_flags=[first, middle, last],
+        realized_events=[
+            _event("AAPL", date(2026, 6, 1), 100, 8000, 5000, date(2026, 1, 1)),
+            _event("AAPL", date(2026, 8, 10), 100, 4500, 4000, date(2026, 6, 5)),
+            _event("AAPL", date(2026, 9, 20), 100, 3500, 3000, date(2026, 6, 5)),
+        ],
+    )
+    assert len(chains) == 1
+    assert [hop.hop_index for hop in chains[0].hops] == [0, 1, 2]
+    assert chains[0].hops[2].carried_in_disallowed == pytest.approx(1000)
+    assert chains[0].hops[2].carried_in_disallowed != pytest.approx(400)
+    assert "Hop 3:" in chains[0].hops[2].plain_english
+
+
+def test_same_year_1099_totals_without_lot_rows_are_not_compared():
+    """Broker totals with lot_match_report None are not a missing 1099 row."""
+    txns = [
+        _txn("AMD", TransCode.BUY, date(2026, 6, 1), 10, 150),
+        _txn("AMD", TransCode.SELL, date(2026, 7, 15), 10, 120),
+        _txn("AMD", TransCode.BUY, date(2026, 7, 24), 10, 125),
+    ]
+    flags = detect_wash_sales(txns, tax_year=2026)
+    supplemental = Supplemental1099Summary(
+        tax_year=2026,
+        short_term_proceeds=1200,
+        short_term_wash_sale_disallowed=300,
+        lots=[],
+    )
+    chains = _build(
+        transactions=txns,
+        wash_sale_flags=flags,
+        supplemental=supplemental,
+        lot_match_report=None,
+        tax_year=2026,
+    )
+    assert len(chains) == 1
+    assert chains[0].reconcile_status == "not_compared"
+    assert chains[0].hops[0].form_1099_wash is None
+    assert "No same-year 1099-B was compared" in chains[0].plain_english
+    assert "found only in this Robinhood export" not in chains[0].plain_english
+    assert all(chain.reconcile_status != "not_on_1099" for chain in chains)
+    assert all(chain.reconcile_status != "on_1099_only" for chain in chains)

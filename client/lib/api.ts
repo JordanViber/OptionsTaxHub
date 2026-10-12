@@ -607,25 +607,38 @@ export async function fetchAnalysisById(
   return response.json();
 }
 
+export type WashSaleChainsResult = {
+  chains: WashSaleChain[];
+  hint: string | null;
+};
+
 /**
  * Load display wash-sale chains after the year-close packet is paid.
  *
  * Unpaid history JSON omits chains. A non-OK response (including 403) yields
- * an empty list so the desk stays quiet until payment is confirmed.
+ * an empty list and no hint so the desk stays quiet until payment is confirmed.
+ * A paid legacy snapshot returns no chains and a re-analyze hint.
  */
 export async function fetchWashSaleChains(
   analysisId: string,
-): Promise<WashSaleChain[]> {
+): Promise<WashSaleChainsResult> {
   const headers = await getAuthHeaders();
   const response = await fetch(
     apiPath(`/api/portfolio/analysis/${analysisId}/wash-sale-chains`),
     { headers },
   );
   if (!response.ok) {
-    return [];
+    return { chains: [], hint: null };
   }
   const body = await response.json();
-  return Array.isArray(body?.wash_sale_chains) ? body.wash_sale_chains : [];
+  const chains = Array.isArray(body?.wash_sale_chains)
+    ? body.wash_sale_chains
+    : [];
+  const hint =
+    typeof body?.hint === "string" && body.hint.trim() !== ""
+      ? body.hint
+      : null;
+  return { chains, hint };
 }
 
 /**
