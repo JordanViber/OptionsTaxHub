@@ -390,6 +390,8 @@ def test_tip_checkout_invalid_tier():
 
 def test_tip_checkout_no_stripe_key(monkeypatch):
     """POST /api/tips/checkout returns 503 when Stripe is not configured."""
+    monkeypatch.delenv("STRIPE_SECRET_KEY", raising=False)
+    monkeypatch.delenv("STRIPE_SECRET_KEY_TEST", raising=False)
     monkeypatch.setattr(main, "STRIPE_SECRET_KEY", None)
     response = client.post("/api/tips/checkout", json={"tier": "coffee"})
     assert response.status_code == 503
@@ -398,6 +400,7 @@ def test_tip_checkout_no_stripe_key(monkeypatch):
 
 def test_tip_checkout_creates_session(monkeypatch):
     """POST /api/tips/checkout creates Stripe session and returns URL."""
+    monkeypatch.delenv("STRIPE_SECRET_KEY_TEST", raising=False)
     monkeypatch.setattr(main, "STRIPE_SECRET_KEY", "sk_test_fake")
 
     class FakeSession:
@@ -422,6 +425,7 @@ def test_tip_checkout_creates_session(monkeypatch):
 
 def test_tip_checkout_stripe_error(monkeypatch):
     """POST /api/tips/checkout returns 502 on Stripe errors."""
+    monkeypatch.delenv("STRIPE_SECRET_KEY_TEST", raising=False)
     monkeypatch.setattr(main, "STRIPE_SECRET_KEY", "sk_test_fake")
 
     import stripe as stripe_mod
@@ -434,6 +438,94 @@ def test_tip_checkout_stripe_error(monkeypatch):
     response = client.post("/api/tips/checkout", json={"tier": "lunch"})
     assert response.status_code == 502
     assert "checkout session" in response.json()["detail"].lower()
+
+
+def test_tip_checkout_refuses_live_key_in_test_mode(monkeypatch):
+    """Staging/local refuses sk_live_ and does not open a Checkout Session."""
+    monkeypatch.setenv("STRIPE_FORCE_TEST_MODE", "true")
+    monkeypatch.delenv("STRIPE_SECRET_KEY_TEST", raising=False)
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_live_tip_refused")
+    monkeypatch.setattr(main, "STRIPE_SECRET_KEY", "sk_live_tip_refused")
+
+    import stripe as stripe_mod
+
+    calls = []
+
+    def fake_create(**kwargs):
+        calls.append(kwargs)
+        raise AssertionError("stripe.checkout.Session.create must not be called")
+
+    monkeypatch.setattr(stripe_mod.checkout.Session, "create", fake_create)
+
+    response = client.post("/api/tips/checkout", json={"tier": "coffee"})
+    assert response.status_code == 503
+    assert calls == []
+
+
+def test_tip_checkout_uses_test_key_and_inline_price(monkeypatch):
+    """Force-test mode uses STRIPE_SECRET_KEY_TEST and inline price_data."""
+    monkeypatch.setenv("STRIPE_FORCE_TEST_MODE", "true")
+    monkeypatch.setenv("STRIPE_SECRET_KEY_TEST", "sk_test_tip")
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_live_tip_primary")
+    monkeypatch.setattr(main, "STRIPE_SECRET_KEY", "sk_live_tip_primary")
+
+    class FakeSession:
+        url = "https://checkout.stripe.com/test_tip_inline"
+
+    import stripe as stripe_mod
+
+    captured = {}
+
+    def fake_create(**kwargs):
+        captured.update(kwargs)
+        return FakeSession()
+
+    monkeypatch.setattr(stripe_mod.checkout.Session, "create", fake_create)
+
+    response = client.post("/api/tips/checkout", json={"tier": "coffee"})
+    assert response.status_code == 200
+    assert response.json() == {"checkout_url": "https://checkout.stripe.com/test_tip_inline"}
+    assert captured["api_key"] == "sk_test_tip"
+    line = captured["line_items"][0]
+    assert "price" not in line
+    assert line["price_data"]["unit_amount"] == 300
+    assert line["price_data"]["product_data"]["name"] == "Coffee"
+    assert line["price_data"]["currency"] == "usd"
+    assert captured["success_url"] == f"{main.FRONTEND_URL}/tips/success"
+    assert captured["cancel_url"] == f"{main.FRONTEND_URL}/tips/cancel"
+
+
+def test_tip_checkout_production_uses_live_price_id(monkeypatch):
+    """Production keeps the live Price id and ignores STRIPE_SECRET_KEY_TEST."""
+    monkeypatch.delenv("STRIPE_FORCE_TEST_MODE", raising=False)
+    monkeypatch.delenv("RENDER_SERVICE_NAME", raising=False)
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("FRONTEND_URL", "https://www.optionstaxhub.com")
+    monkeypatch.setattr(main, "STRIPE_SECRET_KEY", "sk_live_prod")
+    monkeypatch.setenv("STRIPE_SECRET_KEY_TEST", "sk_test_ignored")
+
+    class FakeSession:
+        url = "https://checkout.stripe.com/live_tip_price"
+
+    import stripe as stripe_mod
+
+    captured = {}
+
+    def fake_create(**kwargs):
+        captured.update(kwargs)
+        return FakeSession()
+
+    monkeypatch.setattr(stripe_mod.checkout.Session, "create", fake_create)
+
+    response = client.post("/api/tips/checkout", json={"tier": "coffee"})
+    assert response.status_code == 200
+    assert response.json() == {"checkout_url": "https://checkout.stripe.com/live_tip_price"}
+    assert captured["api_key"] == "sk_live_prod"
+    assert captured["line_items"] == [
+        {"price": "price_1T0mFVKjuEm9woaeLRWgYJBJ", "quantity": 1}
+    ]
+    assert captured["success_url"] == f"{main.FRONTEND_URL}/tips/success"
+    assert captured["cancel_url"] == f"{main.FRONTEND_URL}/tips/cancel"
 
 
 # ---------- Portfolio Analysis Endpoint ----------
