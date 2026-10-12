@@ -3050,7 +3050,8 @@ def test_conflict_receipt_unique_violation_real_writer_23505(monkeypatch, caplog
     assert not any(record.levelno >= 40 for record in caplog.records)
 
 
-def test_mark_already_granted_same_year_is_duplicate_not_true(monkeypatch, caplog):
+def test_mark_already_granted_same_year_is_not_the_duplicate_sentinel(monkeypatch, caplog):
+    """A real cs_ entitlement is not a duplicate charge and writes no receipt."""
     canonical = _LETTERED
     paid = {
         "analysis_id": canonical,
@@ -3071,8 +3072,9 @@ def test_mark_already_granted_same_year_is_duplicate_not_true(monkeypatch, caplo
     monkeypatch.setattr(db, "get_supabase", lambda: client)
     with caplog.at_level(40):
         marked = db.mark_packet_snapshot_paid(canonical, "user1", 2025, "cs_other")
-    assert marked == db.PACKET_GRANT_SAME_YEAR_DUPLICATE
+    assert marked is db.ALREADY_GRANTED_ENTITLEMENT
     assert marked is not True
+    assert marked != db.PACKET_GRANT_SAME_YEAR_DUPLICATE
     assert client.row(canonical)["packet_session_id"] == "cs_owner"
     assert client.entitlements[0]["analysis_id"] == canonical
     assert len(client.entitlements) == 1

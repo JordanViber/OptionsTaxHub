@@ -4393,7 +4393,12 @@ def test_packet_result_tax_year_rejects_bool_and_float():
 
 
 def test_already_granted_confirm_then_download_stays_on_owner_session(monkeypatch, caplog):
-    """A real entitlement on another session is not paid and cannot download."""
+    """This cs_ already owns the entitlement. The paid row belongs to another session.
+
+    That is missing source, not a duplicate charge. No conflict receipt is
+    inserted and confirm does not use refund wording. Download for this cs_
+    is 403. The owner session still downloads.
+    """
     _test_stripe_env(monkeypatch)
     monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_packet_test_secret")
     aid = "analysis-owner-session"
@@ -4449,13 +4454,17 @@ def test_already_granted_confirm_then_download_stays_on_owner_session(monkeypatc
     )
 
     with caplog.at_level(logging.ERROR):
+        granted = main._persist_packet_grant(sessions["cs_other"], aid, user)
         confirm = client.post(
             "/api/year-close-packet/confirm",
             json={"session_id": "cs_other", "analysis_id": aid},
         )
+    assert granted == main.PACKET_GRANT_MISSING_SOURCE
     assert confirm.status_code == 409, confirm.text
-    assert confirm.json()["detail"] == main.PACKET_SAME_YEAR_DUPLICATE_DETAIL
+    assert confirm.json()["detail"] == main.PACKET_MISSING_SOURCE_DETAIL
     assert confirm.json().get("paid") is not True
+    _assert_no_refund_copy(confirm.text)
+    assert _conflict_analysis_ids(snapshot_client) == []
     webhook = _post_signed_webhook(
         _packet_checkout_event(
             tax_year=2025,
@@ -4481,6 +4490,7 @@ def test_already_granted_confirm_then_download_stays_on_owner_session(monkeypatc
         json={"analysis_id": aid, "session_id": "cs_other", "analysis": payload},
     )
     assert other_download.status_code == 403, other_download.text
+    assert not other_download.content.startswith(b"%PDF")
     assert b"OWNER2025" not in other_download.content
     owner_download = client.post(
         "/api/year-close-packet/download",
@@ -4488,6 +4498,253 @@ def test_already_granted_confirm_then_download_stays_on_owner_session(monkeypatc
     )
     assert owner_download.status_code == 200, owner_download.text
     assert b"OWNER2025" in owner_download.content
+
+
+def test_already_owned_own_paid_full_snapshot_confirms_paid_and_downloads_pdf(
+    monkeypatch, caplog
+):
+    """This cs_ already owns the entitlement and its own paid full snapshot.
+
+    The duplicate helper must return paid, not a refund. No conflict receipt
+    is inserted. Confirm is paid. Download for this cs_ is a PDF.
+    """
+    user = "test-user-123"
+    aid = "analysis-owned-own-paid"
+    session_id = "cs_owned_full"
+    source = {
+        **SAMPLE_ANALYSIS,
+        "analysis_id": aid,
+        "analysis_tax_year": 2025,
+        "tax_profile": {"tax_year": 2025, "filing_status": "single"},
+    }
+    sellable = build_packet_payload(source, analysis_id=aid)
+    assert packet_payload_rows_match_counts(sellable) is True
+    snapshot_client, session = _wire_owned_receipt(
+        monkeypatch,
+        aid=aid,
+        user=user,
+        session_id=session_id,
+        tax_year=2025,
+        rows=[_snapshot_row(
+            aid, user, 2025, sellable,
+            session_id=session_id, paid_at="2026-01-01T00:00:00+00:00",
+        )],
+        history_payload=source,
+    )
+
+    with caplog.at_level(logging.ERROR):
+        classified = main._same_year_duplicate_grant(aid, user, 2025, session_id)
+        granted = main._persist_packet_grant(session, aid, user)
+
+    assert classified is True
+    assert granted is True
+    assert _conflict_analysis_ids(snapshot_client) == []
+    assert len(snapshot_client.entitlements) == 1
+    assert snapshot_client.entitlements[0]["analysis_id"] == aid
+    assert snapshot_client.rows[0]["packet_session_id"] == session_id
+    _assert_no_refund_copy(caplog.text)
+
+    confirm = client.post(
+        "/api/year-close-packet/confirm",
+        json={"session_id": session_id, "analysis_id": aid},
+    )
+    assert confirm.status_code == 200, confirm.text
+    assert confirm.json()["paid"] is True
+    _assert_no_refund_copy(confirm.text)
+    assert _conflict_analysis_ids(snapshot_client) == []
+
+    downloaded = client.get(
+        "/api/year-close-packet/download",
+        params={"analysis_id": aid, "session_id": session_id},
+    )
+    assert downloaded.status_code == 200, downloaded.text
+    assert downloaded.headers["content-type"].startswith("application/pdf")
+    assert downloaded.content.startswith(b"%PDF")
+
+
+def test_already_owned_unpaid_and_counts_only_are_missing_source(monkeypatch, caplog):
+    """An already-owned cs_ with an unusable own snapshot is missing source.
+
+    Unpaid and counts-only rows do not insert a conflict receipt and do not
+    use refund wording. Confirm is 409. Download for this cs_ is not a PDF.
+    """
+    user = "test-user-123"
+    counts_only = {
+        "analysis_id": "placeholder",
+        "analysis_tax_year": 2025,
+        "tax_profile": {"tax_year": 2025, "filing_status": "single"},
+        "lot_match_report": {
+            "matched_count": 2,
+            "gap_count": 0,
+            "unmatched_count": 0,
+            "matched": [],
+            "gap": [],
+            "unmatched": [],
+        },
+    }
+    assert packet_payload_rows_match_counts(counts_only) is False
+
+    unpaid_id = "analysis-owned-unpaid"
+    unpaid_session = "cs_owned_unpaid"
+    unpaid_payload = {**counts_only, "analysis_id": unpaid_id}
+    unpaid_client, unpaid_stripe = _wire_owned_receipt(
+        monkeypatch,
+        aid=unpaid_id,
+        user=user,
+        session_id=unpaid_session,
+        tax_year=2025,
+        rows=[_snapshot_row(
+            unpaid_id, user, 2025, unpaid_payload,
+            session_id=unpaid_session, paid_at=None,
+            expires_at="2099-01-01T00:00:00+00:00",
+        )],
+        history_payload=unpaid_payload,
+    )
+    with caplog.at_level(logging.ERROR):
+        unpaid_classified = main._same_year_duplicate_grant(
+            unpaid_id, user, 2025, unpaid_session
+        )
+        unpaid_granted = main._persist_packet_grant(unpaid_stripe, unpaid_id, user)
+    assert unpaid_classified == main.PACKET_GRANT_MISSING_SOURCE
+    assert unpaid_granted == main.PACKET_GRANT_MISSING_SOURCE
+    assert _conflict_analysis_ids(unpaid_client) == []
+    assert unpaid_client.rows[0]["paid_at"] is None
+    _assert_no_refund_copy(caplog.text)
+    unpaid_confirm = client.post(
+        "/api/year-close-packet/confirm",
+        json={"session_id": unpaid_session, "analysis_id": unpaid_id},
+    )
+    assert unpaid_confirm.status_code == 409, unpaid_confirm.text
+    assert unpaid_confirm.json()["detail"] == main.PACKET_MISSING_SOURCE_DETAIL
+    assert unpaid_confirm.json().get("paid") is not True
+    _assert_no_refund_copy(unpaid_confirm.text)
+    unpaid_download = client.get(
+        "/api/year-close-packet/download",
+        params={"analysis_id": unpaid_id, "session_id": unpaid_session},
+    )
+    assert unpaid_download.status_code == 409, unpaid_download.text
+    assert unpaid_download.json()["detail"] == main.PACKET_MISSING_SOURCE_DETAIL
+    assert not unpaid_download.content.startswith(b"%PDF")
+    assert _conflict_analysis_ids(unpaid_client) == []
+
+    caplog.clear()
+    counts_id = "analysis-owned-counts-other"
+    counts_session = "cs_owned_counts_other"
+    counts_payload = {**counts_only, "analysis_id": counts_id}
+    counts_client, counts_stripe = _wire_owned_receipt(
+        monkeypatch,
+        aid=counts_id,
+        user=user,
+        session_id=counts_session,
+        tax_year=2025,
+        rows=[_snapshot_row(
+            counts_id, user, 2025, counts_payload,
+            session_id="cs_owner", paid_at="2026-01-01T00:00:00+00:00",
+        )],
+        history_payload=counts_payload,
+    )
+    with caplog.at_level(logging.ERROR):
+        counts_classified = main._same_year_duplicate_grant(
+            counts_id, user, 2025, counts_session
+        )
+        counts_granted = main._persist_packet_grant(counts_stripe, counts_id, user)
+    assert counts_classified == main.PACKET_GRANT_MISSING_SOURCE
+    assert counts_granted == main.PACKET_GRANT_MISSING_SOURCE
+    assert _conflict_analysis_ids(counts_client) == []
+    assert counts_client.rows[0]["packet_session_id"] == "cs_owner"
+    assert counts_client.rows[0]["packet_payload"] == counts_payload
+    _assert_no_refund_copy(caplog.text)
+    counts_confirm = client.post(
+        "/api/year-close-packet/confirm",
+        json={"session_id": counts_session, "analysis_id": counts_id},
+    )
+    assert counts_confirm.status_code == 409, counts_confirm.text
+    assert counts_confirm.json()["detail"] == main.PACKET_MISSING_SOURCE_DETAIL
+    _assert_no_refund_copy(counts_confirm.text)
+    counts_download = client.get(
+        "/api/year-close-packet/download",
+        params={"analysis_id": counts_id, "session_id": counts_session},
+    )
+    assert counts_download.status_code == 403, counts_download.text
+    assert not counts_download.content.startswith(b"%PDF")
+    assert _conflict_analysis_ids(counts_client) == []
+    assert counts_client.entitlements[0]["analysis_id"] == counts_id
+
+
+def test_genuine_different_session_duplicate_inserts_receipt_and_refund_copy(
+    monkeypatch, caplog
+):
+    """A new cs_ against another session's paid year inserts one conflict receipt.
+
+    The grant is the same-year duplicate sentinel, the refund ERROR is logged,
+    and confirm uses the refund sentence. Download for this cs_ is not a PDF.
+    """
+    _test_stripe_env(monkeypatch)
+    user = "test-user-123"
+    aid = "analysis-genuine-duplicate"
+    session_id = "cs_new_charge"
+    payload = {
+        "analysis_id": aid,
+        "analysis_tax_year": 2025,
+        "tax_profile": {"tax_year": 2025, "filing_status": "single"},
+        "marker": "OWNER-PAID",
+    }
+    assert packet_payload_rows_match_counts(payload) is True
+    _seed_raw_history(aid, user, payload)
+    snapshot_client = _wire_real_snapshot_client(
+        monkeypatch,
+        [_snapshot_row(
+            aid, user, 2025, payload,
+            session_id="cs_owner", paid_at="2026-01-01T00:00:00+00:00",
+        )],
+    )
+    monkeypatch.setattr(main, "save_packet_entitlement", db.save_packet_entitlement)
+    session = _stripe_object_session(
+        id=session_id,
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": aid,
+            "user_id": user,
+            "tax_year": "2025",
+        },
+    )
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda *_args, **_kwargs: session,
+    )
+
+    with caplog.at_level(logging.ERROR):
+        granted = main._persist_packet_grant(session, aid, user)
+        confirm = client.post(
+            "/api/year-close-packet/confirm",
+            json={"session_id": session_id, "analysis_id": aid},
+        )
+
+    assert granted == main.PACKET_GRANT_SAME_YEAR_DUPLICATE
+    receipts = [
+        row for row in snapshot_client.entitlements
+        if str(row.get("analysis_id") or "").startswith("conflict:")
+    ]
+    assert len(receipts) == 1
+    assert receipts[0]["analysis_id"] == f"conflict:{aid}"
+    assert receipts[0]["packet_session_id"] == session_id
+    assert "PACKET_GRANT_SAME_YEAR_DUPLICATE" in caplog.text
+    assert session_id in caplog.text
+    assert confirm.status_code == 409, confirm.text
+    assert confirm.json()["detail"] == main.PACKET_SAME_YEAR_DUPLICATE_DETAIL
+    assert "recorded for a refund" in confirm.text
+    assert confirm.json().get("paid") is not True
+    assert snapshot_client.rows[0]["packet_session_id"] == "cs_owner"
+    assert len(receipts) == 1
+
+    downloaded = client.get(
+        "/api/year-close-packet/download",
+        params={"analysis_id": aid, "session_id": session_id},
+    )
+    assert downloaded.status_code == 403, downloaded.text
+    assert not downloaded.content.startswith(b"%PDF")
+    assert snapshot_client.rows[0]["packet_session_id"] == "cs_owner"
 
 
 def test_download_rejects_unpaid_snapshot_despite_memory_paid_flag(monkeypatch):

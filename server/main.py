@@ -2584,14 +2584,42 @@ def _snapshot_is_paid_full(snapshot) -> bool:
     return isinstance(payload, dict) and packet_payload_rows_match_counts(payload)
 
 
-def _same_year_duplicate_grant(analysis_id, user_id, tax_year, session_id):
-    """Store one refund receipt and return the same-year duplicate sentinel.
+def _already_owned_session_grant(analysis_id, user_id, tax_year, session_id):
+    """Paid only when this ``cs_`` owns a paid full snapshot.
 
-    This is the ``mark_packet_snapshot_paid`` duplicate path: the helper
-    inserts the ``conflict:`` row and writes the refund ERROR log. ``None``
-    means that insert failed. Callers must not report missing source for a
-    charge that has no receipt. An already-stored receipt, including a replay,
-    is ``PACKET_GRANT_SAME_YEAR_DUPLICATE``.
+    ``ALREADY_GRANTED_ENTITLEMENT`` means this session already holds a real
+    entitlement. No ``conflict:`` receipt was inserted and no refund line was
+    logged. That is not a second charge. True requires
+    ``packet_session_id ==`` this session and a payload that passes
+    ``packet_payload_rows_match_counts``. Anything else, including an unpaid
+    row, a counts-only row, or a snapshot owned by another ``cs_``, is
+    ``PACKET_GRANT_MISSING_SOURCE``. A failed re-read is an outage.
+    """
+    try:
+        year = int(tax_year)
+    except (TypeError, ValueError):
+        return PACKET_GRANT_MISSING_SOURCE
+    stored, stored_ok = get_packet_snapshot(analysis_id, user_id, tax_year=year)
+    if not stored_ok:
+        return None
+    if (
+        isinstance(stored, dict)
+        and stored.get("packet_session_id") == session_id
+        and _snapshot_is_paid_full(stored)
+    ):
+        return True
+    return PACKET_GRANT_MISSING_SOURCE
+
+
+def _same_year_duplicate_grant(analysis_id, user_id, tax_year, session_id):
+    """Record a same-year second charge, or classify an already-owned session.
+
+    ``None`` means the receipt write failed. ``PACKET_GRANT_SAME_YEAR_DUPLICATE``
+    is returned only for a ``conflict:`` receipt. The insert writes the refund
+    ERROR; a later read of that same receipt does not log again and still
+    refuses the grant. ``ALREADY_GRANTED_ENTITLEMENT`` is this ``cs_`` already
+    owning the entitlement — never the duplicate sentinel and never refund
+    wording. Paid (True) only when this session's own snapshot is paid and full.
     """
     try:
         year = int(tax_year)
@@ -2610,7 +2638,11 @@ def _same_year_duplicate_grant(analysis_id, user_id, tax_year, session_id):
     )
     if receipt is None:
         return None
-    return PACKET_GRANT_SAME_YEAR_DUPLICATE
+    if receipt is ALREADY_GRANTED_ENTITLEMENT:
+        return _already_owned_session_grant(analysis_id, user_id, year, session_id)
+    if isinstance(receipt, dict) and _is_conflict_analysis_id(receipt.get("analysis_id")):
+        return PACKET_GRANT_SAME_YEAR_DUPLICATE
+    return None
 
 
 def _conflict_grant_result(result, analysis_id, user_id, tax_year, session_id):
@@ -2621,10 +2653,12 @@ def _conflict_grant_result(result, analysis_id, user_id, tax_year, session_id):
     entitlement. Re-read the stored row (not the snapshot captured at grant
     start). Counts-only, null, and a missing row are
     ``PACKET_GRANT_MISSING_SOURCE``. A sellable payload is not a missing
-    document. Another session already paid this year — ``mark`` returns
-    ``PACKET_GRANT_SAME_YEAR_DUPLICATE``, or the re-read is paid under a
-    different ``cs_`` — goes through the duplicate receipt path. A first-time
-    other-year conflict writes a receipt and stays
+    document. ``mark`` returns ``ALREADY_GRANTED_ENTITLEMENT`` when this
+    ``cs_`` already owns the entitlement and nothing was written; that is
+    paid only for this session's own paid full snapshot, otherwise missing
+    source. A ``conflict:`` insert is ``PACKET_GRANT_SAME_YEAR_DUPLICATE``.
+    A re-read paid under a different ``cs_`` uses the same receipt helper.
+    A first-time other-year conflict writes a receipt and stays
     ``PACKET_GRANT_YEAR_CONFLICT``. An already-owned other-year conflict
     writes nothing new and still uses that year-conflict result; the receipt
     already on file is the one that blocks the stamp. Paid and full for this
@@ -2659,7 +2693,12 @@ def _conflict_grant_result(result, analysis_id, user_id, tax_year, session_id):
         return PACKET_GRANT_YEAR_CONFLICT
     if marked is None:
         return None
-    if marked == PACKET_GRANT_SAME_YEAR_DUPLICATE:
+    # The duplicate string is a conflict: receipt. The already-granted sentinel
+    # must not be treated as that string: the helper applies the snapshot rule.
+    if (
+        marked is ALREADY_GRANTED_ENTITLEMENT
+        or marked == PACKET_GRANT_SAME_YEAR_DUPLICATE
+    ):
         return _same_year_duplicate_grant(analysis_id, user_id, year, session_id)
     reread, reread_ok = get_packet_snapshot(analysis_id, user_id, tax_year=year)
     if not reread_ok:
@@ -3012,8 +3051,20 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
         )
     if entitlement_saved is None:
         return None
-    if entitlement_saved == PACKET_GRANT_SAME_YEAR_DUPLICATE:
-        return entitlement_saved
+    # Do not return the duplicate string blindly. mark used to collapse an
+    # already-owned cs_ into that string without inserting a receipt. The
+    # helper returns the duplicate sentinel only for a conflict: receipt, and
+    # missing source or paid for ALREADY_GRANTED_ENTITLEMENT.
+    if (
+        entitlement_saved is ALREADY_GRANTED_ENTITLEMENT
+        or entitlement_saved == PACKET_GRANT_SAME_YEAR_DUPLICATE
+    ):
+        return _same_year_duplicate_grant(
+            session_analysis_id,
+            session_user_id,
+            tax_year,
+            session_id,
+        )
     if not entitlement_saved:
         # The snapshot row disappeared (history delete, expiry). Do not INSERT
         # a replacement private document; keep the purchase as a receipt.

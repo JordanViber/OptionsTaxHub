@@ -2244,7 +2244,7 @@ def mark_packet_snapshot_paid(
     tax_year: int,
     session_id: str,
     client=None,
-) -> bool | str | None:
+) -> bool | str | _AlreadyGrantedEntitlement | None:
     """Mark an existing owner-scoped snapshot as paid for a settled session."""
     analysis_id = _canonical_analysis_id(analysis_id) or ""
     if not analysis_id or not user_id or tax_year is None or not session_id:
@@ -2313,9 +2313,14 @@ def mark_packet_snapshot_paid(
             )
             if receipt is None:
                 return None
-            # ALREADY_GRANTED_ENTITLEMENT is not True. The snapshot stays on
-            # the other session, so this session is not reported paid and
-            # history is not patched. A new conflict: row takes the same path.
+            # This cs_ already owns a real entitlement. That is not a second
+            # charge: nothing was inserted and no refund line was logged.
+            # Callers decide paid vs missing source from this session's snapshot.
+            if receipt is ALREADY_GRANTED_ENTITLEMENT:
+                return ALREADY_GRANTED_ENTITLEMENT
+            # A conflict: row was inserted (and the refund ERROR logged) or was
+            # already stored for this session. The snapshot stays on the session
+            # that paid it.
             return PACKET_GRANT_SAME_YEAR_DUPLICATE
         # Stamp only the row that was read, and only while it is still unpaid.
         result = (
