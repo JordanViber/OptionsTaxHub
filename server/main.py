@@ -1132,7 +1132,9 @@ def _public_analysis(
     Counts stay so the $49 teaser still works. The in-app 2026 sample keeps
     lot rows and chains so the desk can show them; packet_unlocked stays false
     so download remains $49 gated. History forces packet_unlocked false so lot
-    rows stay out, and passes keep_wash_chains when the run was paid or sample.
+    rows stay out. Sample history may keep chains. A year-grant row is written
+    with keep_wash_chains false; chains are patched on only after the paid
+    snapshot commits.
     """
     if keep_wash_chains is None:
         keep_wash_chains = bool(result.packet_unlocked) or keep_lot_rows
@@ -1661,12 +1663,13 @@ async def _run_portfolio_analysis(
     public_result = _public_analysis(result, keep_lot_rows=keep_lot_rows)
 
     # History is always redacted. Lot rows stay in PACKET_STORE and the paid
-    # snapshot. Grant flags are patched on only after that snapshot commits,
-    # so a failed snapshot cannot leave private lots in the history JSON.
+    # snapshot. Grant flags and wash chains are patched on only after that
+    # snapshot commits, so a failed snapshot cannot leave chains in history.
+    year_grant = bool(result.packet_unlocked and result.packet_session_id)
     history_result = _public_analysis(
         result.model_copy(update={"packet_unlocked": False, "packet_session_id": None}),
         keep_lot_rows=keep_lot_rows,
-        keep_wash_chains=bool(result.packet_unlocked) or keep_lot_rows,
+        keep_wash_chains=keep_lot_rows and not year_grant,
     )
     history_summary = summary
     sample_upload = is_sample_csv_filename(filename) or is_trusted_sample_csv_bytes(
@@ -1747,6 +1750,7 @@ async def _run_portfolio_analysis(
                     {
                         "packet_unlocked": True,
                         "packet_session_id": result.packet_session_id,
+                        "wash_sale_chains": list(durable_chains),
                     },
                 )
                 if patched is not True:
@@ -1756,10 +1760,29 @@ async def _run_portfolio_analysis(
                     )
             return public_result
         if history_saved:
+            # The row was written chain-free. Rewrite anyway so a chain that
+            # landed before this failed commit cannot stay in history JSON.
+            cleared = _public_analysis(
+                history_result,
+                keep_lot_rows=keep_lot_rows,
+                keep_wash_chains=False,
+            )
+            cleared_dump = (
+                cleared.model_dump(mode="json")
+                if hasattr(cleared, "model_dump")
+                else dict(cleared)
+            )
+            cleared_chains = cleared_dump.get("wash_sale_chains")
             patch_analysis_result(
                 result.analysis_id,
                 user_id,
-                {"packet_unlocked": False, "packet_session_id": None},
+                {
+                    "packet_unlocked": False,
+                    "packet_session_id": None,
+                    "wash_sale_chains": (
+                        cleared_chains if isinstance(cleared_chains, list) else []
+                    ),
+                },
             )
         result = result.model_copy(
             update={"packet_unlocked": False, "packet_session_id": None}

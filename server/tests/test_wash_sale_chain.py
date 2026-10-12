@@ -1297,15 +1297,13 @@ def test_chain_copy_covers_remaining_branches():
             )
         ),
     )
-    assert any(chain.reconcile_status == "not_on_1099" for chain in empty_unit)
-    blank_unit = next(
-        chain for chain in empty_unit if chain.hops[0].sale_quantity == pytest.approx(0)
-    )
-    assert blank_unit.reconcile_status == "not_compared"
-    assert blank_unit.hops[0].not_compared_reason == "unknown"
-    assert blank_unit.hops[0].replacement_buys == []
-    assert blank_unit.hops[0].cost_basis is None
-    assert blank_unit.hops[0].open_lot_total_cost_basis is None
+    # A zero-quantity same-day row blocks the absence claim. The engine hop
+    # is the only chain, and it is not_compared rather than not_on_1099.
+    assert len(empty_unit) == 1
+    assert empty_unit[0].reconcile_status == "not_compared"
+    assert empty_unit[0].hops[0].not_compared_reason == "unknown"
+    assert empty_unit[0].hops[0].sale_quantity == pytest.approx(10)
+    assert all(chain.reconcile_status != "not_on_1099" for chain in empty_unit)
 
     dated = _build(
         transactions=[
@@ -4726,3 +4724,150 @@ def test_zero_or_missing_1099_quantity_is_not_compared():
         )
         assert "You sold" not in hop.plain_english
         assert all(buy.explained_basis == 0 for buy in hop.replacement_buys)
+
+
+def test_unknown_quantity_same_day_1099_blocks_absence_claim():
+    """A totals-valid same-day row with no quantity is not an absence claim.
+
+    The engine hop becomes one not_compared hop (unknown quantity). The 1099
+    row is not also a leftover hop, and nothing is marked not_on_1099.
+    """
+    sale = date(2026, 6, 1)
+    flag = WashSaleFlag(
+        symbol="AAPL",
+        sale_date=sale,
+        sale_quantity=10,
+        sale_loss=100,
+        repurchase_date=date(2026, 6, 5),
+        repurchase_quantity=10,
+        disallowed_loss=100,
+        adjusted_cost_basis=220,
+    )
+    txns = [
+        _txn("AAPL", TransCode.BUY, date(2026, 1, 1), 10, 20),
+        _txn("AAPL", TransCode.SELL, sale, 10, 10),
+        _txn("AAPL", TransCode.BUY, date(2026, 6, 5), 10, 12),
+    ]
+    events = [_event("AAPL", sale, 10, 200, 100, date(2026, 1, 1))]
+
+    def _blank(**overrides) -> LotMatchRow:
+        payload = dict(
+            status="matched",
+            symbol="AAPL",
+            description="",
+            quantity=0,
+            date_sold_1099=sale,
+            export_trade_date=sale,
+            proceeds_1099=100.0,
+            proceeds_export=0.0,
+            cost_basis_1099=200.0,
+            cost_basis_export=0.0,
+            wash_sale_disallowed=40.0,
+        )
+        payload.update(overrides)
+        return LotMatchRow.model_construct(**payload)
+
+    for quantity in (0, None):
+        report = _report(_blank(quantity=quantity))
+        assert report.totals_ok is True
+        chains = _build(
+            transactions=txns,
+            wash_sale_flags=[flag],
+            realized_events=events,
+            supplemental=_supplemental(2026),
+            lot_match_report=report,
+            tax_year=2026,
+        )
+        assert len(chains) == 1
+        assert len(chains[0].hops) == 1
+        hop = chains[0].hops[0]
+        assert chains[0].reconcile_status == "not_compared"
+        assert hop.reconcile_status == "not_compared"
+        assert hop.not_compared_reason == "unknown"
+        assert hop.sale_quantity == pytest.approx(10)
+        assert hop.engine_disallowed_loss == pytest.approx(100)
+        assert hop.form_1099_wash is None
+        assert hop.plain_english == (
+            "This 1099 sale has no quantity, so it was not compared."
+        )
+        assert all(chain.reconcile_status != "not_on_1099" for chain in chains)
+        assert all(hop.reconcile_status != "not_on_1099" for chain in chains for hop in chain.hops)
+        assert flag.disallowed_loss == pytest.approx(100)
+
+    both_blank = _build(
+        transactions=txns,
+        wash_sale_flags=[flag],
+        realized_events=events,
+        supplemental=_supplemental(2026),
+        lot_match_report=_report(_blank(quantity=0), _blank(quantity=None)),
+        tax_year=2026,
+    )
+    assert len(both_blank) == 1
+    assert both_blank[0].hops[0].not_compared_reason == "unknown"
+    assert all(chain.reconcile_status != "not_on_1099" for chain in both_blank)
+
+    later = date(2026, 7, 15)
+    later_flag = WashSaleFlag(
+        symbol="AAPL",
+        sale_date=later,
+        sale_quantity=10,
+        sale_loss=80,
+        repurchase_date=date(2026, 7, 20),
+        repurchase_quantity=10,
+        disallowed_loss=80,
+        adjusted_cost_basis=200,
+    )
+    shared = _build(
+        transactions=txns
+        + [
+            _txn("AAPL", TransCode.SELL, later, 10, 8),
+            _txn("AAPL", TransCode.BUY, date(2026, 7, 20), 10, 9),
+        ],
+        wash_sale_flags=[flag, later_flag],
+        realized_events=events
+        + [_event("AAPL", later, 10, 180, 80, date(2026, 6, 5))],
+        supplemental=_supplemental(2026),
+        lot_match_report=_report(_blank()),
+        tax_year=2026,
+    )
+    june = [chain for chain in shared if chain.hops[0].sale_date == sale]
+    july = [chain for chain in shared if chain.hops[0].sale_date == later]
+    assert len(june) == 1
+    assert june[0].hops[0].not_compared_reason == "unknown"
+    assert len(july) == 1
+    assert july[0].reconcile_status == "not_on_1099"
+    assert all(
+        chain.hops[0].sale_quantity != pytest.approx(0) for chain in shared
+    )
+
+    small = WashSaleFlag(
+        symbol="AAPL",
+        sale_date=sale,
+        sale_quantity=4,
+        sale_loss=40,
+        repurchase_date=date(2026, 6, 5),
+        repurchase_quantity=4,
+        disallowed_loss=40,
+        adjusted_cost_basis=88,
+    )
+    same_day = _build(
+        transactions=[
+            _txn("AAPL", TransCode.BUY, date(2026, 1, 1), 14, 20),
+            _txn("AAPL", TransCode.SELL, sale, 10, 10),
+            _txn("AAPL", TransCode.SELL, sale, 4, 10),
+            _txn("AAPL", TransCode.BUY, date(2026, 6, 5), 14, 12),
+        ],
+        wash_sale_flags=[flag, small],
+        realized_events=[
+            _event("AAPL", sale, 10, 200, 100, date(2026, 1, 1)),
+            _event("AAPL", sale, 4, 80, 40, date(2026, 1, 1)),
+        ],
+        supplemental=_supplemental(2026),
+        lot_match_report=_report(_blank()),
+        tax_year=2026,
+    )
+    assert len(same_day) == 2
+    assert all(chain.reconcile_status == "not_compared" for chain in same_day)
+    assert all(chain.hops[0].not_compared_reason == "unknown" for chain in same_day)
+    assert all(chain.reconcile_status != "not_on_1099" for chain in same_day)
+    assert all(chain.hops[0].sale_quantity != pytest.approx(0) for chain in same_day)

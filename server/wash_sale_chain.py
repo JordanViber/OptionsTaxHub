@@ -657,7 +657,8 @@ def _match_candidates(
     export date is missing. A csv_only row is export-only and is not a 1099
     match. A row belongs when abs(proceeds - target price * quantity) is
     within the proceeds slack. With no target price, any row that has a
-    quantity is a candidate. A zero-quantity row is not.
+    quantity is a candidate. A missing or zero quantity is not a candidate
+    and is not proof the sale is absent. That row blocks not_on_1099.
     """
     candidates: list[tuple[int, LotMatchRow]] = []
     for index, row in enumerate(rows):
@@ -670,11 +671,41 @@ def _match_candidates(
         if _row_sale_date(row) != sale_date:
             continue
         if _row_unit_proceeds(row) is None:
+            # No share count to compare. _unknown_quantity_rows blocks absence.
             continue
         if target is not None and not _row_total_matches_price(row, target):
             continue
         candidates.append((index, row))
     return candidates
+
+
+def _unknown_quantity_rows(
+    rows: list[LotMatchRow],
+    *,
+    used: set[int],
+    symbol: str,
+    sale_date: date,
+) -> list[tuple[int, LotMatchRow]]:
+    """Same-symbol, same-day 1099 rows whose quantity is missing or zero.
+
+    They cannot match a sale price. On a totals-valid 1099 they also cannot
+    support an absence claim, so the caller marks the hop not_compared and
+    reserves every such row. A csv_only row is export-only and is ignored.
+    """
+    blockers: list[tuple[int, LotMatchRow]] = []
+    for index, row in enumerate(rows):
+        if index in used:
+            continue
+        if _symbol(row.symbol) != symbol:
+            continue
+        if row.status == "csv_only":
+            continue
+        if _row_sale_date(row) != sale_date:
+            continue
+        if _lot_quantity_known(row.quantity):
+            continue
+        blockers.append((index, row))
+    return blockers
 
 
 def _match_sale_rows(
@@ -1121,6 +1152,20 @@ def _apply_1099_match(
         hop.difference = None
         return
     if taken is None:
+        if claim_absence and _unknown_quantity_rows(
+            rows,
+            used=used_rows,
+            symbol=hop.symbol,
+            sale_date=hop.sale_date,
+        ):
+            # Do not reserve the row here. A later hop on this day must see
+            # it too, or that hop would be called not_on_1099. The builder
+            # reserves every blocker after the match loop.
+            hop.reconcile_status = "not_compared"
+            hop.not_compared_reason = "unknown"
+            hop.form_1099_wash = None
+            hop.difference = None
+            return
         if claim_absence:
             hop.reconcile_status = "not_on_1099"
             hop.not_compared_reason = ""
@@ -2026,6 +2071,19 @@ def build_wash_sale_chains(
                 unassigned,
                 claim_absence=claim_absence,
             )
+    if comparable and claim_absence:
+        # One unknown-quantity row blocks absence for every same-day hop and
+        # is not also emitted as a leftover chain.
+        for hop in engine_hops:
+            if hop.not_compared_reason != "unknown":
+                continue
+            for index, _row in _unknown_quantity_rows(
+                rows,
+                used=used_rows,
+                symbol=hop.symbol,
+                sale_date=hop.sale_date,
+            ):
+                used_rows.add(index)
     # Each flag is its own chain. A later sale of the replacement is not linked.
     chains = [_finish(hop) for hop in engine_hops]
     for hop in option_by_day.values():

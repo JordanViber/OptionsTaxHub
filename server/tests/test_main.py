@@ -3224,8 +3224,111 @@ def test_unpaid_analyze_strips_wash_chains_from_response_and_history(monkeypatch
     paid_body = paid_response.json()
     assert paid_body["packet_unlocked"] is True
     assert paid_body["wash_sale_chains"]
-    assert captured["result_data"]["wash_sale_chains"]
+    # Chains are not in the history insert. They are patched after commit.
+    assert captured["result_data"]["wash_sale_chains"] == []
     assert captured["built"][-1]
+
+
+def _post_year_grant_analyze(monkeypatch, *, snapshot_result, on_snapshot=None):
+    """Signed-in year-grant analyze with a controllable snapshot save."""
+    import json
+
+    stored = {"result": None, "patches": [], "events": []}
+    real_history = main._save_history_best_effort
+
+    def save_history(*, user_id, filename, summary, result_data=None):
+        stored["events"].append("history")
+        stored["result"] = json.loads(json.dumps(result_data))
+        return {"id": result_data.get("analysis_id")}
+
+    def save_snapshot(*args, **kwargs):
+        stored["events"].append("snapshot")
+        if on_snapshot is not None:
+            on_snapshot(stored, args, kwargs)
+        return snapshot_result
+
+    def apply_patch(_analysis_id, _user_id, patch):
+        stored["events"].append("patch")
+        copied = json.loads(json.dumps(patch))
+        stored["patches"].append(copied)
+        stored["result"].update(copied)
+        return True
+
+    _stub_analyze_network(monkeypatch)
+    monkeypatch.setattr("main.save_analysis_history", save_history)
+    monkeypatch.setattr("main._save_history_best_effort", real_history)
+    monkeypatch.setattr("main.save_packet_snapshot", save_snapshot)
+    monkeypatch.setattr("main.patch_analysis_result", apply_patch)
+    monkeypatch.setattr(
+        "main.lookup_packet_grant_for_tax_year",
+        lambda *_args, **_kwargs: ("cs_test_yeargrant", True),
+    )
+    csv_2024 = (
+        Path(__file__).resolve().parent / "fixtures" / "year_close_2024.csv"
+    ).read_bytes()
+    response = client.post(
+        "/api/portfolio/analyze?tax_year=2024",
+        files={
+            "file": ("year_close_2024.csv", csv_2024, "text/csv"),
+            "supplemental_1099": _make_supplemental_1099_upload(),
+        },
+    )
+    return stored, response
+
+
+def test_year_grant_failed_snapshot_omits_wash_chains_from_history(monkeypatch):
+    """A failed year-grant snapshot leaves history without wash_sale_chains."""
+
+    def leak_into_history(stored, _args, _kwargs):
+        stored["result"]["wash_sale_chains"] = [
+            {"symbol": "LEAK", "chain_id": "leak"}
+        ]
+
+    stored, response = _post_year_grant_analyze(
+        monkeypatch,
+        snapshot_result=None,
+        on_snapshot=leak_into_history,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["packet_unlocked"] is False
+    assert not body.get("wash_sale_chains")
+    assert stored["events"] == ["history", "snapshot", "patch"]
+    saved = stored["result"]
+    assert saved["wash_sale_chains"] == []
+    assert saved["packet_unlocked"] is False
+    assert saved["packet_session_id"] is None
+    import json
+    assert "LEAK" not in json.dumps(saved)
+    assert stored["patches"][-1]["wash_sale_chains"] == []
+    assert stored["patches"][-1]["packet_unlocked"] is False
+
+
+def test_year_grant_history_attaches_wash_chains_after_snapshot_commit(monkeypatch):
+    """Chains reach history only in the patch that follows a committed snapshot."""
+
+    def note_history_at_commit(stored, args, _kwargs):
+        stored["at_snapshot"] = list(stored["result"].get("wash_sale_chains") or [])
+        payload = args[3]
+        stored["snapshot_chains"] = payload.get("wash_sale_chains")
+
+    stored, response = _post_year_grant_analyze(
+        monkeypatch,
+        snapshot_result={"analysis_id": "committed"},
+        on_snapshot=note_history_at_commit,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["packet_unlocked"] is True
+    assert body["wash_sale_chains"]
+    assert stored["events"] == ["history", "snapshot", "patch"]
+    assert stored["at_snapshot"] == []
+    assert stored["snapshot_chains"]
+    saved = stored["result"]
+    assert saved["packet_unlocked"] is True
+    assert saved["packet_session_id"] == "cs_test_yeargrant"
+    assert saved["wash_sale_chains"] == body["wash_sale_chains"]
+    assert stored["patches"][-1]["wash_sale_chains"] == body["wash_sale_chains"]
 
 
 def test_guest_non_sample_analyze_lot_match_report_is_counts_only(monkeypatch):
