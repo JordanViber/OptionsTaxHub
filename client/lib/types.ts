@@ -122,7 +122,7 @@ export interface WashSaleHop {
   carryover_days?: number | null;
   tacked_acquisition_date?: string | null;
   closed_lots?: WashClosedLot[];
-  carried_in_disallowed?: number;
+  carried_in_disallowed?: number | null;
   engine_sale_loss?: number | null;
   explained_loss_with_carry?: number | null;
   plain_english: string;

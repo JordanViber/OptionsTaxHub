@@ -957,6 +957,32 @@ describe("api hooks", () => {
       expect(malformed).toEqual({ chains: [], hint: null });
     });
 
+    it("fetchWashSaleChains returns the re-analyze hint on 500 and bad JSON", async () => {
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+      } as Response);
+
+      const failed = await fetchWashSaleChains("err-1");
+      expect(failed).toEqual({
+        chains: [],
+        hint: "Re-analyze to see wash-sale chains",
+      });
+
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => {
+          throw new Error("bad json");
+        },
+      } as Response);
+
+      const badJson = await fetchWashSaleChains("bad-json");
+      expect(badJson).toEqual({
+        chains: [],
+        hint: "Re-analyze to see wash-sale chains",
+      });
+    });
+
     it("fetchAnalysisById throws on error", async () => {
       globalThis.fetch = jest.fn().mockResolvedValue({
         ok: false,

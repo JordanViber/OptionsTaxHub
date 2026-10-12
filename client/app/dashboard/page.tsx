@@ -1254,6 +1254,7 @@ export default function DashboardPage() {
   const [isSampleRun, setIsSampleRun] = useState(false);
   const [packetPaid, setPacketPaid] = useState(false);
   const [washChainHint, setWashChainHint] = useState<string | null>(null);
+  const washChainFetchedFor = useRef<string | null>(null);
   const [replaceBook, setReplaceBook] = useState(false);
   const [sampleLoading, setSampleLoading] = useState(false);
   const [sampleLoadError, setSampleLoadError] = useState<string | null>(null);
@@ -1347,23 +1348,30 @@ export default function DashboardPage() {
     setPacketPaid(isYearClosePacketPaid(analysisId));
   }, [displayedAnalysis?.analysis_id, displayedAnalysis]);
 
-  // Unpaid analyze strips chains. After the packet is paid, load them from
-  // the durable snapshot so the explainer appears without another CSV upload.
-  // A legacy snapshot returns a hint instead of chains.
+  // Unpaid analyze strips chains. After the packet is paid, load them once
+  // for this analysis id. packetPaid stays a dependency so checkout can start
+  // that single fetch; the ref ignores a later render of the same id.
+  const washChainAnalysisId = displayedAnalysis?.analysis_id ?? "";
+  const washChainIsSample = Boolean(displayedAnalysis?.sample_run);
+  const washChainCount = displayedAnalysis?.wash_sale_chains?.length ?? 0;
+  const displayedAnalysisRef = useRef(displayedAnalysis);
+  displayedAnalysisRef.current = displayedAnalysis;
   useEffect(() => {
-    const analysisId = displayedAnalysis?.analysis_id;
-    const chainCount = displayedAnalysis?.wash_sale_chains?.length ?? 0;
     if (
       !packetPaid ||
-      !analysisId ||
-      displayedAnalysis?.sample_run ||
-      chainCount > 0
+      !washChainAnalysisId ||
+      washChainIsSample ||
+      washChainCount > 0
     ) {
       setWashChainHint(null);
       return;
     }
+    if (washChainFetchedFor.current === washChainAnalysisId) {
+      return;
+    }
+    washChainFetchedFor.current = washChainAnalysisId;
     let cancelled = false;
-    fetchWashSaleChains(analysisId)
+    fetchWashSaleChains(washChainAnalysisId)
       .then((result) => {
         if (cancelled) return;
         const chains = result.chains;
@@ -1373,17 +1381,21 @@ export default function DashboardPage() {
         }
         setWashChainHint(null);
         setLoadedAnalysis((current) => {
-          const base = current ?? displayedAnalysis;
-          if (!base || base.analysis_id !== analysisId) return current;
+          const base = current ?? displayedAnalysisRef.current;
+          if (!base || base.analysis_id !== washChainAnalysisId) return current;
           if ((base.wash_sale_chains?.length ?? 0) > 0) return current;
           return { ...base, wash_sale_chains: chains };
         });
       })
-      .catch(() => {});
+      .catch(() => {
+        if (!cancelled) {
+          setWashChainHint("Re-analyze to see wash-sale chains");
+        }
+      });
     return () => {
       cancelled = true;
     };
-  }, [packetPaid, displayedAnalysis]);
+  }, [packetPaid, washChainAnalysisId, washChainIsSample, washChainCount]);
 
   useEffect(() => {
     if (displayedAnalysis) {

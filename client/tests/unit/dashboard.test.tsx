@@ -470,6 +470,55 @@ describe("DashboardPage", () => {
     expect(mockFetchWashSaleChains).toHaveBeenCalledWith("analysis-test-1");
   });
 
+  it("does not refetch wash-sale chains when the same analysis rerenders", async () => {
+    mockFetchWashSaleChains.mockResolvedValue({
+      chains: [],
+      hint: "Re-analyze to see wash-sale chains",
+    });
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      sample_run: false,
+      packet_unlocked: false,
+      wash_sale_chains: [],
+    };
+
+    const { rerender } = render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(mockFetchWashSaleChains).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.getByTestId("wash-sale-chain-hint")).toHaveTextContent(
+      "Re-analyze to see wash-sale chains",
+    );
+
+    rerender(<DashboardPage />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("wash-sale-chain-hint")).toBeInTheDocument();
+    });
+    expect(mockFetchWashSaleChains).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the re-analyze hint when the wash-sale chain refetch fails", async () => {
+    mockFetchWashSaleChains.mockRejectedValue(new Error("network down"));
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      sample_run: false,
+      packet_unlocked: false,
+      wash_sale_chains: [],
+    };
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("wash-sale-chain-hint")).toHaveTextContent(
+        "Re-analyze to see wash-sale chains",
+      );
+    });
+    expect(screen.queryByTestId("wash-sale-chain-card")).not.toBeInTheDocument();
+    expect(mockFetchWashSaleChains).toHaveBeenCalledWith("analysis-test-1");
+  });
+
   it("shows restored-session messaging when analysis is recovered from browser storage", async () => {
     mockSessionValue = JSON.stringify(baseAnalysis);
 

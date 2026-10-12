@@ -229,7 +229,8 @@ class WashSaleHop(BaseModel):
     tacked_acquisition_date: Optional[date] = None
     # Every closed lot. A single tacked date is set only when they all share one.
     closed_lots: list[WashClosedLot] = []
-    carried_in_disallowed: float = 0.0
+    # None when a later sale is only part of the replacement. 0 on the first hop.
+    carried_in_disallowed: Optional[float] = 0.0
     engine_sale_loss: Optional[float] = None
     explained_loss_with_carry: Optional[float] = None
     plain_english: str = ""

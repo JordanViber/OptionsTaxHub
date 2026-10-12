@@ -612,12 +612,14 @@ export type WashSaleChainsResult = {
   hint: string | null;
 };
 
+const WASH_SALE_CHAIN_REANALYZE_HINT = "Re-analyze to see wash-sale chains";
+
 /**
  * Load display wash-sale chains after the year-close packet is paid.
  *
- * Unpaid history JSON omits chains. A non-OK response (including 403) yields
- * an empty list and no hint so the desk stays quiet until payment is confirmed.
- * A paid legacy snapshot returns no chains and a re-analyze hint.
+ * Unpaid history is a 403: empty list, no hint. Any other failure (non-OK,
+ * or a body that is not JSON) asks the user to re-analyze. A paid legacy
+ * snapshot returns no chains and that same hint from the server.
  */
 export async function fetchWashSaleChains(
   analysisId: string,
@@ -628,9 +630,17 @@ export async function fetchWashSaleChains(
     { headers },
   );
   if (!response.ok) {
-    return { chains: [], hint: null };
+    if (response.status === 403) {
+      return { chains: [], hint: null };
+    }
+    return { chains: [], hint: WASH_SALE_CHAIN_REANALYZE_HINT };
   }
-  const body = await response.json();
+  let body: { wash_sale_chains?: unknown; hint?: unknown };
+  try {
+    body = await response.json();
+  } catch {
+    return { chains: [], hint: WASH_SALE_CHAIN_REANALYZE_HINT };
+  }
   const chains = Array.isArray(body?.wash_sale_chains)
     ? body.wash_sale_chains
     : [];
