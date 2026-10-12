@@ -1118,6 +1118,9 @@ test.describe("Wash-sale chain explainer", () => {
       await expect(page.getByTestId("entry-rank-leaps")).toBeVisible();
       await expect(page.getByTestId("wash-sale-chain-card")).toBeVisible();
       await expect(page.getByText(amdSentence).first()).toBeVisible();
+      await expect(
+        page.getByRole("button", { name: "Open chain AMD Jul 15, 2026" }),
+      ).toBeVisible();
       await page.getByTestId("wash-sale-chain-open-AMD:2026-07-15:10:e0").click();
       const dialog = page.getByTestId("wash-sale-chain-dialog");
       await expect(dialog).toBeVisible();

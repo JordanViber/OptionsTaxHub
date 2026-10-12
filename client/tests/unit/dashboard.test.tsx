@@ -499,6 +499,60 @@ describe("DashboardPage", () => {
     expect(mockFetchWashSaleChains).toHaveBeenCalledTimes(1);
   });
 
+  it("shows wash-sale-chain-hint when a paid packet's chain fetch is forbidden", async () => {
+    mockFetchWashSaleChains.mockResolvedValue({
+      chains: [],
+      hint: "Re-analyze to see wash-sale chains",
+    });
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      sample_run: false,
+      packet_unlocked: true,
+      wash_sale_chains: [],
+    };
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("wash-sale-chain-hint")).toHaveTextContent(
+        "Re-analyze to see wash-sale chains",
+      );
+    });
+    expect(screen.queryByTestId("wash-sale-chain-card")).not.toBeInTheDocument();
+    expect(mockFetchWashSaleChains).toHaveBeenCalledWith("analysis-test-1");
+  });
+
+  it("does not fetch wash-sale chains or show the hint while the packet is unpaid", async () => {
+    Object.defineProperty(globalThis, "sessionStorage", {
+      value: {
+        getItem: jest.fn(() => null),
+        setItem: jest.fn(),
+        removeItem: jest.fn(),
+        clear: jest.fn(),
+      },
+      writable: true,
+    });
+    mockFetchWashSaleChains.mockResolvedValue({
+      chains: [],
+      hint: "Re-analyze to see wash-sale chains",
+    });
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      sample_run: false,
+      packet_unlocked: false,
+      wash_sale_chains: [],
+    };
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeInTheDocument();
+    });
+    expect(mockFetchWashSaleChains).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("wash-sale-chain-hint")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("wash-sale-chain-card")).not.toBeInTheDocument();
+  });
+
   it("shows the re-analyze hint when the wash-sale chain refetch fails", async () => {
     mockFetchWashSaleChains.mockRejectedValue(new Error("network down"));
     mockAnalyzeData = {

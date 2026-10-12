@@ -939,15 +939,20 @@ describe("api hooks", () => {
       expect(result.hint).toBe("Re-analyze to see wash-sale chains");
     });
 
-    it("fetchWashSaleChains returns empty chains on 403 and on a non-array body", async () => {
+    it("fetchWashSaleChains returns the re-analyze hint on 403", async () => {
       globalThis.fetch = jest.fn().mockResolvedValue({
         ok: false,
         status: 403,
       } as Response);
 
-      const denied = await fetchWashSaleChains("unpaid-1");
-      expect(denied).toEqual({ chains: [], hint: null });
+      const denied = await fetchWashSaleChains("paid-forbidden");
+      expect(denied).toEqual({
+        chains: [],
+        hint: "Re-analyze to see wash-sale chains",
+      });
+    });
 
+    it("fetchWashSaleChains returns empty chains on a non-array body", async () => {
       globalThis.fetch = jest.fn().mockResolvedValue({
         ok: true,
         json: async () => ({ wash_sale_chains: { symbol: "AMD" }, hint: "  " }),

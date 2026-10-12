@@ -535,7 +535,15 @@ describe("WashSaleChainPanel", () => {
     expect(screen.queryByText(/in your tax totals/i)).not.toBeInTheDocument();
   });
 
-  it("renders an option wash as the instrument and engine disallowance", () => {
+  it("names the Open chain button with the symbol and sale date", () => {
+    render(<WashSaleChainPanel chains={[chain()]} />);
+    expect(
+      screen.getByRole("button", { name: "Open chain AMD Jul 15, 2026" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Open chain")).toBeInTheDocument();
+  });
+
+  it("renders an option wash with the sale date and no dollar figure", () => {
     const copy = "Option wash sales aren't explained here yet.";
     const withEngine = chain({
       chain_id: "SPX:2026-06-10:1:f0",
@@ -604,8 +612,10 @@ describe("WashSaleChainPanel", () => {
     fireEvent.click(screen.getByTestId("wash-sale-chain-open-SPX:2026-06-10:1:f0"));
     expect(screen.getByText("Instrument")).toBeInTheDocument();
     expect(screen.getByText("Option")).toBeInTheDocument();
-    expect(screen.getByText("Disallowed")).toBeInTheDocument();
-    expect(screen.getByText("$6.00")).toBeInTheDocument();
+    expect(screen.getByText("Sale date")).toBeInTheDocument();
+    expect(screen.getByText("Jun 10, 2026")).toBeInTheDocument();
+    expect(screen.queryByText("Disallowed")).not.toBeInTheDocument();
+    expect(screen.queryByText("$6.00")).not.toBeInTheDocument();
     expect(screen.queryByText("Proceeds")).not.toBeInTheDocument();
     expect(screen.queryByText("Basis")).not.toBeInTheDocument();
     expect(screen.queryByText("Loss")).not.toBeInTheDocument();
@@ -624,10 +634,55 @@ describe("WashSaleChainPanel", () => {
     fireEvent.click(screen.getByLabelText("Close wash-sale chain"));
     fireEvent.click(screen.getByTestId("wash-sale-chain-open-SPX:2026-06-10:1:r0"));
     expect(screen.getByText("Option")).toBeInTheDocument();
+    expect(screen.getByText("Jun 10, 2026")).toBeInTheDocument();
     expect(screen.queryByText("Disallowed")).not.toBeInTheDocument();
     expect(screen.queryByText("Proceeds")).not.toBeInTheDocument();
     expect(screen.queryByText("Basis")).not.toBeInTheDocument();
     expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
     expect(screen.queryByText("1099 wash adjustment")).not.toBeInTheDocument();
+  });
+
+  it("renders an unclassified 1099 sale without dollar facts", () => {
+    const copy =
+      "This 1099 sale is not labeled as stock or an option, so it was not compared.";
+    render(
+      <WashSaleChainPanel
+        chains={[
+          chain({
+            chain_id: "SPX:2026-09-01:1:r0",
+            symbol: "SPX",
+            reconcile_status: "not_compared",
+            plain_english: copy,
+            hops: [
+              hop({
+                hop_id: "SPX:2026-09-01:1:r0",
+                symbol: "SPX",
+                asset_type: "unclassified",
+                sale_date: "2026-09-01",
+                sale_quantity: 1,
+                proceeds: 0,
+                cost_basis: 0,
+                loss: 0,
+                replacement_buys: [],
+                disallowed_loss: 0,
+                engine_disallowed_loss: null,
+                form_1099_wash: null,
+                plain_english: copy,
+                reconcile_status: "not_compared",
+              }),
+            ],
+          }),
+        ]}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("wash-sale-chain-open-SPX:2026-09-01:1:r0"));
+    expect(screen.getByText("Unclassified")).toBeInTheDocument();
+    expect(screen.getByText("Sep 1, 2026")).toBeInTheDocument();
+    expect(screen.getAllByText(copy).length).toBeGreaterThan(0);
+    expect(screen.queryByText("Proceeds")).not.toBeInTheDocument();
+    expect(screen.queryByText("Basis")).not.toBeInTheDocument();
+    expect(screen.queryByText("Loss")).not.toBeInTheDocument();
+    expect(screen.queryByText("Disallowed")).not.toBeInTheDocument();
+    expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
   });
 });

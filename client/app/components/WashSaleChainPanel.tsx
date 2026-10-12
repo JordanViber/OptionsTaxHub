@@ -146,8 +146,10 @@ function carryoverCopy(hop: WashSaleHop): string {
   return CARRYOVER_MISSING;
 }
 
-function OptionHopDetails({ hop }: Readonly<{ hop: WashSaleHop }>) {
-  const showDisallowed = hop.engine_disallowed_loss != null;
+function QuietHopDetails({
+  hop,
+  instrument,
+}: Readonly<{ hop: WashSaleHop; instrument: string }>) {
   return (
     <Stack
       spacing={1.25}
@@ -183,20 +185,20 @@ function OptionHopDetails({ hop }: Readonly<{ hop: WashSaleHop }>) {
         }}
       >
         <Fact label="Symbol" value={hop.symbol} />
-        <Fact label="Instrument" value="Option" />
-        {showDisallowed && (
-          <Fact
-            label="Disallowed"
-            value={formatUsd(hop.engine_disallowed_loss ?? 0)}
-          />
-        )}
+        <Fact label="Sale date" value={formatChainDate(hop.sale_date)} />
+        <Fact label="Instrument" value={instrument} />
       </Box>
     </Stack>
   );
 }
 
 function HopDetails({ hop }: Readonly<{ hop: WashSaleHop }>) {
-  if (hop.asset_type === "option") return <OptionHopDetails hop={hop} />;
+  if (hop.asset_type === "option") {
+    return <QuietHopDetails hop={hop} instrument="Option" />;
+  }
+  if (hop.asset_type === "unclassified") {
+    return <QuietHopDetails hop={hop} instrument="Unclassified" />;
+  }
   const perLot = differingClosedLots(hop);
   const showCarry =
     hop.hop_index > 0 &&
@@ -402,6 +404,7 @@ export default function WashSaleChainPanel({
               size="small"
               variant="outlined"
               data-testid={`wash-sale-chain-open-${chain.chain_id}`}
+              aria-label={`Open chain ${chain.symbol} ${formatChainDate(chain.hops[0]?.sale_date)}`}
               onClick={() => setOpenId(chain.chain_id)}
             >
               Open chain

@@ -241,9 +241,10 @@ class WashSaleHop(BaseModel):
 class WashSaleChain(BaseModel):
     """A wash-sale chain for the explainer.
 
-    The chip and headline use the worst hop (differs, then on_1099_only,
-    then not_on_1099, then not_compared, then matches). chain_id stays the
-    first hop so links do not move when a later hop is worse.
+    The chip uses the worst hop (differs, then on_1099_only, then
+    not_on_1099, then not_compared, then matches). A one-hop chain's
+    headline is that hop. A longer chain's headline is the symbol, the
+    first sale date, and the status. chain_id stays the first hop.
     """
 
     chain_id: str
