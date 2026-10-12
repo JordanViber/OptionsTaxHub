@@ -3185,3 +3185,22 @@ def test_save_packet_entitlement_refuses_conflict_prefix(monkeypatch):
     row, ok = db.lookup_packet_entitlement_for_tax_year("user1", 2025, client=client)
     assert ok is True and row is None
     assert len(client.entitlements) == 1
+
+
+def test_preserve_snapshot_wash_sale_chains_branches():
+    keep = db._preserve_snapshot_wash_sale_chains
+    assert keep({"wash_sale_chains": [1]}, "nope") == "nope"
+    incoming = {"wash_sale_chains": []}
+    assert keep({"wash_sale_chains": [{"symbol": "AMD"}]}, incoming) is incoming
+    assert keep("stored", {"b": 1}) == {"b": 1}
+    assert keep({"other": 1}, {"b": 1}) == {"b": 1}
+    assert keep({"wash_sale_chains": "nope"}, {"b": 1}) == {"b": 1}
+    stored = {"wash_sale_chains": [{"symbol": "AMD"}]}
+    merged = keep(stored, {"b": 2})
+    assert merged["wash_sale_chains"] == [{"symbol": "AMD"}]
+    assert merged is not stored
+    stored["wash_sale_chains"][0]["symbol"] = "QQQ"
+    assert merged["wash_sale_chains"][0]["symbol"] == "AMD"
+    empty = keep({"wash_sale_chains": []}, {"b": 3})
+    assert empty["wash_sale_chains"] == []
+    assert "wash_sale_chains" not in keep({"no": "key"}, {"b": 4})

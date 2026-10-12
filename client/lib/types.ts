@@ -94,6 +94,12 @@ export interface WashReplacementBuy {
   explained_basis: number;
 }
 
+export interface WashClosedLot {
+  quantity: number;
+  purchase_date?: string | null;
+  holding_days?: number | null;
+}
+
 export interface WashSaleHop {
   hop_id: string;
   hop_index: number;
@@ -115,6 +121,7 @@ export interface WashSaleHop {
   original_holding_days?: number | null;
   carryover_days?: number | null;
   tacked_acquisition_date?: string | null;
+  closed_lots?: WashClosedLot[];
   carried_in_disallowed?: number;
   engine_sale_loss?: number | null;
   explained_loss_with_carry?: number | null;

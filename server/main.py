@@ -1654,8 +1654,9 @@ async def _run_portfolio_analysis(
         else dict(result)
     )
     remember_analysis(analysis_id, user_id, full_dump)
-    # Chains stay out of the in-memory PDF payload. The durable snapshot
-    # written below is the paid read path.
+    # Signed-in analyses attach chains on the durable snapshot below.
+    # A guest keeps them on the in-memory payload so sign-in can persist
+    # them. PDF rendering ignores the key.
     durable_chains = full_dump.get("wash_sale_chains") or []
     public_result = _public_analysis(result, keep_lot_rows=keep_lot_rows)
 

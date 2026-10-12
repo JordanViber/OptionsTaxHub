@@ -1025,6 +1025,15 @@ def remember_analysis(analysis_id: str, user_id: str, analysis: dict[str, Any]) 
         existing_payload,
         build_packet_payload(preserved, analysis_id=analysis_id),
     )
+    # Signed-in analyses attach chains when the durable snapshot is saved.
+    # A guest has no snapshot yet. Keep the chains on this in-memory payload
+    # so claiming the analysis on sign-in persists them. PDF rendering
+    # ignores the key. A missing key stays missing. An empty list is kept.
+    if not str(user_id or "").strip():
+        chains = analysis.get(WASH_SALE_CHAINS_SNAPSHOT_KEY)
+        if isinstance(chains, list):
+            payload = dict(payload)
+            payload[WASH_SALE_CHAINS_SNAPSHOT_KEY] = deepcopy(chains)
     record = _new_packet_record(
         user_id,
         payload=payload,
@@ -1281,7 +1290,9 @@ def copy_packet_payload_to_id(
             analysis,
             analysis_id=str(payload.get("analysis_id") or source_analysis_id),
         )
-        if expected != payload:
+        # Chains are display metadata. A rebuilt analysis omits them, and
+        # that must not block copying the stored document, chains included.
+        if _without_wash_sale_chains(expected) != _without_wash_sale_chains(payload):
             return False
     existing_target = PACKET_STORE.get(target_analysis_id)
     if existing_target and not _same_packet_owner(

@@ -47,14 +47,14 @@ AMD_LINE = (
 )
 
 
-def _txn(symbol, code, when, quantity, price, asset=AssetType.STOCK):
+def _txn(symbol, code, when, quantity, price, asset=AssetType.STOCK, description=""):
     signed = -1 if code in (TransCode.BUY, TransCode.BTO) else 1
     return Transaction(
         activity_date=when,
         process_date=when,
         settle_date=when,
         instrument=symbol,
-        description="",
+        description=description,
         trans_code=code,
         quantity=quantity,
         price=price,
@@ -537,7 +537,14 @@ def test_multi_lot_sell_aggregates_1099_rows_into_one_match():
     assert hop.disallowed_loss == pytest.approx(3800)
     assert hop.sale_quantity == pytest.approx(100)
     assert hop.hop_id.endswith(":e0")
-    assert hop.tacked_acquisition_date == date(2026, 1, 1)
+    assert hop.tacked_acquisition_date is None
+    assert hop.carryover_days is None
+    assert hop.original_purchase_date is None
+    assert "Holding period starts" not in hop.plain_english
+    assert [(lot.purchase_date, lot.quantity) for lot in hop.closed_lots] == [
+        (date(2026, 1, 1), 40),
+        (date(2026, 2, 1), 60),
+    ]
     assert flags[0].disallowed_loss == pytest.approx(3800)
 
 
@@ -584,7 +591,9 @@ def test_option_chain_scales_display_with_contract_multiplier():
         lot_match_report=report,
     )
     engine = [
-        chain for chain in chains if chain.reconcile_status != "on_1099_only"
+        chain
+        for chain in chains
+        if chain.hops[0].engine_disallowed_loss is not None
     ]
     assert len(engine) == 1
     hop = engine[0].hops[0]
@@ -604,9 +613,11 @@ def test_option_chain_scales_display_with_contract_multiplier():
     assert hop.replacement_buys[0].cash_cost == pytest.approx(500)
     assert "contracts" in hop.plain_english
     assert "$600" in hop.plain_english
-    only = [chain for chain in chains if chain.reconcile_status == "on_1099_only"]
+    only = [chain for chain in chains if chain.reconcile_status == "not_compared"]
     assert len(only) == 1
     assert only[0].hops[0].disallowed_loss == pytest.approx(6)
+    assert "could not be tied" in only[0].plain_english
+    assert only[0].hops[0].replacement_buys[0].price == pytest.approx(5)
     assert flags[0].sale_loss == pytest.approx(6)
     assert flags[0].disallowed_loss == pytest.approx(6)
     assert flags[0].adjusted_cost_basis == pytest.approx(11)
@@ -759,9 +770,8 @@ def test_1099_groups_skip_overshoot_and_aggregate_leftovers():
 
 
 def test_chain_copy_covers_remaining_branches():
-    from wash_sale_chain import _claim_event, _event_candidates, _hop_from_1099_group
+    from wash_sale_chain import _event_candidates, _hop_from_1099_group
 
-    assert _claim_event([], set(), "AAPL", None, 1) == (None, None)
     assert _event_candidates([], set(), "AAPL", None) == []
     assert _hop_from_1099_group([], transactions=[], events=[], tax_lots=[]) is None
     blank = _row(symbol=" ", quantity=1, wash_sale_disallowed=4)
@@ -1486,6 +1496,8 @@ def test_chain_copy_covers_remaining_branches():
         ),
     )
     assert from_event_asset[0].hops[0].asset_type == "option"
+    assert from_event_asset[0].hops[0].original_purchase_date == date(2026, 8, 1)
+    assert from_event_asset[0].reconcile_status == "on_1099_only"
 
     option_lot = _lot("SPX", 1, 5, date(2026, 9, 5))
     option_lot.asset_type = AssetType.OPTION
@@ -1506,7 +1518,14 @@ def test_chain_copy_covers_remaining_branches():
             bucket="unmatched",
         ),
     )
-    assert from_lot_asset[0].hops[0].asset_type == "option"
+    lot_hop = from_lot_asset[0].hops[0]
+    assert lot_hop.reconcile_status == "not_compared"
+    assert lot_hop.asset_type == "stock"
+    assert lot_hop.disallowed_loss == pytest.approx(300)
+    assert lot_hop.open_lot_total_cost_basis == pytest.approx(5)
+    assert lot_hop.replacement_buys[0].price == pytest.approx(5)
+    assert "1 contracts" not in lot_hop.plain_english
+    assert "could not be tied" in lot_hop.plain_english
 
 
 def test_chain_status_rolls_up_the_worst_hop():
@@ -1583,8 +1602,14 @@ def test_multi_lot_sale_carryover_links_later_hop():
     assert first.sale_quantity == pytest.approx(100)
     assert first.proceeds == pytest.approx(5000)
     assert first.cost_basis == pytest.approx(8800)
-    assert first.tacked_acquisition_date == date(2026, 1, 1)
-    assert first.carryover_days == (date(2026, 6, 1) - date(2026, 1, 1)).days
+    assert first.tacked_acquisition_date is None
+    assert first.carryover_days is None
+    assert first.original_purchase_date is None
+    assert "Holding period starts" not in first.plain_english
+    assert [(lot.purchase_date, lot.quantity) for lot in first.closed_lots] == [
+        (date(2026, 1, 1), 40),
+        (date(2026, 2, 1), 60),
+    ]
     assert first.hop_id.endswith(":e0")
     assert second.original_purchase_date == date(2026, 6, 6)
     assert second.hop_index == 1
@@ -1777,6 +1802,7 @@ def test_ambiguous_1099_subsets_are_not_compared():
     assert hop.difference is None
     assert "no wash total was chosen" in hop.plain_english
     assert "found only in this Robinhood export" not in hop.plain_english
+    assert len(chains) == 1
     assert flag.disallowed_loss == pytest.approx(500)
 
 
@@ -1823,11 +1849,21 @@ def test_option_1099_only_scales_replacement_and_open_lot():
     from leap_rank import CONTRACT_MULTIPLIER
 
     txns = [
+        _txn(
+            "SPX",
+            TransCode.STC,
+            date(2026, 6, 10),
+            1,
+            4,
+            AssetType.OPTION,
+            description="SPX Call 6/10",
+        ),
         _txn("SPX", TransCode.BTO, date(2026, 6, 12), 1, 5, AssetType.OPTION),
     ]
     row = _row(
         status="1099_only",
         symbol="SPX",
+        description="SPX Call",
         quantity=1,
         export_trade_date=date(2026, 6, 10),
         date_sold_1099=date(2026, 6, 12),
@@ -1899,6 +1935,7 @@ def test_same_wash_total_subsets_do_not_guess_a_different_amount():
         lot_match_report=report,
     )
     matched = [chain for chain in chains if chain.hops[0].engine_disallowed_loss is not None]
+    assert len(chains) == 1
     assert matched[0].reconcile_status == "matches"
     assert matched[0].hops[0].form_1099_wash == pytest.approx(100)
 
@@ -2252,3 +2289,534 @@ def test_same_year_1099_totals_without_lot_rows_are_not_compared():
     assert "found only in this Robinhood export" not in chains[0].plain_english
     assert all(chain.reconcile_status != "not_on_1099" for chain in chains)
     assert all(chain.reconcile_status != "on_1099_only" for chain in chains)
+
+
+def test_1099_stock_stays_unscaled_when_the_symbol_also_has_options():
+    """An unmatched stock 1099 wash stays shares when the symbol also has options."""
+    stock_sell = _txn("AAPL", TransCode.SELL, date(2026, 6, 1), 10, 40)
+    other_day = _txn("AAPL", TransCode.SELL, date(2026, 5, 1), 10, 40)
+    wrong_proceeds = _txn("AAPL", TransCode.SELL, date(2026, 6, 1), 10, 99)
+    other_symbol = _txn("MSFT", TransCode.SELL, date(2026, 6, 1), 10, 40)
+    option_sell = _txn(
+        "AAPL",
+        TransCode.STC,
+        date(2026, 6, 1),
+        1,
+        4,
+        AssetType.OPTION,
+        description="AAPL Call 6/1",
+    )
+    option_buy = _txn(
+        "AAPL",
+        TransCode.BTO,
+        date(2026, 6, 5),
+        1,
+        5,
+        AssetType.OPTION,
+        description="AAPL Call 6/5",
+    )
+    ignored_event = _event("AAPL", date(2026, 6, 1), 10, 500, 999, date(2026, 1, 1))
+    chains = _build(
+        transactions=[
+            stock_sell,
+            other_day,
+            wrong_proceeds,
+            other_symbol,
+            option_sell,
+            option_buy,
+        ],
+        realized_events=[ignored_event],
+        supplemental=_supplemental(2026),
+        lot_match_report=_report(
+            _row(
+                status="1099_only",
+                symbol="AAPL",
+                quantity=10,
+                export_trade_date=date(2026, 6, 1),
+                proceeds_1099=400,
+                cost_basis_1099=500,
+                wash_sale_disallowed=100,
+                description="AAPL",
+            ),
+            bucket="unmatched",
+        ),
+    )
+    assert len(chains) == 1
+    hop = chains[0].hops[0]
+    assert hop.reconcile_status == "on_1099_only"
+    assert hop.asset_type == "stock"
+    assert hop.disallowed_loss == pytest.approx(100)
+    assert hop.sale_quantity == pytest.approx(10)
+    assert "contracts" not in hop.plain_english
+    assert hop.replacement_buys[0].price == pytest.approx(5)
+    assert stock_sell.price == pytest.approx(40)
+    assert option_sell.price == pytest.approx(4)
+
+
+def test_conflicting_stock_and_option_sales_are_not_compared():
+    """Stock and option both match the 1099 sale, so the scale is not guessed."""
+    stock = _txn("AAPL", TransCode.SELL, date(2026, 6, 1), 1, 150)
+    option_event = _event("AAPL", date(2026, 6, 1), 1, 200, 150, date(2026, 1, 1))
+    option_event.asset_type = AssetType.OPTION
+    other_event = _event("MSFT", date(2026, 6, 1), 1, 200, 150, date(2026, 1, 1))
+    chains = _build(
+        transactions=[
+            stock,
+            _txn("AAPL", TransCode.BTO, date(2026, 6, 5), 1, 2, AssetType.OPTION),
+        ],
+        realized_events=[option_event, other_event],
+        supplemental=_supplemental(2026),
+        lot_match_report=_report(
+            _row(
+                status="1099_only",
+                symbol="AAPL",
+                quantity=1,
+                export_trade_date=date(2026, 6, 1),
+                proceeds_1099=150,
+                cost_basis_1099=200,
+                wash_sale_disallowed=50,
+            ),
+            bucket="unmatched",
+        ),
+    )
+    hop = chains[0].hops[0]
+    assert hop.reconcile_status == "not_compared"
+    assert hop.disallowed_loss == pytest.approx(50)
+    assert hop.original_purchase_date is None
+    assert hop.closed_lots == []
+    assert hop.replacement_buys[0].price == pytest.approx(2)
+    assert "could not be tied" in hop.plain_english
+    assert "1 contracts" not in hop.plain_english
+    assert option_event.sale_proceeds == pytest.approx(150)
+
+
+def test_option_wording_does_not_scale_an_unmatched_1099_sale():
+    """Call wording rejects the stock sale. An option buy is not a scale."""
+    stock = _txn(
+        "AAPL",
+        TransCode.SELL,
+        date(2026, 6, 1),
+        1,
+        150,
+        description="AAPL Call",
+    )
+    chains = _build(
+        transactions=[
+            stock,
+            _txn("AAPL", TransCode.BTO, date(2026, 6, 5), 1, 2, AssetType.OPTION),
+        ],
+        supplemental=_supplemental(2026),
+        lot_match_report=_report(
+            _row(
+                status="1099_only",
+                symbol="AAPL",
+                description="AAPL Call",
+                quantity=1,
+                export_trade_date=date(2026, 6, 1),
+                proceeds_1099=150,
+                cost_basis_1099=200,
+                wash_sale_disallowed=50,
+            ),
+            bucket="unmatched",
+        ),
+    )
+    hop = chains[0].hops[0]
+    assert hop.reconcile_status == "not_compared"
+    assert hop.replacement_buys[0].price == pytest.approx(2)
+    assert "could not be tied" in hop.plain_english
+
+    event_only = _event("SPX", date(2026, 1, 1), 1, 10, 4, date(2025, 1, 1))
+    event_only.asset_type = AssetType.OPTION
+    undetermined = _build(
+        realized_events=[event_only],
+        supplemental=_supplemental(2026),
+        lot_match_report=_report(
+            _row(
+                status="1099_only",
+                symbol="SPX",
+                quantity=1,
+                export_trade_date=date(2026, 6, 1),
+                proceeds_1099=400,
+                cost_basis_1099=500,
+                wash_sale_disallowed=80,
+            ),
+            bucket="unmatched",
+        ),
+    )
+    assert undetermined[0].reconcile_status == "not_compared"
+    assert undetermined[0].hops[0].disallowed_loss == pytest.approx(80)
+    assert "1 contracts" not in undetermined[0].plain_english
+
+
+def test_stock_sale_description_rejects_a_plain_1099_row():
+    """The broker sale says Call while the 1099 row does not. Do not scale."""
+    chains = _build(
+        transactions=[
+            _txn(
+                "AAPL",
+                TransCode.SELL,
+                date(2026, 6, 1),
+                1,
+                150,
+                description="AAPL Call",
+            ),
+            _txn("AAPL", TransCode.BTO, date(2026, 6, 5), 1, 2, AssetType.OPTION),
+        ],
+        supplemental=_supplemental(2026),
+        lot_match_report=_report(
+            _row(
+                status="1099_only",
+                symbol="AAPL",
+                description="AAPL",
+                quantity=1,
+                export_trade_date=date(2026, 6, 1),
+                proceeds_1099=150,
+                cost_basis_1099=200,
+                wash_sale_disallowed=50,
+            ),
+            bucket="unmatched",
+        ),
+    )
+    hop = chains[0].hops[0]
+    assert hop.reconcile_status == "not_compared"
+    assert hop.asset_type == "stock"
+    assert hop.disallowed_loss == pytest.approx(50)
+    assert hop.replacement_buys[0].price == pytest.approx(2)
+    assert "1 contracts" not in hop.plain_english
+    assert "could not be tied" in hop.plain_english
+
+
+def test_two_matching_stock_sales_still_keep_the_closed_lot_date():
+    """Several sells identify the stock. The lot date still attaches."""
+    chains = _build(
+        transactions=[
+            _txn("AAPL", TransCode.SELL, date(2026, 6, 1), 10, 40),
+            _txn("AAPL", TransCode.SELL, date(2026, 6, 1), 10, 40),
+        ],
+        realized_events=[
+            _event("AAPL", date(2026, 6, 1), 10, 500, 400, date(2026, 1, 1)),
+        ],
+        supplemental=_supplemental(2026),
+        lot_match_report=_report(
+            _row(
+                status="1099_only",
+                symbol="AAPL",
+                quantity=10,
+                export_trade_date=date(2026, 6, 1),
+                proceeds_1099=400,
+                cost_basis_1099=500,
+                wash_sale_disallowed=100,
+            ),
+            bucket="unmatched",
+        ),
+    )
+    hop = chains[0].hops[0]
+    assert hop.reconcile_status == "on_1099_only"
+    assert hop.asset_type == "stock"
+    assert hop.original_purchase_date == date(2026, 1, 1)
+    assert hop.closed_lots[0].quantity == pytest.approx(10)
+
+
+def test_cent_proceeds_leftover_three_share_fill_is_one_chain():
+    """$33.33 and $66.67 are one 3-share 1099 sale. The unit is not rounded into the key."""
+    chains = _build(
+        supplemental=_supplemental(2026),
+        lot_match_report=_report(
+            _row(
+                status="1099_only",
+                symbol="AAPL",
+                quantity=1,
+                export_trade_date=date(2026, 6, 1),
+                proceeds_1099=33.33,
+                cost_basis_1099=40,
+                wash_sale_disallowed=10,
+            ),
+            _row(
+                status="1099_only",
+                symbol="AAPL",
+                quantity=2,
+                export_trade_date=date(2026, 6, 1),
+                proceeds_1099=66.67,
+                cost_basis_1099=80,
+                wash_sale_disallowed=20,
+            ),
+            bucket="unmatched",
+        ),
+    )
+    assert len(chains) == 1
+    hop = chains[0].hops[0]
+    assert hop.reconcile_status == "on_1099_only"
+    assert hop.sale_quantity == pytest.approx(3)
+    assert hop.disallowed_loss == pytest.approx(30)
+    assert hop.proceeds == pytest.approx(100)
+
+    anchored = _build(
+        supplemental=_supplemental(2026),
+        lot_match_report=_report(
+            _row(
+                status="1099_only",
+                symbol="IBM",
+                quantity=1,
+                export_trade_date=date(2026, 6, 1),
+                proceeds_1099=10.00,
+                wash_sale_disallowed=1,
+            ),
+            _row(
+                status="1099_only",
+                symbol="IBM",
+                quantity=1,
+                export_trade_date=date(2026, 6, 1),
+                proceeds_1099=10.02,
+                wash_sale_disallowed=1,
+            ),
+            _row(
+                status="1099_only",
+                symbol="IBM",
+                quantity=1,
+                export_trade_date=date(2026, 6, 1),
+                proceeds_1099=10.04,
+                wash_sale_disallowed=1,
+            ),
+            bucket="unmatched",
+        ),
+    )
+    assert len(anchored) == 2
+    quantities = sorted(chain.hops[0].sale_quantity for chain in anchored)
+    assert quantities == pytest.approx([1, 2])
+
+    zeros = _build(
+        supplemental=_supplemental(2026),
+        lot_match_report=_report(
+            _row(
+                status="1099_only",
+                symbol="MSFT",
+                quantity=0,
+                export_trade_date=date(2026, 6, 1),
+                proceeds_1099=0,
+                wash_sale_disallowed=4,
+            ),
+            _row(
+                status="1099_only",
+                symbol="MSFT",
+                quantity=0,
+                export_trade_date=date(2026, 6, 1),
+                proceeds_1099=0,
+                wash_sale_disallowed=6,
+            ),
+            _row(
+                status="1099_only",
+                symbol="MSFT",
+                quantity=1,
+                export_trade_date=date(2026, 6, 1),
+                proceeds_1099=10,
+                wash_sale_disallowed=1,
+            ),
+            bucket="unmatched",
+        ),
+    )
+    assert len(zeros) == 2
+    blank = next(chain for chain in zeros if chain.hops[0].sale_quantity == pytest.approx(0))
+    assert blank.hops[0].disallowed_loss == pytest.approx(10)
+    assert blank.reconcile_status == "on_1099_only"
+
+
+def test_cumulative_carry_adds_each_prior_disallowance():
+    """Three $20 hops carry 0, then 20, then 40. Explained loss follows."""
+    txns = [
+        _txn("AAPL", TransCode.BUY, date(2026, 1, 1), 10, 10),
+        _txn("AAPL", TransCode.SELL, date(2026, 6, 1), 10, 8),
+        _txn("AAPL", TransCode.BUY, date(2026, 6, 10), 10, 9),
+        _txn("AAPL", TransCode.SELL, date(2026, 7, 15), 10, 7),
+        _txn("AAPL", TransCode.BUY, date(2026, 7, 20), 10, 8),
+        _txn("AAPL", TransCode.SELL, date(2026, 8, 20), 10, 6),
+        _txn("AAPL", TransCode.BUY, date(2026, 8, 25), 10, 7),
+    ]
+    flags = [
+        WashSaleFlag(
+            symbol="AAPL",
+            sale_date=date(2026, 6, 1),
+            sale_quantity=10,
+            sale_loss=20,
+            repurchase_date=date(2026, 6, 10),
+            repurchase_quantity=10,
+            disallowed_loss=20,
+            adjusted_cost_basis=110,
+        ),
+        WashSaleFlag(
+            symbol="AAPL",
+            sale_date=date(2026, 7, 15),
+            sale_quantity=10,
+            sale_loss=20,
+            repurchase_date=date(2026, 7, 20),
+            repurchase_quantity=10,
+            disallowed_loss=20,
+            adjusted_cost_basis=100,
+        ),
+        WashSaleFlag(
+            symbol="AAPL",
+            sale_date=date(2026, 8, 20),
+            sale_quantity=10,
+            sale_loss=20,
+            repurchase_date=date(2026, 8, 25),
+            repurchase_quantity=10,
+            disallowed_loss=20,
+            adjusted_cost_basis=90,
+        ),
+    ]
+    chains = _build(
+        transactions=txns,
+        wash_sale_flags=flags,
+        realized_events=[
+            _event("AAPL", date(2026, 6, 1), 10, 100, 80, date(2026, 1, 1)),
+            _event("AAPL", date(2026, 7, 15), 10, 90, 70, date(2026, 6, 10)),
+            _event("AAPL", date(2026, 8, 20), 10, 80, 60, date(2026, 7, 20)),
+        ],
+    )
+    assert len(chains) == 1
+    hops = chains[0].hops
+    assert [hop.carried_in_disallowed for hop in hops] == pytest.approx([0, 20, 40])
+    assert [hop.explained_loss_with_carry for hop in hops] == pytest.approx([20, 40, 60])
+    assert [hop.disallowed_loss for hop in hops] == pytest.approx([20, 20, 20])
+    assert [flag.disallowed_loss for flag in flags] == pytest.approx([20, 20, 20])
+
+
+def test_1099_only_multi_lot_keeps_each_acquired_date():
+    """A 1099-only sale of 40 + 60 shares keeps both dates and no single sentence."""
+    chains = _build(
+        transactions=[_txn("AAPL", TransCode.SELL, date(2026, 6, 1), 100, 50)],
+        realized_events=[
+            _event("AAPL", date(2026, 6, 1), 40, 4000, 2000, date(2026, 1, 1)),
+            _event("AAPL", date(2026, 6, 1), 60, 4800, 3000, date(2026, 2, 1)),
+        ],
+        supplemental=_supplemental(2026),
+        lot_match_report=_report(
+            _row(
+                status="1099_only",
+                symbol="AAPL",
+                quantity=100,
+                export_trade_date=date(2026, 6, 1),
+                proceeds_1099=5000,
+                cost_basis_1099=8800,
+                wash_sale_disallowed=1000,
+            ),
+            bucket="unmatched",
+        ),
+    )
+    assert len(chains) == 1
+    hop = chains[0].hops[0]
+    assert hop.reconcile_status == "on_1099_only"
+    assert hop.asset_type == "stock"
+    assert hop.tacked_acquisition_date is None
+    assert hop.original_purchase_date is None
+    assert "Holding period starts" not in hop.plain_english
+    assert [(lot.purchase_date, lot.quantity) for lot in hop.closed_lots] == [
+        (date(2026, 1, 1), 40),
+        (date(2026, 2, 1), 60),
+    ]
+
+
+def test_mixed_fifo_lot_links_when_any_acquired_date_matches():
+    """A later sale of an older lot plus the replacement still carries the disallowance."""
+    txns = [
+        _txn("AAPL", TransCode.BUY, date(2026, 1, 1), 100, 80),
+        _txn("AAPL", TransCode.SELL, date(2026, 6, 1), 100, 50),
+        _txn("AAPL", TransCode.BUY, date(2026, 6, 6), 100, 55),
+        _txn("AAPL", TransCode.SELL, date(2026, 7, 20), 100, 44),
+        _txn("AAPL", TransCode.BUY, date(2026, 7, 25), 100, 42),
+    ]
+    first = WashSaleFlag(
+        symbol="AAPL",
+        sale_date=date(2026, 6, 1),
+        sale_quantity=100,
+        sale_loss=3000,
+        repurchase_date=date(2026, 6, 6),
+        repurchase_quantity=100,
+        disallowed_loss=1000,
+        adjusted_cost_basis=6500,
+    )
+    second = WashSaleFlag(
+        symbol="AAPL",
+        sale_date=date(2026, 7, 20),
+        sale_quantity=100,
+        sale_loss=600,
+        repurchase_date=date(2026, 7, 25),
+        repurchase_quantity=100,
+        disallowed_loss=600,
+        adjusted_cost_basis=5000,
+    )
+    chains = _build(
+        transactions=txns,
+        wash_sale_flags=[first, second],
+        realized_events=[
+            _event("AAPL", date(2026, 6, 1), 100, 8000, 5000, date(2026, 1, 1)),
+            _event("AAPL", date(2026, 7, 20), 40, 2000, 1760, date(2026, 1, 1)),
+            _event("AAPL", date(2026, 7, 20), 60, 3000, 2640, date(2026, 6, 6)),
+        ],
+    )
+    assert len(chains) == 1
+    assert len(chains[0].hops) == 2
+    earlier, later = chains[0].hops
+    assert later.hop_index == 1
+    assert later.tacked_acquisition_date is None
+    assert later.original_purchase_date is None
+    assert "Holding period starts" not in later.plain_english
+    assert [(lot.purchase_date, lot.quantity) for lot in later.closed_lots] == [
+        (date(2026, 1, 1), 40),
+        (date(2026, 6, 6), 60),
+    ]
+    assert later.carried_in_disallowed == pytest.approx(1000)
+    assert earlier.disallowed_loss == pytest.approx(1000)
+    assert first.disallowed_loss == pytest.approx(1000)
+    assert second.disallowed_loss == pytest.approx(600)
+
+
+def test_acquisition_dates_fall_back_to_the_tacked_date():
+    from wash_sale_chain import _BuyDraft, _HopDraft, _covering_replacement_buys, _later_acquisition_dates
+
+    later = _HopDraft(
+        hop_id="AAPL:2026-07-15:10:e0",
+        symbol="AAPL",
+        asset_type="stock",
+        sale_date=date(2026, 7, 15),
+        sale_quantity=10,
+        proceeds=80,
+        cost_basis=100,
+        loss=20,
+        original_purchase_date=date(2026, 6, 10),
+    )
+    assert _later_acquisition_dates(later) == {date(2026, 6, 10)}
+    earlier = _HopDraft(
+        hop_id="AAPL:2026-06-01:10:e0",
+        symbol="AAPL",
+        asset_type="stock",
+        sale_date=date(2026, 6, 1),
+        sale_quantity=10,
+        proceeds=80,
+        cost_basis=100,
+        loss=20,
+        buys=[
+            _BuyDraft(
+                activity_date=date(2026, 6, 10),
+                quantity=10,
+                price=9,
+                cash_cost=90,
+                allocated_quantity=10,
+                allocated_disallowed=20,
+                explained_basis=110,
+            )
+        ],
+        disallowed_loss=20,
+    )
+    assert _covering_replacement_buys(earlier, later)
+    empty = _HopDraft(
+        hop_id="AAPL:2026-08-01:10:e0",
+        symbol="AAPL",
+        asset_type="stock",
+        sale_date=date(2026, 8, 1),
+        sale_quantity=10,
+        proceeds=80,
+        cost_basis=100,
+        loss=20,
+    )
+    assert _later_acquisition_dates(empty) == set()
+    assert _covering_replacement_buys(earlier, empty) == []

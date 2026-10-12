@@ -141,6 +141,86 @@ describe("WashSaleChainPanel", () => {
     expect(disclaimer).toHaveTextContent(WASH_SALE_CHAIN_DISCLAIMER);
   });
 
+  it("lists each closed lot when acquired dates differ", () => {
+    const mixed = chain({
+      chain_id: "MIX",
+      hops: [
+        hop({
+          hop_id: "MIX",
+          tacked_acquisition_date: null,
+          carryover_days: null,
+          original_purchase_date: null,
+          closed_lots: [
+            { quantity: 40, purchase_date: "2026-01-01", holding_days: 151 },
+            { quantity: 60, purchase_date: "2026-02-01", holding_days: 120 },
+          ],
+        }),
+      ],
+    });
+    render(<WashSaleChainPanel chains={[mixed]} />);
+    fireEvent.click(screen.getByTestId("wash-sale-chain-open-MIX"));
+    const firstLot = screen.getByTestId("wash-sale-closed-lot-MIX-0");
+    const secondLot = screen.getByTestId("wash-sale-closed-lot-MIX-1");
+    expect(firstLot).toHaveTextContent("40");
+    expect(firstLot).toHaveTextContent("Jan 1, 2026");
+    expect(secondLot).toHaveTextContent("60");
+    expect(secondLot).toHaveTextContent("Feb 1, 2026");
+    expect(screen.queryByText(/Holding period starts/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Holding-period carryover is not in this export."),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps one holding-period sentence when every lot shares a date", () => {
+    const shared = chain({
+      chain_id: "SAME",
+      hops: [
+        hop({
+          hop_id: "SAME",
+          tacked_acquisition_date: "2026-06-01",
+          carryover_days: 44,
+          closed_lots: [
+            { quantity: 40, purchase_date: "2026-06-01", holding_days: 44 },
+            { quantity: 60, purchase_date: "2026-06-01", holding_days: 44 },
+          ],
+        }),
+      ],
+    });
+    render(<WashSaleChainPanel chains={[shared]} />);
+    fireEvent.click(screen.getByTestId("wash-sale-chain-open-SAME"));
+    expect(
+      screen.getByText(/44 days carried from the sold lot/),
+    ).toHaveTextContent("Jun 1, 2026");
+    expect(screen.queryByTestId("wash-sale-closed-lot-SAME-0")).not.toBeInTheDocument();
+  });
+
+  it("omits the holding-period sentence when a closed lot has no date", () => {
+    const blank = chain({
+      chain_id: "BLANK",
+      hops: [
+        hop({
+          hop_id: "BLANK",
+          tacked_acquisition_date: "2026-06-01",
+          carryover_days: 44,
+          closed_lots: [
+            { quantity: 40, purchase_date: "2026-01-01", holding_days: 151 },
+            { quantity: 60, purchase_date: null, holding_days: null },
+          ],
+        }),
+      ],
+    });
+    render(<WashSaleChainPanel chains={[blank]} />);
+    fireEvent.click(screen.getByTestId("wash-sale-chain-open-BLANK"));
+    expect(screen.getByTestId("wash-sale-closed-lot-BLANK-0")).toHaveTextContent(
+      "Jan 1, 2026",
+    );
+    expect(screen.getByTestId("wash-sale-closed-lot-BLANK-1")).toHaveTextContent("60");
+    expect(screen.queryByText(/Holding period starts/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Holding-period carryover is not in this export."),
+    ).not.toBeInTheDocument();
+  });
+
   it("opens the AMD chain with basis, carryover, and the 1099 figure", () => {
     render(<WashSaleChainPanel chains={[chain()]} />);
     fireEvent.click(screen.getByTestId("wash-sale-chain-open-AMD:2026-07-15:10:e0"));

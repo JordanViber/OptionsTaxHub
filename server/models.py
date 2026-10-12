@@ -196,6 +196,14 @@ class WashReplacementBuy(BaseModel):
     explained_basis: float
 
 
+class WashClosedLot(BaseModel):
+    """One FIFO lot closed by a hop. Display only. Does not feed tax totals."""
+
+    quantity: float
+    purchase_date: Optional[date] = None
+    holding_days: Optional[int] = None
+
+
 class WashSaleHop(BaseModel):
     """One loss sale in a wash chain. Does not feed tax totals."""
 
@@ -219,6 +227,8 @@ class WashSaleHop(BaseModel):
     original_holding_days: Optional[int] = None
     carryover_days: Optional[int] = None
     tacked_acquisition_date: Optional[date] = None
+    # Every closed lot. A single tacked date is set only when they all share one.
+    closed_lots: list[WashClosedLot] = []
     carried_in_disallowed: float = 0.0
     engine_sale_loss: Optional[float] = None
     explained_loss_with_carry: Optional[float] = None

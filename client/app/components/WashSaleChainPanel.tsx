@@ -15,7 +15,7 @@ import {
   useTheme,
 } from "@mui/material";
 import { Close as CloseIcon } from "@mui/icons-material";
-import type { WashSaleChain, WashSaleHop } from "@/lib/types";
+import type { WashClosedLot, WashSaleChain, WashSaleHop } from "@/lib/types";
 import { formatUsd } from "@/lib/supplemental1099";
 
 export const WASH_SALE_CHAIN_DISCLAIMER =
@@ -128,6 +128,17 @@ export function basisSplitIsIllustrative(hop: WashSaleHop): boolean {
   return Math.abs(split - hop.engine_adjusted_cost_basis) > BASIS_SPLIT_CENTS;
 }
 
+function differingClosedLots(hop: WashSaleHop): WashClosedLot[] | null {
+  const lots = hop.closed_lots ?? [];
+  if (lots.length <= 1) return null;
+  const keys = lots.map((lot) =>
+    isIsoDate(lot.purchase_date) ? lot.purchase_date.slice(0, 10) : "",
+  );
+  const shared = keys.every((key) => key !== "" && key === keys[0]);
+  if (shared) return null;
+  return lots;
+}
+
 function carryoverCopy(hop: WashSaleHop): string {
   if (isIsoDate(hop.tacked_acquisition_date) && hop.carryover_days != null) {
     return `Holding period starts ${formatChainDate(hop.tacked_acquisition_date)} for these replacement shares (${hop.carryover_days} days carried from the sold lot).`;
@@ -136,6 +147,7 @@ function carryoverCopy(hop: WashSaleHop): string {
 }
 
 function HopDetails({ hop }: Readonly<{ hop: WashSaleHop }>) {
+  const perLot = differingClosedLots(hop);
   const showCarry =
     hop.hop_index > 0 &&
     hop.engine_sale_loss != null &&
@@ -226,9 +238,22 @@ function HopDetails({ hop }: Readonly<{ hop: WashSaleHop }>) {
           Per-buy basis split is illustrative.
         </Typography>
       )}
-      <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>
-        {carryoverCopy(hop)}
-      </Typography>
+      {perLot ? (
+        perLot.map((lot, index) => (
+          <Typography
+            key={`${hop.hop_id}-lot-${index}`}
+            variant="body2"
+            data-testid={`wash-sale-closed-lot-${hop.hop_id}-${index}`}
+            sx={{ overflowWrap: "anywhere" }}
+          >
+            {formatQty(lot.quantity)} acquired {formatChainDate(lot.purchase_date)}
+          </Typography>
+        ))
+      ) : (
+        <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>
+          {carryoverCopy(hop)}
+        </Typography>
+      )}
       {showCarry && (
         <Stack spacing={0.5}>
           <Fact
