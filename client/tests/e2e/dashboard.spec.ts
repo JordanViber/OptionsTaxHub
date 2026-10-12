@@ -42,7 +42,9 @@ test.describe("Dashboard UI Fixes", () => {
 
     // Reload the page
     await page.reload();
-    await expect(page.getByText("OptionsTaxHub")).toBeVisible({
+    await expect(
+      page.getByRole("link", { name: "OptionsTaxHub" }),
+    ).toBeVisible({
       timeout: 10000,
     });
 
@@ -84,11 +86,10 @@ test.describe("Dashboard UI Fixes", () => {
   }) => {
     await uploadTestCsv(page);
 
-    // Wait for the positions table to render inside the DataGrid
-    await expect(page.locator('[data-testid="DashboardIcon"]')).toBeVisible();
-
-    // Hover over ST chip and check tooltip
-    const stChip = page.locator(".MuiChip-root", { hasText: "ST" }).first();
+    // Suggestions is the default tab. ST / STK / Risk chips live on the positions grid.
+    await page.getByRole("tab", { name: /Positions/ }).click();
+    const stChip = page.locator(".MuiChip-root", { hasText: /^ST$/ }).first();
+    await expect(stChip).toBeVisible();
     await stChip.hover();
     await expect(
       page.getByRole("tooltip", { name: /Short-Term/i }),
@@ -99,7 +100,7 @@ test.describe("Dashboard UI Fixes", () => {
     await page.waitForTimeout(500);
 
     // Hover over STK chip and check tooltip
-    const stkChip = page.locator(".MuiChip-root", { hasText: "STK" }).first();
+    const stkChip = page.locator(".MuiChip-root", { hasText: /^STK$/ }).first();
     await stkChip.hover();
     await expect(
       page.getByRole("tooltip", { name: /Stock position/i }),
@@ -110,7 +111,7 @@ test.describe("Dashboard UI Fixes", () => {
     await page.waitForTimeout(500);
 
     // Hover over wash-sale risk chip
-    const riskChip = page.locator(".MuiChip-root", { hasText: "Risk" }).first();
+    const riskChip = page.locator(".MuiChip-root", { hasText: /^Risk$/ }).first();
     await riskChip.hover();
     await expect(
       page.getByRole("tooltip", { name: /Wash-Sale Risk/i }),
@@ -142,9 +143,16 @@ test.describe("Dashboard UI Fixes", () => {
   }) => {
     await uploadTestCsv(page);
 
-    // The TrendingDown icon has data-testid="TrendingDownIcon"
-    const trendingDown = page.locator('[data-testid="TrendingDownIcon"]');
-    await expect(trendingDown.first()).toBeVisible();
+    // MUI only sets data-testid on icons in development. Production next start
+    // still renders the TrendingDown glyph on the unrealized P&L card.
+    const pnlCard = page
+      .getByText("Unrealized P&L", { exact: true })
+      .locator("xpath=ancestor::*[contains(@class,'MuiCard-root')][1]");
+    await expect(
+      pnlCard.locator(
+        'svg path[d="m16 18 2.29-2.29-4.88-4.88-4 4L2 7.41 3.41 6l6 6 4-4 6.3 6.29L22 12v6z"]',
+      ),
+    ).toBeVisible();
   });
 
   // --- Fix 5b: PNL upward arrow for gains ---
@@ -162,9 +170,14 @@ test.describe("Dashboard UI Fixes", () => {
 
     await uploadTestCsv(page);
 
-    // The TrendingUp icon has data-testid="TrendingUpIcon"
-    const trendingUp = page.locator('[data-testid="TrendingUpIcon"]');
-    await expect(trendingUp.first()).toBeVisible();
+    const pnlCard = page
+      .getByText("Unrealized P&L", { exact: true })
+      .locator("xpath=ancestor::*[contains(@class,'MuiCard-root')][1]");
+    await expect(
+      pnlCard.locator(
+        'svg path[d="m16 6 2.29 2.29-4.88 4.88-4-4L2 16.59 3.41 18l6-6 4 4 6.3-6.29L22 12V6z"]',
+      ),
+    ).toBeVisible();
   });
 
   // --- Fix 6: Upload history sidebar ---
@@ -201,7 +214,9 @@ test.describe("Dashboard UI Fixes", () => {
 
     // Reload to pick up the new route
     await page.reload();
-    await expect(page.getByText("OptionsTaxHub")).toBeVisible({
+    await expect(
+      page.getByRole("link", { name: "OptionsTaxHub" }),
+    ).toBeVisible({
       timeout: 10000,
     });
 
@@ -267,10 +282,13 @@ test.describe("Dashboard Upload & Results", () => {
   }) => {
     await uploadTestCsv(page);
 
-    // Portfolio Value
-    await expect(page.getByText("Portfolio Value")).toBeVisible();
+    await expect(page.getByText("Net Open Position Value")).toBeVisible();
     await expect(page.getByText("$21,100")).toBeVisible();
-    await expect(page.getByText("2 positions")).toBeVisible();
+    await expect(
+      page.getByText(
+        "2 open positions — short options count as liabilities; excludes cash",
+      ),
+    ).toBeVisible();
 
     // Unrealized P&L (also appears as DataGrid column header, so use first())
     await expect(page.getByText("Unrealized P&L").first()).toBeVisible();
@@ -279,17 +297,20 @@ test.describe("Dashboard Upload & Results", () => {
     await expect(page.getByText("Harvestable Losses")).toBeVisible();
     await expect(page.getByText("$625").first()).toBeVisible();
 
-    // Est. Tax Savings
-    await expect(page.getByText("Est. Tax Savings")).toBeVisible();
-    await expect(page.getByText("$138")).toBeVisible();
+    // $138 also appears on the suggestion card and inside its explanation.
+    const savingsCard = page
+      .getByText("Est. Tax Savings", { exact: true })
+      .locator("xpath=ancestor::*[contains(@class,'MuiCardContent-root')][1]");
+    await expect(savingsCard.getByText("$138", { exact: true })).toBeVisible();
   });
 
   test("positions table renders rows for all positions", async ({ page }) => {
     await uploadTestCsv(page);
 
-    // Both symbols from mock data should appear (scoped to grid to avoid wash-sale text matches)
-    await expect(page.getByRole('grid').getByText("AAPL")).toBeVisible();
-    await expect(page.getByRole('grid').getByText("MSFT")).toBeVisible();
+    // Suggestions is the default tab; the positions DataGrid mounts on its own tab.
+    await page.getByRole("tab", { name: /Positions/ }).click();
+    await expect(page.getByRole("grid").getByText("AAPL")).toBeVisible();
+    await expect(page.getByRole("grid").getByText("MSFT")).toBeVisible();
   });
 
   test("upload area is clickable and opens file dialog", async ({ page }) => {
@@ -321,15 +342,19 @@ test.describe("Dashboard Upload & Results", () => {
       }),
     );
 
-    // Upload again — can't reuse uploadTestCsv because "Portfolio Value" is already visible
-    const fileInput = page.locator('input[type="file"]');
+    // Upload again — can't reuse uploadTestCsv because the results card is already visible
+    const fileInput = page.locator("#desk-csv-input");
     const pathMod = await import("node:path");
     const csvPath = pathMod.resolve(__dirname, "../../../test.csv");
     await fileInput.setInputFiles(csvPath);
 
     // Wait for the updated values
     await expect(page.getByText("$50,000")).toBeVisible({ timeout: 15000 });
-    await expect(page.getByText("5 positions")).toBeVisible();
+    await expect(
+      page.getByText(
+        "5 open positions — short options count as liabilities; excludes cash",
+      ),
+    ).toBeVisible();
   });
 
   test("tax disclaimer renders after analysis", async ({ page }) => {
@@ -362,7 +387,7 @@ test.describe("Dashboard Tabs & Components", () => {
 
     // Suggestions content should show the AAPL suggestion card
     await expect(page.getByText("AAPL").first()).toBeVisible();
-    await expect(page.getByText("Estimated Loss")).toBeVisible();
+    await expect(page.getByText("Estimated Loss", { exact: true })).toBeVisible();
     await expect(page.getByText("Tax Savings", { exact: true })).toBeVisible();
 
     // Click back to Positions
@@ -434,7 +459,9 @@ test.describe("Dashboard Tabs & Components", () => {
     await page.getByRole('tab', { name: /Suggestions/ }).click();
 
     await expect(
-      page.getByText("No tax-loss harvesting opportunities found"),
+      page.getByText(
+        "Open lots with unrealized losses were found, but none are recommended to sell right now. They may sit inside a 30-day wash-sale window, or this year's realized losses already exceed the extra $3,000 this return can use.",
+      ),
     ).toBeVisible();
   });
 
@@ -444,11 +471,15 @@ test.describe("Dashboard Tabs & Components", () => {
     await uploadTestCsv(page);
 
     await expect(
-      page.getByText("Wash-Sale Rule Violations Detected (1)"),
+      page.getByText(
+        "Wash-Sale Rule Violations Detected (1 events across 1 ticker)",
+      ),
     ).toBeVisible();
-    await expect(
-      page.getByText("AAPL: $125 loss disallowed"),
-    ).toBeVisible();
+    const aaplWash = page.getByRole("button", {
+      name: "AAPL $125.00 disallowed 1 event",
+    });
+    await expect(aaplWash).toBeVisible();
+    await aaplWash.click();
     await expect(
       page.getByText(/Sold 10 shares at a loss on 3\/1/),
     ).toBeVisible();
@@ -538,7 +569,7 @@ test.describe("Dashboard Error & Loading States", () => {
     await goToAuthenticatedHome(page);
 
     // Upload — this should trigger an error
-    const fileInput = page.locator('input[type="file"]');
+    const fileInput = page.locator("#desk-csv-input");
     const path = await import("node:path");
     const csvPath = path.resolve(__dirname, "../../../test.csv");
     await fileInput.setInputFiles(csvPath);
@@ -562,7 +593,7 @@ test.describe("Dashboard Error & Loading States", () => {
 
     await goToAuthenticatedHome(page);
 
-    const fileInput = page.locator('input[type="file"]');
+    const fileInput = page.locator("#desk-csv-input");
     const path = await import("node:path");
     const csvPath = path.resolve(__dirname, "../../../test.csv");
     await fileInput.setInputFiles(csvPath);
@@ -573,7 +604,7 @@ test.describe("Dashboard Error & Loading States", () => {
     await expect(page.getByText("Analyzing portfolio...")).toBeVisible();
 
     // Wait for results and verify loading disappears
-    await expect(page.getByText("Portfolio Value")).toBeVisible({
+    await expect(page.getByText("Net Open Position Value")).toBeVisible({
       timeout: 15000,
     });
   });
@@ -592,6 +623,9 @@ test.describe("Dashboard Error & Loading States", () => {
     await goToAuthenticatedHome(page);
     await uploadTestCsv(page);
 
+    await page
+      .getByRole("button", { name: /2 data quality notes — click to expand/ })
+      .click();
     await expect(
       page.getByText(
         "Some positions could not be priced — defaulting to cost basis.",
