@@ -2517,7 +2517,8 @@ PACKET_MISSING_SOURCE_DETAIL = (
     "Run a new analysis for this tax year."
 )
 PACKET_ALREADY_PAID_EXISTING_DETAIL = (
-    "This tax year is already paid; download your existing packet."
+    "This tax year is already paid. This extra charge was recorded for a refund. "
+    "Download your existing packet."
 )
 PACKET_FINALIZING_DETAIL = (
     "Payment is on file and the packet is still being finalized. "
@@ -2592,16 +2593,82 @@ def _snapshot_is_paid_full(snapshot) -> bool:
     return isinstance(payload, dict) and packet_payload_rows_match_counts(payload)
 
 
+def _release_nonconflict_entitlement_for_receipt(analysis_id, user_id, tax_year, session_id):
+    """Drop a non-conflict entitlement so a ``conflict:`` receipt can occupy its key.
+
+    The entitlement primary key is (user, tax year, ``cs_``). This losing
+    session already holds a normal row there, and ``save_packet_conflict_receipt``
+    will not rewrite it. A ``conflict:{analysis}`` row on that key is left in
+    place. False when the database client is missing or the delete fails.
+    """
+    import db as packet_db
+
+    receipt_id = packet_db.conflict_receipt_analysis_id(analysis_id)
+    if not receipt_id or not user_id or not isinstance(session_id, str) or not session_id.startswith("cs_"):
+        return False
+    try:
+        year = int(tax_year)
+    except (TypeError, ValueError):
+        return False
+    client = packet_db.get_supabase()
+    if client is None:
+        return False
+    try:
+        (
+            client.table("year_close_packet_entitlements")
+            .delete()
+            .eq("user_id", user_id)
+            .eq("tax_year", year)
+            .eq("packet_session_id", session_id)
+            .neq("analysis_id", receipt_id)
+            .execute()
+        )
+    except Exception as exc:
+        logger.error(
+            "Failed to release packet entitlement before refund receipt %s: %s",
+            session_id,
+            exc,
+        )
+        return False
+    return True
+
+
+def _store_losing_session_refund_receipt(analysis_id, user_id, tax_year, session_id):
+    """Store one refund receipt for a second charge against an already-paid year.
+
+    The receipt row is ``conflict:{analysis}`` on this ``cs_``. Releasing the
+    normal entitlement first lets the insert succeed. A later read of that
+    same receipt does not log again. False when the receipt is not stored.
+    """
+    if not _release_nonconflict_entitlement_for_receipt(
+        analysis_id, user_id, tax_year, session_id
+    ):
+        return False
+    try:
+        year = int(tax_year)
+    except (TypeError, ValueError):
+        return False
+    receipt = save_packet_conflict_receipt(
+        analysis_id,
+        user_id,
+        year,
+        session_id,
+        paid_tax_year=year,
+        log_event=PACKET_GRANT_ALREADY_PAID_EXISTING,
+    )
+    return isinstance(receipt, dict) and _is_conflict_analysis_id(receipt.get("analysis_id"))
+
+
 def _already_owned_session_grant(analysis_id, user_id, tax_year, session_id):
     """Paid only when this ``cs_`` owns a paid full snapshot.
 
     ``ALREADY_GRANTED_ENTITLEMENT`` means this session already holds a real
-    entitlement. No ``conflict:`` receipt was inserted and no refund line was
-    logged. That is not a second charge. True requires
+    entitlement when the classifier starts. True requires
     ``packet_session_id ==`` this session and a payload that passes
     ``packet_payload_rows_match_counts``. A paid full snapshot owned by a
-    different ``cs_`` is ``PACKET_GRANT_ALREADY_PAID_EXISTING``: the document
-    is already on the row, so it is not missing and it is not a new refund.
+    different ``cs_`` is a second charge. Write one ``conflict:`` receipt and
+    one refund ERROR, then return ``PACKET_GRANT_ALREADY_PAID_EXISTING``.
+    ``None`` when that receipt is not stored, so confirm and the webhook retry.
     An unpaid row, a counts-only row, or any other owner is
     ``PACKET_GRANT_MISSING_SOURCE``. A failed re-read is an outage.
     """
@@ -2617,6 +2684,10 @@ def _already_owned_session_grant(analysis_id, user_id, tax_year, session_id):
         if owner == session_id:
             return True
         if isinstance(owner, str) and owner.startswith("cs_") and owner != session_id:
+            if not _store_losing_session_refund_receipt(
+                analysis_id, user_id, year, session_id
+            ):
+                return None
             return PACKET_GRANT_ALREADY_PAID_EXISTING
     return PACKET_GRANT_MISSING_SOURCE
 
@@ -2628,10 +2699,10 @@ def _same_year_duplicate_grant(analysis_id, user_id, tax_year, session_id):
     is returned only for a ``conflict:`` receipt. The insert writes the refund
     ERROR; a later read of that same receipt does not log again and still
     refuses the grant. ``ALREADY_GRANTED_ENTITLEMENT`` is this ``cs_`` already
-    owning the entitlement — never the duplicate sentinel and never refund
-    wording. Paid (True) only when this session's own snapshot is paid and full.
-    A paid full snapshot owned by a different ``cs_`` is
-    ``PACKET_GRANT_ALREADY_PAID_EXISTING`` and writes no receipt.
+    owning the entitlement — never the duplicate sentinel. Paid (True) only
+    when this session's own snapshot is paid and full. A paid full snapshot
+    owned by a different ``cs_`` is ``PACKET_GRANT_ALREADY_PAID_EXISTING`` only
+    after that losing session's refund receipt is stored.
     """
     try:
         year = int(tax_year)
@@ -3069,7 +3140,8 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
     # already-owned cs_ into that string without inserting a receipt. The
     # helper returns the duplicate sentinel only for a conflict: receipt.
     # ALREADY_GRANTED_ENTITLEMENT is paid, already-paid existing, or missing
-    # source. It does not write a receipt.
+    # source. Already-paid existing writes one refund receipt before it
+    # returns. Paid and missing source do not.
     if (
         entitlement_saved is ALREADY_GRANTED_ENTITLEMENT
         or entitlement_saved == PACKET_GRANT_SAME_YEAR_DUPLICATE
@@ -4237,9 +4309,8 @@ async def year_close_packet_webhook(request: Request):
                 "and the saved packet does not name exactly one tax year."
             ),
         )
-    # Non-grant results, including a paid full packet already owned by another
-    # cs_, ack like a duplicate or a missing source: granted is false and this
-    # handler writes no receipt.
+    # Non-grant results ack with granted false. A losing session whose year is
+    # already paid has its refund receipt written inside the grant, once per cs_.
     return {"received": True, "granted": granted is True}
 
 

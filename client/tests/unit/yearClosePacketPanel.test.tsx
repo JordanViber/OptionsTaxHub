@@ -971,7 +971,7 @@ describe("YearClosePacketPanel", () => {
 
   it("offers a session-less download instead of Pay when the packet is already paid", async () => {
     const detail =
-      "This tax year is already paid; download your existing packet.";
+      "This tax year is already paid. This extra charge was recorded for a refund. Download your existing packet.";
     window.history.replaceState(
       null,
       "",
@@ -994,7 +994,7 @@ describe("YearClosePacketPanel", () => {
     await waitFor(() => {
       expect(screen.getByRole("alert")).toHaveTextContent(detail);
     });
-    expect(screen.getByRole("alert")).not.toHaveTextContent(/refund/i);
+    expect(screen.getByRole("alert")).toHaveTextContent(/recorded for a refund/i);
     expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeDisabled();
     expect(screen.getByRole("button", { name: /Download/i })).toBeEnabled();
     expect(store["optionstaxhub-packet-pending:analysis-1"]).toBeUndefined();
@@ -1062,5 +1062,51 @@ describe("YearClosePacketPanel", () => {
     } finally {
       consoleError.mockRestore();
     }
+  });
+
+  it("starts checkout after a session-less finalizing download", async () => {
+    const detail =
+      "Payment is on file and the packet is still being finalized. Retry confirming the payment.";
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        json: () => Promise.resolve({ detail }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            already_paid: true,
+            session_id: "cs_test_finalizing_checkout",
+            analysis_id: "analysis-1",
+          }),
+      });
+
+    render(<YearClosePacketPanel analysis={analysis} />);
+    fireEvent.click(screen.getByRole("button", { name: /Download/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(detail);
+    });
+    expect(String(mockFetch.mock.calls[0][0])).toContain("/api/year-close-packet/download");
+    expect(String(mockFetch.mock.calls[0][0])).not.toContain("session_id=");
+    expect(store["optionstaxhub-packet-pending:analysis-1"]).toBeUndefined();
+    expect(store["optionstaxhub-packet-pending-confirm:analysis-1"]).toBeUndefined();
+    expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole("button", { name: /Pay \$49/i }));
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));
+    expect(String(mockFetch.mock.calls[1][0])).toContain("/api/year-close-packet/checkout");
+    expect(mockFetch.mock.calls[1][1].method).toBe("POST");
+    expect(String(mockFetch.mock.calls[1][0])).not.toContain("/confirm");
+    await waitFor(() =>
+      expect(screen.getByText(/Unlocked for this tax year/i)).toBeInTheDocument(),
+    );
+    expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeDisabled();
+    expect(store["optionstaxhub-packet-paid:analysis-1"]).toBe(
+      "cs_test_finalizing_checkout",
+    );
+    expect(window.location.href).not.toContain("checkout.stripe.com");
   });
 });

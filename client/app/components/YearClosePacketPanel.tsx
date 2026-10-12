@@ -481,10 +481,10 @@ function YearClosePacketPanelForAnalysis({
     if (existingPacketDownload) {
       return;
     }
-    if (isPacketFinalizingDetail(error ?? "")) {
-      if (sessionId) {
-        await confirmPacketSession(sessionId, canonicalAnalysisId);
-      }
+    // Finalizing with a stored cs_ retries confirm. With no session (a
+    // session-less download 409), Pay must still open checkout.
+    if (sessionId && isPacketFinalizingDetail(error ?? "")) {
+      await confirmPacketSession(sessionId, canonicalAnalysisId);
       return;
     }
     if (sessionId && confirmPending) {
