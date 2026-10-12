@@ -250,7 +250,8 @@ function HopDetails({ hop }: Readonly<{ hop: WashSaleHop }>) {
   if (
     hop.not_compared_reason === "overlap" ||
     hop.not_compared_reason === "unassigned" ||
-    hop.not_compared_reason === "unidentified"
+    hop.not_compared_reason === "unidentified" ||
+    hop.not_compared_reason === "unknown"
   ) {
     return <SparseHopDetails hop={hop} />;
   }

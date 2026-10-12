@@ -90,7 +90,7 @@ class _HopDraft:
     from_engine: bool = True
     # Why a hop was not compared. Drives copy only; not a tax field.
     # "" | "no_1099" | "ambiguous" | "over_cap" | "unidentified" | "option"
-    # | "unclassified" | "overlap" | "unassigned"
+    # | "unclassified" | "overlap" | "unassigned" | "unknown"
     not_compared_reason: str = ""
     # Display-only match bookkeeping. Not copied onto the API model.
     row_target: float | None = None
@@ -139,6 +139,28 @@ def _buys_sorted(transactions: list[Transaction]) -> list[Transaction]:
     return sorted(buys, key=lambda txn: (txn.activity_date, _symbol(txn.instrument)))
 
 
+def _confirmed_sells_share_a_lot(
+    confirmed: list[tuple[int, Transaction, list[tuple[int, RealizedEvent]]]],
+) -> bool:
+    """True when one confirmed lot's proceeds also fit another sell.
+
+    A single confirmed sell does not overlap. Two sells more than CENTS
+    apart each match a different lot. Two sells that both sit within CENTS
+    of the same lot are one quiet hop, not a list-order pick.
+    """
+    if len(confirmed) <= 1:
+        return False
+    for index, (_sell_index, _txn, event_set) in enumerate(confirmed):
+        lot_proceeds = sum(float(event.sale_proceeds) for _event_index, event in event_set)
+        for other_index, (_other_index, other, _other_set) in enumerate(confirmed):
+            if other_index == index:
+                continue
+            target = float(other.quantity) * float(other.price)
+            if abs(lot_proceeds - target) <= CENTS:
+                return True
+    return False
+
+
 def _attach_flag_sale(
     transactions: list[Transaction],
     events: list[RealizedEvent],
@@ -152,10 +174,12 @@ def _attach_flag_sale(
 ) -> tuple[int | None, Transaction | None, list[tuple[int, RealizedEvent]], bool]:
     """Attach one sell only when quantity, proceeds, and loss agree.
 
-    Two same-day sells of the same size are not claimed by list order. A
-    sell is eligible when a lot set matches its proceeds and the flag loss
-    within CENTS. No eligible sell, and more than one candidate, leaves the
-    hop unidentified so another sale's proceeds are not shown.
+    Two same-day sells of the same size are not claimed by list order when
+    both sit within CENTS of the same lot. A sell is eligible when a lot
+    set matches its proceeds and the flag loss within CENTS. More than one
+    eligible sell that shares a lot, or no eligible sell and more than one
+    candidate, leaves the hop unidentified so another sale's proceeds are
+    not shown. Sells more than CENTS apart keep the lot each one matches.
     """
     candidates: list[tuple[int, Transaction]] = []
     for index, txn in enumerate(transactions):
@@ -186,6 +210,11 @@ def _attach_flag_sale(
         )
         if event_set:
             confirmed.append((index, txn, event_set))
+    # One confirmed sell is this flag. Two whose lots also fit each other
+    # within CENTS are not picked by list order. Nothing is consumed, so
+    # the hop stays quiet. Sells more than CENTS apart keep their own lots.
+    if len(confirmed) != 1 and _confirmed_sells_share_a_lot(confirmed):
+        return None, None, [], True
     if confirmed:
         index, txn, event_set = confirmed[0]
         used_txns.add(index)
@@ -489,12 +518,15 @@ class _SaleGroup:
 
     Rows are ordered by per-share proceeds. The first row's per-share
     proceeds is the anchor price. A later row stays in that cluster when
-    its total proceeds are within CENTS of anchor price times its quantity.
-    A one-share fill at $10.00, $10.01, and $10.02 is one cluster, because
-    each total is within two cents of $10.00. Ten shares a penny apart
-    differ by ten cents and stay apart. $33.33 and $66.67 (one share and
-    two shares at that price) are one sale. A zero-quantity row only joins
-    another zero-quantity row.
+    its total proceeds are within the proceeds slack of anchor price times
+    its quantity. Slack is two cents plus half a cent per share. A
+    one-share fill at $10.00, $10.01, and $10.02 is one cluster: $10.02 is
+    two cents from $10.00, inside the 2.5-cent slack. A 1-share $10.00 row
+    and a 100-share $1000.50 row differ by fifty cents, inside the 52-cent
+    slack, and stay one sale. Ten shares a penny apart differ by ten cents,
+    outside the 7-cent slack, and stay apart. $33.33 and $66.67 (one share
+    and two shares at that price) are one sale. A zero-quantity row only
+    joins another zero-quantity row.
     """
 
     symbol: str
@@ -517,9 +549,10 @@ def _group_rows(
     """Group unused 1099 rows that still carry a wash amount.
 
     Cluster by symbol and sale date. Sort by per-share proceeds, then start
-    a new cluster unless the row's total proceeds are within CENTS of the
-    anchor price times its quantity. The anchor is the first row's per-share
-    proceeds. A zero-quantity row only joins another zero-quantity row.
+    a new cluster unless the row's total proceeds are within the proceeds
+    slack of the anchor price times its quantity. The anchor is the first
+    row's per-share proceeds. Slack is two cents plus half a cent per share.
+    A zero-quantity row only joins another zero-quantity row.
     Equal prices keep their original index so the hop id stays on the first
     of those rows.
     """
@@ -584,17 +617,23 @@ def _target_unit_proceeds(
     return None
 
 
-def _row_total_matches_price(row: LotMatchRow, price: float) -> bool:
-    """True when total proceeds are within CENTS of price times quantity.
+def _proceeds_slack(quantity: float) -> float:
+    """Dollar window for one row: two cents plus half a cent per share."""
+    return CENTS + 0.005 * abs(float(quantity))
 
-    Fractional shares use the same dollar test as whole shares. A
-    zero-quantity row has no total to compare and does not match.
+
+def _row_total_matches_price(row: LotMatchRow, price: float) -> bool:
+    """True when total proceeds are within the proceeds slack of price times quantity.
+
+    Flag matching and leftover clustering both use this test. Fractional
+    shares use the same dollar slack as whole shares. A zero-quantity row
+    has no total to compare and does not match.
     """
     quantity = float(row.quantity or 0.0)
     if abs(quantity) <= QTY_EPS:
         return False
     proceeds = float(row.proceeds_1099 or 0.0)
-    return abs(proceeds - float(price) * quantity) <= CENTS
+    return abs(proceeds - float(price) * quantity) <= _proceeds_slack(quantity)
 
 
 def _row_unit_proceeds(row: LotMatchRow) -> float | None:
@@ -612,11 +651,13 @@ def _match_candidates(
     sale_date: date,
     target: float | None,
 ) -> list[tuple[int, LotMatchRow]]:
-    """Same-symbol trade-date rows whose total proceeds match the sale price.
+    """Same-symbol rows whose sale date and total proceeds match the flag.
 
-    A row belongs when abs(proceeds - target price * quantity) is within
-    CENTS. With no target price, any row that has a quantity is a candidate.
-    A zero-quantity row is not.
+    The sale date is the export trade date, or the 1099 sold date when the
+    export date is missing. A csv_only row is export-only and is not a 1099
+    match. A row belongs when abs(proceeds - target price * quantity) is
+    within the proceeds slack. With no target price, any row that has a
+    quantity is a candidate. A zero-quantity row is not.
     """
     candidates: list[tuple[int, LotMatchRow]] = []
     for index, row in enumerate(rows):
@@ -624,7 +665,9 @@ def _match_candidates(
             continue
         if _symbol(row.symbol) != symbol:
             continue
-        if row.export_trade_date != sale_date:
+        if row.status == "csv_only":
+            continue
+        if _row_sale_date(row) != sale_date:
             continue
         if _row_unit_proceeds(row) is None:
             continue
@@ -749,6 +792,9 @@ _UNCLASSIFIED_LINE = (
 _UNIDENTIFIED_LINE = (
     "This sale could not be tied to one trade's proceeds and loss, "
     "so it was not compared."
+)
+_UNKNOWN_QTY_LINE = (
+    "This 1099 sale has no quantity, so it was not compared."
 )
 _OPTION_WORD = re.compile(r"\b(?:calls?|puts?|options?)\b", re.IGNORECASE)
 
@@ -1271,11 +1317,26 @@ def _infer_sale_asset(
     return AssetType.STOCK.value, True, None
 
 
-def _repurchase_cap(buys: list[Transaction], sale_quantity: float) -> float:
+def _lot_quantity_known(quantity: float | None) -> bool:
+    """False when a 1099 lot quantity is missing or zero."""
+    if quantity is None:
+        return False
+    return abs(float(quantity)) > QTY_EPS
+
+
+def _repurchase_cap(
+    buys: list[Transaction],
+    sale_quantity: float | None,
+) -> float | None:
+    """Shares of the window buys this 1099 lot can explain.
+
+    A missing or zero quantity is unknown. None stops the caller from
+    allocating every window buy and inventing a basis for them.
+    """
+    if not _lot_quantity_known(sale_quantity):
+        return None
     total = sum(float(buy.quantity) for buy in buys)
-    if sale_quantity > QTY_EPS:
-        return min(total, float(sale_quantity))
-    return total
+    return min(total, float(sale_quantity or 0.0))
 
 
 def _hop_from_1099_group(
@@ -1295,6 +1356,21 @@ def _hop_from_1099_group(
         return None
     quantity = sum(float(row.quantity or 0.0) for _, row in items)
     wash = _cents(sum(float(row.wash_sale_disallowed or 0.0) for _, row in items))
+    if any(not _lot_quantity_known(row.quantity) for _, row in items):
+        # Do not size replacement buys from a missing share count, and do
+        # not turn the row's basis into an explained basis.
+        return _bare_not_compared_hop(
+            hop_id=_hop_id(symbol, sale_date, quantity, f"r{first_index}"),
+            symbol=symbol,
+            asset_type=AssetType.STOCK.value,
+            sale_date=sale_date,
+            sale_quantity=quantity,
+            reason="unknown",
+            proceeds=None,
+            cost_basis=None,
+            loss=0.0,
+            form_1099_wash=wash if wash >= 0.01 else None,
+        )
     proceeds = _cents(sum(float(row.proceeds_1099 or 0.0) for _, row in items))
     cost_basis = _cents(sum(float(row.cost_basis_1099 or 0.0) for _, row in items))
     loss = _cents(max(0.0, cost_basis - proceeds))
@@ -1330,7 +1406,11 @@ def _hop_from_1099_group(
         asset,
     )
     cap = _repurchase_cap(raw_buys, quantity)
-    buys = _allocate_buys(raw_buys, repurchase_quantity=cap, disallowed=wash)
+    buys = _allocate_buys(
+        raw_buys,
+        repurchase_quantity=0.0 if cap is None else cap,
+        disallowed=wash,
+    )
     _apply_display_scale(buys, raw_buys, scale_disallowed=False)
     export_dates = {row.export_trade_date for _, row in items}
     export_date = next(iter(export_dates)) if len(export_dates) == 1 else None
@@ -1437,6 +1517,36 @@ def _basis_split(hop: _HopDraft) -> float:
     )
 
 
+def _join_phrases(bits: list[str]) -> str:
+    if len(bits) == 1:
+        return bits[0]
+    if len(bits) == 2:
+        return f"{bits[0]} and {bits[1]}"
+    return ", ".join(bits[:-1]) + f", and {bits[-1]}"
+
+
+def _buy_bits(
+    buys: list[_BuyDraft],
+    *,
+    symbol: str,
+    with_year: bool,
+    symbol_on_first: bool,
+    back_on_first: bool,
+) -> list[str]:
+    """One phrase per buy. "back" is only for a buy on or after the sale."""
+    bits: list[str] = []
+    for index, buy in enumerate(buys):
+        when = _fmt_date(buy.activity_date, with_year=with_year)
+        amount = _fmt_qty(buy.allocated_quantity)
+        if index == 0 and symbol_on_first:
+            amount = f"{amount} {symbol}"
+        if index == 0 and back_on_first:
+            bits.append(f"{amount} back on {when}")
+        else:
+            bits.append(f"{amount} on {when}")
+    return bits
+
+
 def _basis_split_is_illustrative(hop: _HopDraft) -> bool:
     """True when the per-buy split is not the engine's adjusted basis."""
     if hop.engine_adjusted_cost_basis is None:
@@ -1456,6 +1566,8 @@ def plain_english_line(hop: _HopDraft) -> str:
         return _unassigned_line(hop.symbol, hop.sale_date)
     if hop.not_compared_reason == "unidentified":
         return _UNIDENTIFIED_LINE
+    if hop.not_compared_reason == "unknown":
+        return _UNKNOWN_QTY_LINE
     listed = _listed_buys(hop)
     with_year = _needs_year(hop.sale_date, listed)
     unit = ""
@@ -1474,47 +1586,61 @@ def plain_english_line(hop: _HopDraft) -> str:
         f"so {_fmt_money(hop.disallowed_loss)}{partial} moved into "
         "the new lot's basis."
     )
+    before = [buy for buy in listed if buy.activity_date < hop.sale_date]
+    after = [buy for buy in listed if buy.activity_date >= hop.sale_date]
     if not listed:
         body = f"You sold {qty}{unit} {symbol}{loss_bit} on {sale_on}."
-    elif all(buy.activity_date < hop.sale_date for buy in listed):
-        buy_bits = []
-        for index, buy in enumerate(listed):
-            when = _fmt_date(buy.activity_date, with_year=with_year)
-            amount = f"{_fmt_qty(buy.allocated_quantity)}{unit}"
-            if index == 0:
-                buy_bits.append(f"{amount} {symbol} on {when}")
-            else:
-                buy_bits.append(f"{amount} on {when}")
-        bought = (
-            buy_bits[0]
-            if len(buy_bits) == 1
-            else " and ".join(buy_bits)
-            if len(buy_bits) == 2
-            else ", ".join(buy_bits[:-1]) + f", and {buy_bits[-1]}"
+    elif not after:
+        bought = _join_phrases(
+            _buy_bits(
+                before,
+                symbol=symbol,
+                with_year=with_year,
+                symbol_on_first=True,
+                back_on_first=False,
+            )
         )
         body = (
             f"You bought {bought} and sold {qty}{unit}{loss_bit} on {sale_on}, "
             f"so {_fmt_money(hop.disallowed_loss)}{partial} moved into "
             "the replacement lot's basis."
         )
-    else:
-        buy_bits = []
-        for index, buy in enumerate(listed):
-            when = _fmt_date(buy.activity_date, with_year=with_year)
-            amount = f"{_fmt_qty(buy.allocated_quantity)}{unit}"
-            if index == 0:
-                buy_bits.append(f"{amount} back on {when}")
-            else:
-                buy_bits.append(f"{amount} on {when}")
-        if len(buy_bits) == 1:
-            bought = buy_bits[0]
-        elif len(buy_bits) == 2:
-            bought = f"{buy_bits[0]} and {buy_bits[1]}"
-        else:
-            bought = ", ".join(buy_bits[:-1]) + f", and {buy_bits[-1]}"
+    elif not before:
+        bought = _join_phrases(
+            _buy_bits(
+                after,
+                symbol=symbol,
+                with_year=with_year,
+                symbol_on_first=False,
+                back_on_first=True,
+            )
+        )
         body = (
             f"You sold {qty}{unit} {symbol}{loss_bit} on {sale_on} "
             f"and bought {bought}, {moved}"
+        )
+    else:
+        bought_before = _join_phrases(
+            _buy_bits(
+                before,
+                symbol=symbol,
+                with_year=with_year,
+                symbol_on_first=True,
+                back_on_first=False,
+            )
+        )
+        bought_after = _join_phrases(
+            _buy_bits(
+                after,
+                symbol=symbol,
+                with_year=with_year,
+                symbol_on_first=False,
+                back_on_first=True,
+            )
+        )
+        body = (
+            f"You bought {bought_before}, sold {qty}{unit}{loss_bit} on {sale_on}, "
+            f"and bought {bought_after}, {moved}"
         )
     line = f"{body} {reconcile}"
     if _basis_split_is_illustrative(hop):

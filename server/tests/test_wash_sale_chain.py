@@ -1298,7 +1298,14 @@ def test_chain_copy_covers_remaining_branches():
         ),
     )
     assert any(chain.reconcile_status == "not_on_1099" for chain in empty_unit)
-    assert any(chain.reconcile_status == "on_1099_only" for chain in empty_unit)
+    blank_unit = next(
+        chain for chain in empty_unit if chain.hops[0].sale_quantity == pytest.approx(0)
+    )
+    assert blank_unit.reconcile_status == "not_compared"
+    assert blank_unit.hops[0].not_compared_reason == "unknown"
+    assert blank_unit.hops[0].replacement_buys == []
+    assert blank_unit.hops[0].cost_basis is None
+    assert blank_unit.hops[0].open_lot_total_cost_basis is None
 
     dated = _build(
         transactions=[
@@ -1876,9 +1883,10 @@ def test_same_day_sales_attach_event_whose_proceeds_match():
 def test_cent_proceeds_three_share_fill_matches():
     """A 3-share sale still matches $33.33 + $66.67.
 
-    A row belongs when its total proceeds are within two cents of the sale
-    price times its quantity. $66.67 is one cent from $33.33 times 2, so
-    both rows are that sale. Leftover rows use the same total-dollar test.
+    A row belongs when its total proceeds are within two cents plus half a
+    cent per share of the sale price times its quantity. $66.67 is a
+    fraction of a cent from $33.33 times 2, so both rows are that sale.
+    Leftover rows use the same slack.
     """
     price = 100 / 3
     txns = [
@@ -2831,14 +2839,14 @@ def test_two_matching_stock_sales_still_keep_the_closed_lot_date():
     assert hop.closed_lots[0].quantity == pytest.approx(10)
 
 
-def test_cent_proceeds_leftover_three_share_fill_is_one_chain():
-    """$33.33 and $66.67 are one leftover sale.
+def test_leftover_proceeds_slack_groups_cent_fills_and_hundred_share_half_dollar():
+    """Slack is two cents plus half a cent per share.
 
-    The anchor price is the first row's per-share proceeds. $66.67 is within
-    two cents of $33.33 times 2, so the rows are one 3-share chain. One-share
-    fills at $10.00, $10.01, and $10.02 also join, because each total is
-    within two cents of the $10.00 anchor. Ten shares a penny apart ($0.10)
-    stay apart.
+    $33.33 and $66.67 stay one 3-share sale. One-share fills at $10.00,
+    $10.01, and $10.02 stay one chain: $10.02 is two cents from the $10.00
+    anchor, inside the 2.5-cent slack. A 1-share $10.00 wash of $1 and a
+    100-share $1000.50 wash of $40 stay one chain: the fifty-cent gap is
+    inside the 52-cent slack. Ten shares a penny apart stay split.
     """
     chains = _build(
         supplemental=_supplemental(2026),
@@ -2939,6 +2947,34 @@ def test_cent_proceeds_leftover_three_share_fill_is_one_chain():
     assert middle_first[0].hops[0].disallowed_loss == pytest.approx(3)
     assert middle_first[0].hops[0].proceeds == pytest.approx(30.03)
 
+    wide = _build(
+        supplemental=_supplemental(2026),
+        lot_match_report=_report(
+            _row(
+                status="1099_only",
+                symbol="IBM",
+                quantity=1,
+                export_trade_date=date(2026, 6, 1),
+                proceeds_1099=10.00,
+                wash_sale_disallowed=1,
+            ),
+            _row(
+                status="1099_only",
+                symbol="IBM",
+                quantity=100,
+                export_trade_date=date(2026, 6, 1),
+                proceeds_1099=1000.50,
+                wash_sale_disallowed=40,
+            ),
+            bucket="unmatched",
+        ),
+    )
+    assert len(wide) == 1
+    assert wide[0].hops[0].sale_quantity == pytest.approx(101)
+    assert wide[0].hops[0].disallowed_loss == pytest.approx(41)
+    assert wide[0].hops[0].proceeds == pytest.approx(1010.50)
+    assert wide[0].reconcile_status == "on_1099_only"
+
     zeros = _build(
         supplemental=_supplemental(2026),
         lot_match_report=_report(
@@ -2971,8 +3007,14 @@ def test_cent_proceeds_leftover_three_share_fill_is_one_chain():
     )
     assert len(zeros) == 2
     blank = next(chain for chain in zeros if chain.hops[0].sale_quantity == pytest.approx(0))
-    assert blank.hops[0].disallowed_loss == pytest.approx(10)
-    assert blank.reconcile_status == "on_1099_only"
+    assert blank.reconcile_status == "not_compared"
+    assert blank.hops[0].not_compared_reason == "unknown"
+    assert blank.hops[0].replacement_buys == []
+    assert blank.hops[0].cost_basis is None
+    assert blank.hops[0].form_1099_wash == pytest.approx(10)
+    priced = next(chain for chain in zeros if chain.hops[0].sale_quantity == pytest.approx(1))
+    assert priced.reconcile_status == "on_1099_only"
+    assert priced.hops[0].disallowed_loss == pytest.approx(1)
 
 
 def test_three_washes_stay_separate_with_no_carry():
@@ -4476,3 +4518,211 @@ def test_same_day_different_prices_leave_proceeds_unset():
     assert all(chain.hops[0].not_compared_reason != "unidentified" for chain in attached)
     assert all(chain.hops[0].replacement_buys for chain in attached)
     assert [flag.disallowed_loss for flag in flags] == flag_losses
+
+
+def test_unmatched_row_without_export_date_matches_the_flag_once():
+    """A 1099 sold date matches the flag when the export trade date is missing.
+
+    The row is consumed, so it is not also an on_1099_only chain. A csv_only
+    row with the same size is export-only and does not match.
+    """
+    sale = date(2026, 6, 1)
+    price = 15.0
+    quantity = 100
+    disallowed = 250.0
+    flag = WashSaleFlag(
+        symbol="AAPL",
+        sale_date=sale,
+        sale_quantity=quantity,
+        sale_loss=500,
+        repurchase_date=date(2026, 6, 8),
+        repurchase_quantity=quantity,
+        disallowed_loss=disallowed,
+        adjusted_cost_basis=2000,
+    )
+    txns = [
+        _txn("AAPL", TransCode.BUY, date(2026, 1, 1), quantity, 20),
+        _txn("AAPL", TransCode.SELL, sale, quantity, price),
+        _txn("AAPL", TransCode.BUY, date(2026, 6, 8), quantity, 16),
+    ]
+    events = [
+        _event(
+            "AAPL",
+            sale,
+            quantity,
+            price * quantity + 500,
+            price * quantity,
+            date(2026, 1, 1),
+        )
+    ]
+    row = _row(
+        status="1099_only",
+        symbol="AAPL",
+        quantity=quantity,
+        export_trade_date=None,
+        date_sold_1099=sale,
+        proceeds_1099=price * quantity,
+        wash_sale_disallowed=disallowed,
+    )
+    chains = _build(
+        transactions=txns,
+        wash_sale_flags=[flag],
+        realized_events=events,
+        supplemental=_supplemental(2026),
+        lot_match_report=_report(row, bucket="unmatched"),
+    )
+    assert len(chains) == 1
+    assert chains[0].reconcile_status == "matches"
+    assert chains[0].hops[0].form_1099_wash == pytest.approx(disallowed)
+    assert all(chain.reconcile_status != "on_1099_only" for chain in chains)
+
+    csv_only = _build(
+        transactions=txns,
+        wash_sale_flags=[flag],
+        realized_events=events,
+        supplemental=_supplemental(2026),
+        lot_match_report=_report(
+            _row(
+                status="csv_only",
+                symbol="AAPL",
+                quantity=quantity,
+                export_trade_date=sale,
+                date_sold_1099=None,
+                proceeds_1099=price * quantity,
+                wash_sale_disallowed=0,
+            ),
+            bucket="unmatched",
+        ),
+    )
+    assert len(csv_only) == 1
+    assert csv_only[0].reconcile_status == "not_on_1099"
+    assert csv_only[0].hops[0].form_1099_wash is None
+
+
+def test_buys_before_the_sale_are_not_called_back():
+    """A buy before the sale is not "back". The later buy is."""
+    txns = [
+        _txn("AAPL", TransCode.BUY, date(2026, 1, 1), 20, 100),
+        _txn("AAPL", TransCode.BUY, date(2026, 5, 20), 10, 90),
+        _txn("AAPL", TransCode.SELL, date(2026, 6, 1), 20, 80),
+        _txn("AAPL", TransCode.BUY, date(2026, 6, 5), 10, 85),
+    ]
+    flags = detect_wash_sales(txns, tax_year=2026)
+    chains = _build(transactions=txns, wash_sale_flags=flags)
+    assert len(chains) == 1
+    assert chains[0].plain_english == (
+        "You bought 10 AAPL on May 20, sold 20 at a $400 loss on Jun 1, "
+        "and bought 10 back on Jun 5, so $400 moved into the new lot's basis. "
+        "No same-year 1099-B was compared for this sale. "
+        "The per-buy basis split is illustrative. "
+        "The engine's adjusted basis is the source of truth."
+    )
+
+
+def test_two_same_day_sells_within_cents_stay_unresolved():
+    """Two same-size sells that both fit the lot within CENTS are not chosen."""
+    from lot_matcher import CENTS
+
+    sale = date(2026, 6, 1)
+    near = 10.001
+    assert abs(10 * near - 100.0) <= CENTS
+    assert abs(10 * 10.0 - 100.0) <= CENTS
+    txns = [
+        _txn("AAPL", TransCode.BUY, date(2026, 1, 1), 20, 12),
+        _txn("AAPL", TransCode.SELL, sale, 10, 10.0),
+        _txn("AAPL", TransCode.SELL, sale, 10, near),
+        _txn("AAPL", TransCode.BUY, date(2026, 6, 10), 10, 11),
+    ]
+    flags = [
+        WashSaleFlag(
+            symbol="AAPL",
+            sale_date=sale,
+            sale_quantity=10,
+            sale_loss=20,
+            repurchase_date=date(2026, 6, 10),
+            repurchase_quantity=10,
+            disallowed_loss=20,
+            adjusted_cost_basis=130,
+        ),
+        WashSaleFlag(
+            symbol="AAPL",
+            sale_date=sale,
+            sale_quantity=10,
+            sale_loss=20,
+            repurchase_date=date(2026, 6, 10),
+            repurchase_quantity=10,
+            disallowed_loss=20,
+            adjusted_cost_basis=130,
+        ),
+    ]
+    chains = _build(
+        transactions=txns,
+        wash_sale_flags=flags,
+        realized_events=[
+            _event("AAPL", sale, 10, 120, 100.0, date(2026, 1, 1)),
+        ],
+    )
+    assert len(chains) == 2
+    assert all(len(chain.hops) == 1 for chain in chains)
+    for chain in chains:
+        hop = chain.hops[0]
+        assert hop.not_compared_reason == "unidentified"
+        assert hop.reconcile_status == "not_compared"
+        assert hop.proceeds is None
+        assert hop.cost_basis is None
+        assert hop.replacement_buys == []
+        assert hop.plain_english == (
+            "This sale could not be tied to one trade's proceeds and loss, "
+            "so it was not compared."
+        )
+
+
+def test_zero_or_missing_1099_quantity_is_not_compared():
+    """A 1099 lot with no share count does not allocate buys or invent basis."""
+    from wash_sale_chain import _repurchase_cap
+
+    sale = date(2026, 6, 1)
+    window_buy = _txn("IBM", TransCode.BUY, date(2026, 6, 5), 10, 12)
+    assert _repurchase_cap([window_buy], 0) is None
+    assert _repurchase_cap([window_buy], None) is None
+    assert _repurchase_cap([window_buy], 10) == pytest.approx(10)
+
+    def _unknown_row(**overrides) -> LotMatchRow:
+        payload = dict(
+            status="1099_only",
+            symbol="IBM",
+            description="",
+            quantity=0,
+            date_sold_1099=sale,
+            export_trade_date=sale,
+            proceeds_1099=100.0,
+            proceeds_export=0.0,
+            cost_basis_1099=180.0,
+            cost_basis_export=0.0,
+            wash_sale_disallowed=25.0,
+        )
+        payload.update(overrides)
+        return LotMatchRow.model_construct(**payload)
+
+    for row in (_unknown_row(quantity=0), _unknown_row(quantity=None)):
+        chains = _build(
+            transactions=[window_buy],
+            supplemental=_supplemental(2026),
+            lot_match_report=_report(row, bucket="unmatched"),
+            tax_lots=[_lot("IBM", 10, 12, date(2026, 6, 5), wash=25)],
+        )
+        assert len(chains) == 1
+        hop = chains[0].hops[0]
+        assert chains[0].reconcile_status == "not_compared"
+        assert hop.not_compared_reason == "unknown"
+        assert hop.replacement_buys == []
+        assert hop.cost_basis is None
+        assert hop.proceeds is None
+        assert hop.open_lot_total_cost_basis is None
+        assert hop.engine_adjusted_cost_basis is None
+        assert hop.form_1099_wash == pytest.approx(25)
+        assert hop.plain_english == (
+            "This 1099 sale has no quantity, so it was not compared."
+        )
+        assert "You sold" not in hop.plain_english
+        assert all(buy.explained_basis == 0 for buy in hop.replacement_buys)

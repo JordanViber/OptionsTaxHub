@@ -894,4 +894,53 @@ describe("WashSaleChainPanel", () => {
       screen.queryByText("No replacement buy in this Robinhood export."),
     ).not.toBeInTheDocument();
   });
+
+  it("hides basis when a 1099 quantity is unknown", () => {
+    const copy = "This 1099 sale has no quantity, so it was not compared.";
+    render(
+      <WashSaleChainPanel
+        chains={[
+          chain({
+            chain_id: "IBM:2026-06-01:0:r0",
+            symbol: "IBM",
+            reconcile_status: "not_compared",
+            plain_english: copy,
+            hops: [
+              hop({
+                hop_id: "IBM:2026-06-01:0:r0",
+                symbol: "IBM",
+                sale_date: "2026-06-01",
+                sale_quantity: 0,
+                proceeds: null,
+                cost_basis: null,
+                loss: 0,
+                replacement_buys: [],
+                disallowed_loss: 0,
+                engine_disallowed_loss: null,
+                form_1099_wash: 25,
+                engine_adjusted_cost_basis: null,
+                open_lot_total_cost_basis: null,
+                plain_english: copy,
+                reconcile_status: "not_compared",
+                not_compared_reason: "unknown",
+              }),
+            ],
+          }),
+        ]}
+      />,
+    );
+    fireEvent.click(
+      screen.getByTestId("wash-sale-chain-open-IBM:2026-06-01:0:r0"),
+    );
+    expect(screen.getAllByText(copy).length).toBeGreaterThan(0);
+    expect(screen.queryByText("Basis")).not.toBeInTheDocument();
+    expect(screen.queryByText("Loss")).not.toBeInTheDocument();
+    expect(screen.queryByText("Disallowed")).not.toBeInTheDocument();
+    expect(screen.queryByText("explained basis")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("No replacement buy in this Robinhood export."),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("1099 wash adjustment")).toBeInTheDocument();
+    expect(screen.getByText("$25.00")).toBeInTheDocument();
+  });
 });
