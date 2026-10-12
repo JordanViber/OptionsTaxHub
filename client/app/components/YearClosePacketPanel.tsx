@@ -44,6 +44,26 @@ function isPacketAlreadyPaidExistingDetail(detail: string): boolean {
   return /already paid/i.test(detail) && /download your existing packet/i.test(detail);
 }
 
+function isPacketSameYearDuplicateDetail(detail: string): boolean {
+  return (
+    /PACKET_GRANT_SAME_YEAR_DUPLICATE/.test(detail) &&
+    /another checkout session/i.test(detail) &&
+    /recorded for a refund/i.test(detail)
+  );
+}
+
+function isPacketConflictReceiptDetail(detail: string): boolean {
+  return /already recorded as a refund/i.test(detail) && /does not grant a packet/i.test(detail);
+}
+
+function isPacketExistingDownloadDetail(detail: string): boolean {
+  return (
+    isPacketAlreadyPaidExistingDetail(detail) ||
+    isPacketSameYearDuplicateDetail(detail) ||
+    isPacketConflictReceiptDetail(detail)
+  );
+}
+
 function isPacketFinalizingDetail(detail: string): boolean {
   return /still being finalized/i.test(detail) && /confirming the payment/i.test(detail);
 }
@@ -340,7 +360,7 @@ function YearClosePacketPanelForAnalysis({
         const missingSource =
           response.status === 409 && isPacketMissingSourceDetail(detail);
         alreadyPaidExisting =
-          response.status === 409 && isPacketAlreadyPaidExistingDetail(detail);
+          response.status === 409 && isPacketExistingDownloadDetail(detail);
         finalizing = response.status === 409 && isPacketFinalizingDetail(detail);
         retryableFailure =
           !missingSource &&

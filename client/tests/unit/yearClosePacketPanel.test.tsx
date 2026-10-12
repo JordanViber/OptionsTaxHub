@@ -969,9 +969,7 @@ describe("YearClosePacketPanel", () => {
     expect(window.location.search).toContain("packet_analysis=analysis-2");
   });
 
-  it("offers a session-less download instead of Pay when the packet is already paid", async () => {
-    const detail =
-      "This tax year is already paid. This extra charge was recorded for a refund. Download your existing packet.";
+  async function expectExistingPacketDownload(detail: string) {
     window.history.replaceState(
       null,
       "",
@@ -994,7 +992,6 @@ describe("YearClosePacketPanel", () => {
     await waitFor(() => {
       expect(screen.getByRole("alert")).toHaveTextContent(detail);
     });
-    expect(screen.getByRole("alert")).toHaveTextContent(/recorded for a refund/i);
     expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeDisabled();
     expect(screen.getByRole("button", { name: /Download/i })).toBeEnabled();
     expect(store["optionstaxhub-packet-pending:analysis-1"]).toBeUndefined();
@@ -1013,6 +1010,24 @@ describe("YearClosePacketPanel", () => {
     expect(downloadUrl).toContain("analysis_id=analysis-1");
     expect(downloadUrl).not.toContain("session_id=");
     expect(window.location.href).not.toContain("checkout.stripe.com");
+  }
+
+  it("offers a session-less download instead of Pay when the packet is already paid", async () => {
+    await expectExistingPacketDownload(
+      "This tax year is already paid. This extra charge was recorded for a refund. Download your existing packet.",
+    );
+  });
+
+  it("offers a session-less download for a same-year duplicate charge", async () => {
+    await expectExistingPacketDownload(
+      "PACKET_GRANT_SAME_YEAR_DUPLICATE: this tax year was already paid under another checkout session. The new charge is recorded for a refund.",
+    );
+  });
+
+  it("offers a session-less download when the webhook lands first with a conflict receipt", async () => {
+    await expectExistingPacketDownload(
+      "This checkout session was already recorded as a refund and does not grant a packet.",
+    );
   });
 
   it("retries confirm and does not open Stripe while the packet is still being finalized", async () => {

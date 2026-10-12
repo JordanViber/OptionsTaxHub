@@ -2593,18 +2593,48 @@ def _snapshot_is_paid_full(snapshot) -> bool:
     return isinstance(payload, dict) and packet_payload_rows_match_counts(payload)
 
 
-def _release_nonconflict_entitlement_for_receipt(analysis_id, user_id, tax_year, session_id):
-    """Drop a non-conflict entitlement so a ``conflict:`` receipt can occupy its key.
+def _other_session_owns_paid_snapshot(snapshot, session_id) -> bool:
+    """True when ``paid_at`` is set and a different ``cs_`` owns the row."""
+    if not isinstance(snapshot, dict) or not snapshot.get("paid_at"):
+        return False
+    owner = snapshot.get("packet_session_id")
+    return isinstance(owner, str) and owner.startswith("cs_") and owner != session_id
 
-    The entitlement primary key is (user, tax year, ``cs_``). This losing
-    session already holds a normal row there, and ``save_packet_conflict_receipt``
-    will not rewrite it. A ``conflict:{analysis}`` row on that key is left in
-    place. False when the database client is missing or the delete fails.
+
+def _sticky_conflict_receipt_detail(analysis_id, user_id, tax_year) -> str:
+    """409 text for a stored ``conflict:`` receipt.
+
+    A paid full snapshot for this user and year uses the download-existing
+    sentence. A year-conflict receipt, a teaser, and a snapshot read that
+    fails keep the does-not-grant sentence.
+    """
+    parsed = _packet_result_tax_year({"analysis_tax_year": tax_year})
+    if parsed is None:
+        return PACKET_CONFLICT_RECEIPT_DETAIL
+    snapshot, ok = get_packet_snapshot(analysis_id, user_id, tax_year=parsed)
+    if ok and _snapshot_is_paid_full(snapshot):
+        return PACKET_ALREADY_PAID_EXISTING_DETAIL
+    return PACKET_CONFLICT_RECEIPT_DETAIL
+
+
+def _store_losing_session_refund_receipt(analysis_id, user_id, tax_year, session_id):
+    """Store one refund receipt for a second charge against an already-paid year.
+
+    The entitlement primary key is (user, tax year, ``cs_``). ``analysis_id``
+    is not part of that key, so one upsert rewrites the losing session's
+    normal row into ``conflict:{analysis}`` in place. A failed upsert leaves
+    the previous row. A later read of the receipt does not log again. False
+    when the receipt is not stored.
     """
     import db as packet_db
 
     receipt_id = packet_db.conflict_receipt_analysis_id(analysis_id)
-    if not receipt_id or not user_id or not isinstance(session_id, str) or not session_id.startswith("cs_"):
+    if (
+        not receipt_id
+        or not user_id
+        or not isinstance(session_id, str)
+        or not session_id.startswith("cs_")
+    ):
         return False
     try:
         year = int(tax_year)
@@ -2613,50 +2643,50 @@ def _release_nonconflict_entitlement_for_receipt(analysis_id, user_id, tax_year,
     client = packet_db.get_supabase()
     if client is None:
         return False
+    current, current_ok = packet_db.lookup_packet_session_entitlement(
+        user_id,
+        year,
+        session_id,
+        client=client,
+    )
+    if not current_ok:
+        return False
+    if isinstance(current, dict) and _is_conflict_analysis_id(current.get("analysis_id")):
+        return True
+    row = {
+        "analysis_id": receipt_id,
+        "user_id": user_id,
+        "tax_year": year,
+        "packet_session_id": session_id,
+    }
     try:
-        (
+        result = (
             client.table("year_close_packet_entitlements")
-            .delete()
-            .eq("user_id", user_id)
-            .eq("tax_year", year)
-            .eq("packet_session_id", session_id)
-            .neq("analysis_id", receipt_id)
+            .upsert(row, on_conflict="user_id,tax_year,packet_session_id")
             .execute()
         )
     except Exception as exc:
         logger.error(
-            "Failed to release packet entitlement before refund receipt %s: %s",
+            "Failed to store packet refund receipt %s: %s",
             session_id,
             exc,
         )
         return False
-    return True
-
-
-def _store_losing_session_refund_receipt(analysis_id, user_id, tax_year, session_id):
-    """Store one refund receipt for a second charge against an already-paid year.
-
-    The receipt row is ``conflict:{analysis}`` on this ``cs_``. Releasing the
-    normal entitlement first lets the insert succeed. A later read of that
-    same receipt does not log again. False when the receipt is not stored.
-    """
-    if not _release_nonconflict_entitlement_for_receipt(
-        analysis_id, user_id, tax_year, session_id
-    ):
+    data = getattr(result, "data", None)
+    stored = data[0] if isinstance(data, list) and data else None
+    if not isinstance(stored, dict) or not _is_conflict_analysis_id(stored.get("analysis_id")):
         return False
-    try:
-        year = int(tax_year)
-    except (TypeError, ValueError):
-        return False
-    receipt = save_packet_conflict_receipt(
-        analysis_id,
-        user_id,
-        year,
+    logger.error(
+        "%s session_id=%s user_id=%s analysis_id=%s "
+        "stored_tax_year=%s requested_tax_year=%s",
+        PACKET_GRANT_ALREADY_PAID_EXISTING,
         session_id,
-        paid_tax_year=year,
-        log_event=PACKET_GRANT_ALREADY_PAID_EXISTING,
+        user_id,
+        analysis_id,
+        year,
+        year,
     )
-    return isinstance(receipt, dict) and _is_conflict_analysis_id(receipt.get("analysis_id"))
+    return True
 
 
 def _already_owned_session_grant(analysis_id, user_id, tax_year, session_id):
@@ -3162,6 +3192,16 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
         )
         if not latest_ok:
             return None
+        # The conditional paid update matched nothing. Another cs_ may have
+        # stamped this row between the read and the write. Do not repair over
+        # that owner or insert a normal entitlement for the loser.
+        if _other_session_owns_paid_snapshot(latest_snapshot, session_id):
+            return _same_year_duplicate_grant(
+                session_analysis_id,
+                session_user_id,
+                tax_year,
+                session_id,
+            )
         history_row, history_ok = lookup_analysis_for_entitlement(
             session_analysis_id,
             session_user_id,
@@ -3210,7 +3250,19 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
     )
     if not stored_ok:
         return None
-    if not _snapshot_is_paid_full(stored_snapshot):
+    # Grant only a paid full row owned by this session. A different cs_ that
+    # won the stamp is a second charge: one conflict receipt, then 409.
+    if _other_session_owns_paid_snapshot(stored_snapshot, session_id):
+        return _same_year_duplicate_grant(
+            session_analysis_id,
+            session_user_id,
+            tax_year,
+            session_id,
+        )
+    if (
+        not _snapshot_is_paid_full(stored_snapshot)
+        or stored_snapshot.get("packet_session_id") != session_id
+    ):
         return PACKET_GRANT_MISSING_SOURCE
     # The independent entitlement/snapshot row is authoritative. History flags
     # help legacy clients but a deleted row or history outage cannot revoke a
@@ -3252,7 +3304,14 @@ def _grant_packet_from_session(session, analysis_id: str, user_id: str = "") -> 
     if granted == PACKET_GRANT_SAME_YEAR_DUPLICATE:
         raise HTTPException(status_code=409, detail=PACKET_SAME_YEAR_DUPLICATE_DETAIL)
     if granted == PACKET_GRANT_CONFLICT_RECEIPT:
-        raise HTTPException(status_code=409, detail=PACKET_CONFLICT_RECEIPT_DETAIL)
+        raise HTTPException(
+            status_code=409,
+            detail=_sticky_conflict_receipt_detail(
+                analysis_id,
+                user_id or packet_user_id_from_session(session) or "",
+                _session_metadata(session).get("tax_year"),
+            ),
+        )
     if granted == PACKET_GRANT_YEAR_UNKNOWN:
         raise HTTPException(
             status_code=409,

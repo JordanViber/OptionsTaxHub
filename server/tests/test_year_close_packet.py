@@ -654,6 +654,7 @@ class _YearScopedSnapshotClient:
     def __init__(self, rows):
         self.rows = [dict(row) for row in rows]
         self.entitlements = []
+        self.entitlement_writes = []
 
     def rpc(self, *_args, **_kwargs):
         raise RuntimeError("cleanup unavailable")
@@ -713,6 +714,12 @@ class _YearScopedSnapshotQuery:
         self.payload = dict(row)
         return self
 
+    def upsert(self, row, on_conflict=None, **_kwargs):
+        self.op = "upsert"
+        self.payload = dict(row)
+        self.on_conflict = on_conflict
+        return self
+
     def _matches(self, row):
         for column, value in self.eqs:
             if row.get(column) != value:
@@ -733,12 +740,33 @@ class _YearScopedSnapshotQuery:
         return self
 
     def execute(self):
+        if self.op in {"insert", "upsert"} and (
+            self.rows is self.client.entitlements
+            and getattr(self.client, "fail_entitlement_insert", False)
+        ):
+            raise RuntimeError("entitlement insert failed")
+        if self.op == "upsert":
+            conflict_cols = [
+                part.strip()
+                for part in str(
+                    getattr(self, "on_conflict", None) or "user_id,tax_year,packet_session_id"
+                ).split(",")
+                if part.strip()
+            ]
+            stored = dict(self.payload)
+            if self.rows is self.client.entitlements:
+                self.client.entitlement_writes.append({
+                    "op": "upsert",
+                    "on_conflict": getattr(self, "on_conflict", None),
+                    "row": dict(stored),
+                })
+            for row in self.rows:
+                if all(row.get(column) == stored.get(column) for column in conflict_cols):
+                    row.update(stored)
+                    return SimpleNamespace(data=[dict(row)])
+            self.rows.append(stored)
+            return SimpleNamespace(data=[dict(stored)])
         if self.op == "insert":
-            if (
-                self.rows is self.client.entitlements
-                and getattr(self.client, "fail_entitlement_insert", False)
-            ):
-                raise RuntimeError("entitlement insert failed")
             stored = dict(self.payload)
             self.rows.append(stored)
             return SimpleNamespace(data=[stored])
@@ -3514,7 +3542,11 @@ def test_legacy_session_without_metadata_year_grants_history_year_when_unpaid(mo
 
 
 def test_legacy_grant_accepts_case_variant_without_restamp(monkeypatch):
-    """One paid snapshot names the year. An already-paid row is not restamped."""
+    """One paid snapshot names the year. An already-paid row is not restamped.
+
+    The year resolves, but this cs_ does not own that paid row, so confirm is
+    the duplicate 409 and the only entitlement is the refund receipt.
+    """
     _test_stripe_env(monkeypatch)
     user = "test-user-123"
     canonical = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
@@ -3547,13 +3579,21 @@ def test_legacy_grant_accepts_case_variant_without_restamp(monkeypatch):
         json={"session_id": session.id, "analysis_id": canonical.upper()},
     )
 
-    assert response.status_code == 200, response.text
+    assert response.status_code == 409, response.text
+    assert response.json().get("paid") is not True
+    assert response.json()["detail"] == main.PACKET_SAME_YEAR_DUPLICATE_DETAIL
     assert "PACKET_GRANT_YEAR_UNKNOWN" not in response.text
     assert list(_FAKE_PACKET_SNAPSHOTS) == [(user, canonical)]
     row = _FAKE_PACKET_SNAPSHOTS[(user, canonical)]
     assert row["packet_session_id"] == "cs_other_year"
     assert row["tax_year"] == 2024
     assert row["paid_at"] == "2026-01-01T00:00:00+00:00"
+    receipt = _FAKE_PACKET_ENTITLEMENTS[(user, 2024, session.id)]
+    assert receipt["analysis_id"] == f"conflict:{canonical}"
+    assert all(
+        str(item.get("analysis_id") or "").startswith("conflict:")
+        for item in _FAKE_PACKET_ENTITLEMENTS.values()
+    )
 
 
 def test_legacy_grant_ambiguous_year_logs_and_confirm_409(monkeypatch, caplog):
@@ -4451,6 +4491,11 @@ def _wire_already_paid_existing_loser(monkeypatch):
         "packet_session_id": "cs_other",
     })
     remember_analysis(aid, user, payload)
+    monkeypatch.setattr(
+        main,
+        "lookup_packet_session_entitlement",
+        db.lookup_packet_session_entitlement,
+    )
     sessions = {
         session_id: _stripe_object_session(
             id=session_id,
@@ -4475,8 +4520,9 @@ def test_already_granted_confirm_then_download_stays_on_owner_session(monkeypatc
     """This cs_ already owns a normal entitlement. The paid full row belongs to another session.
 
     That losing charge is recorded once as conflict:{analysis} with one refund
-    ERROR. A repeat confirm and the webhook do not insert or log again. Confirm
-    stays 409 with the already-paid detail. Download for this cs_ is 403. A
+    ERROR. The real session lookup sees that receipt, so a repeat confirm and
+    the webhook do not insert or log again. Both confirms stay 409 with the
+    same download-existing sentence. Download for this cs_ is 403. A
     session-less GET returns the PDF. The owner session still downloads.
     """
     snapshot_client, aid, user, payload, sessions = _wire_already_paid_existing_loser(
@@ -4526,10 +4572,18 @@ def test_already_granted_confirm_then_download_stays_on_owner_session(monkeypatc
         )
         assert repeat.status_code == 409, repeat.text
         assert repeat.json().get("paid") is not True
-        assert repeat.json()["detail"] == main.PACKET_SAME_YEAR_DUPLICATE_DETAIL
+        assert repeat.json()["detail"] == confirm.json()["detail"]
+        assert repeat.json()["detail"] == (
+            "This tax year is already paid. This extra charge was recorded for a refund. "
+            "Download your existing packet."
+        )
         assert len(snapshot_client.entitlements) == 1
         assert snapshot_client.entitlements[0]["analysis_id"] == f"conflict:{aid}"
         assert len(_already_paid_existing_refund_logs(caplog, "cs_other")) == 1
+        assert snapshot_client.entitlement_writes[0]["on_conflict"] == (
+            "user_id,tax_year,packet_session_id"
+        )
+        assert snapshot_client.entitlement_writes[0]["row"]["analysis_id"] == f"conflict:{aid}"
 
         webhook = _post_signed_webhook(
             _packet_checkout_event(
@@ -4549,7 +4603,7 @@ def test_already_granted_confirm_then_download_stays_on_owner_session(monkeypatc
     assert snapshot_client.rows[0]["packet_session_id"] == "cs_owner"
     assert snapshot_client.rows[0]["paid_at"] == "2026-01-01T00:00:00+00:00"
     granted = main._persist_packet_grant(sessions["cs_other"], aid, user)
-    assert granted == main.PACKET_GRANT_SAME_YEAR_DUPLICATE
+    assert granted == main.PACKET_GRANT_CONFLICT_RECEIPT
     assert len(snapshot_client.entitlements) == 1
     assert len(_already_paid_existing_refund_logs(caplog, "cs_other")) == 1
 
@@ -4580,10 +4634,11 @@ def test_already_granted_confirm_then_download_stays_on_owner_session(monkeypatc
 
 
 def test_already_paid_existing_receipt_save_failure_is_retryable(monkeypatch, caplog):
-    """A failed conflict insert does not return the already-paid sentinel.
+    """A failed receipt upsert does not return the already-paid sentinel.
 
-    Confirm is 503 and the webhook is 500 so the caller retries. No refund
-    ERROR is logged and no conflict: row is stored.
+    The normal entitlement stays on this cs_. Confirm is 503 and the webhook
+    is 500 so the caller retries. No refund ERROR is logged and no conflict:
+    row replaces the grant.
     """
     snapshot_client, aid, _user, _payload, sessions = _wire_already_paid_existing_loser(
         monkeypatch
@@ -4609,34 +4664,361 @@ def test_already_paid_existing_receipt_save_failure_is_retryable(monkeypatch, ca
     assert webhook.status_code == 500, webhook.text
     assert webhook.json().get("granted") is not True
     assert _conflict_analysis_ids(snapshot_client) == []
+    assert len(snapshot_client.entitlements) == 1
+    assert snapshot_client.entitlements[0]["analysis_id"] == aid
+    assert snapshot_client.entitlements[0]["packet_session_id"] == "cs_other"
+    assert snapshot_client.entitlement_writes == []
     assert _already_paid_existing_refund_logs(caplog, "cs_other") == []
     assert main.PACKET_GRANT_ALREADY_PAID_EXISTING not in caplog.text
 
 
-def test_losing_session_refund_receipt_refuses_a_missing_client(monkeypatch):
-    """No database client and a failed delete are retryable, not a 409."""
+def test_failed_receipt_upsert_keeps_the_grant_and_retry_converges(monkeypatch, caplog):
+    """The upsert is one write on (user, year, cs_). A failure leaves that row.
+
+    There is no following delete. Retry converts the same row into the
+    conflict receipt, logs one refund ERROR, and a repeat confirm returns the
+    same download-existing 409.
+    """
+    snapshot_client, aid, user, _payload, _sessions = _wire_already_paid_existing_loser(
+        monkeypatch
+    )
+    snapshot_client.fail_entitlement_insert = True
+    with caplog.at_level(logging.ERROR):
+        failed = client.post(
+            "/api/year-close-packet/confirm",
+            json={"session_id": "cs_other", "analysis_id": aid},
+        )
+        assert failed.status_code == 503, failed.text
+        assert failed.json().get("paid") is not True
+        assert snapshot_client.entitlements == [{
+            "analysis_id": aid,
+            "user_id": user,
+            "tax_year": 2025,
+            "packet_session_id": "cs_other",
+        }]
+        assert _already_paid_existing_refund_logs(caplog, "cs_other") == []
+
+        snapshot_client.fail_entitlement_insert = False
+        recovered = client.post(
+            "/api/year-close-packet/confirm",
+            json={"session_id": "cs_other", "analysis_id": aid},
+        )
+        assert recovered.status_code == 409, recovered.text
+        assert recovered.json().get("paid") is not True
+        assert recovered.json()["detail"] == main.PACKET_ALREADY_PAID_EXISTING_DETAIL
+        assert len(snapshot_client.entitlements) == 1
+        assert snapshot_client.entitlements[0]["analysis_id"] == f"conflict:{aid}"
+        assert snapshot_client.entitlements[0]["packet_session_id"] == "cs_other"
+        assert len(_already_paid_existing_refund_logs(caplog, "cs_other")) == 1
+        assert len(snapshot_client.entitlement_writes) == 1
+
+        repeat = client.post(
+            "/api/year-close-packet/confirm",
+            json={"session_id": "cs_other", "analysis_id": aid},
+        )
+    assert repeat.status_code == 409, repeat.text
+    assert repeat.json()["detail"] == recovered.json()["detail"]
+    assert repeat.json().get("paid") is not True
+    assert len(snapshot_client.entitlements) == 1
+    assert snapshot_client.entitlements[0]["analysis_id"] == f"conflict:{aid}"
+    assert len(_already_paid_existing_refund_logs(caplog, "cs_other")) == 1
+    assert len(snapshot_client.entitlement_writes) == 1
+
+
+def test_mark_false_loser_gets_conflict_receipt_not_a_grant(monkeypatch, caplog):
+    """Two sessions read one unpaid full row. The loser's paid update matches nothing.
+
+    ``mark_packet_snapshot_paid`` returns False. The loser is not granted: one
+    conflict receipt, no normal entitlement, and confirm is the duplicate 409.
+    """
+    _test_stripe_env(monkeypatch)
+    user = "test-user-123"
+    aid = "analysis-mark-false-race"
+    sellable = {
+        "analysis_id": aid,
+        "analysis_tax_year": 2025,
+        "tax_profile": {"tax_year": 2025, "filing_status": "single"},
+        "marker": "RACE2025",
+    }
+    assert packet_payload_rows_match_counts(sellable) is True
+    _seed_raw_history(aid, user, sellable)
+    snapshot_client = _wire_real_snapshot_client(
+        monkeypatch,
+        [_snapshot_row(
+            aid, user, 2025, sellable,
+            session_id=None, paid_at=None, expires_at="2099-01-01T00:00:00+00:00",
+        )],
+    )
+    monkeypatch.setattr(main, "save_packet_entitlement", db.save_packet_entitlement)
+    monkeypatch.setattr(
+        main,
+        "lookup_packet_session_entitlement",
+        db.lookup_packet_session_entitlement,
+    )
+    loser_session = _stripe_object_session(
+        id="cs_race_loser",
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": aid,
+            "user_id": user,
+            "tax_year": "2025",
+        },
+    )
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda *_args, **_kwargs: loser_session,
+    )
+    armed = {"open": True}
+    original_execute = _YearScopedSnapshotQuery.execute
+
+    def racing_execute(self):
+        if (
+            armed["open"]
+            and self.op == "update"
+            and self.rows is snapshot_client.rows
+            and isinstance(self.payload, dict)
+            and self.payload.get("packet_session_id") == "cs_race_loser"
+        ):
+            armed["open"] = False
+            for row in snapshot_client.rows:
+                row["paid_at"] = "2026-01-02T00:00:00+00:00"
+                row["packet_session_id"] = "cs_race_winner"
+                row["expires_at"] = None
+        return original_execute(self)
+
+    monkeypatch.setattr(_YearScopedSnapshotQuery, "execute", racing_execute)
+    with caplog.at_level(logging.ERROR):
+        confirm = client.post(
+            "/api/year-close-packet/confirm",
+            json={"session_id": "cs_race_loser", "analysis_id": aid},
+        )
+        repeat = client.post(
+            "/api/year-close-packet/confirm",
+            json={"session_id": "cs_race_loser", "analysis_id": aid},
+        )
+    assert armed["open"] is False
+    assert confirm.status_code == 409, confirm.text
+    assert confirm.json().get("paid") is not True
+    assert confirm.json()["detail"] == main.PACKET_SAME_YEAR_DUPLICATE_DETAIL
+    assert repeat.status_code == 409, repeat.text
+    assert repeat.json().get("paid") is not True
+    assert repeat.json()["detail"] == (
+        "This tax year is already paid. This extra charge was recorded for a refund. "
+        "Download your existing packet."
+    )
+    assert snapshot_client.rows[0]["packet_session_id"] == "cs_race_winner"
+    assert snapshot_client.rows[0]["paid_at"] == "2026-01-02T00:00:00+00:00"
+    assert packet_payload_rows_match_counts(snapshot_client.rows[0]["packet_payload"]) is True
+    normal = [
+        row for row in snapshot_client.entitlements
+        if not str(row.get("analysis_id") or "").startswith("conflict:")
+    ]
+    receipts = [
+        row for row in snapshot_client.entitlements
+        if str(row.get("analysis_id") or "").startswith("conflict:")
+    ]
+    assert normal == []
+    assert len(receipts) == 1
+    assert receipts[0]["analysis_id"] == f"conflict:{aid}"
+    assert receipts[0]["packet_session_id"] == "cs_race_loser"
+    assert receipts[0]["user_id"] == user
+    assert receipts[0]["tax_year"] == 2025
+    error_lines = [
+        record.message
+        for record in caplog.records
+        if record.levelno >= logging.ERROR and "cs_race_loser" in record.message
+    ]
+    assert len(error_lines) == 1
+    assert "PACKET_GRANT_SAME_YEAR_DUPLICATE" in error_lines[0]
+
+
+def test_truthy_mark_still_refuses_a_row_owned_by_another_session(monkeypatch, caplog):
+    """A truthy mark is not a grant when the paid full row belongs to another cs_.
+
+    The final re-read classifies the owner. The loser ends with a conflict
+    receipt, not a normal entitlement, and confirm does not report success.
+    """
+    _test_stripe_env(monkeypatch)
+    user = "test-user-123"
+    aid = "analysis-truthy-mark-other-owner"
+    sellable = {
+        "analysis_id": aid,
+        "analysis_tax_year": 2025,
+        "tax_profile": {"tax_year": 2025, "filing_status": "single"},
+        "marker": "OTHEROWNER",
+    }
+    assert packet_payload_rows_match_counts(sellable) is True
+    _seed_raw_history(aid, user, sellable)
+    snapshot_client = _wire_real_snapshot_client(
+        monkeypatch,
+        [_snapshot_row(
+            aid, user, 2025, sellable,
+            session_id="cs_owner", paid_at="2026-01-01T00:00:00+00:00",
+        )],
+    )
+    monkeypatch.setattr(main, "save_packet_entitlement", db.save_packet_entitlement)
+    monkeypatch.setattr(
+        main,
+        "lookup_packet_session_entitlement",
+        db.lookup_packet_session_entitlement,
+    )
+    monkeypatch.setattr(main, "mark_packet_snapshot_paid", lambda *_args, **_kwargs: True)
+    loser_session = _stripe_object_session(
+        id="cs_truthy_loser",
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": aid,
+            "user_id": user,
+            "tax_year": "2025",
+        },
+    )
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda *_args, **_kwargs: loser_session,
+    )
+    with caplog.at_level(logging.ERROR):
+        granted = main._persist_packet_grant(loser_session, aid, user)
+        confirm = client.post(
+            "/api/year-close-packet/confirm",
+            json={"session_id": "cs_truthy_loser", "analysis_id": aid},
+        )
+    assert granted == main.PACKET_GRANT_ALREADY_PAID_EXISTING
+    assert confirm.status_code == 409, confirm.text
+    assert confirm.json().get("paid") is not True
+    assert confirm.json()["detail"] == main.PACKET_ALREADY_PAID_EXISTING_DETAIL
+    assert snapshot_client.rows[0]["packet_session_id"] == "cs_owner"
+    assert len(snapshot_client.entitlements) == 1
+    assert snapshot_client.entitlements[0]["analysis_id"] == f"conflict:{aid}"
+    assert snapshot_client.entitlements[0]["packet_session_id"] == "cs_truthy_loser"
+    assert len(_already_paid_existing_refund_logs(caplog, "cs_truthy_loser")) == 1
+    assert "PACKET_GRANT_SAME_YEAR_DUPLICATE" not in caplog.text
+
+
+def test_paid_snapshot_owner_and_sticky_receipt_detail(monkeypatch):
+    """Owner classification and the sticky 409 sentence stay exact."""
+    assert main._other_session_owns_paid_snapshot(None, "cs_a") is False
+    assert main._other_session_owns_paid_snapshot(
+        {"paid_at": None, "packet_session_id": "cs_b"},
+        "cs_a",
+    ) is False
+    assert main._other_session_owns_paid_snapshot(
+        {"paid_at": "t", "packet_session_id": "cs_a"},
+        "cs_a",
+    ) is False
+    assert main._other_session_owns_paid_snapshot(
+        {"paid_at": "t", "packet_session_id": "pi_b"},
+        "cs_a",
+    ) is False
+    assert main._other_session_owns_paid_snapshot(
+        {"paid_at": "t", "packet_session_id": "cs_b"},
+        "cs_a",
+    ) is True
+
+    assert main._sticky_conflict_receipt_detail("aid", "user", None) == (
+        main.PACKET_CONFLICT_RECEIPT_DETAIL
+    )
+    assert main._sticky_conflict_receipt_detail("aid", "user", "nope") == (
+        main.PACKET_CONFLICT_RECEIPT_DETAIL
+    )
+    assert main._sticky_conflict_receipt_detail("aid", "user", True) == (
+        main.PACKET_CONFLICT_RECEIPT_DETAIL
+    )
+    user = "test-user-123"
+    aid = "analysis-sticky-detail"
+    _FAKE_PACKET_SNAPSHOTS[(user, aid)] = {
+        "analysis_id": aid,
+        "user_id": user,
+        "tax_year": 2025,
+        "packet_payload": {"analysis_id": aid, "marker": "full"},
+        "packet_session_id": "cs_owner",
+        "paid_at": "2026-01-01T00:00:00+00:00",
+    }
+    assert main._sticky_conflict_receipt_detail(aid, user, 2025) == (
+        main.PACKET_ALREADY_PAID_EXISTING_DETAIL
+    )
+    assert main.PACKET_ALREADY_PAID_EXISTING_DETAIL == (
+        "This tax year is already paid. This extra charge was recorded for a refund. "
+        "Download your existing packet."
+    )
+    _FAKE_PACKET_SNAPSHOTS[(user, aid)]["paid_at"] = None
+    assert main._sticky_conflict_receipt_detail(aid, user, "2025") == (
+        main.PACKET_CONFLICT_RECEIPT_DETAIL
+    )
+    _FAKE_PACKET_SNAPSHOTS[(user, aid)]["paid_at"] = "2026-01-01T00:00:00+00:00"
+    _FAKE_PACKET_SNAPSHOTS[(user, aid)]["packet_payload"] = {
+        "lot_match_report": {"matched_count": 1, "matched": []},
+    }
+    assert main._sticky_conflict_receipt_detail(aid, user, 2025) == (
+        main.PACKET_CONFLICT_RECEIPT_DETAIL
+    )
+    monkeypatch.setattr(main, "get_packet_snapshot", lambda *_args, **_kwargs: (None, False))
+    assert main._sticky_conflict_receipt_detail(aid, user, 2025) == (
+        main.PACKET_CONFLICT_RECEIPT_DETAIL
+    )
+
+
+def test_losing_session_refund_receipt_refuses_a_missing_client(monkeypatch, caplog):
+    """No database client, a failed read, and an empty upsert are retryable."""
     assert main._store_losing_session_refund_receipt("aid", "user", 2025, "cs_lost") is False
     assert main._store_losing_session_refund_receipt("", "user", 2025, "cs_lost") is False
     assert main._store_losing_session_refund_receipt("aid", "user", "nope", "cs_lost") is False
 
-    class _BoomDelete:
+    class _BoomRead:
         def table(self, _name):
             return self
 
-        def delete(self):
+        def select(self, *_args, **_kwargs):
             return self
 
         def eq(self, *_args):
             return self
 
-        def neq(self, *_args):
+        def limit(self, *_args):
             return self
 
         def execute(self):
-            raise RuntimeError("delete down")
+            raise RuntimeError("read down")
 
-    monkeypatch.setattr(db, "get_supabase", lambda: _BoomDelete())
+    monkeypatch.setattr(db, "get_supabase", lambda: _BoomRead())
+    with caplog.at_level(logging.ERROR):
+        assert main._store_losing_session_refund_receipt("aid", "user", 2025, "cs_lost") is False
+    assert main.PACKET_GRANT_ALREADY_PAID_EXISTING not in caplog.text
+
+    class _EmptyUpsert:
+        def __init__(self):
+            self.reads = 0
+
+        def table(self, _name):
+            return self
+
+        def select(self, *_args, **_kwargs):
+            return self
+
+        def eq(self, *_args):
+            return self
+
+        def limit(self, *_args):
+            return self
+
+        def upsert(self, row, on_conflict=None, **_kwargs):
+            self.payload = row
+            self.on_conflict = on_conflict
+            return self
+
+        def execute(self):
+            if not hasattr(self, "payload"):
+                self.reads += 1
+                return SimpleNamespace(data=[])
+            return SimpleNamespace(data=[])
+
+    empty = _EmptyUpsert()
+    monkeypatch.setattr(db, "get_supabase", lambda: empty)
     assert main._store_losing_session_refund_receipt("aid", "user", 2025, "cs_lost") is False
+    assert empty.on_conflict == "user_id,tax_year,packet_session_id"
+    assert empty.payload["analysis_id"] == "conflict:aid"
+    assert main.PACKET_GRANT_ALREADY_PAID_EXISTING not in caplog.text
 
 
 def test_already_owned_own_paid_full_snapshot_confirms_paid_and_downloads_pdf(
@@ -8720,7 +9102,7 @@ def test_confirm_real_entitlement_is_not_year_conflict(monkeypatch, caplog):
         )
     )
     assert sticky.status_code == 409, sticky.text
-    assert sticky.json()["detail"] == main.PACKET_CONFLICT_RECEIPT_DETAIL
+    assert sticky.json()["detail"] == main.PACKET_ALREADY_PAID_EXISTING_DETAIL
     assert sticky_webhook.status_code == 200, sticky_webhook.text
     assert sticky_webhook.json()["granted"] is False
     assert len(snapshot_client.entitlements) == 1
