@@ -60,6 +60,9 @@ import PortfolioSummaryCards from "../components/PortfolioSummaryCards";
 import PositionsTable from "../components/PositionsTable";
 import HarvestingSuggestions from "../components/HarvestingSuggestions";
 import WashSaleWarning from "../components/WashSaleWarning";
+import WashSaleChainPanel, {
+  washChainsVisible,
+} from "../components/WashSaleChainPanel";
 import TipJar from "../components/TipJar";
 import {
   useAnalyzePortfolio,
@@ -921,6 +924,12 @@ function ResultsSection({
           flags={displayedAnalysis.wash_sale_flags}
           taxYear={displayedAnalysis.tax_profile?.tax_year}
           locked={!packetUnlocked}
+        />
+      )}
+
+      {washChainsVisible(displayedAnalysis, packetUnlocked) && (
+        <WashSaleChainPanel
+          chains={displayedAnalysis.wash_sale_chains ?? []}
         />
       )}
 

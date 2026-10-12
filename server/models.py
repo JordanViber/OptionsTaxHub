@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -171,6 +171,63 @@ class WashSaleFlag(BaseModel):
     # Original lot acquisition when present. Optional so wash_sale.py can stay
     # unchanged; 1099 vs export classifies term from this vs sale/repurchase.
     purchase_date: Optional[date] = None
+
+
+WashReconcileStatus = Literal["matches", "differs", "not_on_1099", "on_1099_only"]
+
+
+class WashReplacementBuy(BaseModel):
+    """One buy the explainer lists inside the 61-day window. Display only."""
+
+    activity_date: date
+    quantity: float
+    price: float
+    cash_cost: float
+    allocated_quantity: float
+    allocated_disallowed: float
+    explained_basis: float
+
+
+class WashSaleHop(BaseModel):
+    """One loss sale in a wash chain. Does not feed tax totals."""
+
+    hop_id: str
+    hop_index: int
+    symbol: str
+    asset_type: str = "stock"
+    sale_date: date
+    sale_quantity: float
+    proceeds: float
+    cost_basis: float
+    loss: float
+    replacement_buys: list[WashReplacementBuy] = []
+    disallowed_loss: float
+    engine_disallowed_loss: Optional[float] = None
+    form_1099_wash: Optional[float] = None
+    engine_adjusted_cost_basis: Optional[float] = None
+    open_lot_total_cost_basis: Optional[float] = None
+    open_lot_wash_sale_disallowed: Optional[float] = None
+    original_purchase_date: Optional[date] = None
+    original_holding_days: Optional[int] = None
+    carryover_days: Optional[int] = None
+    tacked_acquisition_date: Optional[date] = None
+    carried_in_disallowed: float = 0.0
+    engine_sale_loss: Optional[float] = None
+    explained_loss_with_carry: Optional[float] = None
+    plain_english: str = ""
+    reconcile_status: WashReconcileStatus = "not_on_1099"
+    difference: Optional[float] = None
+
+
+class WashSaleChain(BaseModel):
+    """A wash-sale chain for the explainer. Headline is the first hop."""
+
+    chain_id: str
+    symbol: str
+    reconcile_status: WashReconcileStatus = "not_on_1099"
+    difference: Optional[float] = None
+    plain_english: str = ""
+    hops: list[WashSaleHop] = []
 
 
 # --- Tax Profile Models ---
@@ -406,6 +463,8 @@ class PortfolioAnalysis(BaseModel):
     tax_lots: list[TaxLot] = []
     suggestions: list[HarvestingSuggestion] = []
     wash_sale_flags: list[WashSaleFlag] = []
+    # Read-only explainer. Missing on older saved history; default empty.
+    wash_sale_chains: list[WashSaleChain] = []
     summary: PortfolioSummary = PortfolioSummary()
     tax_profile: Optional[TaxProfile] = None
     supplemental_1099: Optional[Supplemental1099Summary] = None

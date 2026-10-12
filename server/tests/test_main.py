@@ -3055,7 +3055,9 @@ def test_unpaid_analyze_lot_match_report_is_counts_only(monkeypatch):
     )
     public_json = response.text
     assert "matched_settlement_gap" not in public_json
-    assert "1099_only" not in public_json
+    # Lot-row status is the quoted token "1099_only". The explainer status
+    # "on_1099_only" is a different value and stays on the public analysis.
+    assert '"1099_only"' not in public_json
     assert "date_sold_1099" not in public_json
     lots = (body.get("supplemental_1099") or {}).get("lots") or []
     assert lots == []

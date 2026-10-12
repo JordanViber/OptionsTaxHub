@@ -76,6 +76,60 @@ export interface WashSaleFlag {
   purchase_date?: string | null;
 }
 
+export type WashReconcileStatus =
+  | "matches"
+  | "differs"
+  | "not_on_1099"
+  | "on_1099_only";
+
+export interface WashReplacementBuy {
+  activity_date: string;
+  quantity: number;
+  price: number;
+  cash_cost: number;
+  allocated_quantity: number;
+  allocated_disallowed: number;
+  explained_basis: number;
+}
+
+export interface WashSaleHop {
+  hop_id: string;
+  hop_index: number;
+  symbol: string;
+  asset_type?: string;
+  sale_date: string;
+  sale_quantity: number;
+  proceeds: number;
+  cost_basis: number;
+  loss: number;
+  replacement_buys: WashReplacementBuy[];
+  disallowed_loss: number;
+  engine_disallowed_loss?: number | null;
+  form_1099_wash?: number | null;
+  engine_adjusted_cost_basis?: number | null;
+  open_lot_total_cost_basis?: number | null;
+  open_lot_wash_sale_disallowed?: number | null;
+  original_purchase_date?: string | null;
+  original_holding_days?: number | null;
+  carryover_days?: number | null;
+  tacked_acquisition_date?: string | null;
+  carried_in_disallowed?: number;
+  engine_sale_loss?: number | null;
+  explained_loss_with_carry?: number | null;
+  plain_english: string;
+  reconcile_status: WashReconcileStatus;
+  difference?: number | null;
+}
+
+export interface WashSaleChain {
+  chain_id: string;
+  symbol: string;
+  reconcile_status: WashReconcileStatus;
+  difference?: number | null;
+  plain_english: string;
+  hops: WashSaleHop[];
+}
+
 // --- Tax Profile ---
 
 export interface TaxProfile {
@@ -240,6 +294,8 @@ export interface PortfolioAnalysis {
   tax_lots: TaxLot[];
   suggestions: HarvestingSuggestion[];
   wash_sale_flags: WashSaleFlag[];
+  /** Missing on analyses saved before the explainer. Hide the card then. */
+  wash_sale_chains?: WashSaleChain[];
   summary: PortfolioSummary;
   tax_profile: TaxProfile | null;
   supplemental_1099?: Supplemental1099Summary | null;

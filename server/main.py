@@ -97,6 +97,7 @@ from harvesting import (
     suppress_fractional_residual_positions,
 )
 from wash_sale import detect_wash_sales, adjust_lots_for_wash_sales
+from wash_sale_chain import build_wash_sale_chains
 from price_service import (
     fetch_current_prices,
     fetch_option_chain_window,
@@ -1595,12 +1596,24 @@ async def _run_portfolio_analysis(
                 "Summary totals are unchanged; lot rows are still listed."
             )
 
+    # Display-only. Does not rewrite flags, lots, or realized totals.
+    wash_sale_chains = build_wash_sale_chains(
+        transactions=transactions,
+        wash_sale_flags=wash_sale_flags,
+        realized_events=realized_events,
+        tax_lots=tax_lots,
+        supplemental=supplemental_1099_summary,
+        lot_match_report=lot_match_report,
+        tax_year=tax_profile.tax_year,
+    )
+
     analysis_id = str(uuid.uuid4())
     result = PortfolioAnalysis(
         positions=positions,
         tax_lots=tax_lots,
         suggestions=suggestions,
         wash_sale_flags=wash_sale_flags,
+        wash_sale_chains=wash_sale_chains,
         summary=summary,
         tax_profile=tax_profile,
         supplemental_1099=supplemental_1099_summary,
