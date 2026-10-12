@@ -162,7 +162,7 @@ function QuietHopDetails({
         sx={{ alignItems: { sm: "center" } }}
       >
         <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
-          {hop.hop_index > 0 ? `Hop ${hop.hop_index + 1}` : "This sale"}
+          This sale
         </Typography>
         <Chip
           size="small"
@@ -205,7 +205,7 @@ function SparseHopDetails({ hop }: Readonly<{ hop: WashSaleHop }>) {
         sx={{ alignItems: { sm: "center" } }}
       >
         <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
-          {hop.hop_index > 0 ? `Hop ${hop.hop_index + 1}` : "This sale"}
+          This sale
         </Typography>
         <Chip
           size="small"
@@ -249,15 +249,12 @@ function HopDetails({ hop }: Readonly<{ hop: WashSaleHop }>) {
   }
   if (
     hop.not_compared_reason === "overlap" ||
-    hop.not_compared_reason === "unassigned"
+    hop.not_compared_reason === "unassigned" ||
+    hop.not_compared_reason === "unidentified"
   ) {
     return <SparseHopDetails hop={hop} />;
   }
   const perLot = differingClosedLots(hop);
-  const showCarry =
-    hop.hop_index > 0 &&
-    hop.engine_sale_loss != null &&
-    hop.explained_loss_with_carry != null;
   return (
     <Stack
       spacing={1.25}
@@ -270,7 +267,7 @@ function HopDetails({ hop }: Readonly<{ hop: WashSaleHop }>) {
         sx={{ alignItems: { sm: "center" } }}
       >
         <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
-          {hop.hop_index > 0 ? `Hop ${hop.hop_index + 1}` : "This sale"}
+          This sale
         </Typography>
         <Chip
           size="small"
@@ -295,8 +292,12 @@ function HopDetails({ hop }: Readonly<{ hop: WashSaleHop }>) {
         <Fact label="Symbol" value={hop.symbol} />
         <Fact label="Sale date" value={formatChainDate(hop.sale_date)} />
         <Fact label="Quantity" value={formatQty(hop.sale_quantity)} />
-        <Fact label="Proceeds" value={formatUsd(hop.proceeds)} />
-        <Fact label="Basis" value={formatUsd(hop.cost_basis)} />
+        {hop.proceeds != null && (
+          <Fact label="Proceeds" value={formatUsd(hop.proceeds)} />
+        )}
+        {hop.cost_basis != null && (
+          <Fact label="Basis" value={formatUsd(hop.cost_basis)} />
+        )}
         <Fact label="Loss" value={formatUsd(hop.loss)} />
         <Fact label="Disallowed" value={formatUsd(hop.disallowed_loss)} />
         {hop.form_1099_wash != null && (
@@ -333,7 +334,7 @@ function HopDetails({ hop }: Readonly<{ hop: WashSaleHop }>) {
               variant="body2"
               sx={{ whiteSpace: "normal", overflowWrap: "anywhere" }}
             >
-              {formatChainDate(buy.activity_date)} · {formatQty(buy.quantity)}
+              {formatChainDate(buy.activity_date)} · {formatQty(buy.allocated_quantity)}
               {` · explained basis ${formatUsd(buy.explained_basis)}`}
             </Typography>
           ),
@@ -359,22 +360,6 @@ function HopDetails({ hop }: Readonly<{ hop: WashSaleHop }>) {
         <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>
           {carryoverCopy(hop)}
         </Typography>
-      )}
-      {showCarry && (
-        <Stack spacing={0.5}>
-          <Fact
-            label="Carried in"
-            value={formatUsd(hop.carried_in_disallowed ?? 0)}
-          />
-          <Fact
-            label="Engine loss on this sale"
-            value={formatUsd(hop.engine_sale_loss ?? 0)}
-          />
-          <Fact
-            label="Explained loss with carry"
-            value={formatUsd(hop.explained_loss_with_carry ?? 0)}
-          />
-        </Stack>
       )}
     </Stack>
   );

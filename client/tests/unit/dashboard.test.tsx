@@ -90,6 +90,7 @@ jest.mock("../../lib/api", () => ({
   }),
   fetchAnalysisById: mockFetchAnalysisById,
   fetchWashSaleChains: mockFetchWashSaleChains,
+  WASH_SALE_CHAIN_REANALYZE_HINT: "Re-analyze to see wash-sale chains",
   cleanupOrphanHistory: mockCleanupOrphanHistory,
   deleteAnalysis: mockDeleteAnalysis,
   persistGuestAnalysis: jest.fn(() => Promise.resolve(true)),

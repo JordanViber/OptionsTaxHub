@@ -184,7 +184,8 @@ def test_partial_replacement_splits_disallowed_across_buys():
     assert lots == lots_before
 
 
-def test_multi_hop_chain_keeps_engine_loss_and_shows_carry():
+def test_two_washes_stay_separate_chains_without_carry():
+    """Each flag is its own chain. The later sale does not inherit a carry."""
     txns = _multi_hop_transactions()
     flags = detect_wash_sales(txns, tax_year=2026)
     flag_losses = [flag.disallowed_loss for flag in flags]
@@ -197,20 +198,23 @@ def test_multi_hop_chain_keeps_engine_loss_and_shows_carry():
         wash_sale_flags=flags,
         realized_events=events,
     )
-    assert len(chains) == 1
-    assert len(chains[0].hops) == 2
-    assert chains[0].chain_id == chains[0].hops[0].hop_id
-    first, second = chains[0].hops
+    assert len(chains) == 2
+    assert all(len(chain.hops) == 1 for chain in chains)
+    assert all(chain.chain_id == chain.hops[0].hop_id for chain in chains)
+    second = next(chain.hops[0] for chain in chains if chain.hops[0].sale_date == date(2026, 6, 20))
     assert second.original_purchase_date == date(2026, 6, 10)
     assert second.engine_sale_loss == pytest.approx(200.0)
-    assert second.carried_in_disallowed == pytest.approx(200.0)
-    assert second.explained_loss_with_carry == pytest.approx(400.0)
     assert second.disallowed_loss == pytest.approx(200.0)
-    assert "Hop 2:" in second.plain_english
-    assert "tax totals" not in second.plain_english
-    assert "source of truth" in second.plain_english
-    assert chains[0].plain_english == "AAPL wash-sale chain. Not compared."
-    assert "Hop 2:" not in chains[0].plain_english
+    assert second.hop_index == 0
+    for chain in chains:
+        hop = chain.hops[0]
+        assert hop.carried_in_disallowed is None
+        assert hop.explained_loss_with_carry is None
+        assert "Hop 2" not in hop.plain_english
+        assert "prior hop" not in hop.plain_english
+        assert "Part of the replacement was resold" not in hop.plain_english
+        assert chain.plain_english == hop.plain_english
+        assert "wash-sale chain." not in chain.plain_english
     assert [flag.disallowed_loss for flag in flags] == flag_losses
 
 
@@ -660,18 +664,22 @@ def test_same_day_same_qty_sales_get_distinct_ids():
     txn_ids = sorted(chain.chain_id for chain in without_events)
     # No realized lots, so neither sale's proceeds are safe to show.
     assert txn_ids == ["AAPL:2026-06-01:10:f0", "AAPL:2026-06-01:10:f1"]
-    assert all(chain.hops[0].proceeds == pytest.approx(0) for chain in without_events)
-    assert all(chain.hops[0].proceeds != pytest.approx(700) for chain in without_events)
-    assert all(chain.hops[0].proceeds != pytest.approx(800) for chain in without_events)
+    assert all(chain.hops[0].proceeds is None for chain in without_events)
+    assert all(chain.hops[0].cost_basis is None for chain in without_events)
+    assert all(chain.hops[0].replacement_buys == [] for chain in without_events)
+    assert all(chain.hops[0].not_compared_reason == "unidentified" for chain in without_events)
     assert all(chain.reconcile_status == "not_compared" for chain in without_events)
     assert all(
-        "one trade's proceeds and loss" in chain.plain_english
+        chain.plain_english
+        == "This sale could not be tied to one trade's proceeds and loss, so it was not compared."
         for chain in without_events
     )
+    assert all("illustrative" not in chain.plain_english for chain in without_events)
+    assert all("You sold" not in chain.plain_english for chain in without_events)
 
 
-def test_same_day_sales_that_could_claim_the_same_1099_rows_are_not_compared():
-    """Two same-day sales that both fit both penny-apart rows are not compared."""
+def test_penny_apart_ten_share_sales_keep_their_own_1099_rows():
+    """Ten shares one cent apart differ by $0.10, so each sale keeps its own row."""
     sale = date(2026, 6, 1)
     flags = [
         WashSaleFlag(
@@ -730,9 +738,12 @@ def test_same_day_sales_that_could_claim_the_same_1099_rows_are_not_compared():
         lot_match_report=report,
     )
     assert len(chains) == 2
-    assert {chain.reconcile_status for chain in chains} == {"not_compared"}
-    assert all(chain.hops[0].form_1099_wash is None for chain in chains)
-    assert all("no wash total was chosen" in chain.plain_english for chain in chains)
+    matched = next(chain for chain in chains if chain.reconcile_status == "matches")
+    differed = next(chain for chain in chains if chain.reconcile_status == "differs")
+    assert matched.hops[0].form_1099_wash == pytest.approx(20)
+    assert differed.hops[0].form_1099_wash == pytest.approx(40)
+    assert differed.difference == pytest.approx(10)
+    assert all("no wash total was chosen" not in chain.plain_english for chain in chains)
     assert flags[0].disallowed_loss == pytest.approx(20)
 
     apart = _build(
@@ -1092,11 +1103,16 @@ def test_chain_copy_covers_remaining_branches():
             _event("AAPL", date(2026, 6, 20), 10, 800, 700, date(2026, 6, 10)),
         ],
     )
-    assert len(carry) == 1
-    assert len(carry[0].hops) == 2
-    assert "Hop 2:" in carry[0].hops[1].plain_english
-    assert "tax totals" not in carry[0].hops[1].plain_english
-    assert carry[0].hops[1].carried_in_disallowed == pytest.approx(0.01)
+    assert len(carry) == 2
+    assert all(len(chain.hops) == 1 for chain in carry)
+    assert all(chain.hops[0].carried_in_disallowed is None for chain in carry)
+    assert all(chain.hops[0].explained_loss_with_carry is None for chain in carry)
+    assert all("Hop 2" not in chain.plain_english for chain in carry)
+    assert all("prior hop" not in chain.plain_english for chain in carry)
+    assert all("tax totals" not in chain.plain_english for chain in carry)
+    later_penny = next(chain for chain in carry if chain.hops[0].sale_date == date(2026, 6, 20))
+    assert later_penny.hops[0].disallowed_loss == pytest.approx(100)
+    assert later_penny.hops[0].engine_sale_loss == pytest.approx(100)
 
     cents = _build(
         transactions=[
@@ -1576,8 +1592,12 @@ def test_chain_copy_covers_remaining_branches():
             _event("AAPL", date(2026, 6, 20), 10, 900, 700, date(2026, 6, 10)),
         ],
     )
-    assert len(carried) == 1
-    assert carried[0].hops[1].carried_in_disallowed == pytest.approx(200)
+    assert len(carried) == 2
+    assert all(len(chain.hops) == 1 for chain in carried)
+    assert all(chain.hops[0].carried_in_disallowed is None for chain in carried)
+    assert all(chain.hops[0].explained_loss_with_carry is None for chain in carried)
+    assert all("prior hop" not in chain.plain_english for chain in carried)
+    assert all("Hop 2" not in chain.plain_english for chain in carried)
 
     # No sell: the attached event's per-share proceeds pick the 1099 row.
     from_events = _build(
@@ -1723,8 +1743,8 @@ def test_chain_copy_covers_remaining_branches():
     assert "not labeled as stock or an option" in lot_hop.plain_english
 
 
-def test_chain_status_rolls_up_the_worst_hop():
-    """Chip, difference, and headline follow the worst hop, not hop 0."""
+def test_each_sale_keeps_its_own_1099_status():
+    """A later sale that differs does not change the earlier sale's match."""
     txns = _multi_hop_transactions()
     flags = detect_wash_sales(txns, tax_year=2026)
     assert len(flags) == 2
@@ -1758,21 +1778,26 @@ def test_chain_status_rolls_up_the_worst_hop():
         supplemental=_supplemental(2026),
         lot_match_report=report,
     )
-    assert len(chains) == 1
-    first, second = chains[0].hops
+    assert len(chains) == 2
+    assert all(len(chain.hops) == 1 for chain in chains)
+    first = next(chain for chain in chains if chain.hops[0].sale_date == date(2026, 6, 1))
+    second = next(chain for chain in chains if chain.hops[0].sale_date == date(2026, 6, 20))
     assert first.reconcile_status == "matches"
+    assert first.hops[0].reconcile_status == "matches"
+    assert first.difference is None
     assert second.reconcile_status == "differs"
+    assert second.hops[0].reconcile_status == "differs"
     assert second.difference == pytest.approx(20)
-    assert chains[0].reconcile_status == "differs"
-    assert chains[0].difference == pytest.approx(20)
-    assert chains[0].plain_english == "AAPL wash-sale chain. Differs."
-    assert "Hop 2:" not in chains[0].plain_english
-    assert "Hop 2:" in second.plain_english
-    assert chains[0].chain_id == first.hop_id
+    assert second.hops[0].difference == pytest.approx(20)
+    assert second.plain_english == second.hops[0].plain_english
+    assert "wash-sale chain." not in second.plain_english
+    assert "Hop 2" not in second.plain_english
+    assert second.hops[0].carried_in_disallowed is None
+    assert second.chain_id == second.hops[0].hop_id
 
 
-def test_multi_lot_sale_carryover_links_later_hop():
-    """A 100-share sale of a 40-lot and a 60-lot keeps carryover and the next hop."""
+def test_multi_lot_sale_keeps_both_acquired_dates_without_linking():
+    """A 100-share sale of a 40-lot and a 60-lot stays separate from the next sale."""
     txns = [
         _txn("AAPL", TransCode.BUY, date(2026, 1, 1), 40, 100),
         _txn("AAPL", TransCode.BUY, date(2026, 2, 1), 60, 80),
@@ -1793,9 +1818,10 @@ def test_multi_lot_sale_carryover_links_later_hop():
         wash_sale_flags=flags,
         realized_events=events,
     )
-    assert len(chains) == 1
-    assert len(chains[0].hops) == 2
-    first, second = chains[0].hops
+    assert len(chains) == 2
+    assert all(len(chain.hops) == 1 for chain in chains)
+    first = next(chain.hops[0] for chain in chains if chain.hops[0].sale_date == date(2026, 6, 1))
+    second = next(chain.hops[0] for chain in chains if chain.hops[0].sale_date == date(2026, 6, 20))
     assert first.sale_quantity == pytest.approx(100)
     assert first.proceeds == pytest.approx(5000)
     assert first.cost_basis == pytest.approx(8800)
@@ -1809,8 +1835,10 @@ def test_multi_lot_sale_carryover_links_later_hop():
     ]
     assert first.hop_id.endswith(":e0")
     assert second.original_purchase_date == date(2026, 6, 6)
-    assert second.hop_index == 1
-    assert second.carried_in_disallowed == pytest.approx(losses[0])
+    assert second.hop_index == 0
+    assert second.carried_in_disallowed is None
+    assert second.explained_loss_with_carry is None
+    assert "prior hop" not in second.plain_english
     assert [flag.disallowed_loss for flag in flags] == losses
     assert events[0].quantity == pytest.approx(40)
 
@@ -1848,10 +1876,9 @@ def test_same_day_sales_attach_event_whose_proceeds_match():
 def test_cent_proceeds_three_share_fill_matches():
     """A 3-share sale still matches $33.33 + $66.67.
 
-    Each row's per-share proceeds is within two cents of the sale price
-    (100/3), so the match can use both rows. Leftover clustering is a
-    different rule: that half-cent gap is one chain when the rows are
-    unclaimed.
+    A row belongs when its total proceeds are within two cents of the sale
+    price times its quantity. $66.67 is one cent from $33.33 times 2, so
+    both rows are that sale. Leftover rows use the same total-dollar test.
     """
     price = 100 / 3
     txns = [
@@ -2405,7 +2432,7 @@ def test_ambiguous_candidate_rows_are_not_leftover_on_1099_only():
     assert all(chain.hops[0].sale_quantity != pytest.approx(160) for chain in chains)
 
 
-def test_later_sale_of_one_replacement_date_does_not_link_the_other():
+def test_later_sale_of_one_replacement_date_stays_its_own_chain():
     """100 shares bought Jun 5 are not the 40 on Jun 5 plus 60 on Jun 8."""
     txns = [
         _txn("AAPL", TransCode.BUY, date(2026, 1, 1), 100, 80),
@@ -2457,18 +2484,18 @@ def test_later_sale_of_one_replacement_date_does_not_link_the_other():
     later = later_chain.hops[0]
     assert later.hop_index == 0
     assert later.sale_quantity == pytest.approx(100)
-    assert later.carried_in_disallowed == pytest.approx(0)
-    assert later.carried_in_disallowed != pytest.approx(1000)
+    assert later.carried_in_disallowed is None
+    assert later.explained_loss_with_carry is None
     assert "Part of the replacement was resold" not in later.plain_english
-    assert "prior hop carried" not in later.plain_english
+    assert "prior hop" not in later.plain_english
     assert [(lot.purchase_date, lot.quantity) for lot in later.closed_lots] == [
         (date(2026, 6, 5), 100),
     ]
     assert first.disallowed_loss == pytest.approx(1000)
 
 
-def test_exact_resale_carries_once_and_a_later_sale_does_not_reuse_it():
-    """Aug 10 resells the Jun 5 lot. Sep 20 does not get that carry again."""
+def test_three_exact_resales_stay_separate_chains():
+    """Aug 10 resells the Jun 5 lot. Each sale stays its own chain."""
     txns = [
         _txn("AAPL", TransCode.BUY, date(2026, 1, 1), 100, 80),
         _txn("AAPL", TransCode.SELL, date(2026, 6, 1), 100, 50),
@@ -2517,21 +2544,19 @@ def test_exact_resale_carries_once_and_a_later_sale_does_not_reuse_it():
             _event("AAPL", date(2026, 9, 20), 100, 3500, 3000, date(2026, 6, 5)),
         ],
     )
-    assert len(chains) == 2
-    linked = next(chain for chain in chains if len(chain.hops) == 2)
-    alone = next(chain for chain in chains if len(chain.hops) == 1)
-    assert [hop.sale_date for hop in linked.hops] == [
-        date(2026, 6, 1),
-        date(2026, 8, 10),
-    ]
-    assert linked.hops[1].carried_in_disallowed == pytest.approx(1000)
-    assert linked.hops[1].carried_in_disallowed != pytest.approx(400)
-    assert linked.hops[1].explained_loss_with_carry == pytest.approx(1500)
-    assert "prior hop carried" in linked.hops[1].plain_english
-    assert alone.hops[0].sale_date == date(2026, 9, 20)
-    assert alone.hops[0].carried_in_disallowed == pytest.approx(0)
-    assert alone.hops[0].carried_in_disallowed != pytest.approx(1000)
-    assert "prior hop carried" not in alone.hops[0].plain_english
+    assert len(chains) == 3
+    assert all(len(chain.hops) == 1 for chain in chains)
+    by_date = {chain.hops[0].sale_date: chain.hops[0] for chain in chains}
+    assert set(by_date) == {date(2026, 6, 1), date(2026, 8, 10), date(2026, 9, 20)}
+    assert by_date[date(2026, 8, 10)].disallowed_loss == pytest.approx(400)
+    assert by_date[date(2026, 9, 20)].disallowed_loss == pytest.approx(200)
+    for hop in by_date.values():
+        assert hop.hop_index == 0
+        assert hop.carried_in_disallowed is None
+        assert hop.explained_loss_with_carry is None
+        assert "prior hop" not in hop.plain_english
+        assert "Part of the replacement was resold" not in hop.plain_english
+        assert "Hop 2" not in hop.plain_english
     assert first.disallowed_loss == pytest.approx(1000)
 
 
@@ -2809,9 +2834,11 @@ def test_two_matching_stock_sales_still_keep_the_closed_lot_date():
 def test_cent_proceeds_leftover_three_share_fill_is_one_chain():
     """$33.33 and $66.67 are one leftover sale.
 
-    One share at $33.33 is 33.33 a share. Two shares at $66.67 are 33.335.
-    That half-cent gap is rounding noise against the cluster anchor, so
-    the rows are one 3-share chain. A full cent stays a separate sale.
+    The anchor price is the first row's per-share proceeds. $66.67 is within
+    two cents of $33.33 times 2, so the rows are one 3-share chain. One-share
+    fills at $10.00, $10.01, and $10.02 also join, because each total is
+    within two cents of the $10.00 anchor. Ten shares a penny apart ($0.10)
+    stay apart.
     """
     chains = _build(
         supplemental=_supplemental(2026),
@@ -2872,9 +2899,10 @@ def test_cent_proceeds_leftover_three_share_fill_is_one_chain():
             bucket="unmatched",
         ),
     )
-    assert len(anchored) == 3
-    quantities = sorted(chain.hops[0].sale_quantity for chain in anchored)
-    assert quantities == pytest.approx([1, 1, 1])
+    assert len(anchored) == 1
+    assert anchored[0].hops[0].sale_quantity == pytest.approx(3)
+    assert anchored[0].hops[0].disallowed_loss == pytest.approx(3)
+    assert anchored[0].reconcile_status == "on_1099_only"
 
     middle_first = _build(
         supplemental=_supplemental(2026),
@@ -2906,10 +2934,10 @@ def test_cent_proceeds_leftover_three_share_fill_is_one_chain():
             bucket="unmatched",
         ),
     )
-    assert len(middle_first) == 3
-    middle_quantities = sorted(chain.hops[0].sale_quantity for chain in middle_first)
-    assert middle_quantities == pytest.approx([1, 1, 1])
-    assert middle_quantities == quantities
+    assert len(middle_first) == 1
+    assert middle_first[0].hops[0].sale_quantity == pytest.approx(3)
+    assert middle_first[0].hops[0].disallowed_loss == pytest.approx(3)
+    assert middle_first[0].hops[0].proceeds == pytest.approx(30.03)
 
     zeros = _build(
         supplemental=_supplemental(2026),
@@ -2947,8 +2975,8 @@ def test_cent_proceeds_leftover_three_share_fill_is_one_chain():
     assert blank.reconcile_status == "on_1099_only"
 
 
-def test_cumulative_carry_adds_each_prior_disallowance():
-    """Three $20 hops carry 0, then 20, then 40. Explained loss follows."""
+def test_three_washes_stay_separate_with_no_carry():
+    """Three $20 washes stay three chains. None inherits a prior disallowance."""
     txns = [
         _txn("AAPL", TransCode.BUY, date(2026, 1, 1), 10, 10),
         _txn("AAPL", TransCode.SELL, date(2026, 6, 1), 10, 8),
@@ -2999,10 +3027,14 @@ def test_cumulative_carry_adds_each_prior_disallowance():
             _event("AAPL", date(2026, 8, 20), 10, 80, 60, date(2026, 7, 20)),
         ],
     )
-    assert len(chains) == 1
-    hops = chains[0].hops
-    assert [hop.carried_in_disallowed for hop in hops] == pytest.approx([0, 20, 40])
-    assert [hop.explained_loss_with_carry for hop in hops] == pytest.approx([20, 40, 60])
+    assert len(chains) == 3
+    assert all(len(chain.hops) == 1 for chain in chains)
+    hops = [chain.hops[0] for chain in chains]
+    assert all(hop.carried_in_disallowed is None for hop in hops)
+    assert all(hop.explained_loss_with_carry is None for hop in hops)
+    assert all(hop.hop_index == 0 for hop in hops)
+    assert all("prior hop" not in hop.plain_english for hop in hops)
+    assert all("Hop 2" not in hop.plain_english for hop in hops)
     assert [hop.disallowed_loss for hop in hops] == pytest.approx([20, 20, 20])
     assert [flag.disallowed_loss for flag in flags] == pytest.approx([20, 20, 20])
 
@@ -3042,7 +3074,7 @@ def test_1099_only_multi_lot_keeps_each_acquired_date():
     ]
 
 
-def test_mixed_fifo_lot_does_not_link_when_an_acquired_date_is_outside():
+def test_mixed_fifo_lot_stays_its_own_chain():
     """40 shares from Jan 1 plus 60 of the Jun 6 replacement are not that lot."""
     txns = [
         _txn("AAPL", TransCode.BUY, date(2026, 1, 1), 100, 80),
@@ -3092,20 +3124,17 @@ def test_mixed_fifo_lot_does_not_link_when_an_acquired_date_is_outside():
         (date(2026, 1, 1), 40),
         (date(2026, 6, 6), 60),
     ]
-    assert later.carried_in_disallowed == pytest.approx(0)
-    assert later.carried_in_disallowed != pytest.approx(1000)
-    assert "prior hop carried" not in later.plain_english
+    assert later.carried_in_disallowed is None
+    assert later.explained_loss_with_carry is None
+    assert "prior hop" not in later.plain_english
     assert "Part of the replacement was resold" not in later.plain_english
     assert earlier_chain.hops[0].disallowed_loss == pytest.approx(1000)
     assert first.disallowed_loss == pytest.approx(1000)
     assert second.disallowed_loss == pytest.approx(600)
 
 
-def test_partial_resale_hides_the_carry_figure():
-    """Selling 50 of a 100-share replacement keeps the hop and hides the carry."""
-    partial_copy = (
-        "Part of the replacement was resold, so the carry-over isn't shown here."
-    )
+def test_partial_resale_is_its_own_chain_without_carry_copy():
+    """Selling 50 of a 100-share replacement is a second chain, with no carry copy."""
     txns = [
         _txn("AAPL", TransCode.BUY, date(2026, 1, 1), 100, 80),
         _txn("AAPL", TransCode.SELL, date(2026, 6, 1), 100, 50),
@@ -3141,23 +3170,25 @@ def test_partial_resale_hides_the_carry_figure():
             _event("AAPL", date(2026, 8, 1), 50, 2500, 2000, date(2026, 6, 5)),
         ],
     )
-    assert len(chains) == 1
-    assert len(chains[0].hops) == 2
-    earlier, later = chains[0].hops
-    assert later.hop_index == 1
+    assert len(chains) == 2
+    assert all(len(chain.hops) == 1 for chain in chains)
+    earlier = next(chain.hops[0] for chain in chains if chain.hops[0].sale_date == date(2026, 6, 1))
+    later = next(chain.hops[0] for chain in chains if chain.hops[0].sale_date == date(2026, 8, 1))
+    assert later.hop_index == 0
     assert later.sale_quantity == pytest.approx(50)
     assert later.carried_in_disallowed is None
     assert later.explained_loss_with_carry is None
+    assert earlier.carried_in_disallowed is None
     assert later.disallowed_loss == pytest.approx(250)
-    assert partial_copy in later.plain_english
-    assert "prior hop carried" not in later.plain_english
-    assert partial_copy not in earlier.plain_english
+    assert "Part of the replacement was resold" not in later.plain_english
+    assert "Part of the replacement was resold" not in earlier.plain_english
+    assert "prior hop" not in later.plain_english
     assert first.disallowed_loss == pytest.approx(1000)
     assert second.disallowed_loss == pytest.approx(250)
 
 
-def test_same_day_exact_resales_do_not_pick_a_carry_winner():
-    """Two later sales on one day both match the replacement. Neither carries it."""
+def test_same_day_exact_resales_stay_separate_chains():
+    """Two later sales on one day both match the replacement. Neither is linked."""
     txns = [
         _txn("AAPL", TransCode.BUY, date(2026, 1, 1), 10, 10),
         _txn("AAPL", TransCode.SELL, date(2026, 6, 1), 10, 8),
@@ -3214,13 +3245,15 @@ def test_same_day_exact_resales_do_not_pick_a_carry_winner():
     assert all(
         chain.hops[0].original_purchase_date == date(2026, 6, 10) for chain in july
     )
-    assert all(chain.hops[0].carried_in_disallowed == pytest.approx(0) for chain in chains)
-    assert all("prior hop carried" not in chain.plain_english for chain in chains)
+    assert all(chain.hops[0].carried_in_disallowed is None for chain in chains)
+    assert all(chain.hops[0].explained_loss_with_carry is None for chain in chains)
+    assert all("prior hop" not in chain.plain_english for chain in chains)
+    assert all("Hop 2" not in chain.plain_english for chain in chains)
     assert flags[0].disallowed_loss == pytest.approx(20)
 
 
-def test_hidden_carry_stays_hidden_on_the_next_exact_resale():
-    """A hop whose parent hid the carry does not start the figure again."""
+def test_partial_then_later_sale_stay_separate_chains():
+    """A partial resale and the sale after it are their own chains."""
     txns = [
         _txn("AAPL", TransCode.BUY, date(2026, 1, 1), 100, 80),
         _txn("AAPL", TransCode.SELL, date(2026, 6, 1), 100, 50),
@@ -3271,19 +3304,25 @@ def test_hidden_carry_stays_hidden_on_the_next_exact_resale():
             _event("AAPL", date(2026, 8, 20), 50, 2000, 1500, date(2026, 7, 20)),
         ],
     )
-    assert len(chains) == 1
-    hops = chains[0].hops
-    assert len(hops) == 3
-    assert hops[1].carried_in_disallowed is None
-    assert hops[1].explained_loss_with_carry is None
-    assert hops[2].carried_in_disallowed is None
-    assert hops[2].explained_loss_with_carry is None
-    assert "Part of the replacement was resold" in hops[1].plain_english
-    assert "prior hop carried" not in hops[2].plain_english
+    assert len(chains) == 3
+    assert all(len(chain.hops) == 1 for chain in chains)
+    hops = [chain.hops[0] for chain in chains]
+    assert [hop.sale_date for hop in hops] == [
+        date(2026, 6, 1),
+        date(2026, 7, 15),
+        date(2026, 8, 20),
+    ]
+    assert [hop.disallowed_loss for hop in hops] == pytest.approx([1000, 200, 100])
+    for hop in hops:
+        assert hop.hop_index == 0
+        assert hop.carried_in_disallowed is None
+        assert hop.explained_loss_with_carry is None
+        assert "Part of the replacement was resold" not in hop.plain_english
+        assert "prior hop" not in hop.plain_english
 
 
-def test_tacked_date_without_closed_lots_does_not_link():
-    """A shared date is not a link unless the closed lots equal the replacement."""
+def test_shared_acquisition_date_does_not_merge_chains():
+    """A shared acquisition date does not merge two wash flags into one chain."""
     txns = [
         _txn("AAPL", TransCode.BUY, date(2026, 1, 1), 10, 10),
         _txn("AAPL", TransCode.SELL, date(2026, 6, 1), 10, 8),
@@ -3328,10 +3367,10 @@ def test_tacked_date_without_closed_lots_does_not_link():
         chain for chain in without_lots if chain.hops[0].sale_date == date(2026, 7, 15)
     )
     assert later.hops[0].closed_lots == [] or later.hops[0].closed_lots[0].purchase_date is None
-    assert later.hops[0].carried_in_disallowed == pytest.approx(0)
-    assert "prior hop carried" not in later.plain_english
+    assert later.hops[0].carried_in_disallowed is None
+    assert "prior hop" not in later.plain_english
 
-    linked = _build(
+    separate = _build(
         transactions=txns,
         wash_sale_flags=flags,
         realized_events=[
@@ -3339,54 +3378,16 @@ def test_tacked_date_without_closed_lots_does_not_link():
             _event("AAPL", date(2026, 7, 15), 10, 90, 70, date(2026, 6, 10)),
         ],
     )
-    assert len(linked) == 1
-    assert linked[0].hops[1].carried_in_disallowed == pytest.approx(20)
-    assert linked[0].hops[1].explained_loss_with_carry == pytest.approx(40)
-
-
-def test_exact_lot_match_is_not_a_partial_resale():
-    """An exact resale is carry, not the partial-resale sentence."""
-    from wash_sale_chain import (
-        _BuyDraft,
-        _ClosedLot,
-        _HopDraft,
-        _lots_are_partial_resale,
-    )
-
-    earlier = _HopDraft(
-        hop_id="AAPL:2026-06-01:10:e0",
-        symbol="AAPL",
-        asset_type="stock",
-        sale_date=date(2026, 6, 1),
-        sale_quantity=10,
-        proceeds=80,
-        cost_basis=100,
-        loss=20,
-        buys=[
-            _BuyDraft(
-                activity_date=date(2026, 6, 10),
-                quantity=10,
-                price=9,
-                cash_cost=90,
-                allocated_quantity=10,
-                allocated_disallowed=20,
-                explained_basis=110,
-            )
-        ],
-        disallowed_loss=20,
-    )
-    later = _HopDraft(
-        hop_id="AAPL:2026-07-15:10:e0",
-        symbol="AAPL",
-        asset_type="stock",
-        sale_date=date(2026, 7, 15),
-        sale_quantity=10,
-        proceeds=70,
-        cost_basis=90,
-        loss=20,
-        closed_lots=[_ClosedLot(quantity=10, purchase_date=date(2026, 6, 10), holding_days=35)],
-    )
-    assert _lots_are_partial_resale(earlier, later) is False
+    assert len(separate) == 2
+    assert all(len(chain.hops) == 1 for chain in separate)
+    july = next(chain for chain in separate if chain.hops[0].sale_date == date(2026, 7, 15))
+    assert july.hops[0].original_purchase_date == date(2026, 6, 10)
+    assert july.hops[0].carried_in_disallowed is None
+    assert july.hops[0].explained_loss_with_carry is None
+    assert july.hops[0].disallowed_loss == pytest.approx(20)
+    assert "prior hop" not in july.plain_english
+    assert july.hops[0].tacked_acquisition_date == date(2026, 6, 10)
+    assert july.hops[0].carryover_days is not None
 
 
 def test_stock_chain_ignores_same_date_option_replacement_and_open_lot():
@@ -3470,7 +3471,8 @@ def test_stock_chain_ignores_same_date_option_replacement_and_open_lot():
     assert len(june_stock.hops) == 1
     assert august.hops[0].replacement_buys[0].activity_date == date(2026, 8, 15)
     assert august.hops[0].replacement_buys[0].price == pytest.approx(42)
-    assert august.hops[0].carried_in_disallowed == pytest.approx(0)
+    assert august.hops[0].carried_in_disallowed is None
+    assert august.hops[0].explained_loss_with_carry is None
     assert all(chain.hops[0].plain_english == OPTION_LINE for chain in option_chains)
     assert all(chain.hops[0].engine_disallowed_loss is None for chain in option_chains)
     assert all(chain.hops[0].disallowed_loss == pytest.approx(0) for chain in option_chains)
@@ -3489,7 +3491,7 @@ def test_stock_chain_ignores_same_date_option_replacement_and_open_lot():
     assert option_buy.price == pytest.approx(5)
 
 
-def test_option_sale_does_not_link_to_a_stock_hop():
+def test_option_sale_stays_separate_from_a_stock_hop():
     """Option and stock sales of one symbol stay one hop each, in both directions."""
     option_may = WashSaleFlag(
         symbol="AMD",
@@ -3545,8 +3547,8 @@ def test_option_sale_does_not_link_to_a_stock_hop():
     option_chains = [chain for chain in chains if chain.hops[0].asset_type == "option"]
     assert len(option_chains) == 2
     hop = stock_chain.hops[0]
-    assert hop.carried_in_disallowed == pytest.approx(0)
-    assert hop.carried_in_disallowed != pytest.approx(6)
+    assert hop.carried_in_disallowed is None
+    assert hop.explained_loss_with_carry is None
     assert hop.replacement_buys[0].activity_date == date(2026, 6, 15)
     assert hop.replacement_buys[0].allocated_quantity == pytest.approx(1)
     assert hop.closed_lots[0].purchase_date == date(2026, 5, 10)
@@ -3858,8 +3860,8 @@ def test_ambiguous_match_keeps_a_row_that_fits_no_subset():
     assert len(chains) == 2
 
 
-def test_two_washes_and_a_later_partial_stay_unlinked():
-    """One 20-share resale that fits two washes does not become a three-hop chain."""
+def test_two_washes_and_a_later_partial_stay_separate_chains():
+    """One 20-share resale that fits two washes does not join either of them."""
     flags = [
         WashSaleFlag(
             symbol="AAPL",
@@ -3909,11 +3911,13 @@ def test_two_washes_and_a_later_partial_stay_unlinked():
             _event("AAPL", date(2026, 8, 1), 20, 1100, 800, date(2026, 6, 10)),
         ],
     )
-    assert all(len(chain.hops) < 3 for chain in chains)
+    assert len(chains) == 3
+    assert all(len(chain.hops) == 1 for chain in chains)
     later = next(chain for chain in chains if chain.hops[0].sale_date == date(2026, 8, 1))
-    assert len(later.hops) == 1
     assert "Part of the replacement was resold" not in later.plain_english
-    assert later.hops[0].carried_in_disallowed == pytest.approx(0)
+    assert later.hops[0].carried_in_disallowed is None
+    assert later.hops[0].explained_loss_with_carry is None
+    assert all(chain.hops[0].hop_index == 0 for chain in chains)
 
 
 def test_two_realized_lot_sets_omit_acquisition_and_holding_period():
@@ -3977,30 +3981,6 @@ def test_penny_apart_washes_stay_two_chains():
     assert len(chains) == 2
     assert sorted(chain.hops[0].sale_quantity for chain in chains) == pytest.approx([10, 10])
     assert {chain.hops[0].proceeds for chain in chains} == {100.0, 100.1}
-
-
-def test_chain_headline_uses_symbol_and_status():
-    """A multi-hop headline is the symbol and status, not the first sale date."""
-    from wash_sale_chain import _HopDraft, _chain_headline
-
-    head = _HopDraft(
-        hop_id="AAPL:2026-06-01:10:e0",
-        symbol="AAPL",
-        asset_type="stock",
-        sale_date=date(2026, 6, 1),
-        sale_quantity=10,
-        proceeds=80,
-        cost_basis=100,
-        loss=20,
-    )
-    assert _chain_headline(head, "matches") == "AAPL wash-sale chain. Matches."
-    assert _chain_headline(head, "differs") == "AAPL wash-sale chain. Differs."
-    assert _chain_headline(head, "on_1099_only") == "AAPL wash-sale chain. On your 1099 only."
-    assert _chain_headline(head, "not_on_1099") == "AAPL wash-sale chain. Not on your 1099."
-    assert _chain_headline(head, "not_compared") == "AAPL wash-sale chain. Not compared."
-    assert _chain_headline(head, "other") == "AAPL wash-sale chain. Not compared."
-    assert "Jun 1" not in _chain_headline(head, "differs")
-    assert "Hop 2:" not in _chain_headline(head, "differs")
 
 
 def test_dead_display_scale_multiplier_is_gone():
@@ -4328,3 +4308,171 @@ def test_each_overlapping_stock_flag_keeps_a_hop():
     assert option[0].plain_english == OPTION_LINE
     assert option[0].hops[0].sale_quantity == pytest.approx(10)
     assert [flag.disallowed_loss for flag in flags] == pytest.approx([300, 200])
+
+
+def test_zero_quantity_row_does_not_match_a_sale_price():
+    from wash_sale_chain import _row_total_matches_price
+
+    blank = _row(
+        quantity=0,
+        proceeds_1099=0,
+        export_trade_date=date(2026, 6, 1),
+    )
+    assert _row_total_matches_price(blank, 10.0) is False
+
+
+def test_partial_1099_parse_does_not_claim_a_missing_wash():
+    """A partial parse can match a row it found, and must not call another sale absent."""
+    june = date(2026, 6, 1)
+    july = date(2026, 7, 15)
+    flags = [
+        WashSaleFlag(
+            symbol="AAPL",
+            sale_date=june,
+            sale_quantity=10,
+            sale_loss=200,
+            repurchase_date=date(2026, 6, 10),
+            repurchase_quantity=10,
+            disallowed_loss=200,
+            adjusted_cost_basis=1100,
+        ),
+        WashSaleFlag(
+            symbol="AAPL",
+            sale_date=july,
+            sale_quantity=10,
+            sale_loss=200,
+            repurchase_date=date(2026, 7, 20),
+            repurchase_quantity=10,
+            disallowed_loss=200,
+            adjusted_cost_basis=1000,
+        ),
+    ]
+    report = _report(
+        _row(
+            symbol="AAPL",
+            quantity=10,
+            export_trade_date=june,
+            proceeds_1099=800,
+            cost_basis_1099=1000,
+            wash_sale_disallowed=200,
+        )
+    )
+    report.totals_ok = False
+    chains = _build(
+        transactions=[
+            _txn("AAPL", TransCode.BUY, date(2026, 1, 1), 10, 100),
+            _txn("AAPL", TransCode.SELL, june, 10, 80),
+            _txn("AAPL", TransCode.BUY, date(2026, 6, 10), 10, 90),
+            _txn("AAPL", TransCode.SELL, july, 10, 70),
+            _txn("AAPL", TransCode.BUY, date(2026, 7, 20), 10, 80),
+        ],
+        wash_sale_flags=flags,
+        supplemental=_supplemental(2026),
+        lot_match_report=report,
+    )
+    assert len(chains) == 2
+    found = next(chain for chain in chains if chain.hops[0].sale_date == june)
+    missing = next(chain for chain in chains if chain.hops[0].sale_date == july)
+    assert found.reconcile_status == "matches"
+    assert found.hops[0].form_1099_wash == pytest.approx(200)
+    assert missing.reconcile_status == "not_compared"
+    assert missing.reconcile_status != "not_on_1099"
+    assert missing.hops[0].not_compared_reason == "no_1099"
+    assert missing.hops[0].form_1099_wash is None
+    assert "not on your 1099" not in missing.plain_english
+    assert "No same-year 1099-B was compared" in missing.plain_english
+
+
+def test_fractional_share_1099_rows_group_on_total_dollars():
+    """0.03 at $1.00 and 0.07 at $2.33 are one 0.1-share sale at $33.33."""
+    sale = date(2026, 6, 1)
+    flag = WashSaleFlag(
+        symbol="AAPL",
+        sale_date=sale,
+        sale_quantity=0.1,
+        sale_loss=1.67,
+        repurchase_date=date(2026, 6, 8),
+        repurchase_quantity=0.1,
+        disallowed_loss=1.67,
+        adjusted_cost_basis=5.07,
+    )
+    chains = _build(
+        transactions=[
+            _txn("AAPL", TransCode.BUY, date(2026, 1, 1), 0.1, 50),
+            _txn("AAPL", TransCode.SELL, sale, 0.1, 33.33),
+            _txn("AAPL", TransCode.BUY, date(2026, 6, 8), 0.1, 34),
+        ],
+        wash_sale_flags=[flag],
+        supplemental=_supplemental(2026),
+        lot_match_report=_report(
+            _row(
+                symbol="AAPL",
+                quantity=0.03,
+                export_trade_date=sale,
+                proceeds_1099=1.00,
+                cost_basis_1099=1.50,
+                wash_sale_disallowed=1.00,
+            ),
+            _row(
+                symbol="AAPL",
+                quantity=0.07,
+                export_trade_date=sale,
+                proceeds_1099=2.33,
+                cost_basis_1099=3.50,
+                wash_sale_disallowed=0.50,
+            ),
+        ),
+    )
+    assert len(chains) == 1
+    assert all(chain.reconcile_status != "on_1099_only" for chain in chains)
+    hop = chains[0].hops[0]
+    assert hop.sale_quantity == pytest.approx(0.1)
+    assert hop.reconcile_status == "differs"
+    assert hop.form_1099_wash == pytest.approx(1.50)
+    assert hop.difference == pytest.approx(0.17)
+    assert hop.proceeds == pytest.approx(3.33)
+    assert flag.disallowed_loss == pytest.approx(1.67)
+
+
+def test_same_day_different_prices_leave_proceeds_unset():
+    """Two same-size sells are unidentified until a lot set picks one. Never $0."""
+    txns = [
+        _txn("AAPL", TransCode.BUY, date(2026, 1, 1), 20, 100),
+        _txn("AAPL", TransCode.SELL, date(2026, 6, 1), 10, 70),
+        _txn("AAPL", TransCode.SELL, date(2026, 6, 1), 10, 90),
+        _txn("AAPL", TransCode.BUY, date(2026, 6, 8), 10, 95),
+    ]
+    flags = detect_wash_sales(txns, tax_year=2026)
+    flag_losses = [flag.disallowed_loss for flag in flags]
+    assert len(flags) == 2
+    quiet = _build(transactions=txns, wash_sale_flags=flags)
+    assert len(quiet) == 2
+    assert all(len(chain.hops) == 1 for chain in quiet)
+    for chain in quiet:
+        hop = chain.hops[0]
+        assert hop.proceeds is None
+        assert hop.cost_basis is None
+        assert hop.replacement_buys == []
+        assert hop.not_compared_reason == "unidentified"
+        assert hop.reconcile_status == "not_compared"
+        assert "illustrative" not in hop.plain_english
+        assert "You sold" not in hop.plain_english
+        assert hop.plain_english == (
+            "This sale could not be tied to one trade's proceeds and loss, "
+            "so it was not compared."
+        )
+    attached = _build(
+        transactions=txns,
+        wash_sale_flags=flags,
+        realized_events=[
+            _event("AAPL", date(2026, 6, 1), 10, 1000, 700, date(2026, 1, 1)),
+            _event("AAPL", date(2026, 6, 1), 10, 1000, 900, date(2026, 1, 1)),
+        ],
+    )
+    assert len(attached) == 2
+    proceeds = sorted(chain.hops[0].proceeds for chain in attached)
+    assert proceeds == pytest.approx([700, 900])
+    assert all(chain.hops[0].proceeds != pytest.approx(0) for chain in attached)
+    assert all(chain.hops[0].not_compared_reason != "unidentified" for chain in attached)
+    assert all(chain.hops[0].replacement_buys for chain in attached)
+    assert [flag.disallowed_loss for flag in flags] == flag_losses

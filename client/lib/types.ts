@@ -107,8 +107,8 @@ export interface WashSaleHop {
   asset_type?: string;
   sale_date: string;
   sale_quantity: number;
-  proceeds: number;
-  cost_basis: number;
+  proceeds: number | null;
+  cost_basis: number | null;
   loss: number;
   replacement_buys: WashReplacementBuy[];
   disallowed_loss: number;

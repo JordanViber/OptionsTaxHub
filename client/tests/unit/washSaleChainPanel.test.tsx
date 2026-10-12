@@ -386,8 +386,8 @@ describe("WashSaleChainPanel", () => {
     expect(screen.getByText(/Jun 11, 2026 · 20/)).toBeInTheDocument();
   });
 
-  it("shows hop 2 engine loss beside the carried amount", () => {
-    const first = hop({ plain_english: "Hop one headline" });
+  it("does not render carry figures or a hop number", () => {
+    const first = hop({ plain_english: "First sale headline" });
     const second = hop({
       hop_id: "AAPL:2026-06-20:10",
       hop_index: 1,
@@ -400,8 +400,7 @@ describe("WashSaleChainPanel", () => {
       engine_sale_loss: 200,
       explained_loss_with_carry: 400,
       carried_in_disallowed: 200,
-      plain_english:
-        "Hop 2: You bought 10 AAPL on Jun 10 and sold 10 at a $200 loss on Jun 20. The prior hop carried $200 into this lot. The engine still reports a $200 loss on this sale. That engine figure is the source of truth.",
+      plain_english: "You sold 10 AAPL at a $200 loss on Jun 20.",
     });
     render(
       <WashSaleChainPanel
@@ -414,17 +413,111 @@ describe("WashSaleChainPanel", () => {
         ]}
       />,
     );
-    expect(screen.getByText("Hop one headline")).toBeInTheDocument();
+    expect(screen.getByText("First sale headline")).toBeInTheDocument();
     fireEvent.click(screen.getByTestId(`wash-sale-chain-open-${first.hop_id}`));
-    expect(
-      screen.getByText(/That engine figure is the source of truth/),
-    ).toBeInTheDocument();
+    expect(screen.getAllByText("This sale").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Hop 2")).not.toBeInTheDocument();
+    expect(screen.queryByText("Carried in")).not.toBeInTheDocument();
+    expect(screen.queryByText("Engine loss on this sale")).not.toBeInTheDocument();
+    expect(screen.queryByText("Explained loss with carry")).not.toBeInTheDocument();
+    expect(screen.queryByText(/prior hop/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/in your tax totals/i)).not.toBeInTheDocument();
-    expect(screen.getByText("Carried in")).toBeInTheDocument();
-    expect(screen.getByText("Engine loss on this sale")).toBeInTheDocument();
-    expect(screen.getByText("Explained loss with carry")).toBeInTheDocument();
-    expect(screen.getByText("$400.00")).toBeInTheDocument();
-    expect(screen.getByText("Hop 2")).toBeInTheDocument();
+  });
+
+  it("shows the allocated buy quantity, not the full order", () => {
+    render(
+      <WashSaleChainPanel
+        chains={[
+          chain({
+            chain_id: "AAPL:2026-06-01:100",
+            symbol: "AAPL",
+            hops: [
+              hop({
+                hop_id: "AAPL:2026-06-01:100",
+                symbol: "AAPL",
+                sale_date: "2026-06-01",
+                sale_quantity: 100,
+                replacement_buys: [
+                  {
+                    activity_date: "2026-06-06",
+                    quantity: 80,
+                    price: 10,
+                    cash_cost: 800,
+                    allocated_quantity: 80,
+                    allocated_disallowed: 160,
+                    explained_basis: 960,
+                  },
+                  {
+                    activity_date: "2026-06-11",
+                    quantity: 80,
+                    price: 10,
+                    cash_cost: 800,
+                    allocated_quantity: 20,
+                    allocated_disallowed: 40,
+                    explained_basis: 240,
+                  },
+                ],
+              }),
+            ],
+          }),
+        ]}
+      />,
+    );
+    fireEvent.click(
+      screen.getByTestId("wash-sale-chain-open-AAPL:2026-06-01:100"),
+    );
+    expect(screen.getByText(/Jun 6, 2026 · 80/)).toBeInTheDocument();
+    expect(screen.getByText(/Jun 11, 2026 · 20/)).toBeInTheDocument();
+    expect(screen.queryByText(/Jun 11, 2026 · 80/)).not.toBeInTheDocument();
+  });
+
+  it("renders an unidentified sale as a quiet hop", () => {
+    const copy =
+      "This sale could not be tied to one trade's proceeds and loss, so it was not compared.";
+    render(
+      <WashSaleChainPanel
+        chains={[
+          chain({
+            chain_id: "AAPL:2026-06-01:10:f0",
+            symbol: "AAPL",
+            reconcile_status: "not_compared",
+            plain_english: copy,
+            hops: [
+              hop({
+                hop_id: "AAPL:2026-06-01:10:f0",
+                symbol: "AAPL",
+                sale_date: "2026-06-01",
+                sale_quantity: 10,
+                proceeds: null,
+                cost_basis: null,
+                loss: 0,
+                replacement_buys: [],
+                disallowed_loss: 0,
+                engine_disallowed_loss: null,
+                form_1099_wash: null,
+                engine_adjusted_cost_basis: null,
+                plain_english: copy,
+                reconcile_status: "not_compared",
+                not_compared_reason: "unidentified",
+              }),
+            ],
+          }),
+        ]}
+      />,
+    );
+    fireEvent.click(
+      screen.getByTestId("wash-sale-chain-open-AAPL:2026-06-01:10:f0"),
+    );
+    expect(screen.getAllByText(copy).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("AAPL").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Jun 1, 2026").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Proceeds")).not.toBeInTheDocument();
+    expect(screen.queryByText("Basis")).not.toBeInTheDocument();
+    expect(screen.queryByText("Disallowed")).not.toBeInTheDocument();
+    expect(screen.queryByText(/No replacement buy/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/illustrative/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("Instrument")).not.toBeInTheDocument();
+    expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
   });
 
   it("uses a full-screen dialog at phone width and still shows an empty hop list", () => {

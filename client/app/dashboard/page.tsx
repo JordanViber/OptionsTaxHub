@@ -71,6 +71,7 @@ import {
   useBackendHealth,
   fetchAnalysisById,
   fetchWashSaleChains,
+  WASH_SALE_CHAIN_REANALYZE_HINT,
   cleanupOrphanHistory,
   deleteAnalysis,
   persistGuestAnalysis,
@@ -1390,7 +1391,7 @@ export default function DashboardPage() {
       })
       .catch(() => {
         if (!cancelled) {
-          setWashChainHint("Re-analyze to see wash-sale chains");
+          setWashChainHint(WASH_SALE_CHAIN_REANALYZE_HINT);
         }
       });
     return () => {

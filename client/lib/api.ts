@@ -612,7 +612,7 @@ export type WashSaleChainsResult = {
   hint: string | null;
 };
 
-const WASH_SALE_CHAIN_REANALYZE_HINT = "Re-analyze to see wash-sale chains";
+export const WASH_SALE_CHAIN_REANALYZE_HINT = "Re-analyze to see wash-sale chains";
 
 /**
  * Load display wash-sale chains after the year-close packet is paid.

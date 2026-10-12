@@ -64,8 +64,8 @@ class _HopDraft:
     asset_type: str
     sale_date: date
     sale_quantity: float
-    proceeds: float
-    cost_basis: float
+    proceeds: float | None
+    cost_basis: float | None
     loss: float
     buys: list[_BuyDraft] = field(default_factory=list)
     disallowed_loss: float = 0.0
@@ -79,7 +79,8 @@ class _HopDraft:
     carryover_days: int | None = None
     tacked_acquisition_date: date | None = None
     closed_lots: list[_ClosedLot] = field(default_factory=list)
-    carried_in_disallowed: float | None = 0.0
+    # v1 does not carry a disallowance from an earlier sale. These stay empty.
+    carried_in_disallowed: float | None = None
     engine_sale_loss: float | None = None
     explained_loss_with_carry: float | None = None
     plain_english: str = ""
@@ -91,12 +92,9 @@ class _HopDraft:
     # "" | "no_1099" | "ambiguous" | "over_cap" | "unidentified" | "option"
     # | "unclassified" | "overlap" | "unassigned"
     not_compared_reason: str = ""
-    # Display-only link bookkeeping. Not copied onto the API model.
-    sale_unresolved: bool = False
+    # Display-only match bookkeeping. Not copied onto the API model.
     row_target: float | None = None
     compare_1099: bool = False
-    carry_from_id: str = ""
-    carry_withheld: bool = False
 
 
 def _cents(value: float) -> float:
@@ -321,7 +319,7 @@ def _shared_acquisition(lots: list[_ClosedLot]) -> tuple[date | None, int | None
     """One tacked date only when every lot was acquired that day.
 
     A missing date or two different dates is not the earliest date. The
-    per-lot list is the display, and a later hop can link from any of them.
+    per-lot list is the display.
     """
     if not lots:
         return None, None
@@ -489,11 +487,14 @@ def _report_rows(report: LotMatchReport | None) -> list[LotMatchRow]:
 class _SaleGroup:
     """1099 rows that are one sale: same symbol and sell date.
 
-    Rows are ordered by per-share proceeds. A row stays with the cluster
-    when its per-share price is under one cent from that cluster's first
-    row (the anchor). A full cent starts a new cluster. $33.33 and $66.67
-    are half a cent apart per share, so they are one sale. $10.00 and
-    $10.01 stay apart.
+    Rows are ordered by per-share proceeds. The first row's per-share
+    proceeds is the anchor price. A later row stays in that cluster when
+    its total proceeds are within CENTS of anchor price times its quantity.
+    A one-share fill at $10.00, $10.01, and $10.02 is one cluster, because
+    each total is within two cents of $10.00. Ten shares a penny apart
+    differ by ten cents and stay apart. $33.33 and $66.67 (one share and
+    two shares at that price) are one sale. A zero-quantity row only joins
+    another zero-quantity row.
     """
 
     symbol: str
@@ -516,8 +517,9 @@ def _group_rows(
     """Group unused 1099 rows that still carry a wash amount.
 
     Cluster by symbol and sale date. Sort by per-share proceeds, then start
-    a new cluster unless the row is under one cent from that cluster's
-    anchor. A zero-quantity row only joins another zero-quantity row.
+    a new cluster unless the row's total proceeds are within CENTS of the
+    anchor price times its quantity. The anchor is the first row's per-share
+    proceeds. A zero-quantity row only joins another zero-quantity row.
     Equal prices keep their original index so the hop id stays on the first
     of those rows.
     """
@@ -553,11 +555,7 @@ def _group_rows(
             current = clusters[-1] if clusters else None
             anchor = current.unit_proceeds if current is not None else None
             same_blank = unit is None and anchor is None
-            close = (
-                unit is not None
-                and anchor is not None
-                and _same_price_cluster(unit, anchor)
-            )
+            close = anchor is not None and _row_total_matches_price(row, anchor)
             if current is not None and (same_blank or close):
                 current.items.append((index, row))
                 continue
@@ -586,13 +584,17 @@ def _target_unit_proceeds(
     return None
 
 
-def _same_price_cluster(unit: float, anchor: float) -> bool:
-    """True when the per-share gap is rounding noise, under one cent.
+def _row_total_matches_price(row: LotMatchRow, price: float) -> bool:
+    """True when total proceeds are within CENTS of price times quantity.
 
-    The anchor is the first row of the cluster after sorting by price.
-    A gap of one cent stays a separate sale.
+    Fractional shares use the same dollar test as whole shares. A
+    zero-quantity row has no total to compare and does not match.
     """
-    return abs(float(unit) - float(anchor)) < 0.01 - 1e-6
+    quantity = float(row.quantity or 0.0)
+    if abs(quantity) <= QTY_EPS:
+        return False
+    proceeds = float(row.proceeds_1099 or 0.0)
+    return abs(proceeds - float(price) * quantity) <= CENTS
 
 
 def _row_unit_proceeds(row: LotMatchRow) -> float | None:
@@ -610,7 +612,12 @@ def _match_candidates(
     sale_date: date,
     target: float | None,
 ) -> list[tuple[int, LotMatchRow]]:
-    """Same-symbol trade-date rows whose per-share proceeds are within CENTS."""
+    """Same-symbol trade-date rows whose total proceeds match the sale price.
+
+    A row belongs when abs(proceeds - target price * quantity) is within
+    CENTS. With no target price, any row that has a quantity is a candidate.
+    A zero-quantity row is not.
+    """
     candidates: list[tuple[int, LotMatchRow]] = []
     for index, row in enumerate(rows):
         if index in used:
@@ -619,10 +626,9 @@ def _match_candidates(
             continue
         if row.export_trade_date != sale_date:
             continue
-        unit = _row_unit_proceeds(row)
-        if unit is None:
+        if _row_unit_proceeds(row) is None:
             continue
-        if target is not None and abs(unit - target) > CENTS:
+        if target is not None and not _row_total_matches_price(row, target):
             continue
         candidates.append((index, row))
     return candidates
@@ -643,7 +649,7 @@ def _match_sale_rows(
     Returns (rows, reason). reason is "" when a single wash total fits,
     "ambiguous" when two subsets sum to the quantity but their wash totals
     differ by more than CENTS, and "over_cap" when more than 12 rows are
-    close enough on per-share proceeds to be candidates. Neither reason
+    close enough on total proceeds to be candidates. Neither reason
     chooses a wash total. Over-cap reserves every candidate. An ambiguous
     result reserves only rows that sit in a disagreeing subset. Any other
     candidate is marked unassigned so it becomes its own not-compared entry
@@ -739,6 +745,10 @@ def _is_option_asset(asset: object) -> bool:
 _OPTION_WASH_LINE = "Option wash sales aren't explained here yet."
 _UNCLASSIFIED_LINE = (
     "This 1099 sale is not labeled as stock or an option, so it was not compared."
+)
+_UNIDENTIFIED_LINE = (
+    "This sale could not be tied to one trade's proceeds and loss, "
+    "so it was not compared."
 )
 _OPTION_WORD = re.compile(r"\b(?:calls?|puts?|options?)\b", re.IGNORECASE)
 
@@ -847,7 +857,6 @@ def _option_hop(
         from_engine=False,
         not_compared_reason="option",
         compare_1099=False,
-        carry_withheld=True,
     )
 
 
@@ -859,8 +868,8 @@ def _bare_not_compared_hop(
     sale_date: date,
     sale_quantity: float,
     reason: str,
-    proceeds: float = 0.0,
-    cost_basis: float = 0.0,
+    proceeds: float | None = 0.0,
+    cost_basis: float | None = 0.0,
     loss: float = 0.0,
     form_1099_wash: float | None = None,
 ) -> _HopDraft:
@@ -894,7 +903,6 @@ def _bare_not_compared_hop(
         from_engine=False,
         not_compared_reason=reason,
         compare_1099=False,
-        carry_withheld=True,
     )
 
 
@@ -945,10 +953,28 @@ def _hop_from_flag(
     closed = _closed_lots_from_events(event_set, flag.sale_date) if event_set else []
     acquired, held_days = _shared_acquisition(closed)
     if unresolved:
-        # Do not borrow proceeds or basis from a different same-day sale.
-        proceeds = 0.0
-        cost_basis = _cents(float(flag.sale_loss))
-    elif event_set:
+        # Two same-day sells of the same size. Do not pick one's proceeds,
+        # basis, or replacement buys, and do not show those fields as zero.
+        return _bare_not_compared_hop(
+            hop_id=_hop_id(
+                symbol,
+                flag.sale_date,
+                flag.sale_quantity,
+                _hop_discriminator(
+                    event_index=None,
+                    sell_index=None,
+                    flag_index=flag_index,
+                ),
+            ),
+            symbol=symbol,
+            asset_type=asset,
+            sale_date=flag.sale_date,
+            sale_quantity=float(flag.sale_quantity),
+            reason="unidentified",
+            proceeds=None,
+            cost_basis=None,
+        )
+    if event_set:
         # RealizedEvent basis and proceeds are already contract dollars.
         proceeds = _cents(sum(float(event.sale_proceeds) for _index, event in event_set))
         cost_basis = _cents(sum(float(event.cost_basis) for _index, event in event_set))
@@ -976,7 +1002,7 @@ def _hop_from_flag(
         tax_lots, symbol, flag.repurchase_date
     )
     status: WashReconcileStatus = "not_compared"
-    not_compared_reason = "unidentified" if unresolved else "no_1099"
+    not_compared_reason = "no_1099"
     return _HopDraft(
         hop_id=_hop_id(
             symbol,
@@ -1011,7 +1037,6 @@ def _hop_from_flag(
         reconcile_status=status,
         difference=None,
         not_compared_reason=not_compared_reason,
-        sale_unresolved=unresolved,
         row_target=_target_unit_proceeds(
             sell,
             [event for _index, event in event_set],
@@ -1025,8 +1050,15 @@ def _apply_1099_match(
     rows: list[LotMatchRow],
     used_rows: set[int],
     unassigned: set[int],
+    *,
+    claim_absence: bool,
 ) -> None:
-    """Compare one flag to 1099 rows. Same-day ties are marked before this runs."""
+    """Compare one flag to 1099 rows. Same-day ties are marked before this runs.
+
+    ``claim_absence`` is false when the 1099 parse is partial (totals did
+    not match). A row that was found can still match or differ. A sale with
+    no row is not compared, because the missing row may simply be unparsed.
+    """
     taken, blocked = _match_sale_rows(
         rows,
         used=used_rows,
@@ -1043,8 +1075,12 @@ def _apply_1099_match(
         hop.difference = None
         return
     if taken is None:
-        hop.reconcile_status = "not_on_1099"
-        hop.not_compared_reason = ""
+        if claim_absence:
+            hop.reconcile_status = "not_on_1099"
+            hop.not_compared_reason = ""
+        else:
+            hop.reconcile_status = "not_compared"
+            hop.not_compared_reason = "no_1099"
         hop.form_1099_wash = None
         hop.difference = None
         return
@@ -1339,201 +1375,12 @@ def _hop_from_1099_group(
         tacked_acquisition_date=acquired,
         closed_lots=closed,
         engine_sale_loss=None,
-        explained_loss_with_carry=loss,
         reconcile_status="on_1099_only",
         difference=None,
         from_engine=False,
         not_compared_reason="",
     )
 
-
-def _allocated_lot_pairs(hop: _HopDraft) -> list[tuple[date, float]]:
-    return [
-        (buy.activity_date, buy.allocated_quantity)
-        for buy in hop.buys
-        if buy.allocated_quantity > QTY_EPS
-    ]
-
-
-def _closed_lot_pairs(hop: _HopDraft) -> list[tuple[date, float]] | None:
-    """Closed lots, or None when a date is missing. A tacked date is not a lot."""
-    if not hop.closed_lots:
-        return None
-    pairs: list[tuple[date, float]] = []
-    for lot in hop.closed_lots:
-        if lot.purchase_date is None:
-            return None
-        pairs.append((lot.purchase_date, lot.quantity))
-    return pairs
-
-
-def _same_lot_pairs(
-    left: list[tuple[date, float]],
-    right: list[tuple[date, float]],
-) -> bool:
-    if len(left) != len(right):
-        return False
-    left_sorted = sorted(left, key=lambda item: (item[0], item[1]))
-    right_sorted = sorted(right, key=lambda item: (item[0], item[1]))
-    return all(
-        earlier[0] == later[0] and _qty_close(earlier[1], later[1])
-        for earlier, later in zip(left_sorted, right_sorted)
-    )
-
-
-def _lots_are_exact_resale(earlier: _HopDraft, later: _HopDraft) -> bool:
-    """True when the later sale's lots are the earlier replacement lots."""
-    closed = _closed_lot_pairs(later)
-    allocated = _allocated_lot_pairs(earlier)
-    if closed is None or not allocated:
-        return False
-    return _same_lot_pairs(allocated, closed)
-
-
-def _lots_are_partial_resale(earlier: _HopDraft, later: _HopDraft) -> bool:
-    """True when later lots use only replacement dates and do not exceed them.
-
-    Exact equality is not partial. A date outside the replacement, or more
-    shares than that date's replacement, is not a partial. No fraction of
-    the disallowance is computed.
-    """
-    if _lots_are_exact_resale(earlier, later):
-        return False
-    closed = _closed_lot_pairs(later)
-    allocated = _allocated_lot_pairs(earlier)
-    if closed is None or not allocated:
-        return False
-    available: dict[date, float] = {}
-    for day, qty in allocated:
-        available[day] = available.get(day, 0.0) + qty
-    used: dict[date, float] = {}
-    for day, qty in closed:
-        if day not in available:
-            return False
-        used[day] = used.get(day, 0.0) + qty
-        if used[day] > available[day] + QTY_EPS:
-            return False
-    return sum(used.values()) > QTY_EPS
-
-
-def _link_engine_hops(hops: list[_HopDraft]) -> list[list[_HopDraft]]:
-    """Link a later sale only when it resells that replacement.
-
-    An exact match of every replacement lot, not already used by an earlier
-    hop, carries the disallowance. Two later sales that both match the same
-    replacement on the same day are not given a winner. A partial resale
-    stays in the chain with no carry figure.
-    """
-    count = len(hops)
-    parent = list(range(count))
-
-    def find(index: int) -> int:
-        while parent[index] != index:
-            parent[index] = parent[parent[index]]
-            index = parent[index]
-        return index
-
-    def union(left: int, right: int) -> None:
-        root_left = find(left)
-        root_right = find(right)
-        if root_left != root_right:
-            parent[root_right] = root_left
-
-    def _is_later(earlier: _HopDraft, later: _HopDraft) -> bool:
-        # Same ticker is not the same instrument. Stock does not link to an option.
-        return (
-            later.symbol == earlier.symbol
-            and later.asset_type == earlier.asset_type
-            and later.sale_date > earlier.sale_date
-        )
-
-    exact_by_earlier: dict[int, list[int]] = {}
-    for earlier_index, earlier in enumerate(hops):
-        for later_index, later in enumerate(hops):
-            if earlier_index == later_index or not _is_later(earlier, later):
-                continue
-            if _lots_are_exact_resale(earlier, later):
-                exact_by_earlier.setdefault(earlier_index, []).append(later_index)
-    granted_earlier: set[int] = set()
-    granted_later: set[int] = set()
-    for earlier_index, later_indexes in exact_by_earlier.items():
-        ordered = sorted(
-            later_indexes,
-            key=lambda index: (hops[index].sale_date, hops[index].hop_id),
-        )
-        for later_index in ordered:
-            if earlier_index in granted_earlier or later_index in granted_later:
-                continue
-            sale_day = hops[later_index].sale_date
-            same_day = [
-                index
-                for index in later_indexes
-                if hops[index].sale_date == sale_day and index not in granted_later
-            ]
-            if len(same_day) > 1:
-                granted_earlier.add(earlier_index)
-                break
-            hops[later_index].carry_from_id = hops[earlier_index].hop_id
-            granted_earlier.add(earlier_index)
-            granted_later.add(later_index)
-            union(earlier_index, later_index)
-    partial_pairs: list[tuple[int, int]] = []
-    for earlier_index, earlier in enumerate(hops):
-        if earlier_index in granted_earlier:
-            continue
-        for later_index, later in enumerate(hops):
-            if later_index in granted_later or not _is_later(earlier, later):
-                continue
-            if _lots_are_partial_resale(earlier, later):
-                partial_pairs.append((earlier_index, later_index))
-    earliers_for_later: dict[int, list[int]] = {}
-    laters_for_earlier: dict[int, list[int]] = {}
-    for earlier_index, later_index in partial_pairs:
-        earliers_for_later.setdefault(later_index, []).append(earlier_index)
-        laters_for_earlier.setdefault(earlier_index, []).append(later_index)
-    for earlier_index, later_index in partial_pairs:
-        # One later that fits two washes, or one wash with two partial
-        # resales, is not one chain. Do not union those hops together.
-        if len(earliers_for_later[later_index]) != 1 or len(laters_for_earlier[earlier_index]) != 1:
-            continue
-        hops[later_index].carry_withheld = True
-        union(earlier_index, later_index)
-    groups: dict[int, list[_HopDraft]] = {}
-    for index, hop in enumerate(hops):
-        groups.setdefault(find(index), []).append(hop)
-    return list(groups.values())
-
-
-def _apply_carry(ordered: list[_HopDraft]) -> None:
-    """Show carry only for an exact resale of the whole replacement.
-
-    The amount is the parent hop's carried-in plus its new disallowance.
-    A partial resale keeps the hop and leaves both carry fields empty.
-    """
-    by_id = {hop.hop_id: hop for hop in ordered}
-    for index, hop in enumerate(ordered):
-        hop.hop_index = index
-        if hop.carry_withheld:
-            hop.carried_in_disallowed = None
-            hop.explained_loss_with_carry = None
-            continue
-        parent = by_id.get(hop.carry_from_id) if hop.carry_from_id else None
-        if parent is not None and parent.carried_in_disallowed is None:
-            hop.carry_withheld = True
-            hop.carried_in_disallowed = None
-            hop.explained_loss_with_carry = None
-            continue
-        if parent is None:
-            hop.carried_in_disallowed = 0.0
-            hop.explained_loss_with_carry = _cents(
-                max(0.0, hop.cost_basis - hop.proceeds)
-            )
-            continue
-        carried = _cents(parent.carried_in_disallowed + parent.disallowed_loss)
-        hop.carried_in_disallowed = carried
-        hop.explained_loss_with_carry = _cents(
-            max(0.0, hop.cost_basis + carried - hop.proceeds)
-        )
 
 
 def _reconcile_clause(hop: _HopDraft) -> str:
@@ -1562,11 +1409,6 @@ def _reconcile_clause(hop: _HopDraft) -> str:
         if hop.not_compared_reason == "over_cap":
             return (
                 "Too many 1099 rows match this sale to compare them without guessing."
-            )
-        if hop.not_compared_reason == "unidentified":
-            return (
-                "This sale could not be tied to one trade's proceeds and loss, "
-                "so it was not compared."
             )
         return "No same-year 1099-B was compared for this sale."
     return (
@@ -1612,6 +1454,8 @@ def plain_english_line(hop: _HopDraft) -> str:
         return _overlap_line(hop.symbol, hop.sale_date)
     if hop.not_compared_reason == "unassigned":
         return _unassigned_line(hop.symbol, hop.sale_date)
+    if hop.not_compared_reason == "unidentified":
+        return _UNIDENTIFIED_LINE
     listed = _listed_buys(hop)
     with_year = _needs_year(hop.sale_date, listed)
     unit = ""
@@ -1673,25 +1517,6 @@ def plain_english_line(hop: _HopDraft) -> str:
             f"and bought {bought}, {moved}"
         )
     line = f"{body} {reconcile}"
-    if hop.hop_index > 0:
-        line = f"Hop {hop.hop_index + 1}: {line}"
-    if hop.carry_withheld:
-        line += (
-            " Part of the replacement was resold, so the carry-over isn't shown here."
-        )
-    elif (
-        hop.hop_index > 0
-        and hop.engine_sale_loss is not None
-        and hop.explained_loss_with_carry is not None
-        and hop.carried_in_disallowed is not None
-        and abs(hop.explained_loss_with_carry - hop.engine_sale_loss) > CENTS
-    ):
-        line += (
-            f" The prior hop carried {_fmt_money(hop.carried_in_disallowed)} "
-            f"into this lot. The engine still reports a "
-            f"{_fmt_money(hop.engine_sale_loss)} loss on this sale. "
-            "That engine figure is the source of truth."
-        )
     if _basis_split_is_illustrative(hop):
         line += (
             " The per-buy basis split is illustrative. "
@@ -1751,63 +1576,19 @@ def _to_model(hop: _HopDraft) -> WashSaleHop:
     )
 
 
-# Worst first. on_1099_only outranks not_on_1099: a 1099 wash the engine
-# missed is a stronger mismatch than an export wash the 1099 does not list.
-# not_compared is milder than either, because no same-year figure was chosen.
-_STATUS_RANK = {
-    "differs": 4,
-    "on_1099_only": 3,
-    "not_on_1099": 2,
-    "not_compared": 1,
-    "matches": 0,
-}
-
-
-def _worst_hop(hops: list[_HopDraft]) -> _HopDraft:
-    """Highest rank, then the larger dollar gap, then the earlier hop."""
-    return max(
-        hops,
-        key=lambda hop: (
-            _STATUS_RANK.get(hop.reconcile_status, 0),
-            abs(hop.difference or 0.0),
-            -hop.hop_index,
-        ),
-    )
-
-
-_HEADLINE_STATUS = {
-    "matches": "Matches",
-    "differs": "Differs",
-    "on_1099_only": "On your 1099 only",
-    "not_on_1099": "Not on your 1099",
-    "not_compared": "Not compared",
-}
-
-
-def _chain_headline(head: _HopDraft, status: WashReconcileStatus) -> str:
-    """Symbol and status. The status is not pinned to the first sale's date."""
-    label = _HEADLINE_STATUS.get(status, "Not compared")
-    return f"{head.symbol} wash-sale chain. {label}."
-
-
-def _finish(group: list[_HopDraft]) -> WashSaleChain:
-    ordered = sorted(group, key=lambda hop: (hop.sale_date, hop.hop_id))
-    _apply_carry(ordered)
-    for hop in ordered:
-        hop.plain_english = plain_english_line(hop)
-    head = ordered[0]
-    worst = _worst_hop(ordered)
-    if len(ordered) == 1:
-        headline = head.plain_english
-    else:
-        headline = _chain_headline(head, worst.reconcile_status)
+def _finish(hop: _HopDraft) -> WashSaleChain:
+    """One wash flag is one chain. A later sale is not linked to this one."""
+    hop.hop_index = 0
+    hop.carried_in_disallowed = None
+    hop.explained_loss_with_carry = None
+    hop.plain_english = plain_english_line(hop)
     return WashSaleChain(
-        chain_id=head.hop_id,
-        symbol=head.symbol,
-        reconcile_status=worst.reconcile_status,
-        difference=worst.difference,
-        plain_english=headline,
-        hops=[_to_model(hop) for hop in ordered],
+        chain_id=hop.hop_id,
+        symbol=hop.symbol,
+        reconcile_status=hop.reconcile_status,
+        difference=hop.difference,
+        plain_english=hop.plain_english,
+        hops=[_to_model(hop)],
     )
 
 
@@ -2022,10 +1803,13 @@ def build_wash_sale_chains(
     if supplemental is not None:
         same_year = is_same_year_1099_compare(supplemental.tax_year, tax_year)
     # Totals with no lot report were not compared row by row. An empty search
-    # would otherwise say the sale was missing from the 1099.
+    # would otherwise say the sale was missing from the 1099. A report whose
+    # totals do not match is a partial parse: rows that were found can still
+    # match, but a missing row is not claimed absent.
     has_totals = _supplemental_has_totals(supplemental)
     rows_unusable = same_year and lot_match_report is None and has_totals
     comparable = same_year and not rows_unusable
+    claim_absence = lot_match_report is None or lot_match_report.totals_ok
     rows = _report_rows(lot_match_report) if comparable else []
     used_rows: set[int] = set()
     unassigned: set[int] = set()
@@ -2109,16 +1893,23 @@ def build_wash_sale_chains(
     _refuse_same_day_1099_ties(engine_hops, rows, used_rows, unassigned)
     for hop in engine_hops:
         if hop.compare_1099 and hop.not_compared_reason != "ambiguous":
-            _apply_1099_match(hop, rows, used_rows, unassigned)
-    chains = [_finish(group) for group in _link_engine_hops(engine_hops)]
+            _apply_1099_match(
+                hop,
+                rows,
+                used_rows,
+                unassigned,
+                claim_absence=claim_absence,
+            )
+    # Each flag is its own chain. A later sale of the replacement is not linked.
+    chains = [_finish(hop) for hop in engine_hops]
     for hop in option_by_day.values():
-        chains.append(_finish([hop]))
+        chains.append(_finish(hop))
     if comparable:
         for index in sorted(unassigned):
             hop = _unassigned_from_row(rows[index], index)
             if hop is None:
                 continue
-            chains.append(_finish([hop]))
+            chains.append(_finish(hop))
         leftover = _group_rows(
             rows,
             used=used_rows,
@@ -2134,6 +1925,6 @@ def build_wash_sale_chains(
             )
             if hop is None:
                 continue
-            chains.append(_finish([hop]))
+            chains.append(_finish(hop))
     chains.sort(key=lambda chain: (chain.hops[0].sale_date, chain.symbol, chain.chain_id))
     return chains

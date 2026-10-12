@@ -213,8 +213,9 @@ class WashSaleHop(BaseModel):
     asset_type: str = "stock"
     sale_date: date
     sale_quantity: float
-    proceeds: float
-    cost_basis: float
+    # None when the sale could not be tied to one trade. Never a guessed zero.
+    proceeds: Optional[float] = None
+    cost_basis: Optional[float] = None
     loss: float
     replacement_buys: list[WashReplacementBuy] = []
     disallowed_loss: float
@@ -229,8 +230,8 @@ class WashSaleHop(BaseModel):
     tacked_acquisition_date: Optional[date] = None
     # Every closed lot. A single tacked date is set only when they all share one.
     closed_lots: list[WashClosedLot] = []
-    # None when a later sale is only part of the replacement. 0 on the first hop.
-    carried_in_disallowed: Optional[float] = 0.0
+    # v1 does not carry a disallowance from an earlier sale. Left empty.
+    carried_in_disallowed: Optional[float] = None
     engine_sale_loss: Optional[float] = None
     explained_loss_with_carry: Optional[float] = None
     plain_english: str = ""
@@ -242,13 +243,12 @@ class WashSaleHop(BaseModel):
 
 
 class WashSaleChain(BaseModel):
-    """A wash-sale chain for the explainer.
+    """One wash-sale flag for the explainer.
 
-    The chip uses the worst hop (differs, then on_1099_only, then
-    not_on_1099, then not_compared, then matches). A one-hop chain's
-    headline is that hop. A longer chain's headline is the symbol and the
-    status, without pinning that status to the first sale's date.
-    chain_id stays the first hop.
+    Each flag is its own hop: the loss sale, its replacement buys, the
+    disallowed amount, the engine's adjusted basis and holding period for
+    that replacement, and the 1099 reconcile. A later sale is a separate
+    chain. The chip and the headline are that hop. chain_id is that hop.
     """
 
     chain_id: str
