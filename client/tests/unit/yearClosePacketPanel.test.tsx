@@ -496,7 +496,7 @@ describe("YearClosePacketPanel", () => {
     });
   });
 
-  it("keeps the missing-source alert on a 409 download and reserves Pay $49 for a real 403", async () => {
+  it("keeps the missing-source alert on a 409 download and replaces it with Pay $49 on a 403", async () => {
     const detail =
       "Payment was received, but this analysis has no source document. Run a new analysis for this tax year.";
     mockFetch
@@ -523,11 +523,13 @@ describe("YearClosePacketPanel", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: /Download/i }));
-    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));
-    expect(screen.getByRole("alert")).toHaveTextContent(detail);
-    expect(screen.getByRole("alert")).not.toHaveTextContent(
-      /Pay \$49 to download the year-close packet/i,
-    );
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        /Pay \$49 to download the year-close packet/i,
+      );
+    });
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("alert")).not.toHaveTextContent(/no source document/i);
   });
 
   it("unpaid download shows a blocked error from 403", async () => {

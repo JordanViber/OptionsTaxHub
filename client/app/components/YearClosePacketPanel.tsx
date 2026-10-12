@@ -556,9 +556,6 @@ function YearClosePacketPanelForAnalysis({
         throw new Error(detail || "Download failed.");
       }
       if (response.status === 403) {
-        if (preservedMissingSource) {
-          return;
-        }
         throw new Error("Pay $49 to download the year-close packet.");
       }
       if (!response.ok) {
