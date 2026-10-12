@@ -2576,6 +2576,28 @@ def _resolve_packet_tax_year_for_identity(
     return None, True
 
 
+def _snapshot_is_paid_full(snapshot) -> bool:
+    """True when this row is paid and its payload is a sellable packet."""
+    if not isinstance(snapshot, dict) or not snapshot.get("paid_at"):
+        return False
+    payload = snapshot.get("packet_payload")
+    return isinstance(payload, dict) and packet_payload_rows_match_counts(payload)
+
+
+def _conflict_grant_result(result, snapshot):
+    """Do not treat an already-granted conflict read as a paid packet.
+
+    ``_record_packet_year_conflict`` returns True only for
+    ``ALREADY_GRANTED_ENTITLEMENT``. Confirm and the webhook treat that True
+    as success. An unpaid or counts-only row stays unpaid, so the caller gets
+    the same-year duplicate instead of ``paid: true``. A paid full snapshot
+    is still success. Any other result is unchanged.
+    """
+    if result is True and not _snapshot_is_paid_full(snapshot):
+        return PACKET_GRANT_SAME_YEAR_DUPLICATE
+    return result
+
+
 def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[bool | str]:
     if not session_grants_packet(session, analysis_id):
         return False
@@ -2654,11 +2676,37 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
                 and packet_payload_rows_match_counts(memory_payload)
             ):
                 saved_snapshot = _save_grant_snapshot(memory_payload)
+                # True is ALREADY_GRANTED while this row is still the teaser.
                 if saved_snapshot is True or saved_snapshot == PACKET_GRANT_YEAR_CONFLICT:
-                    return saved_snapshot
+                    return _conflict_grant_result(saved_snapshot, snapshot)
                 if not saved_snapshot:
                     return None
-                packet_payload = memory_payload
+                # A truthy save can return the existing key and leave the teaser.
+                stored_snapshot, stored_ok = get_packet_snapshot(
+                    session_analysis_id,
+                    session_user_id,
+                    tax_year=tax_year,
+                )
+                if not stored_ok:
+                    return None
+                stored_payload = (
+                    stored_snapshot.get("packet_payload")
+                    if isinstance(stored_snapshot, dict)
+                    else None
+                )
+                if (
+                    not isinstance(stored_payload, dict)
+                    or not packet_payload_rows_match_counts(stored_payload)
+                ):
+                    if isinstance(stored_snapshot, dict) and stored_snapshot.get("paid_at"):
+                        owner_session = stored_snapshot.get("packet_session_id")
+                        if owner_session and owner_session != session_id:
+                            return PACKET_GRANT_SAME_YEAR_DUPLICATE
+                        packet_payload = None
+                    else:
+                        return None
+                else:
+                    packet_payload = stored_payload
             else:
                 packet_payload = None
     else:
@@ -2699,10 +2747,10 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
             packet_payload = None
         elif isinstance(packet_payload, dict):
             saved_snapshot = _save_grant_snapshot(packet_payload)
-            # True is an already-granted session. Do not treat it as a saved
-            # snapshot and continue into history.
+            # True is an already-granted session. Do not continue into history.
+            # There is no paid full snapshot for this year, so it is not success.
             if saved_snapshot is True or saved_snapshot == PACKET_GRANT_YEAR_CONFLICT:
-                return saved_snapshot
+                return _conflict_grant_result(saved_snapshot, snapshot)
             if not saved_snapshot:
                 return None
     try:
@@ -2745,15 +2793,18 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
             except (TypeError, ValueError):
                 continue
             if stored_year != tax_year:
-                return _record_packet_year_conflict(
-                    PacketSnapshotYearConflict(
-                        identity_row.get("analysis_id"),
-                        stored_year,
-                        tax_year,
+                return _conflict_grant_result(
+                    _record_packet_year_conflict(
+                        PacketSnapshotYearConflict(
+                            identity_row.get("analysis_id"),
+                            stored_year,
+                            tax_year,
+                        ),
+                        session_id,
+                        session_user_id,
+                        session_analysis_id,
                     ),
-                    session_id,
-                    session_user_id,
-                    session_analysis_id,
+                    snapshot,
                 )
         return False
 
@@ -2798,11 +2849,14 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
             ignore_profile_year=(kind == "profile"),
         )
     except PacketSnapshotYearConflict as exc:
-        return _record_packet_year_conflict(
-            exc,
-            session_id,
-            session_user_id,
-            session_analysis_id,
+        return _conflict_grant_result(
+            _record_packet_year_conflict(
+                exc,
+                session_id,
+                session_user_id,
+                session_analysis_id,
+            ),
+            snapshot,
         )
     if history_ready is None:
         return None
@@ -2831,11 +2885,14 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
             session_id,
         )
     except PacketSnapshotYearConflict as exc:
-        return _record_packet_year_conflict(
-            exc,
-            session_id,
-            session_user_id,
-            session_analysis_id,
+        return _conflict_grant_result(
+            _record_packet_year_conflict(
+                exc,
+                session_id,
+                session_user_id,
+                session_analysis_id,
+            ),
+            snapshot,
         )
     if entitlement_saved is None:
         return None
@@ -2871,7 +2928,7 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
             return PACKET_GRANT_MISSING_SOURCE
         repaired = _save_grant_snapshot(packet_payload, paid=True)
         if repaired is True or repaired == PACKET_GRANT_YEAR_CONFLICT:
-            return repaired
+            return _conflict_grant_result(repaired, latest_snapshot)
         if not repaired:
             return None
     saved_entitlement = save_packet_entitlement(
@@ -2884,6 +2941,17 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
         return PACKET_GRANT_CONFLICT_RECEIPT
     if not saved_entitlement:
         return None
+    # Success is a paid full snapshot. A teaser or unpaid row is not one,
+    # even when the entitlement row was saved.
+    stored_snapshot, stored_ok = get_packet_snapshot(
+        session_analysis_id,
+        session_user_id,
+        tax_year=tax_year,
+    )
+    if not stored_ok:
+        return None
+    if not _snapshot_is_paid_full(stored_snapshot):
+        return PACKET_GRANT_MISSING_SOURCE
     # The independent entitlement/snapshot row is authoritative. History flags
     # help legacy clients but a deleted row or history outage cannot revoke a
     # settled purchase.
