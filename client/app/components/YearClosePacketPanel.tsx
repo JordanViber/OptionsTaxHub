@@ -56,12 +56,8 @@ function isPacketConflictReceiptDetail(detail: string): boolean {
   return /already recorded as a refund/i.test(detail) && /does not grant a packet/i.test(detail);
 }
 
-function isPacketExistingDownloadDetail(detail: string): boolean {
-  return (
-    isPacketAlreadyPaidExistingDetail(detail) ||
-    isPacketSameYearDuplicateDetail(detail) ||
-    isPacketConflictReceiptDetail(detail)
-  );
+function isPacketRefundRecordedDetail(detail: string): boolean {
+  return isPacketSameYearDuplicateDetail(detail) || isPacketConflictReceiptDetail(detail);
 }
 
 function isPacketFinalizingDetail(detail: string): boolean {
@@ -287,6 +283,7 @@ function YearClosePacketPanelForAnalysis({
     () => readSessionItem(pendingOpenStorageKey(analysisStorageId)) === "1",
   );
   const [existingPacketDownload, setExistingPacketDownload] = useState(false);
+  const [extraChargeRefund, setExtraChargeRefund] = useState(false);
   const confirmAttempt = useRef(0);
   const missingAnalysisId = canonicalAnalysisId === "local-analysis";
 
@@ -335,6 +332,7 @@ function YearClosePacketPanelForAnalysis({
     let retryableFailure = true;
     let checkoutStillOpen = false;
     let alreadyPaidExisting = false;
+    let refundRecorded = false;
     let finalizing = false;
     try {
       const headers = await authHeaders();
@@ -355,16 +353,23 @@ function YearClosePacketPanelForAnalysis({
         const errData = await response.json().catch(() => null);
         const detail = String(errData?.detail || "");
         checkoutStillOpen = response.status === 409 && /still open/i.test(detail);
-        // Missing source and an already-paid packet are terminal. Finalizing
-        // keeps this checkout session so Pay retries confirm and does not open Stripe.
+        // Missing source, a verified paid packet, and an unverified extra
+        // charge are terminal. Finalizing keeps this checkout session so Pay
+        // retries confirm and does not open Stripe.
         const missingSource =
           response.status === 409 && isPacketMissingSourceDetail(detail);
+        // Only the verified-paid sentence offers the existing download. The
+        // generic conflict and same-year sentences are a terminal extra charge:
+        // Pay stays disabled for this session and confirm does not retry.
         alreadyPaidExisting =
-          response.status === 409 && isPacketExistingDownloadDetail(detail);
+          response.status === 409 && isPacketAlreadyPaidExistingDetail(detail);
+        refundRecorded =
+          response.status === 409 && isPacketRefundRecordedDetail(detail);
         finalizing = response.status === 409 && isPacketFinalizingDetail(detail);
         retryableFailure =
           !missingSource &&
           !alreadyPaidExisting &&
+          !refundRecorded &&
           !finalizing &&
           (response.status >= 500 || checkoutStillOpen);
         throw new Error(errData?.detail || "Could not confirm packet payment.");
@@ -378,6 +383,7 @@ function YearClosePacketPanelForAnalysis({
       writeSessionItem(canonicalStorageKey(analysisStorageId), canonicalId);
       setPaid(true);
       setExistingPacketDownload(false);
+      setExtraChargeRefund(false);
       persistConfirmFlag(false);
       persistResumeFlag(false);
       setCheckoutUrl(null);
@@ -392,7 +398,18 @@ function YearClosePacketPanelForAnalysis({
       }
       setError(err instanceof Error ? err.message : "Could not confirm payment.");
       if (alreadyPaidExisting) {
+        setExtraChargeRefund(false);
         setExistingPacketDownload(true);
+        persistConfirmFlag(false);
+        persistResumeFlag(false);
+        setSessionId(null);
+        setCheckoutUrl(null);
+        clearSessionItem(pendingSessionStorageKey(analysisStorageId));
+        clearSessionItem(pendingCheckoutUrlStorageKey(analysisStorageId));
+        stripPacketQueryParams();
+      } else if (refundRecorded) {
+        setExtraChargeRefund(true);
+        setExistingPacketDownload(false);
         persistConfirmFlag(false);
         persistResumeFlag(false);
         setSessionId(null);
@@ -498,7 +515,7 @@ function YearClosePacketPanelForAnalysis({
   }, [analysis, analysisId, analysisStorageId]);
 
   const handlePay = async () => {
-    if (existingPacketDownload) {
+    if (existingPacketDownload || extraChargeRefund) {
       return;
     }
     // Finalizing with a stored cs_ retries confirm. With no session (a
@@ -680,7 +697,13 @@ function YearClosePacketPanelForAnalysis({
               )
             }
             onClick={handlePay}
-            disabled={busy !== null || paid || missingAnalysisId || existingPacketDownload}
+            disabled={
+              busy !== null ||
+              paid ||
+              missingAnalysisId ||
+              existingPacketDownload ||
+              extraChargeRefund
+            }
           >
             Pay $49
           </Button>

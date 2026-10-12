@@ -2520,6 +2520,26 @@ PACKET_ALREADY_PAID_EXISTING_DETAIL = (
     "This tax year is already paid. This extra charge was recorded for a refund. "
     "Download your existing packet."
 )
+
+
+class _StickyReceiptReadOutage:
+    """The snapshot read failed while choosing the sticky conflict sentence.
+
+    Callers test this by identity. It is not a 409 detail. ``_grant_packet_from_session``
+    raises 503 so confirm can retry. Truthiness is refused so a stray ``if detail``
+    cannot treat the outage as copy.
+    """
+
+    def __repr__(self) -> str:
+        return "STICKY_RECEIPT_READ_OUTAGE"
+
+    def __bool__(self) -> bool:
+        raise TypeError(
+            "test STICKY_RECEIPT_READ_OUTAGE by identity, not truthiness"
+        )
+
+
+STICKY_RECEIPT_READ_OUTAGE = _StickyReceiptReadOutage()
 PACKET_FINALIZING_DETAIL = (
     "Payment is on file and the packet is still being finalized. "
     "Retry confirming the payment."
@@ -2601,30 +2621,176 @@ def _other_session_owns_paid_snapshot(snapshot, session_id) -> bool:
     return isinstance(owner, str) and owner.startswith("cs_") and owner != session_id
 
 
-def _sticky_conflict_receipt_detail(analysis_id, user_id, tax_year) -> str:
-    """409 text for a stored ``conflict:`` receipt.
+def _sticky_entitlement_tax_year(analysis_id, user_id):
+    """The single entitlement year for this analysis, and whether the read worked.
 
-    A paid full snapshot for this user and year uses the download-existing
-    sentence. A year-conflict receipt, a teaser, and a snapshot read that
-    fails keep the does-not-grant sentence.
+    ``(None, True)`` is no single year. ``(None, False)`` is an outage.
+    Conflict receipts are not in this list. A non-dict row and a non-int
+    ``tax_year`` are skipped.
+    """
+    rows, ok = lookup_packet_entitlements_for_analysis(user_id, analysis_id)
+    if not ok:
+        return None, False
+    years = set()
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            years.add(int(row.get("tax_year")))
+        except (TypeError, ValueError):
+            continue
+    if len(years) != 1:
+        return None, True
+    return next(iter(years)), True
+
+
+def _sticky_paid_full_detail(snapshot) -> str:
+    """Verified download sentence when this row is a paid full packet."""
+    if _snapshot_is_paid_full(snapshot):
+        return PACKET_ALREADY_PAID_EXISTING_DETAIL
+    return PACKET_CONFLICT_RECEIPT_DETAIL
+
+
+def _sticky_conflict_receipt_detail(analysis_id, user_id, tax_year):
+    """409 text for a stored ``conflict:`` receipt, or a read outage.
+
+    A paid full snapshot uses the download-existing sentence. A teaser, another
+    year, and a real miss keep the does-not-grant sentence. ``get_packet_snapshot``
+    returning ``(None, False)`` is ``STICKY_RECEIPT_READ_OUTAGE``, which
+    ``_grant_packet_from_session`` turns into a retryable 503. It is not the
+    final 409.
+
+    Session metadata supplies the year when it has one. Otherwise the year is
+    the unscoped snapshot row's ``tax_year``, then the single entitlement
+    row's ``tax_year``.
     """
     parsed = _packet_result_tax_year({"analysis_tax_year": tax_year})
     if parsed is None:
-        return PACKET_CONFLICT_RECEIPT_DETAIL
+        snapshot, ok = get_packet_snapshot(analysis_id, user_id)
+        if not ok:
+            return STICKY_RECEIPT_READ_OUTAGE
+        if isinstance(snapshot, dict):
+            return _sticky_paid_full_detail(snapshot)
+        entitlement_year, entitlement_ok = _sticky_entitlement_tax_year(
+            analysis_id,
+            user_id,
+        )
+        if not entitlement_ok:
+            return STICKY_RECEIPT_READ_OUTAGE
+        if entitlement_year is None:
+            return PACKET_CONFLICT_RECEIPT_DETAIL
+        parsed = entitlement_year
     snapshot, ok = get_packet_snapshot(analysis_id, user_id, tax_year=parsed)
-    if ok and _snapshot_is_paid_full(snapshot):
-        return PACKET_ALREADY_PAID_EXISTING_DETAIL
-    return PACKET_CONFLICT_RECEIPT_DETAIL
+    if not ok:
+        return STICKY_RECEIPT_READ_OUTAGE
+    return _sticky_paid_full_detail(snapshot)
+
+
+def _refund_claim_timestamp() -> str:
+    """Unique timestamp written into ``created_at`` by one transition attempt."""
+    instant = datetime.now(timezone.utc).replace(
+        microsecond=uuid.uuid4().int % 1_000_000
+    )
+    return instant.isoformat(timespec="microseconds")
+
+
+def _refund_timestamps_match(stored, claim: str) -> bool:
+    """True when a re-read ``created_at`` is this attempt's claim.
+
+    PostgREST may return the same instant with a ``Z`` suffix. A value that
+    does not parse is a different claim.
+    """
+    if stored == claim:
+        return True
+    try:
+        left = datetime.fromisoformat(str(stored).replace("Z", "+00:00"))
+        right = datetime.fromisoformat(claim.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return False
+    return left == right
+
+
+def _refund_result_row(result):
+    """First dict in a representation body, or None when the body is empty."""
+    data = getattr(result, "data", None)
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        return dict(data[0])
+    return None
+
+
+def _reread_losing_session_entitlement(client, user_id, year, session_id):
+    """Read the cs_ entitlement back, including ``created_at``.
+
+    ``(None, False)`` is an outage or a lost read body. ``(None, True)`` is a
+    real miss. An empty list is a miss. ``data is None`` is not a miss.
+    """
+    try:
+        result = (
+            client.table("year_close_packet_entitlements")
+            .select(
+                "analysis_id, user_id, tax_year, packet_session_id, created_at"
+            )
+            .eq("user_id", user_id)
+            .eq("tax_year", int(year))
+            .eq("packet_session_id", session_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception as exc:
+        logger.error(
+            "Failed to reread packet refund receipt %s: %s",
+            session_id,
+            exc,
+        )
+        return None, False
+    data = getattr(result, "data", None)
+    if isinstance(data, list):
+        return _refund_result_row(result), True
+    return None, False
+
+
+def _log_losing_session_refund(analysis_id, user_id, year, session_id):
+    """Log one refund ERROR. ``session_id`` is the cs_ dedupe key."""
+    logger.error(
+        "%s session_id=%s user_id=%s analysis_id=%s "
+        "stored_tax_year=%s requested_tax_year=%s",
+        PACKET_GRANT_ALREADY_PAID_EXISTING,
+        session_id,
+        user_id,
+        analysis_id,
+        year,
+        year,
+    )
 
 
 def _store_losing_session_refund_receipt(analysis_id, user_id, tax_year, session_id):
     """Store one refund receipt for a second charge against an already-paid year.
 
-    The entitlement primary key is (user, tax year, ``cs_``). ``analysis_id``
-    is not part of that key, so one upsert rewrites the losing session's
-    normal row into ``conflict:{analysis}`` in place. A failed upsert leaves
-    the previous row. A later read of the receipt does not log again. False
-    when the receipt is not stored.
+    Refund requests are not a database row. ``db.py`` and the migrations have
+    no refund-request table; the trail is this ERROR line. The entitlement
+    primary key is (user, tax year, ``cs_``). There is no metadata column.
+    ``created_at`` is the only extra field, so this attempt claims the
+    normal → ``conflict:`` transition by setting ``created_at`` to its own
+    timestamp in the same conditional update.
+
+    The update matches ``packet_session_id`` and the stored normal
+    ``analysis_id`` (not a ``conflict:`` id) and ``.select()`` asks for the
+    row back. Only the caller whose update returns that row changed
+    normal → conflict, and only that caller logs. Concurrent losers get an
+    empty body, re-read a conflict row whose ``created_at`` is the other
+    claim, and do not log.
+
+    An empty body is not proof the write failed. Re-read after every write.
+    When the re-read is ``conflict:`` and ``created_at`` matches this claim,
+    the update landed and the response was lost, so this caller logs. A later
+    retry sees conflict before it writes and does not log again.
+
+    There is still no column that means the ERROR was emitted. A process that
+    dies after the update and before the log looks like a caller that already
+    logged, so retries stay quiet once the row is conflict. That keeps the
+    common race at one line. The log's ``session_id`` is the cs_ id; ops
+    dedupe on that key if a residual duplicate is emitted. False when the
+    receipt is not stored.
     """
     import db as packet_db
 
@@ -2651,18 +2817,28 @@ def _store_losing_session_refund_receipt(analysis_id, user_id, tax_year, session
     )
     if not current_ok:
         return False
-    if isinstance(current, dict) and _is_conflict_analysis_id(current.get("analysis_id")):
+    if not isinstance(current, dict):
+        return False
+    stored_id = current.get("analysis_id")
+    if _is_conflict_analysis_id(stored_id):
         return True
-    row = {
-        "analysis_id": receipt_id,
-        "user_id": user_id,
-        "tax_year": year,
-        "packet_session_id": session_id,
-    }
+    if not isinstance(stored_id, str) or not stored_id.strip():
+        return False
+    claim_at = _refund_claim_timestamp()
     try:
         result = (
             client.table("year_close_packet_entitlements")
-            .upsert(row, on_conflict="user_id,tax_year,packet_session_id")
+            .update({
+                "analysis_id": receipt_id,
+                "created_at": claim_at,
+            })
+            .eq("user_id", user_id)
+            .eq("tax_year", year)
+            .eq("packet_session_id", session_id)
+            .eq("analysis_id", stored_id)
+            .select(
+                "analysis_id, user_id, tax_year, packet_session_id, created_at"
+            )
             .execute()
         )
     except Exception as exc:
@@ -2672,21 +2848,31 @@ def _store_losing_session_refund_receipt(analysis_id, user_id, tax_year, session
             exc,
         )
         return False
-    data = getattr(result, "data", None)
-    stored = data[0] if isinstance(data, list) and data else None
-    if not isinstance(stored, dict) or not _is_conflict_analysis_id(stored.get("analysis_id")):
-        return False
-    logger.error(
-        "%s session_id=%s user_id=%s analysis_id=%s "
-        "stored_tax_year=%s requested_tax_year=%s",
-        PACKET_GRANT_ALREADY_PAID_EXISTING,
-        session_id,
+    returned = _refund_result_row(result)
+    reread, reread_ok = _reread_losing_session_entitlement(
+        client,
         user_id,
-        analysis_id,
         year,
-        year,
+        session_id,
     )
-    return True
+    transitioned = (
+        isinstance(returned, dict)
+        and returned.get("analysis_id") == receipt_id
+    )
+    claim_landed = (
+        reread_ok
+        and isinstance(reread, dict)
+        and reread.get("analysis_id") == receipt_id
+        and _refund_timestamps_match(reread.get("created_at"), claim_at)
+    )
+    if transitioned or claim_landed:
+        _log_losing_session_refund(analysis_id, user_id, year, session_id)
+        return True
+    if not reread_ok:
+        return False
+    if isinstance(reread, dict) and _is_conflict_analysis_id(reread.get("analysis_id")):
+        return True
+    return False
 
 
 def _already_owned_session_grant(analysis_id, user_id, tax_year, session_id):
@@ -3304,14 +3490,20 @@ def _grant_packet_from_session(session, analysis_id: str, user_id: str = "") -> 
     if granted == PACKET_GRANT_SAME_YEAR_DUPLICATE:
         raise HTTPException(status_code=409, detail=PACKET_SAME_YEAR_DUPLICATE_DETAIL)
     if granted == PACKET_GRANT_CONFLICT_RECEIPT:
-        raise HTTPException(
-            status_code=409,
-            detail=_sticky_conflict_receipt_detail(
-                analysis_id,
-                user_id or packet_user_id_from_session(session) or "",
-                _session_metadata(session).get("tax_year"),
-            ),
+        detail = _sticky_conflict_receipt_detail(
+            analysis_id,
+            user_id or packet_user_id_from_session(session) or "",
+            _session_metadata(session).get("tax_year"),
         )
+        if detail is STICKY_RECEIPT_READ_OUTAGE:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Could not verify the saved packet for this charge. "
+                    "Please retry."
+                ),
+            )
+        raise HTTPException(status_code=409, detail=detail)
     if granted == PACKET_GRANT_YEAR_UNKNOWN:
         raise HTTPException(
             status_code=409,

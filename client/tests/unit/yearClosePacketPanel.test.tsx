@@ -1018,14 +1018,48 @@ describe("YearClosePacketPanel", () => {
     );
   });
 
-  it("offers a session-less download for a same-year duplicate charge", async () => {
-    await expectExistingPacketDownload(
+  async function expectExtraChargeRefund(detail: string) {
+    window.history.replaceState(
+      null,
+      "",
+      "/dashboard?packet_session=cs_test_other&packet_analysis=analysis-1",
+    );
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      json: () => Promise.resolve({ detail }),
+    });
+
+    render(<YearClosePacketPanel analysis={analysis} />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(detail);
+    });
+    const pay = screen.getByRole("button", { name: /Pay \$49/i });
+    const download = screen.getByRole("button", { name: /Download/i });
+    expect(pay).toBeDisabled();
+    expect(download).toBeEnabled();
+    expect(download.className).toContain("MuiButton-outlined");
+    expect(download.className).not.toContain("MuiButton-contained");
+    expect(store["optionstaxhub-packet-pending:analysis-1"]).toBeUndefined();
+    expect(store["optionstaxhub-packet-pending-confirm:analysis-1"]).toBeUndefined();
+    expect(store["optionstaxhub-packet-paid:analysis-1"]).toBeUndefined();
+    expect(window.location.href).not.toContain("checkout.stripe.com");
+
+    fireEvent.click(pay);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(window.location.href).not.toContain("checkout.stripe.com");
+  }
+
+  it("records a same-year duplicate as a terminal extra charge without a download offer", async () => {
+    await expectExtraChargeRefund(
       "PACKET_GRANT_SAME_YEAR_DUPLICATE: this tax year was already paid under another checkout session. The new charge is recorded for a refund.",
     );
   });
 
-  it("offers a session-less download when the webhook lands first with a conflict receipt", async () => {
-    await expectExistingPacketDownload(
+  it("records a conflict receipt as a terminal extra charge without a download offer", async () => {
+    await expectExtraChargeRefund(
       "This checkout session was already recorded as a refund and does not grant a packet.",
     );
   });
