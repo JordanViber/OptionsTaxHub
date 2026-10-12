@@ -780,6 +780,7 @@ function ResultsSection({
   const suggestionTabCount = packetUnlocked
     ? displayedAnalysis.suggestions.length
     : harvestTeasers.length;
+  const washSaleChains = displayedAnalysis.wash_sale_chains ?? [];
 
   return (
     <>
@@ -928,9 +929,7 @@ function ResultsSection({
       )}
 
       {washChainsVisible(displayedAnalysis, packetUnlocked) && (
-        <WashSaleChainPanel
-          chains={displayedAnalysis.wash_sale_chains ?? []}
-        />
+        <WashSaleChainPanel chains={washSaleChains} />
       )}
 
       <Card sx={{ overflow: "hidden", maxWidth: "100%" }}>

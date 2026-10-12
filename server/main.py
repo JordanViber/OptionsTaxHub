@@ -1121,14 +1121,19 @@ def _public_analysis(
     result: PortfolioAnalysis,
     *,
     keep_lot_rows: bool = False,
+    keep_wash_chains: Optional[bool] = None,
 ) -> PortfolioAnalysis:
-    """Hide raw trades and unpaid lot-level 1099-B rows from the browser payload.
+    """Hide raw trades, unpaid lot rows, and unpaid wash-sale chains.
 
     Unpaid/guest analyze JSON (and anything persisted from it) must not include
-    lot dates, amounts, or statuses. Counts stay so the $49 teaser still works.
-    The in-app 2026 sample keeps lot rows so the desk can show the table;
-    packet_unlocked stays false so download remains $49 gated.
+    lot dates, amounts, or statuses, or 1099-derived wash-chain figures.
+    Counts stay so the $49 teaser still works. The in-app 2026 sample keeps
+    lot rows and chains so the desk can show them; packet_unlocked stays false
+    so download remains $49 gated. History forces packet_unlocked false so lot
+    rows stay out, and passes keep_wash_chains when the run was paid or sample.
     """
+    if keep_wash_chains is None:
+        keep_wash_chains = bool(result.packet_unlocked) or keep_lot_rows
     updates: dict = {}
     book = result.activity_book
     if book and book.transactions:
@@ -1143,6 +1148,8 @@ def _public_analysis(
             updates["supplemental_1099"] = supplemental.model_copy(
                 update={"lots": []}
             )
+    if not keep_wash_chains:
+        updates["wash_sale_chains"] = []
     if not updates:
         return result
     return result.model_copy(update=updates)
@@ -1653,6 +1660,7 @@ async def _run_portfolio_analysis(
     history_result = _public_analysis(
         result.model_copy(update={"packet_unlocked": False, "packet_session_id": None}),
         keep_lot_rows=keep_lot_rows,
+        keep_wash_chains=bool(result.packet_unlocked) or keep_lot_rows,
     )
     history_summary = summary
     sample_upload = is_sample_csv_filename(filename) or is_trusted_sample_csv_bytes(

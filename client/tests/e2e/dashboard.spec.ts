@@ -1018,14 +1018,14 @@ test.describe("Wash-sale chain explainer", () => {
     ],
     wash_sale_chains: [
       {
-        chain_id: "AMD:2026-07-15:10",
+        chain_id: "AMD:2026-07-15:10:e0",
         symbol: "AMD",
         reconcile_status: "matches",
         difference: null,
         plain_english: amdSentence,
         hops: [
           {
-            hop_id: "AMD:2026-07-15:10",
+            hop_id: "AMD:2026-07-15:10:e0",
             hop_index: 0,
             symbol: "AMD",
             asset_type: "stock",
@@ -1118,7 +1118,7 @@ test.describe("Wash-sale chain explainer", () => {
       await expect(page.getByTestId("entry-rank-leaps")).toBeVisible();
       await expect(page.getByTestId("wash-sale-chain-card")).toBeVisible();
       await expect(page.getByText(amdSentence).first()).toBeVisible();
-      await page.getByTestId("wash-sale-chain-open-AMD:2026-07-15:10").click();
+      await page.getByTestId("wash-sale-chain-open-AMD:2026-07-15:10:e0").click();
       const dialog = page.getByTestId("wash-sale-chain-dialog");
       await expect(dialog).toBeVisible();
       await expect(dialog.getByText(amdSentence)).toBeVisible();

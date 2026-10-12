@@ -338,6 +338,32 @@ describe("DashboardPage", () => {
     });
   });
 
+  it("shows the wash-sale chain card when the analysis has chains", async () => {
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      sample_run: true,
+      wash_sale_chains: [
+        {
+          chain_id: "AMD:2026-07-15:10:e0",
+          symbol: "AMD",
+          reconcile_status: "matches",
+          difference: null,
+          plain_english:
+            "You sold 10 AMD at a $300 loss on Jul 15 and bought 10 back on Jul 24, so $300 moved into the new lot's basis. This matches your 1099 wash adjustment of $300.",
+          hops: [],
+        },
+      ],
+    };
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("wash-sale-chain-card")).toBeInTheDocument();
+    });
+    expect(screen.getByText("Wash-sale chains")).toBeInTheDocument();
+    expect(screen.getByText(/You sold 10 AMD/)).toBeInTheDocument();
+  });
+
   it("shows restored-session messaging when analysis is recovered from browser storage", async () => {
     mockSessionValue = JSON.stringify(baseAnalysis);
 

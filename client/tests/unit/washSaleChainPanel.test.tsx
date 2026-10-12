@@ -11,7 +11,7 @@ const amdPlain =
 
 function hop(overrides: Partial<WashSaleHop> = {}): WashSaleHop {
   return {
-    hop_id: "AMD:2026-07-15:10",
+    hop_id: "AMD:2026-07-15:10:e0",
     hop_index: 0,
     symbol: "AMD",
     asset_type: "stock",
@@ -142,7 +142,7 @@ describe("WashSaleChainPanel", () => {
 
   it("opens the AMD chain with basis, carryover, and the 1099 figure", () => {
     render(<WashSaleChainPanel chains={[chain()]} />);
-    fireEvent.click(screen.getByTestId("wash-sale-chain-open-AMD:2026-07-15:10"));
+    fireEvent.click(screen.getByTestId("wash-sale-chain-open-AMD:2026-07-15:10:e0"));
     expect(screen.getByTestId("wash-sale-chain-dialog")).toBeInTheDocument();
     expect(screen.getByText("$1,200.00")).toBeInTheDocument();
     expect(screen.getByText("$1,500.00")).toBeInTheDocument();
@@ -333,7 +333,7 @@ describe("WashSaleChainPanel", () => {
         ]}
       />,
     );
-    fireEvent.click(screen.getByTestId("wash-sale-chain-open-AMD:2026-07-15:10"));
+    fireEvent.click(screen.getByTestId("wash-sale-chain-open-AMD:2026-07-15:10:e0"));
     expect(document.querySelector(".MuiDialog-paperFullScreen")).toBeTruthy();
     expect(screen.getAllByText("Headline only").length).toBeGreaterThan(0);
   });
@@ -365,7 +365,7 @@ describe("WashSaleChainPanel", () => {
         ]}
       />,
     );
-    fireEvent.click(screen.getByTestId("wash-sale-chain-open-AMD:2026-07-15:10"));
+    fireEvent.click(screen.getByTestId("wash-sale-chain-open-AMD:2026-07-15:10:e0"));
     expect(screen.getByText("not-a-date")).toBeInTheDocument();
     expect(
       screen.getByText("Holding-period carryover is not in this export."),
