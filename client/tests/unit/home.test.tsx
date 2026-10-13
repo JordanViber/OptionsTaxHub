@@ -34,6 +34,7 @@ jest.mock("next/navigation", () => ({
   useRouter: () => ({
     push: mockPush,
   }),
+  usePathname: () => "/dashboard",
 }));
 
 jest.mock("../../app/components/ServiceWorkerRegistration", () => () => null);
@@ -229,12 +230,15 @@ describe("Home page", () => {
         /Upload your Robinhood CSV export \(and optional 1099\) to reconcile 1099-B and wash-sale gaps toward Schedule D/i,
       ),
     ).toBeInTheDocument();
-    expect(screen.getByTestId("entry-analysis-panel")).toBeInTheDocument();
-    expect(screen.getByTestId("entry-rank-leaps")).toBeInTheDocument();
-    expect(screen.queryByTestId("entry-rank-find")).not.toBeInTheDocument();
-    expect(
-      screen.getByRole("heading", { name: /Analyze a new option/i }),
-    ).toBeInTheDocument();
+    expect(screen.queryByTestId("entry-analysis-panel")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Tax" })).toHaveAttribute(
+      "href",
+      "/dashboard",
+    );
+    expect(screen.getByRole("link", { name: "Options" })).toHaveAttribute(
+      "href",
+      "/options",
+    );
     expect(screen.getByRole("link", { name: "Sign In" })).toHaveAttribute(
       "href",
       "/auth/signin",
@@ -471,7 +475,7 @@ describe("Home page", () => {
     expect(screen.getByTestId("summary-cards")).toBeInTheDocument();
     // Suggestions tab is now default (tab 0), so HarvestingSuggestions is rendered with 1 item
     expect(screen.getByText("1 suggestions")).toBeInTheDocument();
-    expect(screen.getByText("Suggestions (1)")).toBeInTheDocument();
+    expect(screen.getByText("Harvest queue (1)")).toBeInTheDocument();
   });
 
   it("renders wash-sale warnings when present", async () => {
@@ -723,7 +727,7 @@ describe("Home page", () => {
     await waitFor(() => {
       expect(screen.getByText("Tax Year: 2026")).toBeInTheDocument();
     });
-    expect(screen.getByText(/Positions \(1\)/)).toBeInTheDocument();
+    expect(screen.getByText(/Lot ledger \(1\)/)).toBeInTheDocument();
     expect(screen.queryByText("Analyzing portfolio...")).not.toBeInTheDocument();
     expect(sessionStorage.getItem("oth-load-sample")).toBeNull();
   });
@@ -753,47 +757,30 @@ describe("Home page", () => {
       expect(mutate).toHaveBeenCalledTimes(1);
     });
     expect(screen.getByText("Tax Year: 2026")).toBeInTheDocument();
-    expect(screen.getByText(/Positions \(1\)/)).toBeInTheDocument();
+    expect(screen.getByText(/Lot ledger \(1\)/)).toBeInTheDocument();
     expect(screen.getByTestId("summary-cards")).toBeInTheDocument();
     expect(screen.queryByText("Analyzing portfolio...")).not.toBeInTheDocument();
     expect(sessionStorage.getItem("oth-load-sample")).toBeNull();
 
-    const taxHeading = screen.getByText("Portfolio Analysis");
-    const optionsHeading = screen.getByRole("heading", {
-      name: /Analyze a new option/i,
-    });
-    expect(
-      taxHeading.compareDocumentPosition(optionsHeading) &
-        Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-    expect(screen.getByTestId("entry-rank-leaps")).toBeInTheDocument();
-    expect(screen.queryByTestId("entry-rank-find")).not.toBeInTheDocument();
-    fireEvent.change(screen.getByTestId("entry-symbol"), {
-      target: { value: "NVDA" },
-    });
-    fireEvent.change(screen.getByTestId("entry-strike"), {
-      target: { value: "250" },
-    });
-    fireEvent.change(screen.getByTestId("entry-expiration"), {
-      target: { value: "2027-12-17" },
-    });
-    fireEvent.change(screen.getByTestId("entry-premium"), {
-      target: { value: "4.20" },
-    });
-    expect(screen.getByTestId("entry-results")).toBeInTheDocument();
-    expect(screen.getByTestId("entry-max-loss")).toHaveTextContent("$420.00");
-    expect(
-      screen.queryByRole("button", { name: /connect robinhood/i }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: /reconnect/i }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: /^tax desk$/i }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("link", { name: /options desk/i }),
-    ).not.toBeInTheDocument();
+    const sectionOrder = [
+      "tax-section-kpis",
+      "tax-section-1099",
+      "tax-section-wash",
+      "tax-section-harvest",
+      "tax-section-packet",
+    ];
+    const sections = sectionOrder.map((id) => screen.getByTestId(id));
+    for (let index = 0; index < sections.length - 1; index += 1) {
+      expect(
+        sections[index].compareDocumentPosition(sections[index + 1]) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    }
+    expect(screen.queryByTestId("entry-analysis-panel")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Options" })).toHaveAttribute(
+      "href",
+      "/options",
+    );
     expect(screen.getByTestId("year-close-packet-panel")).toHaveTextContent(
       "$49",
     );
@@ -879,7 +866,7 @@ describe("Home page", () => {
     await waitFor(() => {
       expect(screen.getByText("Tax Year: 2026")).toBeInTheDocument();
     });
-    expect(screen.getByText(/Positions \(1\)/)).toBeInTheDocument();
+    expect(screen.getByText(/Lot ledger \(1\)/)).toBeInTheDocument();
     expect(mutate).not.toHaveBeenCalled();
   });
 

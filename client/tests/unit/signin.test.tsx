@@ -122,6 +122,28 @@ describe("Sign In Page", () => {
     });
   });
 
+  it("returns to Options when next=/options", async () => {
+    window.history.pushState({}, "", "/auth/signin?next=/options");
+    const { container } = render(<SigninPage />);
+
+    expect(
+      screen.getByText(/Sign in to continue on Options/i),
+    ).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText(/Email/i), {
+      target: { value: "test@example.com" },
+    });
+    fireEvent.change(getInput(container, 'input[type="password"]'), {
+      target: { value: "password123" },
+    });
+    fireEvent.submit(getForm(container));
+
+    await waitFor(() => {
+      expect(mockPush).toHaveBeenCalledWith("/options");
+    });
+    window.history.pushState({}, "", "/");
+  });
+
   it("displays error message on sign in failure with Error object", async () => {
     mockSignIn.mockRejectedValue(new Error("Invalid credentials"));
 

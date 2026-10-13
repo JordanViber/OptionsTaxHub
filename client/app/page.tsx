@@ -226,6 +226,34 @@ export default function LandingPage() {
               body="FIFO lots under every position, stock and option. Expand a row for ST / LT, holding period, and wash detail."
             />
           </Box>
+          <Box
+            className="hairline"
+            data-testid="landing-options-tools"
+            sx={{
+              mt: 4,
+              borderRadius: 3,
+              bgcolor: "background.paper",
+              px: 2.5,
+              py: 2.5,
+            }}
+          >
+            <Typography variant="h6" sx={{ fontWeight: 700 }}>
+              Options tools
+            </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+              Rank long LEAPs and sketch a what-if payoff on a separate page.
+              The tax desk stays your whole Robinhood book.
+            </Typography>
+            <Button
+              component={Link}
+              href="/options"
+              variant="outlined"
+              size="small"
+              sx={{ mt: 1.5 }}
+            >
+              Open Options
+            </Button>
+          </Box>
         </Container>
       </Box>
 

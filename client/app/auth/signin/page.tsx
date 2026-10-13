@@ -26,6 +26,7 @@ import {
   resendSignupConfirmation,
 } from "@/lib/supabase";
 import AuthPageShell from "@/app/components/AuthPageShell";
+import { OPTIONS_PATH, safeNextPath } from "@/lib/safeNextPath";
 
 export const dynamic = "force-dynamic";
 
@@ -55,6 +56,8 @@ export default function SignInPage() {
       setInfo(
         "Sign in to keep filing status, income, and tax year with your account.",
       );
+    } else if (safeNextPath(params.get("next")) === OPTIONS_PATH) {
+      setInfo("Sign in to continue on Options.");
     }
   }, []);
 
@@ -75,7 +78,9 @@ export default function SignInPage() {
         );
         return;
       }
-      router.push("/dashboard");
+      router.push(
+        safeNextPath(new URLSearchParams(window.location.search).get("next")),
+      );
     } catch (err) {
       if (isEmailNotConfirmedError(err)) {
         setNeedsConfirmation(true);

@@ -299,6 +299,18 @@ describe("LandingPage", () => {
     expect(
       screen.queryByRole("link", { name: /options desk/i }),
     ).not.toBeInTheDocument();
+    expect(screen.getByTestId("landing-options-tools")).toHaveTextContent(
+      /Rank long LEAPs/i,
+    );
+    expect(screen.getByRole("link", { name: "Open Options" })).toHaveAttribute(
+      "href",
+      "/options",
+    );
+    expect(
+      screen.getByRole("heading", {
+        name: /Robinhood whole-portfolio tax desk/i,
+      }),
+    ).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /^tax desk$/i }),
     ).not.toBeInTheDocument();
