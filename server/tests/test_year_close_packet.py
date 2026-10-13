@@ -525,7 +525,9 @@ def test_checkout_session_is_4900_cents_year_close_packet_not_tips(monkeypatch):
     assert price_data["unit_amount"] == 4900
     assert price_data["product_data"]["name"] == PACKET_CHECKOUT_NAME
     assert price_data["product_data"]["description"] == PACKET_CHECKOUT_DESCRIPTION
-    assert "CPA" in price_data["product_data"]["description"]
+    assert "CPA" in price_data["product_data"]["name"]
+    assert "Downloadable year-close PDF" in price_data["product_data"]["description"]
+    assert "free dashboard compare" in price_data["product_data"]["description"]
     assert captured["custom_text"]["submit"]["message"] == PACKET_CHECKOUT_SUBMIT_MESSAGE
     assert captured["mode"] == "payment"
     assert captured["metadata"]["product"] == PACKET_METADATA_PRODUCT
@@ -6764,7 +6766,9 @@ def test_same_year_packet_pdf_has_two_column_compare_page():
     assert COMPARE_GAP_COPY in compare
     assert "SPX 12/31" in compare
     assert "not a software bug" in compare
-    assert "r/options" in compare
+    assert "+$2,699" in compare
+    assert "-$924" in compare
+    assert "r/options" not in compare
 
     pdf_bytes = render_packet_pdf(payload)
     reader = PdfReader(BytesIO(pdf_bytes))
@@ -6776,7 +6780,9 @@ def test_same_year_packet_pdf_has_two_column_compare_page():
     assert "34,793.58" in pdf_text
     assert "300.00" in pdf_text
     assert "not a software bug" in pdf_text.lower()
-    assert "r/options" in pdf_text.lower()
+    assert "2,699" in pdf_text
+    assert "924" in pdf_text
+    assert "r/options" not in pdf_text.lower()
 
 
 WASH_ALIGNED_1099 = {

@@ -10,10 +10,13 @@ export default function Wordmark({
     <Box
       component={NextLink}
       href={href}
+      aria-label="OptionsTaxHub"
       sx={{
         display: "inline-flex",
         alignItems: "center",
         gap: 1.25,
+        minWidth: 0,
+        flexShrink: 1,
         textDecoration: "none",
         color: "text.primary",
       }}
@@ -29,12 +32,14 @@ export default function Wordmark({
           boxShadow: "0 0 0 1px rgb(236 234 228 / 0.12)",
         }}
       />
-      <Typography
+        <Typography
         component="span"
         sx={{
+          display: { xs: "none", sm: "inline" },
           fontWeight: 700,
           letterSpacing: "-0.03em",
           fontSize: { xs: "1rem", sm: "1.1rem" },
+          whiteSpace: "nowrap",
         }}
       >
         OptionsTaxHub

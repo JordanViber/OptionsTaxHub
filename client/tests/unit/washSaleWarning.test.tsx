@@ -45,11 +45,12 @@ describe("WashSaleWarning", () => {
   it("displays IRS wash-sale rule explanation", () => {
     render(<WashSaleWarning flags={[baseFlag]} />);
 
-    expect(
-      screen.getByText(
+    expect(screen.getByRole("button", { name: "61-day window" })).toHaveAttribute(
+      "title",
+      expect.stringMatching(
         /within 30 days before or after the sale \(a 61-day window\)/,
       ),
-    ).toBeInTheDocument();
+    );
     expect(
       screen.queryByText(/within 30 days of selling at a loss/),
     ).not.toBeInTheDocument();

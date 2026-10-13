@@ -743,7 +743,7 @@ describe("DashboardPage", () => {
     await waitFor(() => {
       expect(screen.getByText("Recommended next steps")).toBeInTheDocument();
       expect(
-        screen.getByText(/Start with the 1 harvesting suggestion in the harvest queue/i),
+        screen.getByText(/Start with the 1 lot in the harvest queue/i),
       ).toBeInTheDocument();
       expect(
         screen.getByText(
@@ -769,9 +769,7 @@ describe("DashboardPage", () => {
     await waitFor(() => {
       expect(screen.getByText("Manual review needed")).toBeInTheDocument();
       expect(
-        screen.getByText(
-          /Automated harvesting suggestions were skipped for ASST/i,
-        ),
+        screen.getByText(/The harvest queue skipped ASST/i),
       ).toBeInTheDocument();
       expect(
         screen.getByText(/Upload your Robinhood 1099 PDF for the tax year you are closing/i),
@@ -820,7 +818,10 @@ describe("DashboardPage", () => {
       expect(
         screen.getByText(/Robinhood 1099 uses settlement date/i),
       ).toBeInTheDocument();
-      expect(screen.getByText(/SPX 12\/31/i)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Year-end short" })).toHaveAttribute(
+        "title",
+        expect.stringMatching(/SPX 12\/31/i),
+      );
       expect(
         screen.getByText(
           /Options and credit-spread wash-sale treatment can differ from the broker 1099/i,
@@ -1239,11 +1240,22 @@ describe("DashboardPage", () => {
         screen.getByText(/Broker 1099 \(settlement date\)/i),
       ).toBeInTheDocument();
       expect(screen.getByText(/This export \(trade date\)/i)).toBeInTheDocument();
-      expect(
-        screen.getByText(/not a software bug/i),
-      ).toBeInTheDocument();
-      expect(screen.getByText(/r\/options/i)).toBeInTheDocument();
-      expect(screen.getByText(/\$2,699/)).toBeInTheDocument();
+      const totalsHint = screen.getByRole("button", {
+        name: "Why these totals disagree",
+      });
+      expect(totalsHint).toHaveAttribute(
+        "title",
+        expect.stringMatching(/not a software bug/i),
+      );
+      expect(totalsHint).toHaveAttribute(
+        "title",
+        expect.stringMatching(/SPX 12\/31/),
+      );
+      expect(totalsHint).toHaveAttribute(
+        "title",
+        expect.stringMatching(/\$2,699/),
+      );
+      expect(screen.queryByText(/r\/options/i)).not.toBeInTheDocument();
       expect(
         screen.queryByText("Previous-year 1099 supplement applied"),
       ).not.toBeInTheDocument();
@@ -1347,6 +1359,41 @@ describe("DashboardPage", () => {
     } finally {
       mockAuthState.user = previousUser;
     }
+  });
+
+  it("sends guests from Saved runs and Settings to sign-in", async () => {
+    const previousUser = mockAuthState.user;
+    mockAuthState.user = null;
+    try {
+      render(<DashboardPage />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getAllByRole("button", { name: "Saved runs" })[0]);
+      expect(mockPush).toHaveBeenCalledWith("/auth/signin?reason=runs");
+      fireEvent.click(screen.getAllByRole("button", { name: "Settings" })[0]);
+      expect(mockPush).toHaveBeenCalledWith("/auth/signin?reason=profile");
+    } finally {
+      mockAuthState.user = previousUser;
+    }
+  });
+
+  it("does not show fallback-price confidence on a fixed sample run", async () => {
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      sample_run: true,
+      warnings: [
+        "Live prices were unavailable for AAPL, so the analysis used the CSV-provided price instead.",
+      ],
+    };
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getAllByText("High confidence").length).toBeGreaterThan(0);
+    });
+    expect(screen.queryByText("Moderate confidence")).not.toBeInTheDocument();
+    expect(screen.queryByText(/fallback pricing/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/Live prices were unavailable/i),
+    ).not.toBeInTheDocument();
   });
 
   it("does not treat a $300 loss + $300 disallowed as a settlement gap on the dashboard compare", async () => {
@@ -1649,8 +1696,8 @@ describe("DashboardPage", () => {
       "tax-section-1099",
       "tax-section-wash",
       "tax-section-harvest",
-      "tax-section-packet",
       "tax-upload",
+      "tax-section-packet",
     ];
     const sections = sectionOrder.map((id) => screen.getByTestId(id));
     for (let index = 0; index < sections.length - 1; index += 1) {

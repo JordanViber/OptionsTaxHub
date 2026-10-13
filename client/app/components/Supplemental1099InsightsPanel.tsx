@@ -7,10 +7,12 @@ import type {
   RealizedSummary,
   Supplemental1099Summary,
 } from "@/lib/types";
+import GlossaryHint from "./GlossaryHint";
 import {
   LOT_MATCHED_1099B_LOCKED_COPY,
   LOT_MATCHED_1099B_TITLE,
   LOT_MATCHED_1099B_UNLOCKED_COPY,
+  ST_TOTALS_EXPLANATION,
   SUPPLEMENTAL_1099_APPLIED_COPY,
   SUPPLEMENTAL_1099_APPLIED_TITLE,
   SUPPLEMENTAL_1099_BROKER_COLUMN,
@@ -32,6 +34,15 @@ import {
   type ClassifiedWashInput,
   type WashSaleFlagLike,
 } from "@/lib/supplemental1099";
+
+const insightPanelSx = {
+  borderRadius: 2,
+  px: 2,
+  py: 1.75,
+  bgcolor: "background.paper",
+  color: "text.primary",
+  boxShadow: "0 0 0 1px rgb(236 234 228 / 0.08)",
+} as const;
 
 const LOT_TABLE_LIMIT = 50;
 
@@ -62,7 +73,7 @@ function LotRowCard({ row }: Readonly<{ row: LotMatchRow }>) {
         </Typography>
         <Chip size="small" label={row.status} />
       </Stack>
-      <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+      <Typography variant="caption" sx={{ display: "block", color: "text.primary" }}>
         1099 sold {formatLotDate(row.date_sold_1099)} · export{" "}
         {formatLotDate(row.export_trade_date)} · qty {row.quantity}
       </Typography>
@@ -102,12 +113,12 @@ function LotMatchSection({
         {report.unmatched_count}
       </Typography>
       {locked ? (
-        <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75 }}>
+        <Typography variant="body2" sx={{ mt: 0.75 }}>
           {LOT_MATCHED_1099B_LOCKED_COPY}
         </Typography>
       ) : (
         <Stack spacing={1} sx={{ mt: 0.75 }}>
-          <Typography variant="body2" color="text.secondary">
+          <Typography variant="body2">
             {LOT_MATCHED_1099B_UNLOCKED_COPY}
           </Typography>
           {previewRows.map((row, index) => (
@@ -117,7 +128,7 @@ function LotMatchSection({
             />
           ))}
           {totalRows > LOT_TABLE_LIMIT && (
-            <Typography variant="caption" color="text.secondary">
+            <Typography variant="caption" sx={{ color: "text.primary" }}>
               Showing {LOT_TABLE_LIMIT} of {totalRows} lots. Full list is in the
               PDF.
             </Typography>
@@ -148,7 +159,7 @@ function TotalsColumn({
       </Typography>
       <Stack spacing={0.75}>
         <Box>
-          <Typography variant="caption" color="text.secondary">
+          <Typography variant="caption" sx={{ color: "text.primary" }}>
             Short-term
           </Typography>
           <Typography variant="body2" sx={{ fontWeight: 600 }}>
@@ -156,7 +167,7 @@ function TotalsColumn({
           </Typography>
         </Box>
         <Box>
-          <Typography variant="caption" color="text.secondary">
+          <Typography variant="caption" sx={{ color: "text.primary" }}>
             Long-term
           </Typography>
           <Typography variant="body2" sx={{ fontWeight: 600 }}>
@@ -164,7 +175,7 @@ function TotalsColumn({
           </Typography>
         </Box>
         <Box>
-          <Typography variant="caption" color="text.secondary">
+          <Typography variant="caption" sx={{ color: "text.primary" }}>
             Wash-sale disallowed
           </Typography>
           <Typography variant="body2" sx={{ fontWeight: 600 }}>
@@ -210,22 +221,14 @@ export default function Supplemental1099InsightsPanel({
     return (
       <Box
         data-testid="1099-vs-export-panel"
-        sx={{
-          border: "1px solid",
-          borderColor: "info.light",
-          borderRadius: 2,
-          px: 2,
-          py: 1.75,
-          background:
-            "linear-gradient(180deg, rgba(227,242,253,0.5) 0%, rgba(227,242,253,0.18) 100%)",
-        }}
+        sx={insightPanelSx}
       >
         <Stack spacing={1.25}>
           <Box>
             <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
               {SUPPLEMENTAL_1099_COMPARE_TITLE}
             </Typography>
-            <Typography variant="body2" color="text.secondary">
+            <Typography variant="body2">
               {SUPPLEMENTAL_1099_COMPARE_COPY}
             </Typography>
           </Box>
@@ -233,8 +236,12 @@ export default function Supplemental1099InsightsPanel({
             Using {summary.broker_name || "broker"} 1099 PDF for tax year{" "}
             {summary.tax_year ?? "unknown"} — same year as this export.
           </Typography>
-          <Typography variant="body2" color="text.secondary">
-            {SUPPLEMENTAL_1099_GAP_COPY}
+          <Typography variant="body2">
+            {SUPPLEMENTAL_1099_GAP_COPY}{" "}
+            <GlossaryHint
+              label="Why these totals disagree"
+              explanation={ST_TOTALS_EXPLANATION}
+            />
           </Typography>
           <Stack
             direction={{ xs: "column", sm: "row" }}
@@ -268,7 +275,7 @@ export default function Supplemental1099InsightsPanel({
             <LotMatchSection report={lotMatchReport} locked={locked} />
           )}
           {showWashFaq && (
-            <Typography variant="body2" color="text.secondary">
+            <Typography variant="body2">
               {SUPPLEMENTAL_1099_WASH_SALE_FAQ}
             </Typography>
           )}
@@ -284,15 +291,7 @@ export default function Supplemental1099InsightsPanel({
           ? "unknown-year-1099-supplement"
           : "previous-year-1099-supplement"
       }
-      sx={{
-        border: "1px solid",
-        borderColor: "info.light",
-        borderRadius: 2,
-        px: 2,
-        py: 1.75,
-        background:
-          "linear-gradient(180deg, rgba(227,242,253,0.5) 0%, rgba(227,242,253,0.18) 100%)",
-      }}
+      sx={insightPanelSx}
     >
       <Stack spacing={1.25}>
         <Box>
@@ -301,7 +300,7 @@ export default function Supplemental1099InsightsPanel({
               ? SUPPLEMENTAL_1099_UNKNOWN_YEAR_TITLE
               : SUPPLEMENTAL_1099_APPLIED_TITLE}
           </Typography>
-          <Typography variant="body2" color="text.secondary">
+          <Typography variant="body2">
             {unknownYear
               ? SUPPLEMENTAL_1099_UNKNOWN_YEAR_COPY
               : SUPPLEMENTAL_1099_APPLIED_COPY}
@@ -313,7 +312,7 @@ export default function Supplemental1099InsightsPanel({
         </Typography>
         <Stack direction="row" spacing={3} flexWrap="wrap" useFlexGap>
           <Box>
-            <Typography variant="caption" color="text.secondary">
+            <Typography variant="caption" sx={{ color: "text.primary" }}>
               Short-term proceeds
             </Typography>
             <Typography variant="body2" sx={{ fontWeight: 600 }}>
@@ -321,7 +320,7 @@ export default function Supplemental1099InsightsPanel({
             </Typography>
           </Box>
           <Box>
-            <Typography variant="caption" color="text.secondary">
+            <Typography variant="caption" sx={{ color: "text.primary" }}>
               Long-term proceeds
             </Typography>
             <Typography variant="body2" sx={{ fontWeight: 600 }}>
@@ -329,7 +328,7 @@ export default function Supplemental1099InsightsPanel({
             </Typography>
           </Box>
           <Box>
-            <Typography variant="caption" color="text.secondary">
+            <Typography variant="caption" sx={{ color: "text.primary" }}>
               Wash-sale disallowed
             </Typography>
             <Typography variant="body2" sx={{ fontWeight: 600 }}>
@@ -337,11 +336,15 @@ export default function Supplemental1099InsightsPanel({
             </Typography>
           </Box>
         </Stack>
-        <Typography variant="body2" color="text.secondary">
-          {SUPPLEMENTAL_1099_SETTLEMENT_FAQ}
+        <Typography variant="body2">
+          {SUPPLEMENTAL_1099_SETTLEMENT_FAQ}{" "}
+          <GlossaryHint
+            label="Year-end short"
+            explanation={ST_TOTALS_EXPLANATION}
+          />
         </Typography>
         {washSaleDisallowed > 0 && (
-          <Typography variant="body2" color="text.secondary">
+          <Typography variant="body2">
             {SUPPLEMENTAL_1099_WASH_SALE_FAQ}
           </Typography>
         )}

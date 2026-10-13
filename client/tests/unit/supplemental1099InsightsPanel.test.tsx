@@ -56,7 +56,10 @@ describe("Supplemental1099InsightsPanel", () => {
     render(<Supplemental1099InsightsPanel summary={fixtureSummary} />);
 
     expect(screen.getByText(SUPPLEMENTAL_1099_SETTLEMENT_FAQ)).toBeInTheDocument();
-    expect(screen.getByText(/SPX 12\/31/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Year-end short" })).toHaveAttribute(
+      "title",
+      expect.stringMatching(/SPX 12\/31/i),
+    );
     expect(
       screen.getByText(/Matched lots still show both dates/i),
     ).toBeInTheDocument();
@@ -140,7 +143,9 @@ describe("Supplemental1099InsightsPanel", () => {
     expect(screen.getByText(SUPPLEMENTAL_1099_COMPARE_COPY)).toBeInTheDocument();
     expect(screen.getByText(SUPPLEMENTAL_1099_GAP_COPY)).toBeInTheDocument();
     expect(screen.getByText(WASH_ACCOUNT_SCOPE_COPY, { exact: false })).toBeInTheDocument();
-    expect(screen.getByText(/SPX 12\/31/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Why these totals disagree" }),
+    ).toHaveAttribute("title", expect.stringMatching(/SPX 12\/31/i));
     expect(screen.getByText(SUPPLEMENTAL_1099_BROKER_COLUMN)).toBeInTheDocument();
     expect(screen.getByText(SUPPLEMENTAL_1099_EXPORT_COLUMN)).toBeInTheDocument();
     expect(screen.getByTestId("1099-vs-export-panel")).toBeInTheDocument();
@@ -162,9 +167,18 @@ describe("Supplemental1099InsightsPanel", () => {
     expect(
       screen.getByText(/same year as this export/i),
     ).toBeInTheDocument();
-    expect(screen.getByText(/SPX 12\/31/i)).toBeInTheDocument();
-    expect(screen.getByText(/not a software bug/i)).toBeInTheDocument();
-    expect(screen.getByText(/r\/options/i)).toBeInTheDocument();
+    const totalsHint = screen.getByRole("button", {
+      name: "Why these totals disagree",
+    });
+    expect(totalsHint).toHaveAttribute(
+      "title",
+      expect.stringMatching(/SPX 12\/31/i),
+    );
+    expect(totalsHint).toHaveAttribute(
+      "title",
+      expect.stringMatching(/not a software bug/i),
+    );
+    expect(screen.queryByText(/r\/options/i)).not.toBeInTheDocument();
   });
 
   it("always shows the named gap copy on the same-year compare, even when totals match", () => {
