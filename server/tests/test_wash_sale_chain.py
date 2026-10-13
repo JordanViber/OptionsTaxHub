@@ -6695,7 +6695,11 @@ def test_same_day_buys_that_cannot_sum_to_the_closed_lot_stay_quiet():
 
 
 def test_unique_same_day_subset_drops_only_the_closed_shares():
-    """A 10-share buy is the closed lot. The other 5-share buy that day remains."""
+    """A 10-share buy is the closed lot. The other 5 shares do not cover the repurchase.
+
+    Five shares cannot explain a 10-share repurchase. The hop stays quiet
+    instead of parking the disallowance on that leftover buy.
+    """
     sale = date(2026, 6, 20)
     opened = date(2026, 6, 1)
     chains = _build(
@@ -6721,9 +6725,67 @@ def test_unique_same_day_subset_drops_only_the_closed_shares():
         ],
     )
     hop = chains[0].hops[0]
-    assert len(hop.replacement_buys) == 1
-    assert hop.replacement_buys[0].activity_date == opened
-    assert hop.replacement_buys[0].quantity == pytest.approx(5)
-    assert hop.replacement_buys[0].allocated_quantity == pytest.approx(5)
-    assert hop.replacement_buys[0].price == pytest.approx(90)
+    assert hop.replacement_buys == []
+    assert hop.reconcile_status == "not_compared"
+    assert "moved into" not in hop.plain_english
+    assert "basis" not in hop.plain_english.lower()
     assert hop.engine_adjusted_cost_basis is None
+
+
+def test_post_sale_buys_short_of_repurchase_quantity_stay_quiet():
+    """50 closed pre-sale shares plus 50 bought after do not cover a 100-share repurchase.
+
+    The sale closed the Jun 1 lot. The Jun 25 buy is only half of
+    repurchase_quantity. It is not allocated, the disallowance is not
+    parked on it, and the sentence does not say the loss moved into a basis.
+    """
+    sale = date(2026, 6, 20)
+    opened = date(2026, 6, 1)
+    later = date(2026, 6, 25)
+    txns = [
+        _txn("AAPL", TransCode.BUY, date(2026, 1, 1), 50, 80),
+        _txn("AAPL", TransCode.BUY, opened, 50, 100),
+        _txn("AAPL", TransCode.SELL, sale, 100, 70),
+        _txn("AAPL", TransCode.BUY, later, 50, 90),
+    ]
+    flags = detect_wash_sales(txns, tax_year=2026)
+    assert len(flags) == 1
+    flag = flags[0]
+    assert flag.sale_quantity == pytest.approx(100)
+    assert flag.repurchase_quantity == pytest.approx(100)
+    assert flag.repurchase_date == opened
+    assert flag.disallowed_loss == pytest.approx(2000)
+    assert flag.adjusted_cost_basis == pytest.approx(7000)
+    before_txns = copy.deepcopy(txns)
+    before_loss = flag.disallowed_loss
+    before_basis = flag.adjusted_cost_basis
+    before_qty = flag.repurchase_quantity
+    chains = _build(
+        transactions=txns,
+        wash_sale_flags=flags,
+        realized_events=[
+            _event("AAPL", sale, 50, 4000, 3500, date(2026, 1, 1)),
+            _event("AAPL", sale, 50, 5000, 3500, opened),
+        ],
+    )
+    assert len(chains) == 1
+    hop = chains[0].hops[0]
+    assert hop.reconcile_status == "not_compared"
+    assert hop.replacement_buys == []
+    assert hop.engine_adjusted_cost_basis is None
+    assert all(buy.allocated_quantity == 0 for buy in hop.replacement_buys)
+    assert all(buy.allocated_disallowed == 0 for buy in hop.replacement_buys)
+    assert all(buy.explained_basis == 0 for buy in hop.replacement_buys)
+    assert "moved into" not in hop.plain_english
+    assert "basis" not in hop.plain_english.lower()
+    assert "Jun 25" not in hop.plain_english
+    assert "$6,500" not in hop.plain_english
+    assert "$5,500" not in hop.plain_english
+    assert flag.disallowed_loss == pytest.approx(before_loss)
+    assert flag.adjusted_cost_basis == pytest.approx(before_basis)
+    assert flag.repurchase_quantity == pytest.approx(before_qty)
+    assert flag.disallowed_loss == pytest.approx(2000)
+    assert flag.adjusted_cost_basis == pytest.approx(7000)
+    assert [(txn.activity_date, txn.quantity, txn.price) for txn in txns] == [
+        (txn.activity_date, txn.quantity, txn.price) for txn in before_txns
+    ]

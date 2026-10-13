@@ -429,12 +429,20 @@ def _allocate_buys(
             )
         )
     denom = float(repurchase_quantity)
+    allocated_total = sum(qty for qty in allocated_qtys if qty > QTY_EPS)
+    # Shares the sale closed are already gone. What is left has to cover the
+    # repurchase quantity. A short list is not a replacement: allocating it
+    # would park the unpaid disallowance on the first buy and invent a basis.
+    if denom > QTY_EPS and allocated_total + QTY_EPS < denom:
+        return []
     amounts = [0.0] * len(drafts)
     if denom > QTY_EPS and disallowed:
         for index, qty in enumerate(allocated_qtys):
             if qty <= QTY_EPS:
                 continue
             amounts[index] = _cents(disallowed * (qty / denom))
+        # Allocated quantity covers the denominator, so this leftover is
+        # cent rounding, not an unallocated share of the disallowance.
         remainder = _cents(disallowed - sum(amounts))
         for index, qty in enumerate(allocated_qtys):
             if qty > QTY_EPS:
