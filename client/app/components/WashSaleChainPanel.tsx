@@ -21,8 +21,6 @@ import { formatUsd } from "@/lib/supplemental1099";
 export const WASH_SALE_CHAIN_DISCLAIMER =
   "Educational only — not tax advice. This explains wash sales in this Robinhood export and the 1099-B you imported for this portfolio. It does not see other brokers, other accounts, or IRAs. A wash outside this file will not show up here.";
 
-const CARRYOVER_MISSING = "Holding-period carryover is not in this export.";
-
 export function washChainsVisible(
   analysis: {
     sample_run?: boolean;
@@ -201,13 +199,6 @@ function differingClosedLots(hop: WashSaleHop): WashClosedLot[] | null {
   return lots;
 }
 
-function carryoverCopy(hop: WashSaleHop): string {
-  if (isIsoDate(hop.tacked_acquisition_date) && hop.carryover_days != null) {
-    return `Holding period starts ${formatChainDate(hop.tacked_acquisition_date)} for these replacement shares (${hop.carryover_days} days carried from the sold lot).`;
-  }
-  return CARRYOVER_MISSING;
-}
-
 function QuietHopDetails({
   hop,
   instrument,
@@ -323,7 +314,7 @@ function HopDetails({ hop }: Readonly<{ hop: WashSaleHop }>) {
   const noAllocatedBuy = hop.replacement_buys.every(
     (buy) => buy.allocated_quantity === 0,
   );
-  // A 1099-only sale with no allocated replacement has nothing to tack.
+  // A 1099-only sale with no allocated replacement has no buys to list.
   const hideUnallocated1099Only =
     hop.reconcile_status === "on_1099_only" && noAllocatedBuy;
   return (
@@ -416,20 +407,14 @@ function HopDetails({ hop }: Readonly<{ hop: WashSaleHop }>) {
         </Typography>
       )}
       {!hideUnallocated1099Only &&
-        (perLot ? (
-          perLot.map((lot, index) => (
-            <Typography
-              key={`${hop.hop_id}-lot-${index}`}
-              variant="body2"
-              data-testid={`wash-sale-closed-lot-${hop.hop_id}-${index}`}
-              sx={{ overflowWrap: "anywhere" }}
-            >
-              {formatQty(lot.quantity)} acquired {formatChainDate(lot.purchase_date)}
-            </Typography>
-          ))
-        ) : (
-          <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>
-            {carryoverCopy(hop)}
+        perLot?.map((lot, index) => (
+          <Typography
+            key={`${hop.hop_id}-lot-${index}`}
+            variant="body2"
+            data-testid={`wash-sale-closed-lot-${hop.hop_id}-${index}`}
+            sx={{ overflowWrap: "anywhere" }}
+          >
+            {formatQty(lot.quantity)} acquired {formatChainDate(lot.purchase_date)}
           </Typography>
         ))}
     </Stack>

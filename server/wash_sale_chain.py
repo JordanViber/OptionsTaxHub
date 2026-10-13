@@ -10,7 +10,7 @@ the sale and the repurchase quiets that flag. Each flag keeps its own
 not-compared line, with no dollars, and that day's 1099 rows are not
 also explained as a missed wash. Rows are held for every same-day stock
 fill of that quantity, not only the first price. A 1099-only sale does
-not name a replacement buy and does not state a tacked holding period.
+not name a replacement buy. No hop states a tacked holding period.
 A $0-wash option 1099 row is reserved and is not matched to stock. A
 row whose instrument cannot be told is not compared and is not
 explained as stock.
@@ -370,10 +370,10 @@ def _closed_lots_from_events(
 
 
 def _shared_acquisition(lots: list[_ClosedLot]) -> tuple[date | None, int | None]:
-    """One tacked date only when every lot was acquired that day.
+    """One sold-lot purchase date only when every lot was acquired that day.
 
     A missing date or two different dates is not the earliest date. The
-    per-lot list is the display.
+    per-lot list is the display. This is not a replacement holding period.
     """
     if not lots:
         return None, None
@@ -1313,8 +1313,9 @@ def _hop_from_flag(
         engine_adjusted_cost_basis=engine_basis,
         original_purchase_date=acquired,
         original_holding_days=held_days,
-        carryover_days=held_days,
-        tacked_acquisition_date=acquired,
+        # Sold-lot dates are not a replacement holding period (JOR-85).
+        carryover_days=None,
+        tacked_acquisition_date=None,
         closed_lots=closed,
         engine_sale_loss=loss,
         from_engine=True,
