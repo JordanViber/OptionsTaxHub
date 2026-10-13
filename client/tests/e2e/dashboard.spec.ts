@@ -1168,3 +1168,214 @@ test.describe("Wash-sale chain explainer", () => {
     });
   }
 });
+
+function boxesOverlap(
+  a: { x: number; y: number; width: number; height: number },
+  b: { x: number; y: number; width: number; height: number },
+): boolean {
+  return (
+    a.x < b.x + b.width &&
+    a.x + a.width > b.x &&
+    a.y < b.y + b.height &&
+    a.y + a.height > b.y
+  );
+}
+
+function boxInside(
+  inner: { x: number; y: number; width: number; height: number },
+  outer: { x: number; y: number; width: number; height: number },
+): boolean {
+  return (
+    inner.x >= outer.x - 1 &&
+    inner.y >= outer.y - 1 &&
+    inner.x + inner.width <= outer.x + outer.width + 1 &&
+    inner.y + inner.height <= outer.y + outer.height + 1
+  );
+}
+
+test.describe("JOR-88 product walk", () => {
+  const sampleAnalysis = {
+    ...MOCK_ANALYSIS,
+    sample_run: true,
+    tax_profile: {
+      ...MOCK_ANALYSIS.tax_profile,
+      tax_year: 2026,
+    },
+  };
+
+  const nvdaWait = {
+    symbol: "NVDA",
+    quantity: 10,
+    avg_cost_basis: 410.25,
+    total_cost_basis: 4102.5,
+    current_price: 228,
+    market_value: 2280,
+    unrealized_pnl: -1822.5,
+    unrealized_pnl_pct: -44.4,
+    earliest_purchase_date: "2025-06-01",
+    holding_period_days: 40,
+    is_long_term: false,
+    asset_type: "stock",
+    tax_lots: [
+      {
+        symbol: "NVDA",
+        quantity: 10,
+        cost_basis_per_share: 410.25,
+        total_cost_basis: 4102.5,
+        purchase_date: "2025-06-01",
+        current_price: 228,
+        asset_type: "stock",
+        unrealized_pnl: -1822.5,
+        unrealized_pnl_pct: -44.4,
+        holding_period_days: 40,
+        is_long_term: false,
+        wash_sale_disallowed: 0,
+      },
+    ],
+    wash_sale_risk: true,
+  };
+
+  async function mockGuestDesk(page: Parameters<typeof setupMockAnalysis>[0]) {
+    await page.route("**/health", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ status: "ok" }),
+      }),
+    );
+    await page.route("**/auth/v1/**", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({}),
+      }),
+    );
+  }
+
+  async function openSampleFromLanding(
+    page: Parameters<typeof setupMockAnalysis>[0],
+  ) {
+    await page.goto("/");
+    await page.getByRole("button", { name: "Open the 2026 sample" }).click();
+    await expect(page).toHaveURL(/\/dashboard/, { timeout: 30000 });
+  }
+
+  test("guest opens Why these totals disagree", async ({ page }) => {
+    await setupMockAnalysis(page, {
+      ...sampleAnalysis,
+      supplemental_1099: {
+        source_filename: "sample-1099.pdf",
+        broker_name: "Robinhood",
+        tax_year: 2026,
+        short_term_proceeds: 2699,
+        short_term_cost_basis: 0,
+        short_term_wash_sale_disallowed: 924,
+        short_term_net_gain: 2699,
+        long_term_proceeds: 0,
+        long_term_cost_basis: 0,
+        long_term_wash_sale_disallowed: 0,
+        long_term_net_gain: 0,
+        referenced_symbols: ["NVDA", "TSLA", "AMD", "SPX"],
+        matched_symbols: ["NVDA"],
+        insights: [],
+      },
+      summary: {
+        ...sampleAnalysis.summary,
+        realized_summary: {
+          tax_year: 2026,
+          st_gains: 0,
+          st_losses: -924,
+          lt_gains: 0,
+          lt_losses: 0,
+          net_st: -924,
+          net_lt: 0,
+          total_net: -924,
+          transactions_count: 1,
+        },
+      },
+    });
+    await mockGuestDesk(page);
+    await openSampleFromLanding(page);
+    const hint = page.getByRole("button", { name: "Why these totals disagree" });
+    await hint.scrollIntoViewIfNeeded();
+    await expect(hint).toBeVisible();
+    await expect(hint).toHaveAttribute("aria-expanded", "false");
+    await expect(page.getByTestId("glossary-hint-panel")).toHaveCount(0);
+    await hint.click();
+    await expect(hint).toHaveAttribute("aria-expanded", "true");
+    await expect(page.getByTestId("glossary-hint-panel")).toContainText(
+      "can settle in January",
+    );
+    await hint.click();
+    await expect(page.getByTestId("glossary-hint-panel")).toHaveCount(0);
+    await hint.click();
+    await expect(page.getByTestId("glossary-hint-panel")).toContainText(
+      "can settle in January",
+    );
+  });
+
+  test("NVDA Wait chip does not cover the P&L percent at 390px", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await setupMockAnalysis(page, {
+      ...sampleAnalysis,
+      positions: [nvdaWait, ...sampleAnalysis.positions],
+      summary: {
+        ...sampleAnalysis.summary,
+        positions_count: 3,
+      },
+    });
+    await mockGuestDesk(page);
+    await openSampleFromLanding(page);
+    const lotTab = page.getByRole("tab", { name: /Lot ledger/ });
+    await expect(async () => {
+      if ((await lotTab.getAttribute("aria-selected")) !== "true") {
+        await lotTab.evaluate((el) =>
+          el.scrollIntoView({ block: "center", inline: "nearest" }),
+        );
+        await lotTab.click();
+      }
+      await expect(lotTab).toHaveAttribute("aria-selected", "true");
+    }).toPass();
+    const card = page.getByTestId("position-row-NVDA");
+    await expect(card).toBeVisible();
+    const pct = card.getByText("(-44.4%)");
+    const waitChip = card.locator(".MuiChip-root", { hasText: /^Wait$/ });
+    await expect(pct).toBeVisible();
+    await expect(waitChip).toBeVisible();
+    const pctBox = await pct.boundingBox();
+    const waitBox = await waitChip.boundingBox();
+    const cardBox = await card.boundingBox();
+    expect(pctBox).toBeTruthy();
+    expect(waitBox).toBeTruthy();
+    expect(cardBox).toBeTruthy();
+    expect(boxesOverlap(pctBox!, waitBox!)).toBe(false);
+    expect(boxInside(pctBox!, cardBox!)).toBe(true);
+    expect(boxInside(waitBox!, cardBox!)).toBe(true);
+    const clipped = await pct.evaluate((el) => {
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 1 || rect.height < 1) return true;
+      let parent = el.parentElement;
+      while (parent) {
+        const style = getComputedStyle(parent);
+        const clips =
+          style.overflowX !== "visible" || style.overflowY !== "visible";
+        if (clips) {
+          const bounds = parent.getBoundingClientRect();
+          if (
+            rect.left < bounds.left - 1 ||
+            rect.right > bounds.right + 1 ||
+            rect.top < bounds.top - 1 ||
+            rect.bottom > bounds.bottom + 1
+          ) {
+            return true;
+          }
+        }
+        parent = parent.parentElement;
+      }
+      return false;
+    });
+    expect(clipped).toBe(false);
+  });
+});

@@ -83,6 +83,7 @@ import FirstRunEmptyState from "../components/FirstRunEmptyState";
 import DeskNav from "../components/DeskNav";
 import Supplemental1099InsightsPanel from "../components/Supplemental1099InsightsPanel";
 import {
+  PACKET_SCOPE_COPY,
   SUPPLEMENTAL_1099_AFTER_FIRST_RUN_COPY,
   SUPPLEMENTAL_1099_AFTER_FIRST_RUN_TITLE,
   SUPPLEMENTAL_1099_CONTEXT_COPY,
@@ -558,7 +559,7 @@ function getSupplemental1099HelperText({
 }): string {
   if (isRestoredAppliedSummary) {
     if (sameYearCompare) {
-      return "This restored result already includes 1099 vs this export (totals stay free). Lot-matched 1099-B is in the $49 packet. Upload the PDF again only if you want to refresh it.";
+      return `This restored result already includes 1099 vs this export (totals stay free). ${PACKET_SCOPE_COPY} Upload the PDF again only if you want to refresh it.`;
     }
     if (unknownYear) {
       return SUPPLEMENTAL_1099_UNKNOWN_YEAR_RESTORED_HELPER;
@@ -568,7 +569,7 @@ function getSupplemental1099HelperText({
 
   if (isApplied) {
     if (sameYearCompare) {
-      return "Included as 1099 vs this export (totals stay free). Lot-matched 1099-B is in the $49 packet.";
+      return `Included as 1099 vs this export (totals stay free). ${PACKET_SCOPE_COPY}`;
     }
     if (unknownYear) {
       return SUPPLEMENTAL_1099_UNKNOWN_YEAR_HELPER;
@@ -577,11 +578,11 @@ function getSupplemental1099HelperText({
   }
 
   if (hasSelectedFile && hasUploadedCsv) {
-    return "This PDF is being used with your latest CSV. Totals compare stays free; lot-matched 1099-B is in the $49 packet. Replace it to automatically refresh the result.";
+    return `This PDF is being used with your latest CSV. Totals compare stays free. ${PACKET_SCOPE_COPY} Replace it to automatically refresh the result.`;
   }
 
   if (hasSelectedFile) {
-    return "This PDF is ready and will be included the next time you analyze a CSV. Totals compare stays free; lot-matched 1099-B is in the $49 packet.";
+    return `This PDF is ready and will be included the next time you analyze a CSV. Totals compare stays free. ${PACKET_SCOPE_COPY}`;
   }
 
   return SUPPLEMENTAL_1099_CONTEXT_COPY;

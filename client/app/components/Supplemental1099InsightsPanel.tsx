@@ -236,7 +236,7 @@ export default function Supplemental1099InsightsPanel({
             Using {summary.broker_name || "broker"} 1099 PDF for tax year{" "}
             {summary.tax_year ?? "unknown"} — same year as this export.
           </Typography>
-          <Typography variant="body2">
+          <Typography component="div" variant="body2">
             {SUPPLEMENTAL_1099_GAP_COPY}{" "}
             <GlossaryHint
               label="Why these totals disagree"
@@ -336,7 +336,7 @@ export default function Supplemental1099InsightsPanel({
             </Typography>
           </Box>
         </Stack>
-        <Typography variant="body2">
+        <Typography component="div" variant="body2">
           {SUPPLEMENTAL_1099_SETTLEMENT_FAQ}{" "}
           <GlossaryHint
             label="Year-end short"

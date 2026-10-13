@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import Supplemental1099InsightsPanel from "../../app/components/Supplemental1099InsightsPanel";
 import type { RealizedSummary, Supplemental1099Summary } from "../../lib/types";
 import {
@@ -188,6 +188,18 @@ describe("Supplemental1099InsightsPanel", () => {
     );
     expect(totalsHint.getAttribute("title") ?? "").not.toMatch(/2,699/);
     expect(screen.queryByText(/r\/options/i)).not.toBeInTheDocument();
+    expect(screen.queryByTestId("glossary-hint-panel")).not.toBeInTheDocument();
+    expect(SUPPLEMENTAL_1099_GAP_COPY).toMatch(
+      /packages the reconciliation, wash chains, and harvest notes/i,
+    );
+    expect(SUPPLEMENTAL_1099_GAP_COPY).not.toMatch(/is in the \$49 PDF/i);
+    fireEvent.click(totalsHint);
+    expect(totalsHint).toHaveAttribute("aria-expanded", "true");
+    const opened = screen.getByTestId("glossary-hint-panel");
+    expect(opened).toBeVisible();
+    expect(opened).toHaveTextContent(/can settle in January/i);
+    expect(opened).toHaveTextContent(/SPX expiring 12\/31/i);
+    expect(opened.textContent ?? "").not.toMatch(/2,699/);
   });
 
   it("always shows the named gap copy on the same-year compare, even when totals match", () => {

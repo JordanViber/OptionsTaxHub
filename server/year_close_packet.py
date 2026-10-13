@@ -92,7 +92,6 @@ COMPARE_BROKER_HEADER = "Broker 1099 (settlement date)"
 COMPARE_EXPORT_HEADER = "This export (trade date)"
 COMPARE_GAP_COPY = (
     "The 1099 uses settlement date and the export uses trade date. "
-    "A year-end short option such as SPX expiring 12/31 can settle in January. "
     "That is not a software bug."
 )
 

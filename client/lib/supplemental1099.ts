@@ -7,8 +7,12 @@ import type {
 export const SUPPLEMENTAL_1099_UPLOAD_TITLE =
   "Robinhood 1099 for the tax year you are closing";
 
+export const PACKET_SCOPE_COPY =
+  "The PDF packages the reconciliation, wash chains, and harvest notes into a downloadable year-close document, plus updates for that tax year.";
+
 export const SUPPLEMENTAL_1099_CONTEXT_COPY =
-  "Broker 1099 for the tax year you are closing — totals compare is free; lot-matched 1099-B is in the $49 packet.";
+  "Broker 1099 for the tax year you are closing — totals compare is free. " +
+  PACKET_SCOPE_COPY;
 
 export const SUPPLEMENTAL_1099_APPLIED_TITLE =
   "Previous-year 1099 supplement applied";
@@ -44,9 +48,9 @@ export const SUPPLEMENTAL_1099_EXPORT_COLUMN = "This export (trade date)";
 
 /** Sample figures. Landing preview only — do not reuse on a real user's compare or PDF. */
 export const ST_TOTALS_EXPLANATION =
-  "Short-term on the 1099 is +$2,699. This export's short-term result before wash-sale add-back is −$924. Both sides disallow $924, so the export column can read $0 after that add-back. A year-end short option (SPX 12/31) settles in January: the 1099 counts the gain, and this export does not yet. That is not a software bug.";
+  "Short-term on the 1099 is +$2,699. This export's short-term result, before the disallowed wash sale is counted, is −$924. Both sides disallow $924, so the export column can read $0 once that disallowed amount is counted. That is not a software bug.";
 
-/** Generic gap hint. No sample dollar figures. */
+/** Dashboard disclosure only. No sample dollar figures. The 12/31 year-end note lives here once. */
 export const ST_GAP_EXPLANATION =
   "The 1099 uses settlement date and the export uses trade date. A year-end short option such as SPX expiring 12/31 can settle in January. That is not a software bug.";
 
@@ -57,7 +61,9 @@ export const WASH_WINDOW_EXPLANATION =
 export const SUPPLEMENTAL_1099_GAP_COPY =
   "These totals often disagree. " +
   WASH_ACCOUNT_SCOPE_COPY +
-  " Lot-level 1099 reconciliation is in the $49 PDF. An incomplete export also shows up here.";
+  " " +
+  PACKET_SCOPE_COPY +
+  " An incomplete export also shows up here.";
 
 export const SUPPLEMENTAL_1099_SETTLEMENT_FAQ =
   "Robinhood 1099 uses settlement date. Matched lots still show both dates so the split is visible.";
@@ -77,10 +83,12 @@ export const SUPPLEMENTAL_1099_AFTER_FIRST_RUN_TITLE =
   "Optional: 1099 for the tax year you are closing";
 
 export const SUPPLEMENTAL_1099_AFTER_FIRST_RUN_COPY =
-  "Upload your Robinhood 1099 PDF for the tax year you are closing. Totals compare stays free. Lot-matched 1099-B is in the $49 packet.";
+  "Upload your Robinhood 1099 PDF for the tax year you are closing. Totals compare stays free. " +
+  PACKET_SCOPE_COPY;
 
 export const SUPPLEMENTAL_1099_FIRST_RUN_HINT =
-  "You can also attach the Robinhood 1099 PDF for the tax year you are closing next to the CSV. Totals compare stays free; lot-matched 1099-B is in the $49 packet.";
+  "You can also attach the Robinhood 1099 PDF for the tax year you are closing next to the CSV. Totals compare stays free. " +
+  PACKET_SCOPE_COPY;
 
 const IN_APP_SAMPLE_1099 = "sample-robinhood-1099-2026.pdf";
 

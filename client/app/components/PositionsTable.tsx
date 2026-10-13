@@ -256,21 +256,44 @@ function getLotWashDetails(
 function PnlCell({
   value,
   pct,
-}: Readonly<{ value: number | null; pct: number | null }>) {
+  stacked = false,
+}: Readonly<{
+  value: number | null;
+  pct: number | null;
+  stacked?: boolean;
+}>) {
   if (value == null) return <Typography variant="body2">—</Typography>;
   const color = value >= 0 ? "success.main" : "error.main";
   const sign = value >= 0 ? "+" : "";
   return (
-    <Box sx={{ display: "flex", alignItems: "baseline", gap: 0.5 }}>
+    <Box
+      sx={{
+        display: "flex",
+        flexDirection: stacked ? "column" : "row",
+        alignItems: stacked ? "flex-start" : "baseline",
+        gap: stacked ? 0 : 0.5,
+        minWidth: 0,
+        maxWidth: "100%",
+      }}
+    >
       <Typography
         variant="body2"
-        sx={{ color, fontWeight: 600, fontSize: "0.8rem" }}
+        sx={{
+          color,
+          fontWeight: 600,
+          fontSize: "0.8rem",
+          overflowWrap: "anywhere",
+          maxWidth: "100%",
+        }}
       >
         {sign}
         {formatCurrency(value)}
       </Typography>
       {pct != null && (
-        <Typography variant="caption" sx={{ color, fontSize: "0.7rem" }}>
+        <Typography
+          variant="caption"
+          sx={{ color, fontSize: "0.7rem", whiteSpace: "nowrap" }}
+        >
           {`(${sign}${pct.toFixed(1)}%)`}
         </Typography>
       )}
@@ -947,8 +970,10 @@ function PositionCard({
         sx={{
           mt: 1.25,
           display: "grid",
-          gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
-          gap: 1,
+          gridTemplateColumns: "auto minmax(0, 1fr) auto",
+          columnGap: 1.5,
+          rowGap: 0.5,
+          alignItems: "start",
           minWidth: 0,
         }}
       >
@@ -960,16 +985,17 @@ function PositionCard({
             {position.quantity}
           </Typography>
         </Box>
-        <Box sx={{ minWidth: 0 }}>
+        <Box sx={{ minWidth: 0, maxWidth: "100%" }}>
           <Typography variant="caption" color="text.secondary">
             P&L
           </Typography>
           <PnlCell
+            stacked
             value={position.unrealized_pnl}
             pct={position.unrealized_pnl_pct}
           />
         </Box>
-        <Box sx={{ minWidth: 0 }}>
+        <Box sx={{ minWidth: 0, justifySelf: "end" }}>
           <Typography variant="caption" color="text.secondary">
             Harvest
           </Typography>

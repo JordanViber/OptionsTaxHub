@@ -326,7 +326,7 @@ describe("WashSaleChainPanel", () => {
     expect(screen.getByText(/explained basis/i)).toHaveTextContent("10");
     expect(screen.queryByText(/Holding period/i)).not.toBeInTheDocument();
     expect(
-      screen.getByText("Engine adjusted basis (source of truth)"),
+      screen.getByText("Adjusted basis"),
     ).toBeInTheDocument();
     expect(screen.queryByText(/in your tax totals/i)).not.toBeInTheDocument();
     expect(
@@ -405,7 +405,7 @@ describe("WashSaleChainPanel", () => {
       screen.getByText("No replacement buy in this Robinhood export."),
     ).toBeInTheDocument();
     expect(
-      screen.queryByText("Engine adjusted basis (source of truth)"),
+      screen.queryByText("Adjusted basis"),
     ).not.toBeInTheDocument();
     expect(screen.queryByText(/in your tax totals/i)).not.toBeInTheDocument();
     fireEvent.click(screen.getByLabelText("Close wash-sale chain"));
