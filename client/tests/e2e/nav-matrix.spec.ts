@@ -23,13 +23,21 @@ async function mockGuest(page: Page) {
       body: JSON.stringify({ status: "ok" }),
     }),
   );
-  await page.route("**/auth/v1/**", (route) =>
-    route.fulfill({
+  await page.route("**/auth/v1/**", (route) => {
+    const url = route.request().url();
+    if (
+      url.includes("/auth/v1/user") ||
+      url.includes("/auth/v1/token") ||
+      url.includes("/auth/v1/logout")
+    ) {
+      return route.fallback();
+    }
+    return route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({}),
-    }),
-  );
+    });
+  });
   await page.route("**/api/oth/options/rh-status*", (route) =>
     route.fulfill({
       status: 200,
@@ -235,7 +243,7 @@ test.describe("nav matrix", () => {
       "href",
       "/auth/signin?next=/",
     );
-    await expect(footer.getByRole("link", { name: "Tax" })).toHaveAttribute(
+    await expect(footer.getByRole("link", { name: "Tax", exact: true })).toHaveAttribute(
       "href",
       "/dashboard",
     );
@@ -256,7 +264,7 @@ test.describe("nav matrix", () => {
     await page.goto("/");
     await page.getByRole("button", { name: "I have a CSV" }).click();
     await expect(page).toHaveURL(/\/dashboard/);
-    await expect(page.getByLabel("Upload CSV")).toBeVisible();
+    await expect(page.getByTestId("csv-dropzone")).toBeVisible();
 
     await page.goto("/");
     await page.getByRole("navigation", { name: "Primary" }).getByRole("link", {
@@ -293,7 +301,7 @@ test.describe("nav matrix", () => {
     await page.goto("/options");
     await page.getByTestId("header-upload").click();
     await expect(page).toHaveURL(/\/dashboard/);
-    await expect(page.getByLabel("Upload CSV")).toBeVisible();
+    await expect(page.getByTestId("csv-dropzone")).toBeVisible();
 
     await page.goto("/dashboard");
     await page.getByTestId("tax-settings-link").click();

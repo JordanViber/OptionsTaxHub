@@ -308,10 +308,18 @@ export async function injectMockSession(page: Page) {
         created_at: "2025-01-01T00:00:00Z",
       },
     };
-    const keys = Object.keys(localStorage);
-    const existing = keys.find((k) => k.includes("auth-token"));
-    const storageKey = existing || "sb-vgrlucxqncajjdoaoctq-auth-token";
-    localStorage.setItem(storageKey, JSON.stringify(authData));
+    const storageKeys = new Set([
+      "sb-vgrlucxqncajjdoaoctq-auth-token",
+      "sb-127-auth-token",
+    ]);
+    for (const key of Object.keys(localStorage)) {
+      if (key.includes("auth-token")) {
+        storageKeys.add(key);
+      }
+    }
+    for (const storageKey of storageKeys) {
+      localStorage.setItem(storageKey, JSON.stringify(authData));
+    }
     try {
       sessionStorage.setItem(
         "optionstaxhub-packet-paid:local-analysis",
