@@ -4,12 +4,13 @@ Builds a display model from wash flags, FIFO realized events, and same-year
 1099-B lot matches. Does not rewrite wash_sale.py, lot basis, or tax totals.
 Does not set WashSaleFlag.purchase_date (that field feeds ST/LT wash splits).
 
-v1 explains stock sales only. An option flag, or a flag whose replacement
-is an option buy, is one not-compared entry per symbol and sale date, with
-no dollar figure. A same-day option close that is not itself a wash flag
-is not shown. A $0-wash option 1099 row is reserved and is not matched to
-stock. A row whose instrument cannot be told is not compared and is not
-explained as stock.
+v1 explains one stock sale at a time. Any option trade on the flag's
+symbol from 30 days before the sale through 30 days after the repurchase
+quiets that flag: one not-compared line, no dollars, and that day's 1099
+rows are not also explained as a missed wash. A 1099 row with no export
+trade date is shown without a replacement buy. A $0-wash option 1099 row
+is reserved and is not matched to stock. A row whose instrument cannot
+be told is not compared and is not explained as stock.
 """
 
 from __future__ import annotations
@@ -93,7 +94,7 @@ class _HopDraft:
     from_engine: bool = True
     # Why a hop was not compared. Drives copy only; not a tax field.
     # "" | "no_1099" | "ambiguous" | "over_cap" | "unidentified" | "option"
-    # | "unclassified" | "overlap" | "unassigned" | "unknown"
+    # | "unclassified" | "unassigned" | "unknown"
     not_compared_reason: str = ""
     # Display-only match bookkeeping. Not copied onto the API model.
     row_target: float | None = None
@@ -875,14 +876,141 @@ _UNKNOWN_QTY_LINE = (
     "This 1099 sale has no quantity, so it was not compared."
 )
 _OPTION_WORD = re.compile(r"\b(?:calls?|puts?|options?)\b", re.IGNORECASE)
+# Buy, sell, open, close, assignment, exercise, and expiry. Asset type
+# option counts even when the code is a plain buy or sell.
+_OPTION_EVENT_CODES = frozenset(
+    {
+        TransCode.BTO,
+        TransCode.STO,
+        TransCode.BTC,
+        TransCode.STC,
+        TransCode.OASGN,
+        TransCode.OEXCS,
+        TransCode.OEXP,
+    }
+)
 
 
-def _overlap_line(symbol: str, sale_date: date) -> str:
-    when = _fmt_date(sale_date, with_year=True)
-    return (
-        f"{symbol} on {when} has a stock sale and an option close of the same "
-        "quantity, so neither was compared."
+def _is_option_event(txn: Transaction) -> bool:
+    """True for an option buy, sell, close, assignment, exercise, or expiry."""
+    return _is_option_asset(txn.asset_type) or txn.trans_code in _OPTION_EVENT_CODES
+
+
+def _option_touches_flag(
+    flag: WashSaleFlag,
+    transactions: list[Transaction],
+    events: list[RealizedEvent],
+) -> bool:
+    """True when any option trade hits this symbol inside the flag's window.
+
+    The window is 30 days before the sale through 30 days after the
+    repurchase. One option trade quiets the whole flag. A stock sell of
+    the same size is not used to explain that flag.
+    """
+    symbol = _symbol(flag.symbol)
+    start = flag.sale_date - timedelta(days=WASH_SALE_WINDOW_DAYS)
+    end = flag.repurchase_date + timedelta(days=WASH_SALE_WINDOW_DAYS)
+    for txn in transactions:
+        if _symbol(txn.instrument) != symbol:
+            continue
+        if not start <= txn.activity_date <= end:
+            continue
+        if _is_option_event(txn):
+            return True
+    for event in events:
+        if _symbol(event.symbol) != symbol:
+            continue
+        if not start <= event.sale_date <= end:
+            continue
+        if _is_option_asset(event.asset_type):
+            return True
+    return False
+
+
+def _quiet_unit_target(
+    flag: WashSaleFlag,
+    transactions: list[Transaction],
+    events: list[RealizedEvent],
+) -> float | None:
+    """Unit price used only to choose which 1099 rows to hold back.
+
+    A stock sell of this quantity wins, so split stock fills are held
+    back with the quiet flag. An option trade's price is used only when
+    no stock sell of this size exists. The price is not shown.
+    """
+    symbol = _symbol(flag.symbol)
+    sale_date = flag.sale_date
+    quantity = float(flag.sale_quantity)
+    stock_price: float | None = None
+    option_price: float | None = None
+    for txn in transactions:
+        if _symbol(txn.instrument) != symbol or txn.activity_date != sale_date:
+            continue
+        if float(txn.quantity) <= QTY_EPS or not _qty_close(txn.quantity, quantity):
+            continue
+        if _is_option_event(txn):
+            if option_price is None:
+                option_price = float(txn.price)
+            continue
+        if txn.trans_code in _SELL_CODES and stock_price is None:
+            stock_price = float(txn.price)
+    if stock_price is not None:
+        return stock_price
+    if option_price is not None:
+        return option_price
+    for event in events:
+        if _symbol(event.symbol) != symbol or event.sale_date != sale_date:
+            continue
+        if _is_option_asset(event.asset_type):
+            continue
+        if float(event.quantity) <= QTY_EPS or not _qty_close(event.quantity, quantity):
+            continue
+        return float(event.sale_proceeds) / float(event.quantity)
+    return None
+
+
+def _reserve_same_day_1099_rows(
+    rows: list[LotMatchRow],
+    used: set[int],
+    *,
+    symbol: str,
+    sale_date: date,
+    quantity: float,
+    unit_target: float | None,
+) -> None:
+    """Hold back same-day 1099 rows so a quiet flag has no sibling claim.
+
+    Candidates sit within the proceeds slack of the sale's unit price.
+    An exact quantity subset is reserved. More than 12 candidates, or no
+    exact subset, reserves every candidate. Those rows are not compared
+    and are not explained as a wash the export missed.
+    """
+    candidates = _match_candidates(
+        rows,
+        used=used,
+        symbol=symbol,
+        sale_date=sale_date,
+        target=unit_target,
     )
+    if not candidates:
+        return
+    over_cap = len(candidates) > _MAX_MATCH_CANDIDATES
+    subsets = (
+        []
+        if over_cap
+        else _qty_subsets(
+            candidates,
+            quantity,
+            lambda item: float(item[1].quantity or 0.0),
+        )
+    )
+    if over_cap or not subsets:
+        for index, _row in candidates:
+            used.add(index)
+        return
+    for subset in subsets:
+        for index, _row in subset:
+            used.add(index)
 
 
 def _unassigned_line(symbol: str, sale_date: date) -> str:
@@ -891,67 +1019,6 @@ def _unassigned_line(symbol: str, sale_date: date) -> str:
         f"{symbol} on {when} overlapped more than one possible sale, "
         "so it was not compared."
     )
-
-
-def _flag_sale_is_option(
-    transactions: list[Transaction],
-    events: list[RealizedEvent],
-    *,
-    symbol: str,
-    sale_date: date,
-    quantity: float,
-) -> bool:
-    """True when this flag's sale is an option.
-
-    A stock sell of the same symbol keeps the flag on the stock path.
-    Option events are not stock lots, and a stock lot is not an option sale.
-    """
-    saw_stock_sell = False
-    saw_option_sell = False
-    option_parts: list[float] = []
-    for txn in transactions:
-        option_close = (
-            txn.trans_code in (TransCode.STC, TransCode.BTC)
-            and _is_option_asset(txn.asset_type)
-        )
-        stock_sell = txn.trans_code in _SELL_CODES and not _is_option_asset(txn.asset_type)
-        if not option_close and not stock_sell:
-            continue
-        if _symbol(txn.instrument) != symbol or txn.activity_date != sale_date:
-            continue
-        if float(txn.quantity) <= QTY_EPS:
-            continue
-        if option_close:
-            option_parts.append(float(txn.quantity))
-            if _qty_close(txn.quantity, quantity):
-                saw_option_sell = True
-        elif _qty_close(txn.quantity, quantity):
-            saw_stock_sell = True
-    if saw_stock_sell:
-        return False
-    if saw_option_sell:
-        return True
-    # A buy-to-close split across lots is still this flag's option sale.
-    if option_parts and _qty_subsets(option_parts, quantity, lambda part: part):
-        return True
-    stock_events: list[RealizedEvent] = []
-    option_events: list[RealizedEvent] = []
-    for event in events:
-        if _symbol(event.symbol) != symbol or event.sale_date != sale_date:
-            continue
-        if float(event.quantity) <= QTY_EPS:
-            continue
-        if _is_option_asset(event.asset_type):
-            option_events.append(event)
-        else:
-            stock_events.append(event)
-    if not option_events:
-        return False
-    if not stock_events:
-        return True
-    if any(_qty_close(float(event.quantity), quantity) for event in stock_events):
-        return False
-    return any(_qty_close(float(event.quantity), quantity) for event in option_events)
 
 
 def _option_hop(
@@ -1053,24 +1120,6 @@ def _hop_from_flag(
     same_year: bool,
 ) -> _HopDraft:
     symbol = _symbol(flag.symbol)
-    if _flag_sale_is_option(
-        transactions,
-        events,
-        symbol=symbol,
-        sale_date=flag.sale_date,
-        quantity=float(flag.sale_quantity),
-    ):
-        return _option_hop(
-            hop_id=_hop_id(
-                symbol,
-                flag.sale_date,
-                flag.sale_quantity,
-                f"f{flag_index}",
-            ),
-            symbol=symbol,
-            sale_date=flag.sale_date,
-            sale_quantity=float(flag.sale_quantity),
-        )
     sell_index, sell, event_set, unresolved = _attach_flag_sale(
         transactions,
         events,
@@ -1502,23 +1551,28 @@ def _hop_from_1099_group(
             reason="unclassified",
         )
     # Option buys are not stock replacements. The sale keeps buys of its own
-    # asset. Nothing here is scaled by contract size.
-    raw_buys = _buys_for_asset(
-        [
-            buy
-            for buy in _window_buys(transactions, symbol, sale_date)
-            if not _is_option_asset(buy.asset_type)
-        ],
-        asset,
-    )
-    cap = _repurchase_cap(raw_buys, quantity)
-    buys = _allocate_buys(
-        raw_buys,
-        repurchase_quantity=0.0 if cap is None else cap,
-        disallowed=wash,
-    )
-    _apply_display_scale(buys, raw_buys, scale_disallowed=False)
+    # asset. Nothing here is scaled by contract size. A row with no export
+    # trade date is shown as the 1099 sale only: date_sold can label it, but
+    # it does not pick a replacement buy.
     export_dates = {row.export_trade_date for _, row in items}
+    if any(value is None for value in export_dates):
+        buys = []
+    else:
+        raw_buys = _buys_for_asset(
+            [
+                buy
+                for buy in _window_buys(transactions, symbol, sale_date)
+                if not _is_option_asset(buy.asset_type)
+            ],
+            asset,
+        )
+        cap = _repurchase_cap(raw_buys, quantity)
+        buys = _allocate_buys(
+            raw_buys,
+            repurchase_quantity=0.0 if cap is None else cap,
+            disallowed=wash,
+        )
+        _apply_display_scale(buys, raw_buys, scale_disallowed=False)
     export_date = next(iter(export_dates)) if len(export_dates) == 1 else None
     closed: list[_ClosedLot] = []
     if export_date is not None:
@@ -1666,8 +1720,6 @@ def plain_english_line(hop: _HopDraft) -> str:
         return _OPTION_WASH_LINE
     if hop.not_compared_reason == "unclassified":
         return _UNCLASSIFIED_LINE
-    if hop.not_compared_reason == "overlap":
-        return _overlap_line(hop.symbol, hop.sale_date)
     if hop.not_compared_reason == "unassigned":
         return _unassigned_line(hop.symbol, hop.sale_date)
     if hop.not_compared_reason == "unidentified":
@@ -1841,37 +1893,6 @@ def _supplemental_has_totals(supplemental: Supplemental1099Summary | None) -> bo
     return any(abs(float(value or 0.0)) >= 0.01 for value in amounts)
 
 
-def _has_instrument_close(
-    transactions: list[Transaction],
-    events: list[RealizedEvent],
-    *,
-    symbol: str,
-    sale_date: date,
-    quantity: float,
-    option: bool,
-) -> bool:
-    """True when a sell or realized lot of this instrument matches the key."""
-    for txn in transactions:
-        if txn.trans_code not in _SELL_CODES:
-            continue
-        if _symbol(txn.instrument) != symbol or txn.activity_date != sale_date:
-            continue
-        if not _qty_close(txn.quantity, quantity):
-            continue
-        if _is_option_asset(txn.asset_type) is option:
-            return True
-    for event in events:
-        if _symbol(event.symbol) != symbol or event.sale_date != sale_date:
-            continue
-        if float(event.quantity) <= QTY_EPS:
-            continue
-        if not _qty_close(float(event.quantity), quantity):
-            continue
-        if _is_option_asset(event.asset_type) is option:
-            return True
-    return False
-
-
 def _unassigned_from_row(row: LotMatchRow, index: int) -> _HopDraft | None:
     """A 1099 row that overlapped a match and was not part of a chosen subset."""
     symbol = _symbol(row.symbol)
@@ -1981,57 +2002,6 @@ def _refuse_same_day_1099_ties(
                     unassigned.add(index)
 
 
-def _replacement_involves_option(
-    flag: WashSaleFlag,
-    transactions: list[Transaction],
-) -> bool:
-    """True when this flag's repurchase quantity is an option buy.
-
-    A stock buy on the same day does not hide that option buy. The option
-    buy has to be this flag's repurchase quantity, so a one-contract buy
-    does not claim a share wash of a different size.
-    """
-    symbol = _symbol(flag.symbol)
-    target = float(flag.repurchase_quantity)
-    for txn in transactions:
-        if txn.trans_code != TransCode.BTO or not _is_option_asset(txn.asset_type):
-            continue
-        if _symbol(txn.instrument) != symbol or txn.activity_date != flag.repurchase_date:
-            continue
-        if _qty_close(txn.quantity, target):
-            return True
-    return False
-
-
-def _reserve_overlap_1099_rows(
-    rows: list[LotMatchRow],
-    used: set[int],
-    *,
-    symbol: str,
-    sale_date: date,
-    quantity: float,
-) -> None:
-    """Consume 1099 rows of this overlapping sale's quantity.
-
-    The hop does not compare a wash total. Leaving its own rows unused lets
-    _group_rows emit an on_1099_only chain that says the export missed a
-    wash. Another sale that day keeps its rows. A missing quantity stays
-    for the unknown-row pass.
-    """
-    for index, row in enumerate(rows):
-        if index in used:
-            continue
-        if _symbol(row.symbol) != symbol:
-            continue
-        if _row_sale_date(row) != sale_date:
-            continue
-        if not _lot_quantity_known(row.quantity):
-            continue
-        if not _qty_close(float(row.quantity or 0.0), quantity):
-            continue
-        used.add(index)
-
-
 def _option_1099_hops(
     rows: list[LotMatchRow],
     used: set[int],
@@ -2121,9 +2091,20 @@ def build_wash_sale_chains(
             continue
         symbol = _symbol(flag.symbol)
         quantity = float(flag.sale_quantity)
-        # The flag's own option buy, even beside a stock buy that day.
-        # One line per symbol and sale date. No gain test and no dollar figure.
-        if _replacement_involves_option(flag, transactions):
+        # Any option trade in the wash window quiets the whole flag. One
+        # line per symbol and sale date. Same-day 1099 rows are held back
+        # so they are not a second chain claiming a missed wash.
+        if _option_touches_flag(flag, transactions, realized_events):
+            _reserve_same_day_1099_rows(
+                rows,
+                used_rows,
+                symbol=symbol,
+                sale_date=flag.sale_date,
+                quantity=quantity,
+                unit_target=_quiet_unit_target(
+                    flag, transactions, realized_events
+                ),
+            )
             option_by_day.setdefault(
                 (symbol, flag.sale_date),
                 _option_hop(
@@ -2134,46 +2115,8 @@ def build_wash_sale_chains(
                 ),
             )
             continue
-        stock_close = _has_instrument_close(
-            transactions,
-            realized_events,
-            symbol=symbol,
-            sale_date=flag.sale_date,
-            quantity=quantity,
-            option=False,
-        )
-        # A 1099 option lot of this quantity is not a close. Only a real
-        # option sale or realized option lot holds the stock wash back.
-        option_close = _has_instrument_close(
-            transactions,
-            realized_events,
-            symbol=symbol,
-            sale_date=flag.sale_date,
-            quantity=quantity,
-            option=True,
-        )
-        if stock_close and option_close:
-            # One hop per flag. Do not borrow the other side's proceeds.
-            # The option close is not a separate hop unless it is a wash flag.
-            engine_hops.append(
-                _bare_not_compared_hop(
-                    hop_id=_hop_id(symbol, flag.sale_date, quantity, f"f{flag_index}"),
-                    symbol=symbol,
-                    asset_type=AssetType.STOCK.value,
-                    sale_date=flag.sale_date,
-                    sale_quantity=quantity,
-                    reason="overlap",
-                )
-            )
-            _reserve_overlap_1099_rows(
-                rows,
-                used_rows,
-                symbol=symbol,
-                sale_date=flag.sale_date,
-                quantity=quantity,
-            )
-        else:
-            hop = _hop_from_flag(
+        engine_hops.append(
+            _hop_from_flag(
                 flag,
                 flag_index=flag_index,
                 transactions=transactions,
@@ -2183,10 +2126,7 @@ def build_wash_sale_chains(
                 used_txns=used_txns,
                 same_year=comparable,
             )
-            if hop.not_compared_reason == "option":
-                option_by_day.setdefault((hop.symbol, hop.sale_date), hop)
-            else:
-                engine_hops.append(hop)
+        )
     _refuse_same_day_1099_ties(engine_hops, rows, used_rows, unassigned)
     for hop in engine_hops:
         if hop.compare_1099 and hop.not_compared_reason != "ambiguous":
