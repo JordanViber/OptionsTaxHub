@@ -12,6 +12,8 @@ const APP_PAGES = [
 
 const VIEWPORTS = [
   { name: "1280", width: 1280, height: 800 },
+  { name: "900", width: 900, height: 800 },
+  { name: "768", width: 768, height: 800 },
   { name: "390", width: 390, height: 844 },
 ] as const;
 
@@ -74,7 +76,7 @@ test.describe("nav matrix", () => {
         }
 
         const actionSets: string[] = [];
-        const compact = viewport.width === 390;
+        const compact = viewport.width <= 900;
 
         for (const entry of APP_PAGES) {
           await page.goto(entry.path);
@@ -93,6 +95,17 @@ test.describe("nav matrix", () => {
           await expect(options).toHaveAttribute("href", "/options");
           await expect(page.getByText("Open Tax")).toHaveCount(0);
           await expect(page.getByRole("button", { name: /^Settings$/ })).toHaveCount(0);
+          const headerOverflow = await header.evaluate(
+            (el) => el.scrollWidth - el.clientWidth,
+          );
+          expect(headerOverflow).toBeLessThanOrEqual(1);
+          if (compact) {
+            await expect(header.getByTestId("header-menu")).toBeVisible();
+            await expect(header.getByTestId("header-actions")).toHaveCount(0);
+          } else {
+            await expect(header.getByTestId("header-menu")).toHaveCount(0);
+            await expect(header.getByTestId("header-actions")).toBeVisible();
+          }
 
           if (entry.path === "/dashboard") {
             await expect(tax).toHaveAttribute("aria-current", "page");
@@ -109,6 +122,7 @@ test.describe("nav matrix", () => {
 
           if (compact) {
             await header.getByRole("button", { name: "Menu" }).click();
+            await expect(page.locator(".MuiMenu-paper")).toHaveCSS("opacity", "1");
             if (entry.path === "/dashboard") {
               await expect(
                 page.getByRole("menuitem", { name: "Tax (current)" }),
@@ -164,6 +178,7 @@ test.describe("nav matrix", () => {
         ).toBeVisible();
         if (compact) {
           await header.getByRole("button", { name: "Menu" }).click();
+          await expect(page.locator(".MuiMenu-paper")).toHaveCSS("opacity", "1");
         }
         await expect(page.getByTestId("header-try-sample")).toBeVisible();
         if (auth === "guest") {
@@ -346,7 +361,9 @@ test.describe("nav matrix", () => {
     await page.getByTestId("header-account").click();
     await page.getByTestId("account-tax-settings").click();
     await expect(page).toHaveURL(/\/settings/);
-    await expect(page.getByRole("heading", { name: "Tax settings" })).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "Tax settings", exact: true }),
+    ).toBeVisible();
   });
 
   test("390 menu still reaches the sample in one labeled step", async ({ page }) => {

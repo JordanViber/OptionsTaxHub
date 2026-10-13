@@ -21,6 +21,7 @@ import {
 } from "@mui/icons-material";
 import NextLink from "next/link";
 import { usePathname, useRouter } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/app/context/auth";
 import TipJar from "./TipJar";
 import Wordmark from "./Wordmark";
@@ -37,6 +38,11 @@ const NAV_ITEMS = [
   { href: TAX_PATH, label: "Tax" },
   { href: OPTIONS_PATH, label: "Options" },
 ] as const;
+
+/** Desktop actions stay in the toolbar only above 900px. 600–900px uses the menu. */
+export const COMPACT_HEADER_QUERY = "(max-width:900px)";
+
+const ANALYSIS_STORAGE_KEY = "optionstaxhub-analysis";
 
 type ShellVariant = "app" | "landing" | "auth";
 
@@ -91,8 +97,9 @@ export default function AppShell({
 }>) {
   const pathname = usePathname() || "/";
   const router = useRouter();
+  const queryClient = useQueryClient();
   const { user, signOut } = useAuth();
-  const compact = useMediaQuery("(max-width:599.95px)");
+  const compact = useMediaQuery(COMPACT_HEADER_QUERY);
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
   const [accountAnchor, setAccountAnchor] = useState<HTMLElement | null>(null);
   const [tipOpen, setTipOpen] = useState(false);
@@ -151,6 +158,15 @@ export default function AppShell({
 
   const goSignOut = async () => {
     closeMenus();
+    const userId = user?.id;
+    try {
+      sessionStorage.removeItem(ANALYSIS_STORAGE_KEY);
+    } catch {
+      // ignore
+    }
+    // Drop this account's cached runs and tax profile before the next sign-in.
+    queryClient.removeQueries({ queryKey: ["portfolio-history", userId] });
+    queryClient.removeQueries({ queryKey: ["tax-profile", userId] });
     if (onSignOut) {
       await onSignOut();
       return;

@@ -1,9 +1,11 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import AppShell, { accountDisplayName } from "../../app/components/AppShell";
 
 const mockPush = jest.fn();
 const mockAuth = {
   user: null as null | {
+    id?: string;
     email?: string;
     user_metadata?: { display_name?: string };
   },
@@ -48,6 +50,13 @@ describe("accountDisplayName", () => {
   });
 });
 
+function renderShell(ui: React.ReactElement, client = new QueryClient()) {
+  return {
+    client,
+    ...render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>),
+  };
+}
+
 describe("AppShell", () => {
   const originalMatchMedia = window.matchMedia;
 
@@ -55,6 +64,7 @@ describe("AppShell", () => {
     mockPush.mockReset();
     mockAuth.user = null;
     mockAuth.signOut.mockReset();
+    mockAuth.signOut.mockResolvedValue(undefined);
     sessionStorage.clear();
     mockCompact(false);
   });
@@ -64,7 +74,7 @@ describe("AppShell", () => {
   });
 
   it("shows the same app actions and an active Tax link", () => {
-    render(
+    renderShell(
       <AppShell>
         <div>Desk</div>
       </AppShell>,
@@ -88,7 +98,7 @@ describe("AppShell", () => {
   });
 
   it("sends guests from Saved runs to sign-in for this page", () => {
-    render(<AppShell />);
+    renderShell(<AppShell />);
     fireEvent.click(screen.getByTestId("header-saved-runs"));
     expect(mockPush).toHaveBeenCalledWith(
       "/auth/signin?next=/dashboard&reason=runs",
@@ -100,7 +110,7 @@ describe("AppShell", () => {
       email: "ada@example.com",
       user_metadata: { display_name: "Ada" },
     };
-    render(<AppShell />);
+    renderShell(<AppShell />);
     fireEvent.click(screen.getByRole("button", { name: "Account" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Tax settings" }));
     expect(mockPush).toHaveBeenCalledWith("/settings");
@@ -109,7 +119,7 @@ describe("AppShell", () => {
 
   it("labels the 390px menu and marks the active page", () => {
     mockCompact(true);
-    render(<AppShell />);
+    renderShell(<AppShell />);
 
     expect(screen.getByRole("link", { name: "Tax" })).toBeVisible();
     expect(screen.getByRole("link", { name: "Options" })).toBeVisible();
@@ -128,10 +138,32 @@ describe("AppShell", () => {
 
   it("uses the tax page upload handler instead of leaving the desk", () => {
     const onUpload = jest.fn();
-    render(<AppShell onUpload={onUpload} />);
+    renderShell(<AppShell onUpload={onUpload} />);
     fireEvent.click(screen.getByTestId("header-upload"));
     expect(onUpload).toHaveBeenCalledTimes(1);
     expect(sessionStorage.getItem("oth-upload-intent")).toBeNull();
     expect(mockPush).not.toHaveBeenCalled();
+  });
+
+  it("clears the saved analysis and query cache on shared sign-out", async () => {
+    mockAuth.user = {
+      id: "user-1",
+      email: "ada@example.com",
+      user_metadata: { display_name: "Ada" },
+    };
+    sessionStorage.setItem("optionstaxhub-analysis", "{\"sample\":true}");
+    const client = new QueryClient();
+    client.setQueryData(["portfolio-history", "user-1"], [{ id: "h1" }]);
+    client.setQueryData(["tax-profile", "user-1"], { tax_year: 2026 });
+
+    renderShell(<AppShell />, client);
+    fireEvent.click(screen.getByRole("button", { name: "Account" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Sign Out" }));
+
+    await waitFor(() => expect(mockAuth.signOut).toHaveBeenCalledTimes(1));
+    expect(sessionStorage.getItem("optionstaxhub-analysis")).toBeNull();
+    expect(client.getQueryData(["portfolio-history", "user-1"])).toBeUndefined();
+    expect(client.getQueryData(["tax-profile", "user-1"])).toBeUndefined();
+    expect(mockPush).toHaveBeenCalledWith("/auth/signin");
   });
 });
