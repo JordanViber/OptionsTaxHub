@@ -268,4 +268,112 @@ describe("supplemental1099 helpers", () => {
     expect(redactUnpaidLotMatch(analysis).lot_match_report?.gap).toHaveLength(1);
     expect(redactUnpaidLotMatch(analysis).supplemental_1099?.lots).toHaveLength(1);
   });
+
+  it("strips wash-sale chains and lot rows from an unpaid analysis", () => {
+    const chain = {
+      chain_id: "AAPL:2026-06-20:10:e0",
+      symbol: "AAPL",
+      hops: [{ hop_id: "AAPL:2026-06-20:10:e0", symbol: "AAPL" }],
+    };
+    const analysis = {
+      packet_unlocked: false,
+      sample_run: false,
+      positions: [],
+      tax_lots: [],
+      suggestions: [],
+      wash_sale_flags: [],
+      wash_sale_chains: [chain],
+      summary: {},
+      tax_profile: null,
+      disclaimer: "",
+      errors: [],
+      warnings: [],
+      supplemental_1099: {
+        source_filename: "real-1099.pdf",
+        tax_year: 2026,
+        lots: [{ symbol: "AAPL", quantity: 10, proceeds: 800 }],
+      },
+      lot_match_report: {
+        matched: [
+          {
+            status: "matched",
+            symbol: "AAPL",
+            quantity: 10,
+            proceeds_1099: 800,
+            proceeds_export: 800,
+          },
+        ],
+        gap: [],
+        unmatched: [],
+        matched_count: 1,
+        gap_count: 0,
+        unmatched_count: 0,
+      },
+    } as unknown as PortfolioAnalysis;
+
+    const redacted = redactUnpaidLotMatch(analysis);
+    expect(redacted.wash_sale_chains).toBeUndefined();
+    expect("wash_sale_chains" in redacted).toBe(false);
+    expect(JSON.stringify(redacted)).not.toContain("wash_sale_chains");
+    expect(redacted.lot_match_report?.matched).toEqual([]);
+    expect(redacted.lot_match_report?.gap).toEqual([]);
+    expect(redacted.lot_match_report?.unmatched).toEqual([]);
+    expect(redacted.supplemental_1099?.lots).toEqual([]);
+    expect(analysis.wash_sale_chains).toEqual([chain]);
+    expect(analysis.lot_match_report?.matched).toHaveLength(1);
+  });
+
+  it("keeps wash-sale chains for a sample run and the in-app sample", () => {
+    const chain = {
+      chain_id: "AMD:2026-07-15:10:e0",
+      symbol: "AMD",
+    };
+    const sampleRun = {
+      packet_unlocked: false,
+      sample_run: true,
+      positions: [],
+      tax_lots: [],
+      suggestions: [],
+      wash_sale_flags: [],
+      wash_sale_chains: [chain],
+      summary: {},
+      tax_profile: null,
+      disclaimer: "",
+      errors: [],
+      warnings: [],
+      lot_match_report: {
+        matched: [],
+        gap: [
+          {
+            status: "matched_settlement_gap",
+            symbol: "AMD",
+            quantity: 10,
+            proceeds_1099: 1400,
+            proceeds_export: 1400,
+          },
+        ],
+        unmatched: [],
+        matched_count: 0,
+        gap_count: 1,
+        unmatched_count: 0,
+      },
+    } as unknown as PortfolioAnalysis;
+    const keptRun = redactUnpaidLotMatch(sampleRun);
+    expect(keptRun.wash_sale_chains).toEqual([chain]);
+    expect(keptRun.lot_match_report?.gap).toHaveLength(1);
+
+    const inAppSample = {
+      ...sampleRun,
+      sample_run: false,
+      supplemental_1099: {
+        source_filename: "sample-robinhood-1099-2026.pdf",
+        tax_year: 2026,
+        lots: [{ symbol: "AMD", quantity: 10, proceeds: 1400 }],
+      },
+    } as unknown as PortfolioAnalysis;
+    const keptSample = redactUnpaidLotMatch(inAppSample);
+    expect(keptSample.wash_sale_chains).toEqual([chain]);
+    expect(keptSample.lot_match_report?.gap).toHaveLength(1);
+    expect(keptSample.supplemental_1099?.lots).toHaveLength(1);
+  });
 });

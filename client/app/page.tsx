@@ -219,7 +219,7 @@ export default function LandingPage() {
             />
             <Feature
               title="Wash-sale radar"
-              body={`Same-symbol buys inside 30 days, with disallowed loss and the replacement-lot basis bump. Whole book, not options-only. ${WASH_ACCOUNT_SCOPE_COPY}`}
+              body={`Same-symbol buys within 30 days before or after the sale (a 61-day window), with disallowed loss and the replacement-lot basis bump. Whole book, not options-only. ${WASH_ACCOUNT_SCOPE_COPY}`}
             />
             <Feature
               title="Lot ledger"

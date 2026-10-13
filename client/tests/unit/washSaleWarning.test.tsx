@@ -46,8 +46,13 @@ describe("WashSaleWarning", () => {
     render(<WashSaleWarning flags={[baseFlag]} />);
 
     expect(
-      screen.getByText(/disallows loss deductions when you repurchase/),
+      screen.getByText(
+        /within 30 days before or after the sale \(a 61-day window\)/,
+      ),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/within 30 days of selling at a loss/),
+    ).not.toBeInTheDocument();
   });
 
   it("shows symbol and disallowed loss for each flag", () => {

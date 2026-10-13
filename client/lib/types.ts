@@ -76,6 +76,70 @@ export interface WashSaleFlag {
   purchase_date?: string | null;
 }
 
+// Worst-first rollup: differs, on_1099_only, not_on_1099, not_compared, matches.
+export type WashReconcileStatus =
+  | "matches"
+  | "differs"
+  | "not_on_1099"
+  | "on_1099_only"
+  | "not_compared";
+
+export interface WashReplacementBuy {
+  activity_date: string;
+  quantity: number;
+  price: number;
+  cash_cost: number;
+  allocated_quantity: number;
+  allocated_disallowed: number;
+  explained_basis: number;
+}
+
+export interface WashClosedLot {
+  quantity: number;
+  purchase_date?: string | null;
+  holding_days?: number | null;
+}
+
+export interface WashSaleHop {
+  hop_id: string;
+  hop_index: number;
+  symbol: string;
+  asset_type?: string;
+  sale_date: string;
+  sale_quantity: number;
+  proceeds: number | null;
+  cost_basis: number | null;
+  loss: number;
+  replacement_buys: WashReplacementBuy[];
+  disallowed_loss: number;
+  engine_disallowed_loss?: number | null;
+  form_1099_wash?: number | null;
+  engine_adjusted_cost_basis?: number | null;
+  original_purchase_date?: string | null;
+  original_holding_days?: number | null;
+  // Always empty. Replacement holding period is not shown (JOR-85).
+  carryover_days?: number | null;
+  tacked_acquisition_date?: string | null;
+  closed_lots?: WashClosedLot[];
+  carried_in_disallowed?: number | null;
+  engine_sale_loss?: number | null;
+  explained_loss_with_carry?: number | null;
+  plain_english: string;
+  reconcile_status: WashReconcileStatus;
+  difference?: number | null;
+  // Display only. "" when the hop was compared.
+  not_compared_reason?: string;
+}
+
+export interface WashSaleChain {
+  chain_id: string;
+  symbol: string;
+  reconcile_status: WashReconcileStatus;
+  difference?: number | null;
+  plain_english: string;
+  hops: WashSaleHop[];
+}
+
 // --- Tax Profile ---
 
 export interface TaxProfile {
@@ -240,6 +304,8 @@ export interface PortfolioAnalysis {
   tax_lots: TaxLot[];
   suggestions: HarvestingSuggestion[];
   wash_sale_flags: WashSaleFlag[];
+  /** Missing on analyses saved before the explainer. Hide the card then. */
+  wash_sale_chains?: WashSaleChain[];
   summary: PortfolioSummary;
   tax_profile: TaxProfile | null;
   supplemental_1099?: Supplemental1099Summary | null;

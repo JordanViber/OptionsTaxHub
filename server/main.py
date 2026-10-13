@@ -66,6 +66,8 @@ from year_close_packet import (
     packet_store_belongs_to_user,
     paid_session_for_user_year,
     remember_analysis,
+    snapshot_payload_with_wash_sale_chains,
+    wash_sale_chains_from_snapshot_payload,
     _analysis_ids_match,
     render_packet_pdf,
     resolve_packet_stripe_secret_key,
@@ -97,6 +99,7 @@ from harvesting import (
     suppress_fractional_residual_positions,
 )
 from wash_sale import detect_wash_sales, adjust_lots_for_wash_sales
+from wash_sale_chain import build_wash_sale_chains
 from price_service import (
     fetch_current_prices,
     fetch_option_chain_window,
@@ -1120,14 +1123,21 @@ def _public_analysis(
     result: PortfolioAnalysis,
     *,
     keep_lot_rows: bool = False,
+    keep_wash_chains: Optional[bool] = None,
 ) -> PortfolioAnalysis:
-    """Hide raw trades and unpaid lot-level 1099-B rows from the browser payload.
+    """Hide raw trades, unpaid lot rows, and unpaid wash-sale chains.
 
     Unpaid/guest analyze JSON (and anything persisted from it) must not include
-    lot dates, amounts, or statuses. Counts stay so the $49 teaser still works.
-    The in-app 2026 sample keeps lot rows so the desk can show the table;
-    packet_unlocked stays false so download remains $49 gated.
+    lot dates, amounts, or statuses, or 1099-derived wash-chain figures.
+    Counts stay so the $49 teaser still works. The in-app 2026 sample keeps
+    lot rows and chains so the desk can show them; packet_unlocked stays false
+    so download remains $49 gated. History forces packet_unlocked false so lot
+    rows stay out. Sample history may keep chains. A year-grant row is written
+    with keep_wash_chains false; chains are patched on only after the paid
+    snapshot commits.
     """
+    if keep_wash_chains is None:
+        keep_wash_chains = bool(result.packet_unlocked) or keep_lot_rows
     updates: dict = {}
     book = result.activity_book
     if book and book.transactions:
@@ -1142,6 +1152,8 @@ def _public_analysis(
             updates["supplemental_1099"] = supplemental.model_copy(
                 update={"lots": []}
             )
+    if not keep_wash_chains:
+        updates["wash_sale_chains"] = []
     if not updates:
         return result
     return result.model_copy(update=updates)
@@ -1595,12 +1607,24 @@ async def _run_portfolio_analysis(
                 "Summary totals are unchanged; lot rows are still listed."
             )
 
+    # Display-only. Does not rewrite flags, lots, or realized totals.
+    wash_sale_chains = build_wash_sale_chains(
+        transactions=transactions,
+        wash_sale_flags=wash_sale_flags,
+        realized_events=realized_events,
+        tax_lots=tax_lots,
+        supplemental=supplemental_1099_summary,
+        lot_match_report=lot_match_report,
+        tax_year=tax_profile.tax_year,
+    )
+
     analysis_id = str(uuid.uuid4())
     result = PortfolioAnalysis(
         positions=positions,
         tax_lots=tax_lots,
         suggestions=suggestions,
         wash_sale_flags=wash_sale_flags,
+        wash_sale_chains=wash_sale_chains,
         summary=summary,
         tax_profile=tax_profile,
         supplemental_1099=supplemental_1099_summary,
@@ -1632,14 +1656,20 @@ async def _run_portfolio_analysis(
         else dict(result)
     )
     remember_analysis(analysis_id, user_id, full_dump)
+    # Signed-in analyses attach chains on the durable snapshot below.
+    # A guest keeps them on the in-memory payload so sign-in can persist
+    # them. PDF rendering ignores the key.
+    durable_chains = full_dump.get("wash_sale_chains") or []
     public_result = _public_analysis(result, keep_lot_rows=keep_lot_rows)
 
     # History is always redacted. Lot rows stay in PACKET_STORE and the paid
-    # snapshot. Grant flags are patched on only after that snapshot commits,
-    # so a failed snapshot cannot leave private lots in the history JSON.
+    # snapshot. Grant flags and wash chains are patched on only after that
+    # snapshot commits, so a failed snapshot cannot leave chains in history.
+    year_grant = bool(result.packet_unlocked and result.packet_session_id)
     history_result = _public_analysis(
         result.model_copy(update={"packet_unlocked": False, "packet_session_id": None}),
         keep_lot_rows=keep_lot_rows,
+        keep_wash_chains=keep_lot_rows and not year_grant,
     )
     history_summary = summary
     sample_upload = is_sample_csv_filename(filename) or is_trusted_sample_csv_bytes(
@@ -1675,7 +1705,9 @@ async def _run_portfolio_analysis(
                     result.analysis_id,
                     user_id,
                     tax_year,
-                    packet_payload,
+                    snapshot_payload_with_wash_sale_chains(
+                        packet_payload, durable_chains
+                    ),
                 )
             except PacketSnapshotYearConflict:
                 # A paid row for another year stays put. Analyze does not re-year it.
@@ -1696,7 +1728,9 @@ async def _run_portfolio_analysis(
                         result.analysis_id,
                         user_id,
                         tax_year,
-                        packet_payload,
+                        snapshot_payload_with_wash_sale_chains(
+                            packet_payload, durable_chains
+                        ),
                         session_id=result.packet_session_id,
                         paid=True,
                     )
@@ -1716,6 +1750,7 @@ async def _run_portfolio_analysis(
                     {
                         "packet_unlocked": True,
                         "packet_session_id": result.packet_session_id,
+                        "wash_sale_chains": list(durable_chains),
                     },
                 )
                 if patched is not True:
@@ -1725,10 +1760,29 @@ async def _run_portfolio_analysis(
                     )
             return public_result
         if history_saved:
+            # The row was written chain-free. Rewrite anyway so a chain that
+            # landed before this failed commit cannot stay in history JSON.
+            cleared = _public_analysis(
+                history_result,
+                keep_lot_rows=keep_lot_rows,
+                keep_wash_chains=False,
+            )
+            cleared_dump = (
+                cleared.model_dump(mode="json")
+                if hasattr(cleared, "model_dump")
+                else dict(cleared)
+            )
+            cleared_chains = cleared_dump.get("wash_sale_chains")
             patch_analysis_result(
                 result.analysis_id,
                 user_id,
-                {"packet_unlocked": False, "packet_session_id": None},
+                {
+                    "packet_unlocked": False,
+                    "packet_session_id": None,
+                    "wash_sale_chains": (
+                        cleared_chains if isinstance(cleared_chains, list) else []
+                    ),
+                },
             )
         result = result.model_copy(
             update={"packet_unlocked": False, "packet_session_id": None}
@@ -1956,6 +2010,71 @@ async def get_portfolio_analysis(
             "result": strip_book_transactions_dict(record["result"]),
         }
     return record
+
+
+@app.get(
+    "/api/portfolio/analysis/{analysis_id}/wash-sale-chains",
+    responses={
+        403: {"description": "Year-close packet is not paid"},
+    },
+)
+async def get_wash_sale_chains(
+    analysis_id: str,
+    user_id: Annotated[str, Depends(get_current_user)],
+):
+    """Return display wash-sale chains from the owned paid packet snapshot.
+
+    History JSON stays redacted. This read does not rebuild tax figures.
+    Process memory is not the source. A snapshot saved before chains were
+    stored returns an empty list and a re-analyze hint.
+    """
+    analysis_id = _require_canonical_analysis_id(analysis_id)
+    rows, lookup_ok = list_packet_snapshots_for_identity(analysis_id, user_id)
+    if not lookup_ok:
+        _packet_download_entitlement_unavailable()
+    paid = next(
+        (
+            row
+            for row in rows
+            if isinstance(row, dict) and row.get("paid_at")
+        ),
+        None,
+    )
+    if paid is None:
+        raise HTTPException(
+            status_code=403,
+            detail="Wash-sale chains are available after the year-close packet is paid.",
+        )
+    try:
+        tax_year = int(paid.get("tax_year"))
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=403,
+            detail="Wash-sale chains are available after the year-close packet is paid.",
+        )
+    # Same ownership and entitlement gate as the packet download. This does
+    # not grant, unlock, or retrieve Checkout.
+    _authorize_packet_download_identity(analysis_id, None, user_id)
+    _authorized_packet_download(
+        analysis_id,
+        None,
+        user_id,
+        tax_year=tax_year,
+    )
+    snapshot, snapshot_ok = get_packet_snapshot(
+        analysis_id,
+        user_id,
+        tax_year=tax_year,
+    )
+    if not snapshot_ok or not isinstance(snapshot, dict):
+        _packet_download_entitlement_unavailable()
+    chains, hint = wash_sale_chains_from_snapshot_payload(
+        snapshot.get("packet_payload")
+    )
+    body: dict[str, Any] = {"wash_sale_chains": chains}
+    if hint:
+        body["hint"] = hint
+    return body
 
 
 @app.delete("/api/portfolio/history/cleanup")

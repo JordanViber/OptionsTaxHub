@@ -3068,6 +3068,269 @@ def test_unpaid_analyze_lot_match_report_is_counts_only(monkeypatch):
     )
 
 
+def test_unpaid_analyze_strips_wash_chains_from_response_and_history(monkeypatch):
+    """Unpaid non-sample analyze drops chains. Sample and paid runs keep them."""
+    import json
+    from datetime import date
+
+    from models import (
+        LotMatchReport,
+        LotMatchRow,
+        PortfolioAnalysis,
+        WashSaleChain,
+        WashSaleHop,
+    )
+    from year_close_packet import mark_paid
+
+    chain = WashSaleChain(
+        chain_id="QQQ:2026-03-02:4:r0",
+        symbol="QQQ",
+        reconcile_status="on_1099_only",
+        plain_english=(
+            "Your 1099 reports a $50 wash adjustment on this sale. "
+            "This Robinhood export did not flag a matching wash."
+        ),
+        hops=[
+            WashSaleHop(
+                hop_id="QQQ:2026-03-02:4:r0",
+                hop_index=0,
+                symbol="QQQ",
+                sale_date=date(2026, 3, 2),
+                sale_quantity=4,
+                proceeds=400,
+                cost_basis=450,
+                loss=50,
+                disallowed_loss=50,
+                form_1099_wash=50,
+                plain_english=(
+                    "Your 1099 reports a $50 wash adjustment on this sale. "
+                    "This Robinhood export did not flag a matching wash."
+                ),
+                reconcile_status="on_1099_only",
+            )
+        ],
+    )
+    analysis = PortfolioAnalysis(
+        analysis_id="wash-redaction",
+        packet_unlocked=True,
+        wash_sale_chains=[chain],
+        lot_match_report=LotMatchReport(
+            unmatched=[
+                LotMatchRow(
+                    status="1099_only",
+                    symbol="QQQ",
+                    quantity=4,
+                    wash_sale_disallowed=50,
+                )
+            ],
+            unmatched_count=1,
+        ),
+    )
+    paid = main._public_analysis(analysis)
+    assert paid.wash_sale_chains
+    assert paid.lot_match_report.unmatched
+    sample = main._public_analysis(
+        analysis.model_copy(update={"packet_unlocked": False, "sample_run": True}),
+        keep_lot_rows=True,
+    )
+    assert sample.wash_sale_chains
+    assert sample.sample_run is True
+    assert sample.lot_match_report.unmatched
+    history = main._public_analysis(
+        analysis.model_copy(update={"packet_unlocked": False, "packet_session_id": None}),
+        keep_wash_chains=True,
+    )
+    assert history.packet_unlocked is False
+    assert history.wash_sale_chains
+    assert history.lot_match_report.unmatched == []
+    unpaid = main._public_analysis(
+        analysis.model_copy(update={"packet_unlocked": False, "sample_run": False})
+    )
+    assert unpaid.wash_sale_chains == []
+    unpaid_json = unpaid.model_dump_json()
+    assert "1099_only" not in unpaid_json
+    assert "Your 1099 reports" not in unpaid_json
+
+    captured = {}
+    real_history = main._save_history_best_effort
+    real_build = main.build_wash_sale_chains
+
+    def fake_save_analysis_history(*, user_id, filename, summary, result_data=None):
+        captured["result_data"] = result_data
+        return {"id": "hist-wash"}
+
+    def spy_build(*args, **kwargs):
+        built = real_build(*args, **kwargs)
+        captured.setdefault("built", []).append(built)
+        return built
+
+    saved_payloads = []
+
+    def capture_save(analysis_id, _user_id, _tax_year, packet_payload, **_kwargs):
+        saved_payloads.append(packet_payload)
+        return {"analysis_id": analysis_id}
+
+    _stub_analyze_network(monkeypatch)
+    monkeypatch.setattr("main.save_analysis_history", fake_save_analysis_history)
+    monkeypatch.setattr("main._save_history_best_effort", real_history)
+    monkeypatch.setattr("main.build_wash_sale_chains", spy_build)
+    monkeypatch.setattr("main.save_packet_snapshot", capture_save)
+    monkeypatch.setattr(
+        "main.list_packet_snapshots_for_identity",
+        lambda *_args, **_kwargs: ([], True),
+    )
+
+    csv_2024 = (
+        Path(__file__).resolve().parent / "fixtures" / "year_close_2024.csv"
+    ).read_bytes()
+    files = {
+        "file": ("year_close_2024.csv", csv_2024, "text/csv"),
+        "supplemental_1099": _make_supplemental_1099_upload(),
+    }
+    response = client.post("/api/portfolio/analyze?tax_year=2024", files=files)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["packet_unlocked"] is False
+    assert body.get("sample_run") is False
+    assert body["wash_sale_chains"] == []
+    assert "1099_only" not in response.text
+    assert "Your 1099 reports" not in response.text
+    assert captured["built"][0]
+    stored = captured["result_data"]
+    assert stored["wash_sale_chains"] == []
+    stored_json = json.dumps(stored)
+    assert "1099_only" not in stored_json
+    assert "Your 1099 reports" not in stored_json
+
+    unpaid_chains = client.get(
+        f"/api/portfolio/analysis/{body['analysis_id']}/wash-sale-chains"
+    )
+    assert unpaid_chains.status_code == 403
+
+    from year_close_packet import get_payload
+
+    assert saved_payloads
+    assert saved_payloads[0]["wash_sale_chains"]
+    assert "wash_sale_chains" not in (get_payload(body["analysis_id"]) or {})
+    # In-memory payment is not the chain source. No paid snapshot stays 403.
+    mark_paid(body["analysis_id"], "cs_test_wash_redaction", user_id="test-user-123")
+    still_unpaid = client.get(
+        f"/api/portfolio/analysis/{body['analysis_id']}/wash-sale-chains"
+    )
+    assert still_unpaid.status_code == 403
+    captured.clear()
+    paid_response = client.post("/api/portfolio/analyze?tax_year=2024", files=files)
+    assert paid_response.status_code == 200, paid_response.text
+    paid_body = paid_response.json()
+    assert paid_body["packet_unlocked"] is True
+    assert paid_body["wash_sale_chains"]
+    # Chains are not in the history insert. They are patched after commit.
+    assert captured["result_data"]["wash_sale_chains"] == []
+    assert captured["built"][-1]
+
+
+def _post_year_grant_analyze(monkeypatch, *, snapshot_result, on_snapshot=None):
+    """Signed-in year-grant analyze with a controllable snapshot save."""
+    import json
+
+    stored = {"result": None, "patches": [], "events": []}
+    real_history = main._save_history_best_effort
+
+    def save_history(*, user_id, filename, summary, result_data=None):
+        stored["events"].append("history")
+        stored["result"] = json.loads(json.dumps(result_data))
+        return {"id": result_data.get("analysis_id")}
+
+    def save_snapshot(*args, **kwargs):
+        stored["events"].append("snapshot")
+        if on_snapshot is not None:
+            on_snapshot(stored, args, kwargs)
+        return snapshot_result
+
+    def apply_patch(_analysis_id, _user_id, patch):
+        stored["events"].append("patch")
+        copied = json.loads(json.dumps(patch))
+        stored["patches"].append(copied)
+        stored["result"].update(copied)
+        return True
+
+    _stub_analyze_network(monkeypatch)
+    monkeypatch.setattr("main.save_analysis_history", save_history)
+    monkeypatch.setattr("main._save_history_best_effort", real_history)
+    monkeypatch.setattr("main.save_packet_snapshot", save_snapshot)
+    monkeypatch.setattr("main.patch_analysis_result", apply_patch)
+    monkeypatch.setattr(
+        "main.lookup_packet_grant_for_tax_year",
+        lambda *_args, **_kwargs: ("cs_test_yeargrant", True),
+    )
+    csv_2024 = (
+        Path(__file__).resolve().parent / "fixtures" / "year_close_2024.csv"
+    ).read_bytes()
+    response = client.post(
+        "/api/portfolio/analyze?tax_year=2024",
+        files={
+            "file": ("year_close_2024.csv", csv_2024, "text/csv"),
+            "supplemental_1099": _make_supplemental_1099_upload(),
+        },
+    )
+    return stored, response
+
+
+def test_year_grant_failed_snapshot_omits_wash_chains_from_history(monkeypatch):
+    """A failed year-grant snapshot leaves history without wash_sale_chains."""
+
+    def leak_into_history(stored, _args, _kwargs):
+        stored["result"]["wash_sale_chains"] = [
+            {"symbol": "LEAK", "chain_id": "leak"}
+        ]
+
+    stored, response = _post_year_grant_analyze(
+        monkeypatch,
+        snapshot_result=None,
+        on_snapshot=leak_into_history,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["packet_unlocked"] is False
+    assert not body.get("wash_sale_chains")
+    assert stored["events"] == ["history", "snapshot", "patch"]
+    saved = stored["result"]
+    assert saved["wash_sale_chains"] == []
+    assert saved["packet_unlocked"] is False
+    assert saved["packet_session_id"] is None
+    import json
+    assert "LEAK" not in json.dumps(saved)
+    assert stored["patches"][-1]["wash_sale_chains"] == []
+    assert stored["patches"][-1]["packet_unlocked"] is False
+
+
+def test_year_grant_history_attaches_wash_chains_after_snapshot_commit(monkeypatch):
+    """Chains reach history only in the patch that follows a committed snapshot."""
+
+    def note_history_at_commit(stored, args, _kwargs):
+        stored["at_snapshot"] = list(stored["result"].get("wash_sale_chains") or [])
+        payload = args[3]
+        stored["snapshot_chains"] = payload.get("wash_sale_chains")
+
+    stored, response = _post_year_grant_analyze(
+        monkeypatch,
+        snapshot_result={"analysis_id": "committed"},
+        on_snapshot=note_history_at_commit,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["packet_unlocked"] is True
+    assert body["wash_sale_chains"]
+    assert stored["events"] == ["history", "snapshot", "patch"]
+    assert stored["at_snapshot"] == []
+    assert stored["snapshot_chains"]
+    saved = stored["result"]
+    assert saved["packet_unlocked"] is True
+    assert saved["packet_session_id"] == "cs_test_yeargrant"
+    assert saved["wash_sale_chains"] == body["wash_sale_chains"]
+    assert stored["patches"][-1]["wash_sale_chains"] == body["wash_sale_chains"]
+
+
 def test_guest_non_sample_analyze_lot_match_report_is_counts_only(monkeypatch):
     """Unauthenticated non-sample analyze must not leak lot rows."""
     _stub_analyze_network(monkeypatch)

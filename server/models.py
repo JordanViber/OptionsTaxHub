@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -171,6 +171,91 @@ class WashSaleFlag(BaseModel):
     # Original lot acquisition when present. Optional so wash_sale.py can stay
     # unchanged; 1099 vs export classifies term from this vs sale/repurchase.
     purchase_date: Optional[date] = None
+
+
+# Worst-first rollup used by the chain chip: differs, then on_1099_only,
+# then not_on_1099, then not_compared, then matches.
+WashReconcileStatus = Literal[
+    "matches",
+    "differs",
+    "not_on_1099",
+    "on_1099_only",
+    "not_compared",
+]
+
+
+class WashReplacementBuy(BaseModel):
+    """One buy the explainer lists inside the 61-day window. Display only."""
+
+    activity_date: date
+    quantity: float
+    price: float
+    cash_cost: float
+    allocated_quantity: float
+    allocated_disallowed: float
+    explained_basis: float
+
+
+class WashClosedLot(BaseModel):
+    """One FIFO lot closed by a hop. Display only. Does not feed tax totals."""
+
+    quantity: float
+    purchase_date: Optional[date] = None
+    holding_days: Optional[int] = None
+
+
+class WashSaleHop(BaseModel):
+    """One loss sale in a wash chain. Does not feed tax totals."""
+
+    hop_id: str
+    hop_index: int
+    symbol: str
+    asset_type: str = "stock"
+    sale_date: date
+    sale_quantity: float
+    # None when the sale could not be tied to one trade. Never a guessed zero.
+    proceeds: Optional[float] = None
+    cost_basis: Optional[float] = None
+    loss: float
+    replacement_buys: list[WashReplacementBuy] = []
+    disallowed_loss: float
+    engine_disallowed_loss: Optional[float] = None
+    form_1099_wash: Optional[float] = None
+    engine_adjusted_cost_basis: Optional[float] = None
+    original_purchase_date: Optional[date] = None
+    original_holding_days: Optional[int] = None
+    carryover_days: Optional[int] = None
+    tacked_acquisition_date: Optional[date] = None
+    # Every closed lot. A single tacked date is set only when they all share one.
+    closed_lots: list[WashClosedLot] = []
+    # v1 does not carry a disallowance from an earlier sale. Left empty.
+    carried_in_disallowed: Optional[float] = None
+    engine_sale_loss: Optional[float] = None
+    explained_loss_with_carry: Optional[float] = None
+    plain_english: str = ""
+    reconcile_status: WashReconcileStatus = "not_on_1099"
+    difference: Optional[float] = None
+    # Display only. "" | "no_1099" | "ambiguous" | "over_cap" | "unidentified"
+    # | "option" | "unclassified" | "overlap" | "unassigned" | "unknown".
+    # Not a tax field.
+    not_compared_reason: str = ""
+
+
+class WashSaleChain(BaseModel):
+    """One wash-sale flag for the explainer.
+
+    Each flag is its own hop: the loss sale, its replacement buys, the
+    disallowed amount, the engine's adjusted basis and holding period for
+    that replacement, and the 1099 reconcile. A later sale is a separate
+    chain. The chip and the headline are that hop. chain_id is that hop.
+    """
+
+    chain_id: str
+    symbol: str
+    reconcile_status: WashReconcileStatus = "not_on_1099"
+    difference: Optional[float] = None
+    plain_english: str = ""
+    hops: list[WashSaleHop] = []
 
 
 # --- Tax Profile Models ---
@@ -406,6 +491,8 @@ class PortfolioAnalysis(BaseModel):
     tax_lots: list[TaxLot] = []
     suggestions: list[HarvestingSuggestion] = []
     wash_sale_flags: list[WashSaleFlag] = []
+    # Read-only explainer. Missing on older saved history; default empty.
+    wash_sale_chains: list[WashSaleChain] = []
     summary: PortfolioSummary = PortfolioSummary()
     tax_profile: Optional[TaxProfile] = None
     supplemental_1099: Optional[Supplemental1099Summary] = None

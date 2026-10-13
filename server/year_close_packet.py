@@ -22,6 +22,11 @@ from db import _canonical_analysis_id, _canonical_analysis_uuid
 logger = logging.getLogger(__name__)
 
 PACKET_AMOUNT_CENTS = 4900
+# Display-only snapshot field. PDF text, lot-count checks, and guest-claim
+# equality ignore it. A paid snapshot saved before this key existed asks the
+# client to re-analyze instead of erroring.
+WASH_SALE_CHAINS_SNAPSHOT_KEY = "wash_sale_chains"
+WASH_SALE_CHAINS_REANALYZE_HINT = "Re-analyze to see wash-sale chains"
 PACKET_PRODUCT_NAME = "Year-close packet"
 PACKET_METADATA_PRODUCT = "year_close_packet"
 # Stripe Checkout left-rail copy. Name stays recognizable; description sells
@@ -665,8 +670,46 @@ def lot_match_plain_text(payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _without_wash_sale_chains(payload: dict[str, Any]) -> dict[str, Any]:
+    """Drop display chains so PDF text and verification see the prior shape."""
+    if WASH_SALE_CHAINS_SNAPSHOT_KEY not in payload:
+        return payload
+    trimmed = dict(payload)
+    trimmed.pop(WASH_SALE_CHAINS_SNAPSHOT_KEY, None)
+    return trimmed
+
+
+def snapshot_payload_with_wash_sale_chains(
+    payload: dict[str, Any],
+    chains: Any,
+) -> dict[str, Any]:
+    """Copy display chains onto the durable snapshot. Does not mutate the PDF payload."""
+    if not isinstance(payload, dict) or not isinstance(chains, list):
+        return payload
+    merged = deepcopy(payload)
+    merged[WASH_SALE_CHAINS_SNAPSHOT_KEY] = deepcopy(chains)
+    return merged
+
+
+def wash_sale_chains_from_snapshot_payload(
+    payload: Any,
+) -> tuple[list[Any], str | None]:
+    """Chains stored on a paid snapshot, plus a hint when the key was never saved.
+
+    A list, including an empty one, is authoritative. A missing or non-list
+    value is a legacy snapshot: empty chains and a re-analyze hint, not an error.
+    """
+    if not isinstance(payload, dict) or WASH_SALE_CHAINS_SNAPSHOT_KEY not in payload:
+        return [], WASH_SALE_CHAINS_REANALYZE_HINT
+    chains = payload.get(WASH_SALE_CHAINS_SNAPSHOT_KEY)
+    if not isinstance(chains, list):
+        return [], WASH_SALE_CHAINS_REANALYZE_HINT
+    return deepcopy(chains), None
+
+
 def packet_plain_text(payload: dict[str, Any]) -> str:
     """Plain-text rendering used in the PDF and in content assertions."""
+    payload = _without_wash_sale_chains(payload)
     lines = [
         PACKET_PRODUCT_NAME,
         PACKET_DISCLAIMER,
@@ -871,6 +914,7 @@ def _assemble_pdf(page_streams: list[bytes]) -> bytes:
 
 def render_packet_pdf(payload: dict[str, Any]) -> bytes:
     """Server-side PDF from the structured payload (no extra PDF library)."""
+    payload = _without_wash_sale_chains(payload)
     pages = [packet_plain_text(payload)]
     if payload.get("harvest_opportunities"):
         pages.append(harvest_plain_text(payload))
@@ -902,6 +946,9 @@ def packet_payload_rows_match_counts(payload: Any) -> bool:
     """
     if not isinstance(payload, dict):
         return False
+    # wash_sale_chains is display metadata on the snapshot. It is not a lot
+    # row and must not change this completeness result.
+    payload = _without_wash_sale_chains(payload)
     report = payload.get("lot_match_report")
     if not isinstance(report, dict):
         return True
@@ -978,13 +1025,23 @@ def remember_analysis(analysis_id: str, user_id: str, analysis: dict[str, Any]) 
         existing_payload,
         build_packet_payload(preserved, analysis_id=analysis_id),
     )
-    PACKET_STORE[analysis_id] = _new_packet_record(
+    # Signed-in analyses attach chains when the durable snapshot is saved.
+    # A guest has no snapshot yet. Keep the chains on this in-memory payload
+    # so claiming the analysis on sign-in persists them. PDF rendering
+    # ignores the key. A missing key stays missing. An empty list is kept.
+    if not str(user_id or "").strip():
+        chains = analysis.get(WASH_SALE_CHAINS_SNAPSHOT_KEY)
+        if isinstance(chains, list):
+            payload = dict(payload)
+            payload[WASH_SALE_CHAINS_SNAPSHOT_KEY] = deepcopy(chains)
+    record = _new_packet_record(
         user_id,
         payload=payload,
         paid=bool(existing.get("paid")),
         session_ids=set(existing.get("session_ids") or []),
         created_at=existing.get("created_at"),
     )
+    PACKET_STORE[analysis_id] = record
     purge_packet_store()
 
 
@@ -1075,6 +1132,8 @@ def _public_packet_payload(payload: dict[str, Any]) -> dict[str, Any]:
     not required for a same-run match, so both sides are redacted before compare.
     """
     public = deepcopy(payload)
+    # Display chains are not part of the guest-claim or counts comparison.
+    public.pop(WASH_SALE_CHAINS_SNAPSHOT_KEY, None)
     report = public.get("lot_match_report")
     if isinstance(report, dict):
         for key in _PACKET_LOT_LIST_KEYS:
@@ -1231,7 +1290,9 @@ def copy_packet_payload_to_id(
             analysis,
             analysis_id=str(payload.get("analysis_id") or source_analysis_id),
         )
-        if expected != payload:
+        # Chains are display metadata. A rebuilt analysis omits them, and
+        # that must not block copying the stored document, chains included.
+        if _without_wash_sale_chains(expected) != _without_wash_sale_chains(payload):
             return False
     existing_target = PACKET_STORE.get(target_analysis_id)
     if existing_target and not _same_packet_owner(

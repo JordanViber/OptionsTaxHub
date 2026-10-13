@@ -124,7 +124,8 @@ export default function WashSaleWarning({
           })}
         </strong>
         . The IRS wash-sale rule disallows loss deductions when you repurchase
-        substantially identical securities within 30 days of selling at a loss.
+        substantially identical securities within 30 days before or after the
+        sale (a 61-day window).
         {taxYear
           ? ` This panel only shows sale events from tax year ${taxYear}.`
           : ""}

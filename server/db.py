@@ -11,6 +11,7 @@ import os
 import logging
 import re
 import uuid
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1808,6 +1809,32 @@ def _packet_snapshot_is_current(snapshot: dict) -> bool:
         return False
 
 
+# Display-only. Not a lot row, not a tax total. Completeness checks ignore it.
+_SNAPSHOT_WASH_SALE_CHAINS_KEY = "wash_sale_chains"
+
+
+def _preserve_snapshot_wash_sale_chains(stored_payload, packet_payload):
+    """Keep durable chains when a later unpaid write omits the key.
+
+    A caller that sends the key, including an empty list, replaces it.
+    A legacy payload with no key stays without one.
+    """
+    if not isinstance(packet_payload, dict):
+        return packet_payload
+    if _SNAPSHOT_WASH_SALE_CHAINS_KEY in packet_payload:
+        return packet_payload
+    if not isinstance(stored_payload, dict):
+        return packet_payload
+    if _SNAPSHOT_WASH_SALE_CHAINS_KEY not in stored_payload:
+        return packet_payload
+    prior = stored_payload.get(_SNAPSHOT_WASH_SALE_CHAINS_KEY)
+    if not isinstance(prior, list):
+        return packet_payload
+    merged = dict(packet_payload)
+    merged[_SNAPSHOT_WASH_SALE_CHAINS_KEY] = deepcopy(prior)
+    return merged
+
+
 def save_packet_snapshot(
     analysis_id: str,
     user_id: str,
@@ -1979,6 +2006,11 @@ def save_packet_snapshot(
                 }
             return None
 
+        if existing_row:
+            packet_payload = _preserve_snapshot_wash_sale_chains(
+                existing_row.get("packet_payload"),
+                packet_payload,
+            )
         row = {
             "analysis_id": analysis_id,
             "user_id": user_id,

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { PortfolioAnalysis, Supplemental1099Summary } from "../../lib/types";
 
@@ -61,6 +61,9 @@ let mockHistoryData: Array<{
 }> = [];
 const mockAnalyzeMutate = jest.fn();
 const mockFetchAnalysisById = jest.fn();
+const mockFetchWashSaleChains = jest.fn(() =>
+  Promise.resolve({ chains: [], hint: null }),
+);
 const mockCleanupOrphanHistory = jest.fn(() => Promise.resolve());
 const mockDeleteAnalysis = jest.fn(() => Promise.resolve(true));
 
@@ -86,6 +89,8 @@ jest.mock("../../lib/api", () => ({
     isFetched: true,
   }),
   fetchAnalysisById: mockFetchAnalysisById,
+  fetchWashSaleChains: mockFetchWashSaleChains,
+  WASH_SALE_CHAIN_REANALYZE_HINT: "Re-analyze to see wash-sale chains",
   cleanupOrphanHistory: mockCleanupOrphanHistory,
   deleteAnalysis: mockDeleteAnalysis,
   persistGuestAnalysis: jest.fn(() => Promise.resolve(true)),
@@ -244,6 +249,8 @@ describe("DashboardPage", () => {
     mockHistoryData = [];
     mockAnalyzeMutate.mockReset();
     mockFetchAnalysisById.mockReset();
+    mockFetchWashSaleChains.mockReset();
+    mockFetchWashSaleChains.mockResolvedValue({ chains: [], hint: null });
     mockCleanupOrphanHistory.mockClear();
     mockDeleteAnalysis.mockClear();
     mockSessionValue = null;
@@ -336,6 +343,309 @@ describe("DashboardPage", () => {
         ),
       ).toBeInTheDocument();
     });
+  });
+
+  it("shows the wash-sale chain card when the analysis has chains", async () => {
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      sample_run: true,
+      wash_sale_chains: [
+        {
+          chain_id: "AMD:2026-07-15:10:e0",
+          symbol: "AMD",
+          reconcile_status: "matches",
+          difference: null,
+          plain_english:
+            "You sold 10 AMD at a $300 loss on Jul 15 and bought 10 back on Jul 24, so $300 moved into the new lot's basis. This matches your 1099 wash adjustment of $300.",
+          hops: [],
+        },
+      ],
+    };
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("wash-sale-chain-card")).toBeInTheDocument();
+    });
+    expect(screen.getByText("Wash-sale chains")).toBeInTheDocument();
+    expect(screen.getByText(/You sold 10 AMD/)).toBeInTheDocument();
+    expect(mockFetchWashSaleChains).not.toHaveBeenCalled();
+  });
+
+  it("shows wash-sale chains after packet confirm without a new upload", async () => {
+    const store = new Map<string, string>();
+    Object.defineProperty(globalThis, "sessionStorage", {
+      value: {
+        getItem: jest.fn((key: string) => store.get(key) ?? null),
+        setItem: jest.fn((key: string, value: string) => {
+          store.set(key, value);
+        }),
+        removeItem: jest.fn((key: string) => {
+          store.delete(key);
+        }),
+        clear: jest.fn(() => {
+          store.clear();
+        }),
+      },
+      writable: true,
+    });
+    const paidChain = {
+      chain_id: "AMD:2026-07-15:10:e0",
+      symbol: "AMD",
+      reconcile_status: "matches" as const,
+      difference: null,
+      plain_english:
+        "You sold 10 AMD at a $300 loss on Jul 15 and bought 10 back on Jul 24, so $300 moved into the new lot's basis. This matches your 1099 wash adjustment of $300.",
+      hops: [],
+    };
+    mockFetchWashSaleChains.mockResolvedValue({
+      chains: [paidChain],
+      hint: null,
+    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/year-close-packet/checkout")) {
+        return {
+          ok: true,
+          json: async () => ({
+            already_paid: true,
+            session_id: "cs_test_confirm",
+            analysis_id: "analysis-test-1",
+          }),
+        };
+      }
+      return { ok: false, status: 404, json: async () => ({}) };
+    }) as unknown as typeof fetch;
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      sample_run: false,
+      packet_unlocked: false,
+      wash_sale_chains: [],
+    };
+
+    try {
+      render(<DashboardPage />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(
+          screen.getByRole("button", { name: /Pay \$49/i }),
+        ).toBeEnabled();
+      });
+      expect(screen.queryByTestId("wash-sale-chain-card")).not.toBeInTheDocument();
+      expect(mockFetchWashSaleChains).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole("button", { name: /Pay \$49/i }));
+
+      await waitFor(() => {
+        expect(screen.getByTestId("wash-sale-chain-card")).toBeInTheDocument();
+      });
+      expect(screen.getByText(/You sold 10 AMD/)).toBeInTheDocument();
+      expect(mockFetchWashSaleChains).toHaveBeenCalledWith("analysis-test-1");
+      expect(mockAnalyzeMutate).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("shows the re-analyze hint when a paid snapshot has no chains", async () => {
+    mockFetchWashSaleChains.mockResolvedValue({
+      chains: [],
+      hint: "Re-analyze to see wash-sale chains",
+    });
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      sample_run: false,
+      packet_unlocked: false,
+      wash_sale_chains: [],
+    };
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("wash-sale-chain-hint")).toHaveTextContent(
+        "Re-analyze to see wash-sale chains",
+      );
+    });
+    expect(screen.queryByTestId("wash-sale-chain-card")).not.toBeInTheDocument();
+    expect(mockFetchWashSaleChains).toHaveBeenCalledWith("analysis-test-1");
+  });
+
+  it("does not refetch wash-sale chains when the same analysis rerenders", async () => {
+    mockFetchWashSaleChains.mockResolvedValue({
+      chains: [],
+      hint: "Re-analyze to see wash-sale chains",
+    });
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      sample_run: false,
+      packet_unlocked: false,
+      wash_sale_chains: [],
+    };
+
+    const { rerender } = render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(mockFetchWashSaleChains).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.getByTestId("wash-sale-chain-hint")).toHaveTextContent(
+      "Re-analyze to see wash-sale chains",
+    );
+
+    rerender(<DashboardPage />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("wash-sale-chain-hint")).toBeInTheDocument();
+    });
+    expect(mockFetchWashSaleChains).toHaveBeenCalledTimes(1);
+  });
+
+  it("fetches wash-sale chains again after a cancelled in-flight request", async () => {
+    const resolvers: Array<
+      (value: {
+        chains: Array<{
+          chain_id: string;
+          symbol: string;
+          reconcile_status: "matches";
+          difference: null;
+          plain_english: string;
+          hops: [];
+        }>;
+        hint: string | null;
+      }) => void
+    > = [];
+    mockFetchWashSaleChains.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolvers.push(resolve);
+        }),
+    );
+    const paidChain = {
+      chain_id: "AMD:2026-07-15:10:e0",
+      symbol: "AMD",
+      reconcile_status: "matches" as const,
+      difference: null,
+      plain_english:
+        "You sold 10 AMD at a $300 loss on Jul 15 and bought 10 back on Jul 24, so $300 moved into the new lot's basis. This matches your 1099 wash adjustment of $300.",
+      hops: [] as [],
+    };
+    const paid = {
+      ...baseAnalysis,
+      sample_run: false,
+      packet_unlocked: false,
+      wash_sale_chains: [],
+    };
+    const sample = {
+      ...baseAnalysis,
+      analysis_id: "sample-analysis",
+      sample_run: true,
+      wash_sale_chains: [],
+    };
+    mockAnalyzeData = paid;
+
+    const { rerender } = render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(mockFetchWashSaleChains).toHaveBeenCalledTimes(1);
+    });
+
+    mockAnalyzeData = sample;
+    rerender(<DashboardPage />);
+    await waitFor(() => {
+      expect(screen.queryByTestId("wash-sale-chain-card")).not.toBeInTheDocument();
+    });
+
+    await act(async () => {
+      resolvers[0]?.({ chains: [paidChain], hint: null });
+    });
+    expect(screen.queryByText(/You sold 10 AMD/)).not.toBeInTheDocument();
+
+    mockAnalyzeData = paid;
+    rerender(<DashboardPage />);
+    await waitFor(() => {
+      expect(mockFetchWashSaleChains).toHaveBeenCalledTimes(2);
+    });
+    await act(async () => {
+      resolvers[1]?.({ chains: [paidChain], hint: null });
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("wash-sale-chain-card")).toBeInTheDocument();
+    });
+    expect(screen.getByText(/You sold 10 AMD/)).toBeInTheDocument();
+  });
+
+  it("shows wash-sale-chain-hint when a paid packet's chain fetch is forbidden", async () => {
+    mockFetchWashSaleChains.mockResolvedValue({
+      chains: [],
+      hint: "Re-analyze to see wash-sale chains",
+    });
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      sample_run: false,
+      packet_unlocked: true,
+      wash_sale_chains: [],
+    };
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("wash-sale-chain-hint")).toHaveTextContent(
+        "Re-analyze to see wash-sale chains",
+      );
+    });
+    expect(screen.queryByTestId("wash-sale-chain-card")).not.toBeInTheDocument();
+    expect(mockFetchWashSaleChains).toHaveBeenCalledWith("analysis-test-1");
+  });
+
+  it("does not fetch wash-sale chains or show the hint while the packet is unpaid", async () => {
+    Object.defineProperty(globalThis, "sessionStorage", {
+      value: {
+        getItem: jest.fn(() => null),
+        setItem: jest.fn(),
+        removeItem: jest.fn(),
+        clear: jest.fn(),
+      },
+      writable: true,
+    });
+    mockFetchWashSaleChains.mockResolvedValue({
+      chains: [],
+      hint: "Re-analyze to see wash-sale chains",
+    });
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      sample_run: false,
+      packet_unlocked: false,
+      wash_sale_chains: [],
+    };
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeInTheDocument();
+    });
+    expect(mockFetchWashSaleChains).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("wash-sale-chain-hint")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("wash-sale-chain-card")).not.toBeInTheDocument();
+  });
+
+  it("shows the re-analyze hint when the wash-sale chain refetch fails", async () => {
+    mockFetchWashSaleChains.mockRejectedValue(new Error("network down"));
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      sample_run: false,
+      packet_unlocked: false,
+      wash_sale_chains: [],
+    };
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("wash-sale-chain-hint")).toHaveTextContent(
+        "Re-analyze to see wash-sale chains",
+      );
+    });
+    expect(screen.queryByTestId("wash-sale-chain-card")).not.toBeInTheDocument();
+    expect(mockFetchWashSaleChains).toHaveBeenCalledWith("analysis-test-1");
   });
 
   it("shows restored-session messaging when analysis is recovered from browser storage", async () => {
