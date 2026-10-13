@@ -35,8 +35,6 @@ function hop(overrides: Partial<WashSaleHop> = {}): WashSaleHop {
     engine_disallowed_loss: 300,
     form_1099_wash: 300,
     engine_adjusted_cost_basis: 1550,
-    open_lot_total_cost_basis: 1550,
-    open_lot_wash_sale_disallowed: 300,
     original_purchase_date: "2026-06-01",
     original_holding_days: 44,
     carryover_days: 44,
@@ -241,7 +239,7 @@ describe("WashSaleChainPanel", () => {
     expect(
       screen.queryByText("Per-buy basis split is illustrative."),
     ).not.toBeInTheDocument();
-    expect(screen.getByText("Open lot basis now")).toBeInTheDocument();
+    expect(screen.queryByText("Open lot basis now")).not.toBeInTheDocument();
     expect(screen.getByText("1099 wash adjustment")).toBeInTheDocument();
     expect(screen.getAllByTestId("wash-sale-chain-disclaimer")).toHaveLength(1);
     expect(
@@ -280,7 +278,6 @@ describe("WashSaleChainPanel", () => {
           plain_english: "Export only example",
           form_1099_wash: null,
           engine_adjusted_cost_basis: null,
-          open_lot_total_cost_basis: null,
           tacked_acquisition_date: null,
           carryover_days: null,
           replacement_buys: [],
@@ -658,8 +655,6 @@ describe("WashSaleChainPanel", () => {
           engine_disallowed_loss: 6,
           form_1099_wash: null,
           engine_adjusted_cost_basis: null,
-          open_lot_total_cost_basis: null,
-          open_lot_wash_sale_disallowed: null,
           original_purchase_date: null,
           carryover_days: null,
           tacked_acquisition_date: null,
@@ -691,7 +686,6 @@ describe("WashSaleChainPanel", () => {
           engine_disallowed_loss: null,
           form_1099_wash: null,
           engine_adjusted_cost_basis: null,
-          open_lot_total_cost_basis: null,
           carried_in_disallowed: null,
           engine_sale_loss: null,
           explained_loss_with_carry: null,
@@ -804,7 +798,6 @@ describe("WashSaleChainPanel", () => {
         engine_disallowed_loss: null,
         form_1099_wash: formWash,
         engine_adjusted_cost_basis: null,
-        open_lot_total_cost_basis: null,
         carried_in_disallowed: null,
         engine_sale_loss: null,
         explained_loss_with_carry: null,
@@ -919,7 +912,6 @@ describe("WashSaleChainPanel", () => {
                 engine_disallowed_loss: null,
                 form_1099_wash: 25,
                 engine_adjusted_cost_basis: null,
-                open_lot_total_cost_basis: null,
                 plain_english: copy,
                 reconcile_status: "not_compared",
                 not_compared_reason: "unknown",

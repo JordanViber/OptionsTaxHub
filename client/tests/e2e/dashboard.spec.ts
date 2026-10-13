@@ -1049,7 +1049,6 @@ test.describe("Wash-sale chain explainer", () => {
             engine_disallowed_loss: 300,
             form_1099_wash: 300,
             engine_adjusted_cost_basis: 1550,
-            open_lot_total_cost_basis: 1550,
             carryover_days: 44,
             tacked_acquisition_date: "2026-06-01",
             carried_in_disallowed: 0,

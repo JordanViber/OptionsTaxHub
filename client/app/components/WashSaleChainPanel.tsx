@@ -313,12 +313,6 @@ function HopDetails({ hop }: Readonly<{ hop: WashSaleHop }>) {
             value={formatUsd(hop.engine_adjusted_cost_basis)}
           />
         )}
-        {hop.open_lot_total_cost_basis != null && (
-          <Fact
-            label="Open lot basis now"
-            value={formatUsd(hop.open_lot_total_cost_basis)}
-          />
-        )}
       </Box>
       <Typography variant="caption" color="text.secondary">
         Replacement buys

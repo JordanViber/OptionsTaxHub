@@ -222,8 +222,6 @@ class WashSaleHop(BaseModel):
     engine_disallowed_loss: Optional[float] = None
     form_1099_wash: Optional[float] = None
     engine_adjusted_cost_basis: Optional[float] = None
-    open_lot_total_cost_basis: Optional[float] = None
-    open_lot_wash_sale_disallowed: Optional[float] = None
     original_purchase_date: Optional[date] = None
     original_holding_days: Optional[int] = None
     carryover_days: Optional[int] = None

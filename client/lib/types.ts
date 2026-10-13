@@ -115,8 +115,6 @@ export interface WashSaleHop {
   engine_disallowed_loss?: number | null;
   form_1099_wash?: number | null;
   engine_adjusted_cost_basis?: number | null;
-  open_lot_total_cost_basis?: number | null;
-  open_lot_wash_sale_disallowed?: number | null;
   original_purchase_date?: string | null;
   original_holding_days?: number | null;
   carryover_days?: number | null;
