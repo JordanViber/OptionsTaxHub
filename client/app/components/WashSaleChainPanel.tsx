@@ -118,6 +118,68 @@ function isIsoDate(value: string | null | undefined): value is string {
   return Boolean(value && /^\d{4}-\d{2}-\d{2}/.test(value));
 }
 
+const WASH_SALE_WINDOW_DAYS = 30;
+
+function parseChainDay(iso: string): Date | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const parsed = new Date(year, month - 1, day);
+  if (
+    parsed.getFullYear() !== year ||
+    parsed.getMonth() !== month - 1 ||
+    parsed.getDate() !== day
+  ) {
+    return null;
+  }
+  return parsed;
+}
+
+function formatWindowDay(date: Date): string {
+  return date.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+  });
+}
+
+/** Display copy only. Does not feed matching, allocation, or tax totals. */
+export function washSaleWindowText(
+  saleDate: string | null | undefined,
+): string | null {
+  if (!isIsoDate(saleDate)) return null;
+  const sale = parseChainDay(saleDate);
+  if (!sale) return null;
+  const start = new Date(sale.getFullYear(), sale.getMonth(), sale.getDate());
+  const end = new Date(sale.getFullYear(), sale.getMonth(), sale.getDate());
+  start.setDate(start.getDate() - WASH_SALE_WINDOW_DAYS);
+  end.setDate(end.getDate() + WASH_SALE_WINDOW_DAYS);
+  return `Window ${formatWindowDay(start)} \u2013 ${formatWindowDay(end)} (30 days before/after sale)`;
+}
+
+function WashWindowLine({
+  hop,
+}: Readonly<{ hop: Pick<WashSaleHop, "hop_id" | "sale_date"> }>) {
+  const text = washSaleWindowText(hop.sale_date);
+  if (!text) return null;
+  return (
+    <Typography
+      variant="body2"
+      color="text.secondary"
+      data-testid={`wash-sale-window-${hop.hop_id}`}
+      sx={{
+        display: "block",
+        mb: 0.75,
+        whiteSpace: "normal",
+        overflowWrap: "anywhere",
+      }}
+    >
+      {text}
+    </Typography>
+  );
+}
+
 const BASIS_SPLIT_CENTS = 0.02;
 
 export function basisSplitIsIllustrative(hop: WashSaleHop): boolean {
@@ -188,6 +250,7 @@ function QuietHopDetails({
         <Fact label="Sale date" value={formatChainDate(hop.sale_date)} />
         <Fact label="Instrument" value={instrument} />
       </Box>
+      <WashWindowLine hop={hop} />
     </Stack>
   );
 }
@@ -236,6 +299,7 @@ function SparseHopDetails({ hop }: Readonly<{ hop: WashSaleHop }>) {
           />
         )}
       </Box>
+      <WashWindowLine hop={hop} />
     </Stack>
   );
 }
@@ -320,6 +384,7 @@ function HopDetails({ hop }: Readonly<{ hop: WashSaleHop }>) {
           />
         )}
       </Box>
+      <WashWindowLine hop={hop} />
       {!hideUnallocated1099Only && (
         <>
           <Typography variant="caption" color="text.secondary">
@@ -445,6 +510,11 @@ export default function WashSaleChainPanel({
             >
               {chain.plain_english}
             </Typography>
+            {chain.hops.map((hop) =>
+              washSaleWindowText(hop.sale_date) ? (
+                <WashWindowLine key={`${hop.hop_id}-window`} hop={hop} />
+              ) : null,
+            )}
             <Button
               size="small"
               variant="outlined"

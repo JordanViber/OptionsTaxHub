@@ -3,6 +3,7 @@ import WashSaleChainPanel, {
   WASH_SALE_CHAIN_DISCLAIMER,
   washChainsVisible,
   washChainStatusLabel,
+  washSaleWindowText,
 } from "../../app/components/WashSaleChainPanel";
 import type { WashSaleChain, WashSaleHop } from "../../lib/types";
 
@@ -137,6 +138,87 @@ describe("WashSaleChainPanel", () => {
     expect(disclaimer.textContent).not.toMatch(/we detected every wash/i);
     expect(disclaimer.textContent).not.toMatch(/other accounts are included/i);
     expect(disclaimer).toHaveTextContent(WASH_SALE_CHAIN_DISCLAIMER);
+  });
+
+  it("shows Window Jun 15 – Aug 14 for a Jul 15 sale", () => {
+    const windowText =
+      "Window Jun 15 \u2013 Aug 14 (30 days before/after sale)";
+    expect(washSaleWindowText("2026-07-15")).toBe(windowText);
+    render(<WashSaleChainPanel chains={[chain()]} />);
+    expect(screen.getByTestId("wash-sale-window-AMD:2026-07-15:10:e0")).toHaveTextContent(
+      windowText,
+    );
+    expect(screen.getAllByText(windowText)).toHaveLength(1);
+    fireEvent.click(
+      screen.getByTestId("wash-sale-chain-open-AMD:2026-07-15:10:e0"),
+    );
+    expect(screen.getAllByText(windowText)).toHaveLength(2);
+  });
+
+  it("does not show a bogus window for a quiet hop or a hop with no sale date", () => {
+    const quiet = chain({
+      chain_id: "QUIET",
+      symbol: "SPX",
+      plain_english: "Quiet option",
+      hops: [
+        hop({
+          hop_id: "QUIET",
+          symbol: "SPX",
+          asset_type: "option",
+          sale_date: "",
+          plain_english: "Quiet option",
+          replacement_buys: [],
+        }),
+      ],
+    });
+    const noDate = chain({
+      chain_id: "NODATE",
+      plain_english: "No sale date",
+      hops: [
+        hop({
+          hop_id: "NODATE",
+          sale_date: "",
+          plain_english: "No sale date",
+        }),
+      ],
+    });
+    const notADate = chain({
+      chain_id: "JUNK",
+      plain_english: "Bad sale date",
+      hops: [
+        hop({
+          hop_id: "JUNK",
+          sale_date: "not-a-date",
+          plain_english: "Bad sale date",
+        }),
+      ],
+    });
+    expect(washSaleWindowText("")).toBeNull();
+    expect(washSaleWindowText(null)).toBeNull();
+    expect(washSaleWindowText(undefined)).toBeNull();
+    expect(washSaleWindowText("not-a-date")).toBeNull();
+    expect(washSaleWindowText("2026-02-31")).toBeNull();
+    render(<WashSaleChainPanel chains={[quiet, noDate, notADate]} />);
+    expect(screen.queryByText(/^Window /)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Invalid Date/i)).not.toBeInTheDocument();
+    expect(screen.queryByTestId("wash-sale-window-QUIET")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("wash-sale-window-NODATE")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("wash-sale-window-JUNK")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("wash-sale-chain-open-QUIET"));
+    expect(screen.queryByText(/^Window /)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Invalid Date/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Close wash-sale chain"));
+
+    fireEvent.click(screen.getByTestId("wash-sale-chain-open-NODATE"));
+    expect(screen.queryByText(/^Window /)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Invalid Date/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Close wash-sale chain"));
+
+    fireEvent.click(screen.getByTestId("wash-sale-chain-open-JUNK"));
+    expect(screen.getByText("not-a-date")).toBeInTheDocument();
+    expect(screen.queryByText(/^Window /)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Invalid Date/i)).not.toBeInTheDocument();
   });
 
   it("lists each closed lot when acquired dates differ", () => {
