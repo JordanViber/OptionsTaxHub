@@ -180,6 +180,11 @@ def _attach_flag_sale(
     eligible sell that shares a lot, or no eligible sell and more than one
     candidate, leaves the hop unidentified so another sale's proceeds are
     not shown. Sells more than CENTS apart keep the lot each one matches.
+
+    One leftover sell is not attached when same-day stock lots exist and
+    none match the flag loss within CENTS. That loss can be skewed by a
+    same-ticker option lot. Attaching the sell would invent basis as
+    proceeds plus the flag loss and would call the holding period missing.
     """
     candidates: list[tuple[int, Transaction]] = []
     for index, txn in enumerate(transactions):
@@ -222,6 +227,17 @@ def _attach_flag_sale(
             used_events.add(event_index)
         return index, txn, event_set, False
     if len(candidates) == 1:
+        # Do not invent basis from proceeds + flag.sale_loss when stock lots
+        # for this symbol and day exist and none imply the flag loss.
+        if _same_day_stock_lots_miss_flag_loss(
+            events,
+            used_events,
+            symbol,
+            sale_date,
+            quantity,
+            sale_loss,
+        ):
+            return None, None, [], True
         index, txn = candidates[0]
         used_txns.add(index)
         return index, txn, [], False
@@ -325,6 +341,34 @@ def _claim_event_set(
     for index, _event in chosen:
         used.add(index)
     return chosen
+
+
+def _same_day_stock_lots_miss_flag_loss(
+    events: list[RealizedEvent],
+    used: set[int],
+    symbol: str,
+    sale_date: date,
+    quantity: float,
+    sale_loss: float,
+) -> bool:
+    """True when same-day stock lots exist and none imply the flag loss.
+
+    A quantity subset matches when basis minus proceeds is within CENTS of
+    ``sale_loss``, the same test ``_claim_event_set`` uses. Option lots are
+    ignored. No stock lots means the caller may still show one leftover
+    sell. Lots that do not match are not that sale: the caller must leave
+    the hop unidentified instead of building basis from the flag loss.
+    """
+    candidates = _event_candidates(events, used, symbol, sale_date)
+    if not candidates:
+        return False
+    subsets = _qty_subsets(candidates, quantity, lambda item: item[1].quantity)
+    for subset in subsets:
+        proceeds = sum(float(event.sale_proceeds) for _, event in subset)
+        basis = sum(float(event.cost_basis) for _, event in subset)
+        if abs((basis - proceeds) - float(sale_loss)) <= CENTS:
+            return False
+    return True
 
 
 def _closed_lots_from_events(
@@ -1056,6 +1100,9 @@ def _hop_from_flag(
         proceeds = _cents(sum(float(event.sale_proceeds) for _index, event in event_set))
         cost_basis = _cents(sum(float(event.cost_basis) for _index, event in event_set))
     elif sell is not None:
+        # Reached only when no same-day stock lot missed the flag loss.
+        # _attach_flag_sale leaves that case unidentified, so this line does
+        # not invent basis as proceeds + flag.sale_loss for a skewed loss.
         proceeds = _cents(float(sell.quantity) * float(sell.price))
         cost_basis = _cents(proceeds + float(flag.sale_loss))
     else:

@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import main
-from csv_parser import RealizedEvent
+from csv_parser import RealizedEvent, transactions_to_tax_lots
 from harvesting import build_portfolio_summary
 from ledger import SAMPLE_FIXTURE_PRICES, is_trusted_sample_csv_bytes
 from lot_matcher import match_1099b_lots
@@ -3531,6 +3531,85 @@ def test_stock_chain_ignores_same_date_option_replacement_and_open_lot():
     assert option_buy.price == pytest.approx(5)
 
 
+def test_option_lot_skewed_flag_loss_does_not_invent_stock_basis():
+    """A same-ticker option buy can skew the flag loss. Do not print that loss.
+
+    Buy 1 AMD option at $5, then 10 AMD shares at $100, sell those shares at
+    $90, and rebuy 10 within the window. The wash flag's sale loss is $5
+    because the option lot is included in the flag's FIFO. The stock realized
+    lot is the real $100 loss. The hop must not show the $5 loss, must not
+    build basis as proceeds plus that flag loss, and must not claim the
+    holding period is missing.
+    """
+    sale = date(2026, 6, 1)
+    option_buy = _txn("AMD", TransCode.BTO, date(2026, 1, 1), 1, 5, AssetType.OPTION)
+    stock_buy = _txn("AMD", TransCode.BUY, date(2026, 1, 2), 10, 100)
+    stock_sell = _txn("AMD", TransCode.SELL, sale, 10, 90)
+    rebuy = _txn("AMD", TransCode.BUY, date(2026, 6, 15), 10, 95)
+    txns = [option_buy, stock_buy, stock_sell, rebuy]
+    flags = detect_wash_sales(txns, tax_year=2026)
+    assert len(flags) == 1
+    assert flags[0].sale_loss == pytest.approx(5)
+    assert flags[0].disallowed_loss == pytest.approx(5)
+    lots, _warnings, events = transactions_to_tax_lots(txns)
+    stock_events = [
+        event for event in events if event.asset_type != AssetType.OPTION
+    ]
+    assert len(stock_events) == 1
+    assert stock_events[0].sale_proceeds == pytest.approx(900)
+    assert stock_events[0].cost_basis == pytest.approx(1000)
+    true_loss = stock_events[0].cost_basis - stock_events[0].sale_proceeds
+    assert true_loss == pytest.approx(100)
+    fabricated_basis = stock_events[0].sale_proceeds + flags[0].sale_loss
+    assert fabricated_basis == pytest.approx(905)
+
+    flags_before = copy.deepcopy(flags)
+    events_before = copy.deepcopy(events)
+    lots_before = copy.deepcopy(lots)
+    chains = _build(
+        transactions=txns,
+        wash_sale_flags=flags,
+        realized_events=events,
+        tax_lots=lots,
+    )
+    assert flags == flags_before
+    assert events == events_before
+    assert lots == lots_before
+    assert len(chains) == 1
+    assert len(chains[0].hops) == 1
+    hop = chains[0].hops[0]
+    assert hop.asset_type == "stock"
+    assert hop.not_compared_reason == "unidentified"
+    assert hop.reconcile_status == "not_compared"
+    assert chains[0].reconcile_status == "not_compared"
+    assert hop.proceeds is None
+    assert hop.cost_basis is None
+    assert hop.cost_basis != pytest.approx(fabricated_basis)
+    assert hop.proceeds is None or hop.proceeds == pytest.approx(900)
+    assert hop.cost_basis is None or hop.cost_basis == pytest.approx(1000)
+    assert hop.loss != pytest.approx(5)
+    assert hop.engine_sale_loss != pytest.approx(5)
+    assert hop.replacement_buys == []
+    assert hop.closed_lots == []
+    assert hop.tacked_acquisition_date is None
+    assert hop.carryover_days is None
+    assert hop.original_holding_days is None
+    assert hop.plain_english == (
+        "This sale could not be tied to one trade's proceeds and loss, "
+        "so it was not compared."
+    )
+    assert "$5" not in hop.plain_english
+    assert "holding period" not in hop.plain_english.lower()
+    assert "Holding-period carryover is not in this export." not in hop.plain_english
+    assert "You sold" not in hop.plain_english
+    assert flags[0].sale_loss == pytest.approx(5)
+    assert flags[0].disallowed_loss == pytest.approx(5)
+    assert option_buy.price == pytest.approx(5)
+    assert stock_buy.price == pytest.approx(100)
+    assert stock_sell.price == pytest.approx(90)
+    assert rebuy.price == pytest.approx(95)
+
+
 def test_option_sale_stays_separate_from_a_stock_hop():
     """Option and stock sales of one symbol stay one hop each, in both directions."""
     option_may = WashSaleFlag(
@@ -4817,6 +4896,9 @@ def test_unknown_quantity_same_day_1099_blocks_absence_claim():
         disallowed_loss=80,
         adjusted_cost_basis=200,
     )
+    # 160 - 80 matches the flag loss. A same-day stock lot that misses
+    # that loss is unidentified and is not an absence claim.
+    later_event = _event("AAPL", later, 10, 160, 80, date(2026, 6, 5))
     shared = _build(
         transactions=txns
         + [
@@ -4824,8 +4906,7 @@ def test_unknown_quantity_same_day_1099_blocks_absence_claim():
             _txn("AAPL", TransCode.BUY, date(2026, 7, 20), 10, 9),
         ],
         wash_sale_flags=[flag, later_flag],
-        realized_events=events
-        + [_event("AAPL", later, 10, 180, 80, date(2026, 6, 5))],
+        realized_events=events + [later_event],
         supplemental=_supplemental(2026),
         lot_match_report=_report(_blank()),
         tax_year=2026,
