@@ -117,6 +117,7 @@ export interface WashSaleHop {
   engine_adjusted_cost_basis?: number | null;
   original_purchase_date?: string | null;
   original_holding_days?: number | null;
+  // Always empty. Replacement holding period is not shown (JOR-85).
   carryover_days?: number | null;
   tacked_acquisition_date?: string | null;
   closed_lots?: WashClosedLot[];

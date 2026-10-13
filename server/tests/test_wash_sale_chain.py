@@ -2282,6 +2282,36 @@ def test_too_many_realized_lots_are_not_guessed():
     assert events[0].quantity == pytest.approx(1)
 
 
+def test_jun1_jul15_jul24_replacement_holding_period_stays_empty():
+    """Buy 10 on Jun 1, sell 10 on Jul 15 at a loss, rebuy 10 on Jul 24.
+
+    The sold lot's acquisition date is known and is not copied onto the
+    replacement as a tacked holding period. Per-replacement tacking is JOR-85.
+    """
+    txns = [
+        _txn("AMD", TransCode.BUY, date(2026, 6, 1), 10, 150),
+        _txn("AMD", TransCode.SELL, date(2026, 7, 15), 10, 120),
+        _txn("AMD", TransCode.BUY, date(2026, 7, 24), 10, 125),
+    ]
+    flags = detect_wash_sales(txns, tax_year=2026)
+    _lots, _warnings, events = transactions_to_tax_lots(txns)
+    chains = _build(
+        transactions=txns,
+        wash_sale_flags=flags,
+        realized_events=events,
+    )
+    assert len(chains) == 1
+    assert len(chains[0].hops) == 1
+    hop = chains[0].hops[0]
+    assert hop.sale_date == date(2026, 7, 15)
+    assert hop.sale_quantity == pytest.approx(10)
+    assert hop.original_purchase_date == date(2026, 6, 1)
+    assert hop.replacement_buys[0].activity_date == date(2026, 7, 24)
+    assert hop.tacked_acquisition_date is None
+    assert hop.carryover_days is None
+    assert "Holding period" not in hop.plain_english
+
+
 def test_sample_2026_wash_total_stays_924_and_amd_chain(monkeypatch):
     """Guest sample keeps the $924 wash and shows the AMD chain."""
     csv_text = SAMPLE_CSV_PATH.read_text(encoding="utf-8")
@@ -2361,8 +2391,6 @@ def test_sample_2026_wash_total_stays_924_and_amd_chain(monkeypatch):
     amd = next(chain for chain in chains if chain["symbol"] == "AMD")
     assert amd["plain_english"] == AMD_LINE
     hop = amd["hops"][0]
-    assert hop["carryover_days"] == 44
-    assert hop["tacked_acquisition_date"] == "2026-06-01"
     assert hop["original_purchase_date"] == "2026-06-01"
     assert hop["engine_adjusted_cost_basis"] == pytest.approx(1550)
     assert hop["form_1099_wash"] == pytest.approx(300)
@@ -3475,8 +3503,8 @@ def test_shared_acquisition_date_does_not_merge_chains():
     assert july.hops[0].explained_loss_with_carry is None
     assert july.hops[0].disallowed_loss == pytest.approx(20)
     assert "prior hop" not in july.plain_english
-    assert july.hops[0].tacked_acquisition_date == date(2026, 6, 10)
-    assert july.hops[0].carryover_days is not None
+    assert july.hops[0].tacked_acquisition_date is None
+    assert july.hops[0].carryover_days is None
 
 
 def test_stock_chain_ignores_same_date_option_replacement_and_open_lot():

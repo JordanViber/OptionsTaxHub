@@ -251,7 +251,7 @@ describe("WashSaleChainPanel", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("keeps one holding-period sentence when every lot shares a date", () => {
+  it("does not show a holding period when every lot shares a date", () => {
     const shared = chain({
       chain_id: "SAME",
       hops: [
@@ -268,9 +268,8 @@ describe("WashSaleChainPanel", () => {
     });
     render(<WashSaleChainPanel chains={[shared]} />);
     fireEvent.click(screen.getByTestId("wash-sale-chain-open-SAME"));
-    expect(
-      screen.getByText(/44 days carried from the sold lot/),
-    ).toHaveTextContent("Jun 1, 2026");
+    expect(screen.queryByText(/Holding period/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/carried from the sold lot/)).not.toBeInTheDocument();
     expect(screen.queryByTestId("wash-sale-closed-lot-SAME-0")).not.toBeInTheDocument();
   });
 
@@ -301,7 +300,21 @@ describe("WashSaleChainPanel", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("opens the AMD chain with basis, carryover, and the 1099 figure", () => {
+  it("shows no Holding period text in the chain dialog", () => {
+    render(<WashSaleChainPanel chains={[chain()]} />);
+    fireEvent.click(
+      screen.getByTestId("wash-sale-chain-open-AMD:2026-07-15:10:e0"),
+    );
+    expect(screen.getByTestId("wash-sale-chain-dialog")).toBeInTheDocument();
+    expect(screen.getByText(/Jul 24, 2026/)).toBeInTheDocument();
+    expect(screen.queryByText(/Holding period/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/carried from the sold lot/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Holding-period carryover is not in this export."),
+    ).not.toBeInTheDocument();
+  });
+
+  it("opens the AMD chain with basis and the 1099 figure", () => {
     render(<WashSaleChainPanel chains={[chain()]} />);
     fireEvent.click(screen.getByTestId("wash-sale-chain-open-AMD:2026-07-15:10:e0"));
     expect(screen.getByTestId("wash-sale-chain-dialog")).toBeInTheDocument();
@@ -311,9 +324,7 @@ describe("WashSaleChainPanel", () => {
     expect(screen.getAllByText("$1,550.00").length).toBeGreaterThan(0);
     expect(screen.getByText(/Jul 24, 2026/)).toBeInTheDocument();
     expect(screen.getByText(/explained basis/i)).toHaveTextContent("10");
-    expect(
-      screen.getByText(/44 days carried from the sold lot/),
-    ).toHaveTextContent("Jun 1, 2026");
+    expect(screen.queryByText(/Holding period/i)).not.toBeInTheDocument();
     expect(
       screen.getByText("Engine adjusted basis (source of truth)"),
     ).toBeInTheDocument();
@@ -389,9 +400,7 @@ describe("WashSaleChainPanel", () => {
     expect(screen.getByText("On your 1099 only")).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("wash-sale-chain-open-MISS"));
-    expect(
-      screen.getByText("Holding-period carryover is not in this export."),
-    ).toBeInTheDocument();
+    expect(screen.queryByText(/Holding period/i)).not.toBeInTheDocument();
     expect(
       screen.getByText("No replacement buy in this Robinhood export."),
     ).toBeInTheDocument();
@@ -400,27 +409,25 @@ describe("WashSaleChainPanel", () => {
     ).not.toBeInTheDocument();
     expect(screen.queryByText(/in your tax totals/i)).not.toBeInTheDocument();
     fireEvent.click(screen.getByLabelText("Close wash-sale chain"));
-    expect(
-      screen.queryByText("Holding-period carryover is not in this export."),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/Holding period/i)).not.toBeInTheDocument();
     expect(
       screen.queryByText("No replacement buy in this Robinhood export."),
     ).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("wash-sale-chain-open-MISS"));
     expect(
-      screen.getByText("Holding-period carryover is not in this export."),
+      screen.getByText("No replacement buy in this Robinhood export."),
     ).toBeInTheDocument();
     fireEvent.keyDown(screen.getByRole("dialog"), {
       key: "Escape",
       code: "Escape",
     });
     expect(
-      screen.queryByText("Holding-period carryover is not in this export."),
+      screen.queryByText("No replacement buy in this Robinhood export."),
     ).not.toBeInTheDocument();
   });
 
-  it("omits replacement and carryover on a 1099-only hop with no allocated buy", () => {
+  it("omits replacement buys on a 1099-only hop with no allocated buy", () => {
     const only = chain({
       chain_id: "ONLY-LOT",
       symbol: "QQQ",
@@ -688,9 +695,7 @@ describe("WashSaleChainPanel", () => {
     );
     fireEvent.click(screen.getByTestId("wash-sale-chain-open-AMD:2026-07-15:10:e0"));
     expect(screen.getByText("not-a-date")).toBeInTheDocument();
-    expect(
-      screen.getByText("Holding-period carryover is not in this export."),
-    ).toBeInTheDocument();
+    expect(screen.queryByText(/Holding period/i)).not.toBeInTheDocument();
     expect(screen.getByText(/nope · 1.5/)).toBeInTheDocument();
     expect(screen.queryByText(/Jun 2, 2026 · 4/)).not.toBeInTheDocument();
   });
