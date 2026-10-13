@@ -2871,6 +2871,9 @@ def test_two_matching_stock_sales_still_keep_the_closed_lot_date():
     assert hop.asset_type == "stock"
     assert hop.original_purchase_date == date(2026, 1, 1)
     assert hop.closed_lots[0].quantity == pytest.approx(10)
+    assert hop.replacement_buys == []
+    assert hop.tacked_acquisition_date is None
+    assert hop.carryover_days is None
 
 
 def test_leftover_proceeds_slack_groups_cent_fills_and_hundred_share_half_dollar():
@@ -6096,5 +6099,185 @@ def test_1099_only_match_of_the_second_sale_allocates_no_buys():
     hop = chains[0].hops[0]
     assert hop.reconcile_status == "on_1099_only"
     assert hop.replacement_buys == []
+    assert hop.tacked_acquisition_date is None
+    assert hop.carryover_days is None
     assert "moved into" not in hop.plain_english
     assert "did not flag a matching wash" in hop.plain_english
+
+
+def _penny_apart_quiet_rows(sale: date):
+    """10 @ $10.00 and 10 @ $10.01, each with a positive wash. Outside slack."""
+    from lot_matcher import CENTS
+    from wash_sale_chain import _proceeds_slack
+
+    assert abs(100.10 - 100.00) > CENTS
+    assert abs(100.10 - 100.00) > _proceeds_slack(10)
+    return (
+        _row(
+            symbol="AAPL",
+            quantity=10,
+            export_trade_date=sale,
+            proceeds_1099=100.00,
+            cost_basis_1099=120.00,
+            wash_sale_disallowed=20,
+        ),
+        _row(
+            symbol="AAPL",
+            quantity=10,
+            export_trade_date=sale,
+            proceeds_1099=100.10,
+            cost_basis_1099=120.10,
+            wash_sale_disallowed=15,
+        ),
+    )
+
+
+def _assert_quiet_without_dollars(chains):
+    assert len(chains) == 1
+    assert len(chains[0].hops) == 1
+    hop = chains[0].hops[0]
+    assert hop.reconcile_status != "on_1099_only"
+    assert hop.proceeds is None
+    assert hop.cost_basis is None
+    assert hop.form_1099_wash is None
+    assert hop.replacement_buys == []
+    assert "$" not in hop.plain_english
+    assert "did not flag a matching wash" not in hop.plain_english
+    assert all(chain.reconcile_status != "on_1099_only" for chain in chains)
+    assert all("$" not in chain.plain_english for chain in chains)
+    assert all(
+        "did not flag a matching wash" not in chain.plain_english for chain in chains
+    )
+    return hop
+
+
+def test_quiet_flag_reserves_every_same_day_stock_sell_price():
+    """Two fills a penny apart both hold their 1099 rows.
+
+    Sells on 2026-06-01 are 10 @ $10.00 and 10 @ $10.01. One qty-10 stock
+    flag is quieted (a) by an option in the window and (b) because both
+    lots fit the flag loss within CENTS. Each price has a positive wash.
+    Neither row is an on_1099_only chain, and no dollars are shown.
+    """
+    from lot_matcher import CENTS
+
+    sale = date(2026, 6, 1)
+    loss = 20.0
+    assert abs((120.0 - 100.0) - loss) <= CENTS
+    assert abs((120.10 - 100.10) - loss) <= CENTS
+    sells = [
+        _txn("AAPL", TransCode.SELL, sale, 10, 10.00),
+        _txn("AAPL", TransCode.SELL, sale, 10, 10.01),
+    ]
+    events = [
+        _event("AAPL", sale, 10, 120.0, 100.0, date(2026, 1, 1)),
+        _event("AAPL", sale, 10, 120.10, 100.10, date(2026, 1, 2)),
+    ]
+    flag = WashSaleFlag(
+        symbol="AAPL",
+        sale_date=sale,
+        sale_quantity=10,
+        sale_loss=loss,
+        repurchase_date=date(2026, 6, 10),
+        repurchase_quantity=10,
+        disallowed_loss=loss,
+        adjusted_cost_basis=130,
+    )
+    rows = _penny_apart_quiet_rows(sale)
+
+    option_quiet = _build(
+        transactions=sells
+        + [
+            _txn("AAPL", TransCode.BUY, date(2026, 6, 10), 10, 11),
+            _txn("AAPL", TransCode.BTO, date(2026, 6, 5), 1, 2, AssetType.OPTION),
+        ],
+        wash_sale_flags=[flag],
+        realized_events=events,
+        supplemental=_supplemental(2026),
+        lot_match_report=_report(*rows),
+    )
+    option_hop = _assert_quiet_without_dollars(option_quiet)
+    assert option_hop.not_compared_reason == "option"
+    assert option_hop.plain_english == OPTION_LINE
+    assert flag.disallowed_loss == pytest.approx(loss)
+    assert flag.sale_loss == pytest.approx(loss)
+
+    unidentified = _build(
+        transactions=sells + [_txn("AAPL", TransCode.BUY, date(2026, 6, 10), 10, 11)],
+        wash_sale_flags=[flag],
+        realized_events=events,
+        supplemental=_supplemental(2026),
+        lot_match_report=_report(*rows),
+    )
+    unidentified_hop = _assert_quiet_without_dollars(unidentified)
+    assert unidentified_hop.not_compared_reason == "unidentified"
+    assert unidentified_hop.proceeds is None
+    assert flag.disallowed_loss == pytest.approx(loss)
+
+
+def test_ambiguous_cross_price_row_stays_quiet():
+    """A 1099 row inside two fills' slack is not a missed wash.
+
+    Two $10.00 sells are one search. $10.004 is a second price. The
+    3-share row matches both prices and sums to neither sale, so it stays
+    quiet along with the two 10-share rows.
+    """
+    from wash_sale_chain import _proceeds_slack
+
+    sale = date(2026, 6, 1)
+    assert abs(100.04 - 100.00) <= _proceeds_slack(10)
+    assert abs(30.02 - 30.00) <= _proceeds_slack(3)
+    assert abs(30.02 - 10.004 * 3) <= _proceeds_slack(3)
+    flag = WashSaleFlag(
+        symbol="AAPL",
+        sale_date=sale,
+        sale_quantity=10,
+        sale_loss=20,
+        repurchase_date=date(2026, 6, 10),
+        repurchase_quantity=10,
+        disallowed_loss=20,
+        adjusted_cost_basis=130,
+    )
+    chains = _build(
+        transactions=[
+            _txn("AAPL", TransCode.SELL, sale, 10, 10.00),
+            _txn("AAPL", TransCode.SELL, sale, 10, 10.00),
+            _txn("AAPL", TransCode.SELL, sale, 10, 10.004),
+            _txn("AAPL", TransCode.BTO, date(2026, 6, 5), 1, 2, AssetType.OPTION),
+            _txn("AAPL", TransCode.BUY, date(2026, 6, 10), 10, 11),
+        ],
+        wash_sale_flags=[flag],
+        supplemental=_supplemental(2026),
+        lot_match_report=_report(
+            _row(
+                symbol="AAPL",
+                quantity=10,
+                export_trade_date=sale,
+                proceeds_1099=100.00,
+                wash_sale_disallowed=20,
+            ),
+            _row(
+                symbol="AAPL",
+                quantity=10,
+                export_trade_date=sale,
+                proceeds_1099=100.04,
+                wash_sale_disallowed=15,
+            ),
+            _row(
+                symbol="AAPL",
+                quantity=3,
+                export_trade_date=sale,
+                proceeds_1099=30.02,
+                wash_sale_disallowed=4,
+            ),
+        ),
+    )
+    assert len(chains) == 1
+    hop = chains[0].hops[0]
+    assert hop.not_compared_reason == "option"
+    assert hop.reconcile_status != "on_1099_only"
+    assert all(chain.reconcile_status != "on_1099_only" for chain in chains)
+    assert all("did not flag a matching wash" not in chain.plain_english for chain in chains)
+    assert all("$" not in chain.plain_english for chain in chains)
+    assert hop.form_1099_wash is None
+    assert flag.disallowed_loss == pytest.approx(20)

@@ -338,6 +338,40 @@ describe("WashSaleChainPanel", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("omits replacement and carryover on a 1099-only hop with no allocated buy", () => {
+    const only = chain({
+      chain_id: "ONLY-LOT",
+      symbol: "QQQ",
+      reconcile_status: "on_1099_only",
+      plain_english: "1099 only example",
+      hops: [
+        hop({
+          hop_id: "ONLY-LOT",
+          symbol: "QQQ",
+          reconcile_status: "on_1099_only",
+          plain_english: "1099 only example",
+          engine_disallowed_loss: null,
+          engine_adjusted_cost_basis: null,
+          disallowed_loss: 50,
+          replacement_buys: [],
+          closed_lots: [
+            { quantity: 10, purchase_date: "2026-06-01", holding_days: 44 },
+          ],
+          tacked_acquisition_date: "2026-06-01",
+          carryover_days: 44,
+        }),
+      ],
+    });
+    render(<WashSaleChainPanel chains={[only]} />);
+    fireEvent.click(screen.getByTestId("wash-sale-chain-open-ONLY-LOT"));
+    expect(
+      screen.queryByText("No replacement buy in this Robinhood export."),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/replacement shares/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Replacement buys")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Holding period starts/)).not.toBeInTheDocument();
+  });
+
   it("lists both buys on a partial replacement", () => {
     const partial = chain({
       chain_id: "AAPL:2026-06-01:100",

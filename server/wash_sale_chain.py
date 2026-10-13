@@ -8,10 +8,12 @@ v1 explains one stock sale at a time. Any option trade on the flag's
 symbol from 30 days before the sale through 30 days after the later of
 the sale and the repurchase quiets that flag. Each flag keeps its own
 not-compared line, with no dollars, and that day's 1099 rows are not
-also explained as a missed wash. A 1099-only sale does not name a
-replacement buy. A $0-wash option 1099 row is reserved and is not
-matched to stock. A row whose instrument cannot be told is not compared
-and is not explained as stock.
+also explained as a missed wash. Rows are held for every same-day stock
+fill of that quantity, not only the first price. A 1099-only sale does
+not name a replacement buy and does not state a tacked holding period.
+A $0-wash option 1099 row is reserved and is not matched to stock. A
+row whose instrument cannot be told is not compared and is not
+explained as stock.
 """
 
 from __future__ import annotations
@@ -852,17 +854,19 @@ def _quiet_unit_target(
     flag: WashSaleFlag,
     transactions: list[Transaction],
     events: list[RealizedEvent],
-) -> float | None:
-    """Unit price used only to choose which 1099 rows to hold back.
+) -> list[float | None]:
+    """Unit prices used only to choose which 1099 rows to hold back.
 
-    A stock sell of this quantity wins, so split stock fills are held
-    back with the quiet flag. An option trade's price is used only when
-    no stock sell of this size exists. The price is not shown.
+    Every same-day stock sell of this quantity is included, so two fills
+    a penny apart both hold their rows. An option trade's price is used
+    only when no stock sell of this size exists, then a realized-event
+    price. None means every same-day row with a quantity is a candidate.
+    The price is not shown.
     """
     symbol = _symbol(flag.symbol)
     sale_date = flag.sale_date
     quantity = float(flag.sale_quantity)
-    stock_price: float | None = None
+    stock_prices: list[float | None] = []
     option_price: float | None = None
     for txn in transactions:
         if _symbol(txn.instrument) != symbol or txn.activity_date != sale_date:
@@ -873,12 +877,12 @@ def _quiet_unit_target(
             if option_price is None:
                 option_price = float(txn.price)
             continue
-        if txn.trans_code in _SELL_CODES and stock_price is None:
-            stock_price = float(txn.price)
-    if stock_price is not None:
-        return stock_price
+        if txn.trans_code in _SELL_CODES:
+            stock_prices.append(float(txn.price))
+    if stock_prices:
+        return stock_prices
     if option_price is not None:
-        return option_price
+        return [option_price]
     for event in events:
         if _symbol(event.symbol) != symbol or event.sale_date != sale_date:
             continue
@@ -886,8 +890,51 @@ def _quiet_unit_target(
             continue
         if float(event.quantity) <= QTY_EPS or not _qty_close(event.quantity, quantity):
             continue
-        return float(event.sale_proceeds) / float(event.quantity)
-    return None
+        return [float(event.sale_proceeds) / float(event.quantity)]
+    return [None]
+
+
+def _quiet_row_indices(
+    rows: list[LotMatchRow],
+    used: set[int],
+    *,
+    symbol: str,
+    sale_date: date,
+    quantity: float,
+    unit_target: float | None,
+) -> set[int]:
+    """Indexes one price would hold. Does not change ``used``.
+
+    Candidates sit within the proceeds slack of that unit price. An exact
+    quantity subset is held. More than 12 candidates, or no exact subset,
+    holds every candidate.
+    """
+    candidates = _match_candidates(
+        rows,
+        used=used,
+        symbol=symbol,
+        sale_date=sale_date,
+        target=unit_target,
+    )
+    if not candidates:
+        return set()
+    over_cap = len(candidates) > _MAX_MATCH_CANDIDATES
+    subsets = (
+        []
+        if over_cap
+        else _qty_subsets(
+            candidates,
+            quantity,
+            lambda item: float(item[1].quantity or 0.0),
+        )
+    )
+    if over_cap or not subsets:
+        return {index for index, _row in candidates}
+    held: set[int] = set()
+    for subset in subsets:
+        for index, _row in subset:
+            held.add(index)
+    return held
 
 
 def _reserve_same_day_1099_rows(
@@ -906,32 +953,74 @@ def _reserve_same_day_1099_rows(
     exact subset, reserves every candidate. Those rows are not compared
     and are not explained as a wash the export missed.
     """
-    candidates = _match_candidates(
-        rows,
-        used=used,
-        symbol=symbol,
-        sale_date=sale_date,
-        target=unit_target,
-    )
-    if not candidates:
-        return
-    over_cap = len(candidates) > _MAX_MATCH_CANDIDATES
-    subsets = (
-        []
-        if over_cap
-        else _qty_subsets(
-            candidates,
-            quantity,
-            lambda item: float(item[1].quantity or 0.0),
+    used.update(
+        _quiet_row_indices(
+            rows,
+            used,
+            symbol=symbol,
+            sale_date=sale_date,
+            quantity=quantity,
+            unit_target=unit_target,
         )
     )
-    if over_cap or not subsets:
-        for index, _row in candidates:
-            used.add(index)
-        return
-    for subset in subsets:
-        for index, _row in subset:
-            used.add(index)
+
+
+def _reserve_quiet_1099_rows(
+    rows: list[LotMatchRow],
+    used: set[int],
+    *,
+    symbol: str,
+    sale_date: date,
+    quantity: float,
+    unit_targets: list[float | None],
+) -> None:
+    """Hold the union of per-price rows for one quiet flag.
+
+    Each same-day stock fill of this quantity is searched on its own.
+    Subset-sum and the over-cap rule apply per price. A row that fits a
+    later fill is not left as a wash the export missed. A row that still
+    matches more than one fill stays quiet too. The price is not shown.
+    """
+    held: set[int] = set()
+    # Distinct prices only. Two fills at one price are the same search.
+    # A row inside the slack of two different prices is ambiguous, so it
+    # is held even when it sits in no quantity subset.
+    seen_prices: list[float | None] = []
+    ambiguous: dict[int, int] = {}
+    for target in unit_targets:
+        if any(_same_unit_price(target, seen) for seen in seen_prices):
+            continue
+        seen_prices.append(target)
+        held.update(
+            _quiet_row_indices(
+                rows,
+                used,
+                symbol=symbol,
+                sale_date=sale_date,
+                quantity=quantity,
+                unit_target=target,
+            )
+        )
+        for index, _row in _match_candidates(
+            rows,
+            used=used,
+            symbol=symbol,
+            sale_date=sale_date,
+            target=target,
+        ):
+            ambiguous[index] = ambiguous.get(index, 0) + 1
+    for index, hits in ambiguous.items():
+        if hits > 1:
+            held.add(index)
+    used.update(held)
+
+
+def _same_unit_price(left: float | None, right: float | None) -> bool:
+    return (
+        left is not None
+        and right is not None
+        and abs(float(left) - float(right)) <= 1e-9
+    )
 
 
 def _unassigned_line(symbol: str, sale_date: date) -> str:
@@ -1443,8 +1532,9 @@ def _hop_from_1099_group(
             reason="unclassified",
         )
     # A 1099-only sale is the broker row. It does not allocate replacement
-    # buys, so the copy has no moved-basis sentence. An export trade date
-    # can still attach the closed lot. It does not pick a replacement buy.
+    # buys, so the copy has no moved-basis sentence and no tacked holding
+    # period. An export trade date can still attach the closed lot. It
+    # does not pick a replacement buy.
     buys: list[_BuyDraft] = []
     export_dates = {row.export_trade_date for _, row in items}
     export_date = next(iter(export_dates)) if len(export_dates) == 1 else None
@@ -1478,8 +1568,8 @@ def _hop_from_1099_group(
         engine_adjusted_cost_basis=None,
         original_purchase_date=acquired,
         original_holding_days=held_days,
-        carryover_days=held_days,
-        tacked_acquisition_date=acquired,
+        carryover_days=None,
+        tacked_acquisition_date=None,
         closed_lots=closed,
         engine_sale_loss=None,
         reconcile_status="on_1099_only",
@@ -1958,16 +2048,16 @@ def build_wash_sale_chains(
         symbol = _symbol(flag.symbol)
         quantity = float(flag.sale_quantity)
         # Any option trade in the window quiets this flag. Same-day 1099
-        # rows are held back so they are not a second chain claiming a
-        # missed wash.
+        # rows for every stock fill of this quantity are held back, so
+        # they are not a second chain claiming a missed wash.
         if _option_touches_flag(flag, transactions, realized_events):
-            _reserve_same_day_1099_rows(
+            _reserve_quiet_1099_rows(
                 rows,
                 used_rows,
                 symbol=symbol,
                 sale_date=flag.sale_date,
                 quantity=quantity,
-                unit_target=_quiet_unit_target(
+                unit_targets=_quiet_unit_target(
                     flag, transactions, realized_events
                 ),
             )
@@ -1989,18 +2079,18 @@ def build_wash_sale_chains(
             used_txns=used_txns,
             same_year=comparable,
         )
-        # An unidentified flag still holds its same-day 1099 rows. The
-        # subset-sum rule matches a quiet option flag: an exact quantity
-        # subset is reserved, and no exact subset or more than 12
-        # candidates reserves every candidate.
+        # An unidentified flag still holds its same-day 1099 rows for
+        # every stock fill of this quantity, not only the first price.
+        # Each price uses the subset-sum rule. A row that still matches
+        # more than one fill stays quiet instead of a missed-wash sibling.
         if hop.not_compared_reason == "unidentified":
-            _reserve_same_day_1099_rows(
+            _reserve_quiet_1099_rows(
                 rows,
                 used_rows,
                 symbol=symbol,
                 sale_date=flag.sale_date,
                 quantity=quantity,
-                unit_target=_quiet_unit_target(
+                unit_targets=_quiet_unit_target(
                     flag, transactions, realized_events
                 ),
             )

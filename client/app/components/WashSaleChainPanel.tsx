@@ -256,6 +256,12 @@ function HopDetails({ hop }: Readonly<{ hop: WashSaleHop }>) {
     return <SparseHopDetails hop={hop} />;
   }
   const perLot = differingClosedLots(hop);
+  const noAllocatedBuy = hop.replacement_buys.every(
+    (buy) => buy.allocated_quantity === 0,
+  );
+  // A 1099-only sale with no allocated replacement has nothing to tack.
+  const hideUnallocated1099Only =
+    hop.reconcile_status === "on_1099_only" && noAllocatedBuy;
   return (
     <Stack
       spacing={1.25}
@@ -314,48 +320,53 @@ function HopDetails({ hop }: Readonly<{ hop: WashSaleHop }>) {
           />
         )}
       </Box>
-      <Typography variant="caption" color="text.secondary">
-        Replacement buys
-      </Typography>
-      {hop.replacement_buys.every((buy) => buy.allocated_quantity === 0) ? (
-        <Typography variant="body2">
-          No replacement buy in this Robinhood export.
-        </Typography>
-      ) : (
-        hop.replacement_buys.map((buy, index) =>
-          buy.allocated_quantity === 0 ? null : (
-            <Typography
-              key={`${hop.hop_id}-${index}-${buy.activity_date}-${buy.quantity}`}
-              variant="body2"
-              sx={{ whiteSpace: "normal", overflowWrap: "anywhere" }}
-            >
-              {formatChainDate(buy.activity_date)} · {formatQty(buy.allocated_quantity)}
-              {` · explained basis ${formatUsd(buy.explained_basis)}`}
+      {!hideUnallocated1099Only && (
+        <>
+          <Typography variant="caption" color="text.secondary">
+            Replacement buys
+          </Typography>
+          {noAllocatedBuy ? (
+            <Typography variant="body2">
+              No replacement buy in this Robinhood export.
             </Typography>
-          ),
-        )
+          ) : (
+            hop.replacement_buys.map((buy, index) =>
+              buy.allocated_quantity === 0 ? null : (
+                <Typography
+                  key={`${hop.hop_id}-${index}-${buy.activity_date}-${buy.quantity}`}
+                  variant="body2"
+                  sx={{ whiteSpace: "normal", overflowWrap: "anywhere" }}
+                >
+                  {formatChainDate(buy.activity_date)} · {formatQty(buy.allocated_quantity)}
+                  {` · explained basis ${formatUsd(buy.explained_basis)}`}
+                </Typography>
+              ),
+            )
+          )}
+        </>
       )}
       {basisSplitIsIllustrative(hop) && (
         <Typography variant="caption" color="text.secondary">
           Per-buy basis split is illustrative.
         </Typography>
       )}
-      {perLot ? (
-        perLot.map((lot, index) => (
-          <Typography
-            key={`${hop.hop_id}-lot-${index}`}
-            variant="body2"
-            data-testid={`wash-sale-closed-lot-${hop.hop_id}-${index}`}
-            sx={{ overflowWrap: "anywhere" }}
-          >
-            {formatQty(lot.quantity)} acquired {formatChainDate(lot.purchase_date)}
+      {!hideUnallocated1099Only &&
+        (perLot ? (
+          perLot.map((lot, index) => (
+            <Typography
+              key={`${hop.hop_id}-lot-${index}`}
+              variant="body2"
+              data-testid={`wash-sale-closed-lot-${hop.hop_id}-${index}`}
+              sx={{ overflowWrap: "anywhere" }}
+            >
+              {formatQty(lot.quantity)} acquired {formatChainDate(lot.purchase_date)}
+            </Typography>
+          ))
+        ) : (
+          <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>
+            {carryoverCopy(hop)}
           </Typography>
-        ))
-      ) : (
-        <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>
-          {carryoverCopy(hop)}
-        </Typography>
-      )}
+        ))}
     </Stack>
   );
 }
