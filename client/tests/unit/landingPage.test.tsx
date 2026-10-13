@@ -134,6 +134,14 @@ describe("LandingPage", () => {
     expect(screen.getByText(/stocks and options — ranked by federal savings/i)).toBeInTheDocument();
     expect(screen.getByText(/Whole book, not options-only/i)).toBeInTheDocument();
     expect(
+      screen.getByText(
+        /Same-symbol buys within 30 days before or after the sale \(a 61-day window\)/,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/Same-symbol buys inside 30 days,/),
+    ).not.toBeInTheDocument();
+    expect(
       screen.getByText(/Wash flags on a 1099 are often scoped to that one account/i),
     ).toBeInTheDocument();
   });
