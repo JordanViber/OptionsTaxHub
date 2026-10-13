@@ -60,6 +60,9 @@ import PortfolioSummaryCards from "../components/PortfolioSummaryCards";
 import PositionsTable from "../components/PositionsTable";
 import HarvestingSuggestions from "../components/HarvestingSuggestions";
 import WashSaleWarning from "../components/WashSaleWarning";
+import WashSaleChainPanel, {
+  washChainsVisible,
+} from "../components/WashSaleChainPanel";
 import TipJar from "../components/TipJar";
 import {
   useAnalyzePortfolio,
@@ -67,6 +70,8 @@ import {
   usePortfolioHistory,
   useBackendHealth,
   fetchAnalysisById,
+  fetchWashSaleChains,
+  WASH_SALE_CHAIN_REANALYZE_HINT,
   cleanupOrphanHistory,
   deleteAnalysis,
   persistGuestAnalysis,
@@ -755,6 +760,7 @@ function ResultsSection({
   guest,
   packetUnlocked,
   onPacketPaidChange,
+  washChainHint,
 }: Readonly<{
   displayedAnalysis: PortfolioAnalysis;
   analysisSource: AnalysisSource | null;
@@ -768,6 +774,7 @@ function ResultsSection({
   guest?: boolean;
   packetUnlocked: boolean;
   onPacketPaidChange?: (paid: boolean) => void;
+  washChainHint?: string | null;
 }>) {
   const harvestTeasers = buildHarvestTeasers(
     displayedAnalysis.suggestions,
@@ -777,6 +784,10 @@ function ResultsSection({
   const suggestionTabCount = packetUnlocked
     ? displayedAnalysis.suggestions.length
     : harvestTeasers.length;
+  const washSaleChains = displayedAnalysis.wash_sale_chains ?? [];
+  const showChainHint =
+    Boolean(washChainHint) &&
+    !washChainsVisible(displayedAnalysis, packetUnlocked);
 
   return (
     <>
@@ -922,6 +933,20 @@ function ResultsSection({
           taxYear={displayedAnalysis.tax_profile?.tax_year}
           locked={!packetUnlocked}
         />
+      )}
+
+      {washChainsVisible(displayedAnalysis, packetUnlocked) && (
+        <WashSaleChainPanel chains={washSaleChains} />
+      )}
+
+      {showChainHint && (
+        <Alert
+          severity="info"
+          variant="outlined"
+          data-testid="wash-sale-chain-hint"
+        >
+          {washChainHint}
+        </Alert>
       )}
 
       <Card sx={{ overflow: "hidden", maxWidth: "100%" }}>
@@ -1229,6 +1254,8 @@ export default function DashboardPage() {
   );
   const [isSampleRun, setIsSampleRun] = useState(false);
   const [packetPaid, setPacketPaid] = useState(false);
+  const [washChainHint, setWashChainHint] = useState<string | null>(null);
+  const washChainFetchedFor = useRef<string | null>(null);
   const [replaceBook, setReplaceBook] = useState(false);
   const [sampleLoading, setSampleLoading] = useState(false);
   const [sampleLoadError, setSampleLoadError] = useState<string | null>(null);
@@ -1321,6 +1348,60 @@ export default function DashboardPage() {
     }
     setPacketPaid(isYearClosePacketPaid(analysisId));
   }, [displayedAnalysis?.analysis_id, displayedAnalysis]);
+
+  // Unpaid analyze strips chains. After the packet is paid, load them once
+  // for this analysis id. packetPaid stays a dependency so checkout can start
+  // that single fetch; the ref ignores a later render of the same id.
+  const washChainAnalysisId = displayedAnalysis?.analysis_id ?? "";
+  const washChainIsSample = Boolean(displayedAnalysis?.sample_run);
+  const washChainCount = displayedAnalysis?.wash_sale_chains?.length ?? 0;
+  const displayedAnalysisRef = useRef(displayedAnalysis);
+  displayedAnalysisRef.current = displayedAnalysis;
+  useEffect(() => {
+    if (
+      !packetPaid ||
+      !washChainAnalysisId ||
+      washChainIsSample ||
+      washChainCount > 0
+    ) {
+      setWashChainHint(null);
+      return;
+    }
+    if (washChainFetchedFor.current === washChainAnalysisId) {
+      return;
+    }
+    const requestedId = washChainAnalysisId;
+    washChainFetchedFor.current = requestedId;
+    let cancelled = false;
+    fetchWashSaleChains(requestedId)
+      .then((result) => {
+        if (cancelled) return;
+        const chains = result.chains;
+        if (chains.length === 0) {
+          setWashChainHint(result.hint);
+          return;
+        }
+        setWashChainHint(null);
+        setLoadedAnalysis((current) => {
+          const base = current ?? displayedAnalysisRef.current;
+          if (!base || base.analysis_id !== requestedId) return current;
+          if ((base.wash_sale_chains?.length ?? 0) > 0) return current;
+          return { ...base, wash_sale_chains: chains };
+        });
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setWashChainHint(WASH_SALE_CHAIN_REANALYZE_HINT);
+        }
+      });
+    return () => {
+      cancelled = true;
+      // A cancelled request must not block the next fetch of this id.
+      if (washChainFetchedFor.current === requestedId) {
+        washChainFetchedFor.current = null;
+      }
+    };
+  }, [packetPaid, washChainAnalysisId, washChainIsSample, washChainCount]);
 
   useEffect(() => {
     if (displayedAnalysis) {
@@ -2228,6 +2309,7 @@ export default function DashboardPage() {
               guest={!user}
               packetUnlocked={packetUnlocked}
               onPacketPaidChange={setPacketPaid}
+              washChainHint={washChainHint}
             />
           )}
 

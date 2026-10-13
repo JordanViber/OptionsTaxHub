@@ -10,6 +10,7 @@ import type {
   LeapRankResponse,
   RhChainResponse,
   RhStatusResponse,
+  WashSaleChain,
 } from "@/lib/types";
 import { getSession } from "./supabase";
 
@@ -604,6 +605,49 @@ export async function fetchAnalysisById(
   }
 
   return response.json();
+}
+
+export type WashSaleChainsResult = {
+  chains: WashSaleChain[];
+  hint: string | null;
+};
+
+export const WASH_SALE_CHAIN_REANALYZE_HINT = "Re-analyze to see wash-sale chains";
+
+/**
+ * Load display wash-sale chains after the year-close packet is paid.
+ *
+ * The dashboard calls this only after the packet is paid, so a 403 asks
+ * the user to re-analyze. Unpaid history never reaches this fetch. Any
+ * other failure (non-OK, or a body that is not JSON) asks the user to
+ * re-analyze. A paid legacy snapshot returns no chains and that same
+ * hint from the server.
+ */
+export async function fetchWashSaleChains(
+  analysisId: string,
+): Promise<WashSaleChainsResult> {
+  const headers = await getAuthHeaders();
+  const response = await fetch(
+    apiPath(`/api/portfolio/analysis/${analysisId}/wash-sale-chains`),
+    { headers },
+  );
+  if (!response.ok) {
+    return { chains: [], hint: WASH_SALE_CHAIN_REANALYZE_HINT };
+  }
+  let body: { wash_sale_chains?: unknown; hint?: unknown };
+  try {
+    body = await response.json();
+  } catch {
+    return { chains: [], hint: WASH_SALE_CHAIN_REANALYZE_HINT };
+  }
+  const chains = Array.isArray(body?.wash_sale_chains)
+    ? body.wash_sale_chains
+    : [];
+  const hint =
+    typeof body?.hint === "string" && body.hint.trim() !== ""
+      ? body.hint
+      : null;
+  return { chains, hint };
 }
 
 /**

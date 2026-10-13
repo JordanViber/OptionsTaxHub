@@ -11878,6 +11878,378 @@ def test_conflict_result_first_year_conflict_writes_receipt(monkeypatch, caplog)
     assert "PACKET_GRANT_SAME_YEAR_DUPLICATE" not in caplog.text
 
 
+def _wash_chain_source(aid):
+    return {
+        **SAMPLE_ANALYSIS,
+        "analysis_id": aid,
+        "analysis_tax_year": 2025,
+        "tax_profile": {"tax_year": 2025, "filing_status": "single"},
+    }
+
+
+def _amd_chain_payload():
+    return [{
+        "chain_id": "AMD:2026-07-15:10:e0",
+        "symbol": "AMD",
+        "reconcile_status": "matches",
+        "difference": None,
+        "plain_english": "You sold 10 AMD.",
+        "hops": [],
+    }]
+
+
+def test_packet_pdf_unchanged_when_snapshot_has_wash_sale_chains():
+    """Chains in the snapshot JSON must not change the packet PDF bytes."""
+    from year_close_packet import (
+        WASH_SALE_CHAINS_REANALYZE_HINT,
+        _public_packet_payload,
+        snapshot_payload_with_wash_sale_chains,
+    )
+
+    aid = "pdf-wash-chains"
+    source = _wash_chain_source(aid)
+    payload = build_packet_payload(source, analysis_id=aid)
+    chains = _amd_chain_payload()
+    with_chains = snapshot_payload_with_wash_sale_chains(payload, chains)
+    assert "wash_sale_chains" not in payload
+    assert with_chains["wash_sale_chains"] == chains
+    assert render_packet_pdf(payload) == render_packet_pdf(with_chains)
+    assert packet_plain_text(payload) == packet_plain_text(with_chains)
+    assert packet_payload_rows_match_counts(payload) is True
+    assert packet_payload_rows_match_counts(with_chains) is True
+    assert _public_packet_payload(payload) == _public_packet_payload(with_chains)
+    assert WASH_SALE_CHAINS_REANALYZE_HINT == "Re-analyze to see wash-sale chains"
+
+
+def test_wash_sale_chains_survive_confirm_on_another_worker(monkeypatch):
+    """Worker A confirms. Worker B has an empty PACKET_STORE and still reads chains."""
+    from year_close_packet import snapshot_payload_with_wash_sale_chains
+
+    user = "test-user-123"
+    aid = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+    session_id = "cs_wash_worker_a"
+    source = _wash_chain_source(aid)
+    payload = build_packet_payload(source, analysis_id=aid)
+    assert packet_payload_rows_match_counts(payload) is True
+    chains = _amd_chain_payload()
+    durable = snapshot_payload_with_wash_sale_chains(payload, chains)
+    remember_analysis(aid, user, source)
+    assert "wash_sale_chains" not in (get_payload(aid) or {})
+    snapshot_client, _session = _wire_owned_receipt(
+        monkeypatch,
+        aid=aid,
+        user=user,
+        session_id=session_id,
+        tax_year=2025,
+        rows=[],
+        history_payload=source,
+    )
+    saved = db.save_packet_snapshot(aid, user, 2025, durable, client=snapshot_client)
+    assert saved
+    # A later unpaid write that omits the key must not drop the durable chains.
+    rewritten = db.save_packet_snapshot(
+        aid, user, 2025, payload, client=snapshot_client,
+    )
+    assert rewritten
+    stored_chains = snapshot_client.rows[0]["packet_payload"]["wash_sale_chains"]
+    assert stored_chains[0]["symbol"] == "AMD"
+    assert snapshot_client.rows[0]["paid_at"] is None
+
+    confirm = client.post(
+        "/api/year-close-packet/confirm",
+        json={"session_id": session_id, "analysis_id": aid},
+    )
+    assert confirm.status_code == 200, confirm.text
+    assert confirm.json()["paid"] is True
+    assert snapshot_client.rows[0]["paid_at"]
+    assert snapshot_client.rows[0]["packet_payload"]["wash_sale_chains"][0]["symbol"] == "AMD"
+
+    PACKET_STORE.clear()
+    assert get_payload(aid) is None
+    got = client.get(f"/api/portfolio/analysis/{aid}/wash-sale-chains")
+    assert got.status_code == 200, got.text
+    body = got.json()
+    assert body["wash_sale_chains"][0]["symbol"] == "AMD"
+    assert body["wash_sale_chains"][0]["chain_id"] == "AMD:2026-07-15:10:e0"
+    assert "hint" not in body
+
+
+def test_legacy_paid_snapshot_without_chains_returns_hint(monkeypatch):
+    from year_close_packet import WASH_SALE_CHAINS_REANALYZE_HINT
+
+    user = "test-user-123"
+    aid = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+    session_id = "cs_legacy_chains"
+    source = _wash_chain_source(aid)
+    payload = build_packet_payload(source, analysis_id=aid)
+    assert "wash_sale_chains" not in payload
+    assert packet_payload_rows_match_counts(payload) is True
+    _wire_owned_receipt(
+        monkeypatch,
+        aid=aid,
+        user=user,
+        session_id=session_id,
+        tax_year=2025,
+        rows=[_snapshot_row(
+            aid, user, 2025, payload,
+            session_id=session_id, paid_at="2026-01-01T00:00:00+00:00",
+        )],
+        history_payload=source,
+    )
+    PACKET_STORE.clear()
+    got = client.get(f"/api/portfolio/analysis/{aid}/wash-sale-chains")
+    assert got.status_code == 200, got.text
+    body = got.json()
+    assert body["wash_sale_chains"] == []
+    assert body["hint"] == WASH_SALE_CHAINS_REANALYZE_HINT
+
+
+def test_unpaid_snapshot_wash_sale_chains_stay_forbidden(monkeypatch):
+    from year_close_packet import mark_paid, snapshot_payload_with_wash_sale_chains
+
+    user = "test-user-123"
+    aid = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+    source = _wash_chain_source(aid)
+    payload = build_packet_payload(source, analysis_id=aid)
+    durable = snapshot_payload_with_wash_sale_chains(payload, _amd_chain_payload())
+    _wire_real_snapshot_client(
+        monkeypatch,
+        [_snapshot_row(
+            aid, user, 2025, durable,
+            session_id=None, paid_at=None, expires_at="2099-01-01T00:00:00+00:00",
+        )],
+    )
+    remember_analysis(aid, user, source)
+    assert mark_paid(aid, "cs_memory_only", user_id=user) is True
+    denied = client.get(f"/api/portfolio/analysis/{aid}/wash-sale-chains")
+    assert denied.status_code == 403
+    assert denied.json()["detail"] == (
+        "Wash-sale chains are available after the year-close packet is paid."
+    )
+    assert "AMD" not in denied.text
+    assert "hint" not in denied.json()
+
+
+def test_guest_remember_keeps_wash_sale_chains_for_claim():
+    """A guest payload keeps chains. A signed-in payload does not."""
+    guest = {
+        **SAMPLE_ANALYSIS,
+        "analysis_id": "guest-chains",
+        "wash_sale_chains": _amd_chain_payload(),
+    }
+    remember_analysis("guest-chains", "", guest)
+    stored = get_payload("guest-chains")
+    assert stored["wash_sale_chains"][0]["symbol"] == "AMD"
+    guest["wash_sale_chains"][0]["symbol"] = "QQQ"
+    assert stored["wash_sale_chains"][0]["symbol"] == "AMD"
+
+    signed = {
+        **SAMPLE_ANALYSIS,
+        "analysis_id": "signed-chains",
+        "wash_sale_chains": _amd_chain_payload(),
+    }
+    remember_analysis("signed-chains", "test-user-123", signed)
+    assert "wash_sale_chains" not in (get_payload("signed-chains") or {})
+
+    missing = {**SAMPLE_ANALYSIS, "analysis_id": "guest-missing"}
+    remember_analysis("guest-missing", "", missing)
+    assert "wash_sale_chains" not in (get_payload("guest-missing") or {})
+
+    empty = {**SAMPLE_ANALYSIS, "analysis_id": "guest-empty", "wash_sale_chains": []}
+    remember_analysis("guest-empty", "", empty)
+    assert get_payload("guest-empty")["wash_sale_chains"] == []
+
+
+def test_copy_packet_payload_keeps_chains_without_requiring_them():
+    from year_close_packet import copy_packet_payload_to_id
+
+    source = "local-analysis"
+    target = "12121212-1212-4121-8121-121212121212"
+    remember_analysis(source, "test-user-123", SAMPLE_ANALYSIS)
+    PACKET_STORE[source]["payload"]["wash_sale_chains"] = _amd_chain_payload()
+    analysis = {
+        key: value for key, value in SAMPLE_ANALYSIS.items() if key != "analysis_id"
+    }
+    assert copy_packet_payload_to_id(source, target, "test-user-123", analysis) is True
+    copied = PACKET_STORE[target]["payload"]
+    assert copied["analysis_id"] == target
+    assert copied["wash_sale_chains"][0]["symbol"] == "AMD"
+    assert "wash_sale_chains" not in build_packet_payload(analysis, analysis_id=source)
+
+
+def test_snapshot_chain_helpers_reject_bad_shapes():
+    from year_close_packet import (
+        WASH_SALE_CHAINS_REANALYZE_HINT,
+        snapshot_payload_with_wash_sale_chains,
+        wash_sale_chains_from_snapshot_payload,
+    )
+
+    assert snapshot_payload_with_wash_sale_chains("x", []) == "x"
+    payload = {"a": 1}
+    assert snapshot_payload_with_wash_sale_chains(payload, "nope") is payload
+    chains, hint = wash_sale_chains_from_snapshot_payload({"wash_sale_chains": "nope"})
+    assert chains == []
+    assert hint == WASH_SALE_CHAINS_REANALYZE_HINT
+
+
+def test_unpaid_snapshot_rewrite_keeps_stored_chains(monkeypatch):
+    """An unpaid rewrite that omits the key leaves the stored chains in place."""
+    from year_close_packet import snapshot_payload_with_wash_sale_chains
+
+    user = "test-user-123"
+    aid = "abababab-abab-4aba-8aba-abababababab"
+    source = _wash_chain_source(aid)
+    payload = build_packet_payload(source, analysis_id=aid)
+    chains = _amd_chain_payload()
+    durable = snapshot_payload_with_wash_sale_chains(payload, chains)
+    snapshot_client = _wire_real_snapshot_client(monkeypatch, [])
+    assert db.save_packet_snapshot(aid, user, 2025, durable, client=snapshot_client)
+    rewritten = db.save_packet_snapshot(aid, user, 2025, payload, client=snapshot_client)
+    assert rewritten
+    assert snapshot_client.rows[0]["paid_at"] is None
+    assert snapshot_client.rows[0]["packet_payload"]["wash_sale_chains"] == chains
+    replaced = db.save_packet_snapshot(
+        aid,
+        user,
+        2025,
+        snapshot_payload_with_wash_sale_chains(payload, []),
+        client=snapshot_client,
+    )
+    assert replaced
+    assert snapshot_client.rows[0]["packet_payload"]["wash_sale_chains"] == []
+
+
+def test_wash_sale_chain_read_covers_outage_and_bad_snapshot_shapes(monkeypatch):
+    from year_close_packet import WASH_SALE_CHAINS_REANALYZE_HINT
+
+    aid = "ffffffff-ffff-4fff-8fff-ffffffffffff"
+    user = "test-user-123"
+    listed = main.list_packet_snapshots_for_identity
+    monkeypatch.setattr(
+        main,
+        "list_packet_snapshots_for_identity",
+        lambda *_args, **_kwargs: ([], False),
+    )
+    outage = client.get(f"/api/portfolio/analysis/{aid}/wash-sale-chains")
+    assert outage.status_code == 503
+    monkeypatch.setattr(main, "list_packet_snapshots_for_identity", listed)
+
+    _FAKE_PACKET_SNAPSHOTS[(user, aid)] = {
+        "analysis_id": aid,
+        "user_id": user,
+        "tax_year": "nope",
+        "packet_payload": {"wash_sale_chains": []},
+        "packet_session_id": "cs_bad_year",
+        "paid_at": "2026-01-01T00:00:00+00:00",
+    }
+    bad_year = client.get(f"/api/portfolio/analysis/{aid}/wash-sale-chains")
+    assert bad_year.status_code == 403
+    assert bad_year.json()["detail"] == (
+        "Wash-sale chains are available after the year-close packet is paid."
+    )
+
+    _FAKE_PACKET_SNAPSHOTS[(user, aid)]["tax_year"] = 2025
+    _FAKE_PACKET_SNAPSHOTS[(user, aid)]["packet_payload"] = {"wash_sale_chains": "nope"}
+    hinted = client.get(f"/api/portfolio/analysis/{aid}/wash-sale-chains")
+    assert hinted.status_code == 200, hinted.text
+    assert hinted.json()["wash_sale_chains"] == []
+    assert hinted.json()["hint"] == WASH_SALE_CHAINS_REANALYZE_HINT
+
+
+def test_guest_analyze_claim_and_pay_returns_wash_sale_chains(monkeypatch):
+    """Guest analyze keeps chains in memory. Sign-in, then pay, then the GET."""
+    from auth import get_optional_user
+
+    _test_stripe_env(monkeypatch)
+    # test_main installs a process-wide signed-in optional user. This request
+    # must stay anonymous so the chains live on the in-memory payload.
+    monkeypatch.setitem(main.app.dependency_overrides, get_optional_user, lambda: "")
+    monkeypatch.setattr(main, "_enforce_guest_analyze_quota", lambda _request: None)
+    monkeypatch.setattr(
+        main,
+        "fetch_current_prices",
+        lambda symbols, fb=None, allow_network=True: (
+            {symbol.upper(): 100.0 for symbol in symbols},
+            [],
+        ),
+    )
+    monkeypatch.setattr(
+        main,
+        "fetch_option_prices",
+        lambda labels, fb=None, allow_network=True: ({}, []),
+    )
+    monkeypatch.setattr(main, "prepare_positions_for_ai", lambda _lots: [])
+    monkeypatch.setattr(
+        main,
+        "_process_ai_suggestions",
+        lambda _lots, warnings: (None, warnings),
+    )
+    monkeypatch.setattr(main, "_save_history_best_effort", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        main,
+        "load_activity_book_for_merge",
+        lambda user_id, client=None: db.ActivityBookLookup(),
+    )
+    monkeypatch.setattr(main, "upsert_activity_book", lambda *_args, **_kwargs: {"ok": True})
+
+    csv_path = Path(__file__).resolve().parent / "fixtures" / "year_close_2024.csv"
+    analyzed = client.post(
+        "/api/portfolio/analyze?tax_year=2024",
+        files={"file": ("year_close_2024.csv", csv_path.read_bytes(), "text/csv")},
+    )
+    assert analyzed.status_code == 200, analyzed.text
+    body = analyzed.json()
+    aid = body["analysis_id"]
+    assert body.get("sample_run") is False
+    assert body["wash_sale_chains"] == []
+    stored = get_payload(aid)
+    assert stored["wash_sale_chains"]
+    assert stored["wash_sale_chains"][0]["symbol"] == "AMD"
+    assert PACKET_STORE[aid]["user_id"] == ""
+
+    claimed = client.post(
+        "/api/portfolio/history",
+        json={"filename": "year_close_2024.csv", "analysis": body},
+    )
+    assert claimed.status_code == 200, claimed.text
+    assert PACKET_STORE[aid]["user_id"] == "test-user-123"
+    snapshot = _FAKE_PACKET_SNAPSHOTS[("test-user-123", aid)]
+    assert snapshot["packet_payload"]["wash_sale_chains"][0]["symbol"] == "AMD"
+    assert snapshot["paid_at"] is None
+    tax_year = int(snapshot["tax_year"])
+
+    session_id = "cs_guest_claim_chains"
+    session = _stripe_object_session(
+        id=session_id,
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": aid,
+            "user_id": "test-user-123",
+            "tax_year": str(tax_year),
+        },
+    )
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda *_args, **_kwargs: session,
+    )
+    confirm = client.post(
+        "/api/year-close-packet/confirm",
+        json={"session_id": session_id, "analysis_id": aid},
+    )
+    assert confirm.status_code == 200, confirm.text
+    assert confirm.json()["paid"] is True
+    assert snapshot["paid_at"]
+    assert snapshot["packet_payload"]["wash_sale_chains"][0]["symbol"] == "AMD"
+
+    got = client.get(f"/api/portfolio/analysis/{aid}/wash-sale-chains")
+    assert got.status_code == 200, got.text
+    paid_body = got.json()
+    assert paid_body["wash_sale_chains"][0]["symbol"] == "AMD"
+    assert paid_body["wash_sale_chains"][0]["chain_id"] == stored["wash_sale_chains"][0]["chain_id"]
+    assert "hint" not in paid_body
+
+
 def test_same_year_duplicate_grant_refuses_bad_year_and_session():
     """A refund receipt is only written for an integer year and a cs_ session."""
     assert main._same_year_duplicate_grant("aid", "user", "nope", "cs_ok") is None

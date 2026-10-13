@@ -989,3 +989,154 @@ test.describe("Open 2026 sample", () => {
     await expect(page.getByTestId("entry-breakeven")).toHaveText("$254.00");
   });
 });
+
+test.describe("Wash-sale chain explainer", () => {
+  const amdSentence =
+    "You sold 10 AMD at a $300 loss on Jul 15 and bought 10 back on Jul 24, so $300 moved into the new lot's basis. This matches your 1099 wash adjustment of $300.";
+
+  const sampleWithChain = {
+    ...MOCK_ANALYSIS,
+    sample_run: true,
+    packet_unlocked: false,
+    analysis_id: "sample-2026",
+    tax_profile: {
+      ...MOCK_ANALYSIS.tax_profile,
+      tax_year: 2026,
+    },
+    wash_sale_flags: [
+      {
+        symbol: "AMD",
+        sale_date: "2026-07-15",
+        sale_quantity: 10,
+        sale_loss: 300,
+        repurchase_date: "2026-07-24",
+        repurchase_quantity: 10,
+        disallowed_loss: 300,
+        adjusted_cost_basis: 1550,
+        explanation: "AMD wash",
+      },
+    ],
+    wash_sale_chains: [
+      {
+        chain_id: "AMD:2026-07-15:10:e0",
+        symbol: "AMD",
+        reconcile_status: "matches",
+        difference: null,
+        plain_english: amdSentence,
+        hops: [
+          {
+            hop_id: "AMD:2026-07-15:10:e0",
+            hop_index: 0,
+            symbol: "AMD",
+            asset_type: "stock",
+            sale_date: "2026-07-15",
+            sale_quantity: 10,
+            proceeds: 1200,
+            cost_basis: 1500,
+            loss: 300,
+            replacement_buys: [
+              {
+                activity_date: "2026-07-24",
+                quantity: 10,
+                price: 125,
+                cash_cost: 1250,
+                allocated_quantity: 10,
+                allocated_disallowed: 300,
+                explained_basis: 1550,
+              },
+            ],
+            disallowed_loss: 300,
+            engine_disallowed_loss: 300,
+            form_1099_wash: 300,
+            engine_adjusted_cost_basis: 1550,
+            carryover_days: 44,
+            tacked_acquisition_date: "2026-06-01",
+            carried_in_disallowed: 0,
+            engine_sale_loss: 300,
+            explained_loss_with_carry: 300,
+            plain_english: amdSentence,
+            reconcile_status: "matches",
+            difference: null,
+          },
+        ],
+      },
+    ],
+  };
+
+  async function mockGuestDesk(page: Parameters<typeof setupMockAnalysis>[0]) {
+    await page.route("**/health", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ status: "ok" }),
+      }),
+    );
+    await page.route("**/auth/v1/**", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({}),
+      }),
+    );
+  }
+
+  async function openSampleFromLanding(
+    page: Parameters<typeof setupMockAnalysis>[0],
+  ) {
+    await page.goto("/");
+    await page.getByRole("button", { name: "Open the 2026 sample" }).click();
+    await expect(page).toHaveURL(/\/dashboard/, { timeout: 30000 });
+  }
+
+  const viewports = [
+    { name: "desktop", width: 1280, height: 800 },
+    { name: "phone-390", width: 390, height: 844 },
+  ] as const;
+
+  for (const viewport of viewports) {
+    test(`guest sample opens the AMD chain on ${viewport.name}`, async ({
+      page,
+    }) => {
+      test.setTimeout(90_000);
+      await page.setViewportSize({
+        width: viewport.width,
+        height: viewport.height,
+      });
+      await setupMockAnalysis(page, sampleWithChain);
+      await mockGuestDesk(page);
+      await openSampleFromLanding(page);
+      await expect(page.getByText("Tax Year: 2026")).toBeVisible({
+        timeout: 20000,
+      });
+      await expect(page.getByText(/Positions \(2\)/)).toBeVisible();
+      await expect(page.getByText("Net Open Position Value")).toBeVisible();
+      await expect(page.getByRole("button", { name: "Pay $49" })).toBeVisible();
+      await expect(
+        page.getByRole("heading", { name: /Analyze a new option/i }),
+      ).toBeVisible();
+      await expect(page.getByTestId("entry-rank-leaps")).toBeVisible();
+      await expect(page.getByTestId("wash-sale-chain-card")).toBeVisible();
+      await expect(page.getByText(amdSentence).first()).toBeVisible();
+      await expect(
+        page.getByRole("button", { name: "Open chain AMD Jul 15, 2026" }),
+      ).toBeVisible();
+      await page.getByTestId("wash-sale-chain-open-AMD:2026-07-15:10:e0").click();
+      const dialog = page.getByTestId("wash-sale-chain-dialog");
+      await expect(dialog).toBeVisible();
+      await expect(dialog.getByText(amdSentence)).toBeVisible();
+      await expect(
+        page.getByTestId("wash-sale-chain-dialog-disclaimer"),
+      ).toBeVisible();
+      await expect(dialog.getByText(/Jul 24, 2026/)).toBeVisible();
+      await expect(dialog.getByText(/· 10/)).toBeVisible();
+      if (viewport.width === 390) {
+        const scrollWidth = await page.evaluate(
+          () => document.documentElement.scrollWidth,
+        );
+        expect(scrollWidth).toBeLessThanOrEqual(391);
+        const box = await dialog.boundingBox();
+        expect(box?.width ?? 0).toBeLessThanOrEqual(390);
+      }
+    });
+  }
+});
