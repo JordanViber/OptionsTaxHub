@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import Supplemental1099InsightsPanel from "../../app/components/Supplemental1099InsightsPanel";
 import type { RealizedSummary, Supplemental1099Summary } from "../../lib/types";
 import {
@@ -56,7 +56,14 @@ describe("Supplemental1099InsightsPanel", () => {
     render(<Supplemental1099InsightsPanel summary={fixtureSummary} />);
 
     expect(screen.getByText(SUPPLEMENTAL_1099_SETTLEMENT_FAQ)).toBeInTheDocument();
-    expect(screen.getByText(/SPX 12\/31/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Year-end short" })).toHaveAttribute(
+      "title",
+      expect.stringMatching(/SPX expiring 12\/31/i),
+    );
+    expect(
+      screen.getByRole("button", { name: "Year-end short" }).getAttribute("title") ??
+        "",
+    ).not.toMatch(/2,699/);
     expect(
       screen.getByText(/Matched lots still show both dates/i),
     ).toBeInTheDocument();
@@ -140,7 +147,9 @@ describe("Supplemental1099InsightsPanel", () => {
     expect(screen.getByText(SUPPLEMENTAL_1099_COMPARE_COPY)).toBeInTheDocument();
     expect(screen.getByText(SUPPLEMENTAL_1099_GAP_COPY)).toBeInTheDocument();
     expect(screen.getByText(WASH_ACCOUNT_SCOPE_COPY, { exact: false })).toBeInTheDocument();
-    expect(screen.getByText(/SPX 12\/31/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Why these totals disagree" }),
+    ).toHaveAttribute("title", expect.stringMatching(/SPX expiring 12\/31/i));
     expect(screen.getByText(SUPPLEMENTAL_1099_BROKER_COLUMN)).toBeInTheDocument();
     expect(screen.getByText(SUPPLEMENTAL_1099_EXPORT_COLUMN)).toBeInTheDocument();
     expect(screen.getByTestId("1099-vs-export-panel")).toBeInTheDocument();
@@ -162,9 +171,35 @@ describe("Supplemental1099InsightsPanel", () => {
     expect(
       screen.getByText(/same year as this export/i),
     ).toBeInTheDocument();
-    expect(screen.getByText(/SPX 12\/31/i)).toBeInTheDocument();
-    expect(screen.getByText(/not a software bug/i)).toBeInTheDocument();
-    expect(screen.getByText(/r\/options/i)).toBeInTheDocument();
+    const totalsHint = screen.getByRole("button", {
+      name: "Why these totals disagree",
+    });
+    expect(totalsHint).toHaveAttribute(
+      "title",
+      expect.stringMatching(/settlement date/i),
+    );
+    expect(totalsHint).toHaveAttribute(
+      "title",
+      expect.stringMatching(/SPX expiring 12\/31/i),
+    );
+    expect(totalsHint).toHaveAttribute(
+      "title",
+      expect.stringMatching(/not a software bug/i),
+    );
+    expect(totalsHint.getAttribute("title") ?? "").not.toMatch(/2,699/);
+    expect(screen.queryByText(/r\/options/i)).not.toBeInTheDocument();
+    expect(screen.queryByTestId("glossary-hint-panel")).not.toBeInTheDocument();
+    expect(SUPPLEMENTAL_1099_GAP_COPY).toMatch(
+      /packages the reconciliation, wash chains, and harvest notes/i,
+    );
+    expect(SUPPLEMENTAL_1099_GAP_COPY).not.toMatch(/is in the \$49 PDF/i);
+    fireEvent.click(totalsHint);
+    expect(totalsHint).toHaveAttribute("aria-expanded", "true");
+    const opened = screen.getByTestId("glossary-hint-panel");
+    expect(opened).toBeVisible();
+    expect(opened).toHaveTextContent(/can settle in January/i);
+    expect(opened).toHaveTextContent(/SPX expiring 12\/31/i);
+    expect(opened.textContent ?? "").not.toMatch(/2,699/);
   });
 
   it("always shows the named gap copy on the same-year compare, even when totals match", () => {

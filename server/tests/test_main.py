@@ -3438,6 +3438,24 @@ def test_trusted_in_app_sample_skips_yahoo_and_still_returns_positions(monkeypat
     assert body["sample_run"] is True
     assert body["positions"]
     assert body["tax_profile"]["tax_year"] == 2026
+    warning_text = " ".join(body.get("warnings") or [])
+    assert "Live prices were unavailable" not in warning_text
+    assert "CSV-provided price" not in warning_text
+    assert "fallback" not in warning_text.lower()
+    from ledger import SAMPLE_FIXTURE_PRICES
+
+    priced = [
+        position
+        for position in body["positions"]
+        if position.get("symbol") in SAMPLE_FIXTURE_PRICES
+        and position.get("asset_type") == "stock"
+        and position.get("current_price") is not None
+    ]
+    assert priced
+    for position in priced:
+        assert position["current_price"] == pytest.approx(
+            SAMPLE_FIXTURE_PRICES[position["symbol"]]
+        )
 
 
 def test_trusted_sample_fixture_prices_win_over_cache_and_lot_fills():

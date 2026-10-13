@@ -1,6 +1,7 @@
 "use client";
 
 import { Box, Stack, Typography } from "@mui/material";
+import { ST_TOTALS_EXPLANATION } from "@/lib/supplemental1099";
 
 /**
  * Static landing preview of the 2026 sample same-year compare.
@@ -118,9 +119,12 @@ export default function DeskPreview() {
           py: 1.75,
         }}
       >
-        <Typography variant="body2" color="text.secondary">
-          A year-end short (SPX 12/31) can print a gain on the 1099 while the
-          export still shows a loss. Not a software bug.
+        <Typography
+          id="why-totals-disagree"
+          variant="body2"
+          sx={{ color: "text.primary" }}
+        >
+          {ST_TOTALS_EXPLANATION}
         </Typography>
       </Box>
     </Box>

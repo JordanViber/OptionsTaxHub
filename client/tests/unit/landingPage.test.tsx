@@ -64,11 +64,11 @@ describe("LandingPage", () => {
         name: /Your 1099 and your export will disagree/,
       }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Open desk" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Open Tax" })).toHaveAttribute(
       "href",
       "/dashboard",
     );
-    expect(screen.getByRole("link", { name: "Desk" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Tax" })).toHaveAttribute(
       "href",
       "/dashboard",
     );
@@ -99,7 +99,7 @@ describe("LandingPage", () => {
     expect(screen.getByText(/your export uses trade date/i)).toBeInTheDocument();
     expect(screen.getByText(/CSV export plus the 1099/i)).toBeInTheDocument();
     expect(screen.getByText(/not a Form 8949 rebuild/i)).toBeInTheDocument();
-    expect(screen.getAllByText(/SPX 12\/31/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/SPX 12\/31/)).not.toBeInTheDocument();
     expect(screen.getAllByText(/not a software bug/i).length).toBeGreaterThan(0);
     expect(
       screen.getByText(WASH_ACCOUNT_SCOPE_COPY, { exact: false }),
@@ -113,13 +113,13 @@ describe("LandingPage", () => {
     expect(screen.queryByText(/CPA advice/i)).not.toBeInTheDocument();
   });
 
-  it("renders navigation with Sign In and Open desk", () => {
+  it("renders navigation with Sign In and Open Tax", () => {
     mockUseAuth.mockReturnValue({ user: null, loading: false });
 
     renderWithClient(<LandingPage />);
 
     expect(screen.getAllByText("Sign In").length).toBeGreaterThan(0);
-    expect(screen.getByText("Open desk")).toBeInTheDocument();
+    expect(screen.getByText("Open Tax")).toBeInTheDocument();
   });
 
   it("renders feature columns", () => {
@@ -130,12 +130,12 @@ describe("LandingPage", () => {
     expect(screen.getByText("Harvest queue")).toBeInTheDocument();
     expect(screen.getByText("Wash-sale radar")).toBeInTheDocument();
     expect(screen.getByText("Lot ledger")).toBeInTheDocument();
-    expect(screen.getByText(/Robinhood whole-portfolio tax desk/i)).toBeInTheDocument();
+    expect(screen.getByText(/Robinhood whole-portfolio tax/i)).toBeInTheDocument();
     expect(screen.getByText(/stocks and options — ranked by federal savings/i)).toBeInTheDocument();
     expect(screen.getByText(/Whole book, not options-only/i)).toBeInTheDocument();
     expect(
       screen.getByText(
-        /Same-symbol buys within 30 days before or after the sale \(a 61-day window\)/,
+        /substantially identical security, including options or contracts to acquire it, bought within 30 days before or after the sale \(a 61-day window\)/,
       ),
     ).toBeInTheDocument();
     expect(
@@ -146,19 +146,19 @@ describe("LandingPage", () => {
     ).toBeInTheDocument();
   });
 
-  it("renders How the desk works with 3 steps", () => {
+  it("renders How it works with 3 steps", () => {
     mockUseAuth.mockReturnValue({ user: null, loading: false });
 
     renderWithClient(<LandingPage />);
 
-    expect(screen.getByText("How the desk works")).toBeInTheDocument();
+    expect(screen.getByText("How it works")).toBeInTheDocument();
     expect(
       screen.getByRole("heading", {
-        name: /Robinhood whole-portfolio tax desk/,
+        name: /Robinhood whole-portfolio tax/,
       }),
     ).toBeInTheDocument();
     expect(screen.getByText("Drop a CSV")).toBeInTheDocument();
-    expect(screen.getByText("Read the desk")).toBeInTheDocument();
+    expect(screen.getByText("Read the compare")).toBeInTheDocument();
     expect(
       screen.getByText(/1099 vs export first — toward Schedule D/i),
     ).toBeInTheDocument();
@@ -241,14 +241,14 @@ describe("LandingPage", () => {
     expect(mockPush).toHaveBeenCalledWith("/dashboard");
   });
 
-  it("uses real links for Sign In and Open desk", () => {
+  it("uses real links for Sign In and Open Tax", () => {
     mockUseAuth.mockReturnValue({ user: null, loading: false });
     renderWithClient(<LandingPage />);
 
     const signIn = screen.getAllByRole("link", { name: /Sign In/i });
     expect(signIn.length).toBeGreaterThan(0);
     expect(signIn[0]).toHaveAttribute("href", "/auth/signin");
-    expect(screen.getByRole("link", { name: "Open desk" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Open Tax" })).toHaveAttribute(
       "href",
       "/dashboard",
     );
@@ -270,12 +270,22 @@ describe("LandingPage", () => {
     ).toBeGreaterThan(0);
   });
 
-  it("claims lot-matched 1099-B on the packet and does not claim Form 8949 filing", () => {
+  it("describes the $49 PDF as a packaged year-close document", () => {
     mockUseAuth.mockReturnValue({ user: null, loading: false });
     renderWithClient(<LandingPage />);
 
-    expect(screen.getAllByText(/lot-matched 1099-B/i).length).toBeGreaterThan(0);
-    expect(screen.getByText(/not a filed Form 8949/i)).toBeInTheDocument();
+    expect(
+      screen.getAllByText(
+        /packages the reconciliation, wash chains, and harvest notes into a downloadable year-close document/i,
+      ).length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.queryByText(/Lot-matched 1099-B is in that PDF/i),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/lot-level 1099 reconciliation is in the \$49 PDF/i),
+    ).not.toBeInTheDocument();
+    expect(screen.getAllByText(/not a filed Form 8949/i).length).toBeGreaterThan(0);
     expect(screen.getByText(/not a Form 8949 rebuild/i)).toBeInTheDocument();
     expect(screen.queryByText(/file your Form 8949/i)).not.toBeInTheDocument();
     expect(
@@ -308,7 +318,7 @@ describe("LandingPage", () => {
     );
     expect(
       screen.getByRole("heading", {
-        name: /Robinhood whole-portfolio tax desk/i,
+        name: /Robinhood whole-portfolio tax/i,
       }),
     ).toBeInTheDocument();
     expect(

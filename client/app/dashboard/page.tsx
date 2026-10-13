@@ -45,6 +45,7 @@ import {
   CloudUpload as CloudUploadIcon,
   Error as ErrorIcon,
   ExpandMore as ExpandMoreIcon,
+  Login as LoginIcon,
   Logout as LogoutIcon,
   Settings as SettingsIcon,
   History as HistoryIcon,
@@ -82,6 +83,7 @@ import FirstRunEmptyState from "../components/FirstRunEmptyState";
 import DeskNav from "../components/DeskNav";
 import Supplemental1099InsightsPanel from "../components/Supplemental1099InsightsPanel";
 import {
+  PACKET_SCOPE_COPY,
   SUPPLEMENTAL_1099_AFTER_FIRST_RUN_COPY,
   SUPPLEMENTAL_1099_AFTER_FIRST_RUN_TITLE,
   SUPPLEMENTAL_1099_CONTEXT_COPY,
@@ -324,13 +326,27 @@ function getAnalysisSourceDisplay(source: AnalysisSource): {
   }
 }
 
+function isSamplePriceWarning(warning: string): boolean {
+  return /live prices were unavailable|fallback pric|csv-provided price|csv-provided option/i.test(
+    warning,
+  );
+}
+
+function warningsForDisplay(analysis: PortfolioAnalysis): string[] {
+  const warnings = analysis.warnings ?? [];
+  if (!analysis.sample_run) {
+    return warnings;
+  }
+  return warnings.filter((warning) => !isSamplePriceWarning(warning));
+}
+
 function getConfidenceSummary(analysis: PortfolioAnalysis): {
   severity: "success" | "info" | "warning";
   label: string;
   summary: string;
   details: string[];
 } {
-  const warnings = analysis.warnings ?? [];
+  const warnings = warningsForDisplay(analysis);
   const details: string[] = [];
 
   if (
@@ -380,7 +396,7 @@ function getConfidenceSummary(analysis: PortfolioAnalysis): {
       severity: "success",
       label: "High confidence",
       summary:
-        "No major data quality issues were detected in this result. You can use the suggestions as a strong first pass for this tax year.",
+        "No major data quality issues were detected in this result. You can use the harvest queue as a strong first pass for this tax year.",
       details: [],
     };
   }
@@ -420,22 +436,22 @@ function getRecommendedNextSteps(
       steps.push(
         `${totals.count} lot${totals.count === 1 ? "" : "s"} show ${formatUsd(
           totals.totalLoss,
-        )} in unrealized losses. Pay $49 to unlock sell instructions, replacements, wash-sale events, and the CPA PDF.`,
+        )} in unrealized losses. The $49 PDF adds sell instructions, replacements, wash chains, and harvest notes.`,
       );
     } else {
       steps.push(
-        "This preview shows headline numbers. Pay $49 to unlock harvest instructions, wash-sale events, tax-lot detail, and the CPA PDF.",
+        "This page shows the free compare. The $49 PDF adds harvest notes, wash chains, and lot-level 1099 reconciliation.",
       );
     }
     return steps;
   }
   if (analysis.suggestions.length > 0) {
     steps.push(
-      `Start with the ${analysis.suggestions.length} harvesting suggestion${analysis.suggestions.length === 1 ? "" : "s"} in the harvest queue.`,
+      `Start with the ${analysis.suggestions.length} ${analysis.suggestions.length === 1 ? "lot" : "lots"} in the harvest queue.`,
     );
   } else {
     steps.push(
-      "No obvious harvesting candidates were found, so review your open positions and realized gains for this tax year first.",
+      "The harvest queue is empty, so review the lot ledger and realized gains for this tax year first.",
     );
   }
 
@@ -445,7 +461,7 @@ function getRecommendedNextSteps(
     );
   }
 
-  if (analysis.warnings.length > 0) {
+  if (warningsForDisplay(analysis).length > 0) {
     steps.push(
       "After that, check the data quality notes for any positions that may need manual verification.",
     );
@@ -497,7 +513,7 @@ function SuggestionsPanel({
       {skippedSuggestionSymbols.length > 0 && (
         <Alert severity="warning" variant="outlined">
           <AlertTitle>Manual review needed</AlertTitle>
-          Automated harvesting suggestions were skipped for{" "}
+          The harvest queue skipped{" "}
           {skippedSuggestionSymbols.join(", ")} because a split or corporate
           action changed the reported share count. Review those symbols manually
           before acting.
@@ -543,7 +559,7 @@ function getSupplemental1099HelperText({
 }): string {
   if (isRestoredAppliedSummary) {
     if (sameYearCompare) {
-      return "This restored result already includes 1099 vs this export (totals stay free). Lot-matched 1099-B is in the $49 packet. Upload the PDF again only if you want to refresh it.";
+      return `This restored result already includes 1099 vs this export (totals stay free). ${PACKET_SCOPE_COPY} Upload the PDF again only if you want to refresh it.`;
     }
     if (unknownYear) {
       return SUPPLEMENTAL_1099_UNKNOWN_YEAR_RESTORED_HELPER;
@@ -553,7 +569,7 @@ function getSupplemental1099HelperText({
 
   if (isApplied) {
     if (sameYearCompare) {
-      return "Included as 1099 vs this export (totals stay free). Lot-matched 1099-B is in the $49 packet.";
+      return `Included as 1099 vs this export (totals stay free). ${PACKET_SCOPE_COPY}`;
     }
     if (unknownYear) {
       return SUPPLEMENTAL_1099_UNKNOWN_YEAR_HELPER;
@@ -562,11 +578,11 @@ function getSupplemental1099HelperText({
   }
 
   if (hasSelectedFile && hasUploadedCsv) {
-    return "This PDF is being used with your latest CSV. Totals compare stays free; lot-matched 1099-B is in the $49 packet. Replace it to automatically refresh the result.";
+    return `This PDF is being used with your latest CSV. Totals compare stays free. ${PACKET_SCOPE_COPY} Replace it to automatically refresh the result.`;
   }
 
   if (hasSelectedFile) {
-    return "This PDF is ready and will be included the next time you analyze a CSV. Totals compare stays free; lot-matched 1099-B is in the $49 packet.";
+    return `This PDF is ready and will be included the next time you analyze a CSV. Totals compare stays free. ${PACKET_SCOPE_COPY}`;
   }
 
   return SUPPLEMENTAL_1099_CONTEXT_COPY;
@@ -759,7 +775,6 @@ function ResultsSection({
   shouldPrompt1099Supplement,
   guest,
   packetUnlocked,
-  onPacketPaidChange,
   washChainHint,
 }: Readonly<{
   displayedAnalysis: PortfolioAnalysis;
@@ -773,7 +788,6 @@ function ResultsSection({
   shouldPrompt1099Supplement: boolean;
   guest?: boolean;
   packetUnlocked: boolean;
-  onPacketPaidChange?: (paid: boolean) => void;
   washChainHint?: string | null;
 }>) {
   const harvestTeasers = buildHarvestTeasers(
@@ -957,13 +971,6 @@ function ResultsSection({
           </Box>
         </Alert>
       )}
-
-      <Box data-testid="tax-section-packet">
-        <YearClosePacketPanel
-          analysis={displayedAnalysis}
-          onPaidChange={onPacketPaidChange}
-        />
-      </Box>
 
       {confidenceSummary && (
         <Alert severity={confidenceSummary.severity} variant="outlined">
@@ -1921,7 +1928,7 @@ export default function DashboardPage() {
                     Your{" "}
                     <Button
                       size="small"
-                      onClick={() => router.push("/settings")}
+                      onClick={handleOpenSettings}
                       sx={{ textTransform: "none", p: 0, minWidth: "auto" }}
                     >
                       tax profile
@@ -2065,13 +2072,22 @@ export default function DashboardPage() {
 
       {/* Header AppBar */}
       <AppBar position="static" sx={{ zIndex: 40 }}>
-        <Toolbar sx={{ px: { xs: 1, sm: 2 }, gap: { xs: 0.25, sm: 0.5 } }}>
+        <Toolbar
+          sx={{
+            px: { xs: 1, sm: 2 },
+            gap: { xs: 0.25, sm: 0.5 },
+            flexWrap: "nowrap",
+            minWidth: 0,
+          }}
+        >
           <Wordmark href="/" />
           <Box sx={{ flexGrow: 1 }} />
 
           {hasResults && (
             <Button
               color="inherit"
+              aria-label="Upload"
+              data-testid="tax-upload-action"
               startIcon={<CloudUploadIcon />}
               onClick={() => {
                 setUploadOpen(true);
@@ -2081,77 +2097,69 @@ export default function DashboardPage() {
                     ?.scrollIntoView?.({ block: "start" });
                 });
               }}
-              data-testid="tax-upload-action"
-              sx={{ textTransform: "none", minWidth: 0, px: { xs: 1, sm: 1.5 } }}
+              sx={{
+                textTransform: "none",
+                whiteSpace: "nowrap",
+                flexShrink: 0,
+                minWidth: { xs: 40, sm: 64 },
+                px: { xs: 1, sm: 1.5 },
+              }}
             >
-              Upload
+              <Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>
+                Upload
+              </Box>
             </Button>
           )}
 
-          {/* Tip — icon-only on mobile */}
-          <IconButton
-            color="inherit"
-            onClick={() => setTipJarOpen(true)}
-            aria-label="Tip"
-            sx={{ display: { xs: "inline-flex", sm: "none" } }}
-          >
-            <HeartIcon sx={{ color: "#c46a58" }} />
-          </IconButton>
           <Button
             color="inherit"
+            aria-label="Tip"
             startIcon={<HeartIcon sx={{ color: "#c46a58" }} />}
             onClick={() => setTipJarOpen(true)}
             sx={{
               textTransform: "none",
-              mr: 0.5,
-              display: { xs: "none", sm: "inline-flex" },
+              flexShrink: 0,
+              minWidth: { xs: 40, sm: 64 },
+              px: { xs: 1, sm: 1.5 },
             }}
           >
-            Tip
+            <Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>
+              Tip
+            </Box>
           </Button>
 
-          {/* Saved runs — icon-only on mobile */}
-          <IconButton
-            color="inherit"
-            onClick={handleOpenSavedRuns}
-            aria-label="Saved runs"
-            sx={{ display: { xs: "inline-flex", sm: "none" } }}
-          >
-            <HistoryIcon />
-          </IconButton>
           <Button
             color="inherit"
+            aria-label="Saved runs"
             startIcon={<HistoryIcon />}
             onClick={handleOpenSavedRuns}
             sx={{
               textTransform: "none",
-              mr: 0.5,
-              display: { xs: "none", sm: "inline-flex" },
+              flexShrink: 0,
+              minWidth: { xs: 40, sm: 64 },
+              px: { xs: 1, sm: 1.5 },
             }}
           >
-            Saved runs
+            <Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>
+              Saved runs
+            </Box>
           </Button>
 
-          {/* Settings — icon-only on mobile */}
-          <IconButton
-            color="inherit"
-            onClick={handleOpenSettings}
-            aria-label="Settings"
-            sx={{ display: { xs: "inline-flex", sm: "none" } }}
-          >
-            <SettingsIcon />
-          </IconButton>
           <Button
             color="inherit"
+            aria-label="Settings"
             startIcon={<SettingsIcon />}
             onClick={handleOpenSettings}
             sx={{
               textTransform: "none",
-              mr: 0.5,
-              display: { xs: "none", sm: "inline-flex" },
+              flexShrink: 0,
+              minWidth: { xs: 40, sm: 64 },
+              px: { xs: 1, sm: 1.5 },
             }}
           >
-            Settings
+            <Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>
+              Settings
+            </Box>
           </Button>
 
           {user ? (
@@ -2213,11 +2221,21 @@ export default function DashboardPage() {
             <Button
               component={NextLink}
               href="/auth/signin"
+              aria-label="Sign In"
               variant="contained"
               size="small"
-              sx={{ ml: 0.5 }}
+              startIcon={<LoginIcon />}
+              sx={{
+                ml: 0.5,
+                whiteSpace: "nowrap",
+                flexShrink: 0,
+                minWidth: { xs: 40, sm: 64 },
+                px: { xs: 1, sm: 1.5 },
+              }}
             >
-              Sign In
+              <Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>
+                Sign In
+              </Box>
             </Button>
           )}
         </Toolbar>
@@ -2365,14 +2383,13 @@ export default function DashboardPage() {
               shouldPrompt1099Supplement={shouldPrompt1099Supplement}
               guest={!user}
               packetUnlocked={packetUnlocked}
-              onPacketPaidChange={setPacketPaid}
               washChainHint={washChainHint}
             />
           )}
 
           {/* Data quality notes — collapsible accordion, shown below results */}
-          {displayedAnalysis?.warnings &&
-            displayedAnalysis.warnings.length > 0 && (
+          {displayedAnalysis &&
+            warningsForDisplay(displayedAnalysis).length > 0 && (
               <Accordion
                 elevation={0}
                 sx={{
@@ -2388,8 +2405,8 @@ export default function DashboardPage() {
                     color="warning.dark"
                     sx={{ fontWeight: 500 }}
                   >
-                    ⚠ {displayedAnalysis.warnings.length} data quality note
-                    {displayedAnalysis.warnings.length === 1 ? "" : "s"} — click
+                    ⚠ {warningsForDisplay(displayedAnalysis).length} data quality note
+                    {warningsForDisplay(displayedAnalysis).length === 1 ? "" : "s"} — click
                     to expand
                   </Typography>
                 </AccordionSummary>
@@ -2400,7 +2417,7 @@ export default function DashboardPage() {
                     sx={{ border: 0 }}
                   >
                     {Array.from(
-                      new Set<string>(displayedAnalysis.warnings),
+                      new Set<string>(warningsForDisplay(displayedAnalysis)),
                     ).map((w: string) => (
                       <Typography
                         key={w}
@@ -2415,6 +2432,14 @@ export default function DashboardPage() {
               </Accordion>
             )}
           {hasResults && uploadSection}
+          {hasResults && displayedAnalysis && (
+            <Box data-testid="tax-section-packet">
+              <YearClosePacketPanel
+                analysis={displayedAnalysis}
+                onPaidChange={setPacketPaid}
+              />
+            </Box>
+          )}
         </Stack>
       </Container>
     </>

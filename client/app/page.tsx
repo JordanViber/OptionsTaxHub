@@ -15,8 +15,10 @@ import TaxDisclaimer from "./components/TaxDisclaimer";
 import Wordmark from "./components/Wordmark";
 import DeskPreview from "./components/DeskPreview";
 import {
+  PACKET_SCOPE_COPY,
   SCHEDULE_D_RECONCILE_COPY,
   WASH_ACCOUNT_SCOPE_COPY,
+  WASH_WINDOW_EXPLANATION,
 } from "@/lib/supplemental1099";
 
 const UPLOAD_INTENT_KEY = "oth-upload-intent";
@@ -90,22 +92,34 @@ export default function LandingPage() {
           alignItems: "center",
           justifyContent: "space-between",
           gap: 2,
-          px: 2.5,
-          py: 2.5,
+          px: { xs: 1.5, sm: 2.5 },
+          py: 2,
+          flexWrap: "nowrap",
         }}
       >
         <Wordmark />
-        <Stack direction="row" spacing={1} alignItems="center">
+        <Stack
+          direction="row"
+          spacing={1}
+          alignItems="center"
+          sx={{ flexShrink: 0 }}
+        >
           <Button
             component={Link}
             href="/dashboard"
             variant="outlined"
             size="small"
+            sx={{ whiteSpace: "nowrap", flexShrink: 0 }}
           >
-            Open desk
+            Open Tax
           </Button>
           {!user && (
-            <Button component={Link} href="/auth/signin" size="small">
+            <Button
+              component={Link}
+              href="/auth/signin"
+              size="small"
+              sx={{ whiteSpace: "nowrap", flexShrink: 0 }}
+            >
               Sign In
             </Button>
           )}
@@ -156,10 +170,7 @@ export default function LandingPage() {
               }}
             >
               {SCHEDULE_D_RECONCILE_COPY} Broker 1099 uses settlement date.
-              Your export uses trade date. A year-end short — SPX 12/31 — can
-              print a gain on the 1099 while the export still shows a loss. Not
-              a software bug. Totals stay free. The $49 packet adds lot-matched
-              1099-B — not a filed Form 8949.
+              Your export uses trade date. Totals stay free. {PACKET_SCOPE_COPY}
             </Typography>
             <Stack
               direction={{ xs: "column", sm: "row" }}
@@ -219,7 +230,7 @@ export default function LandingPage() {
             />
             <Feature
               title="Wash-sale radar"
-              body={`Same-symbol buys within 30 days before or after the sale (a 61-day window), with disallowed loss and the replacement-lot basis bump. Whole book, not options-only. ${WASH_ACCOUNT_SCOPE_COPY}`}
+              body={`${WASH_WINDOW_EXPLANATION} Whole book, not options-only. ${WASH_ACCOUNT_SCOPE_COPY}`}
             />
             <Feature
               title="Lot ledger"
@@ -242,7 +253,7 @@ export default function LandingPage() {
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
               Rank long LEAPs and sketch a what-if payoff on a separate page.
-              The tax desk stays your whole Robinhood book.
+              Tax stays your whole Robinhood book.
             </Typography>
             <Button
               component={Link}
@@ -270,13 +281,13 @@ export default function LandingPage() {
             color: "text.secondary",
           }}
         >
-          How the desk works
+          How it works
         </Typography>
         <Typography
           variant="h2"
           sx={{ mt: 1.5, maxWidth: 560, fontSize: { xs: "1.6rem", md: "2rem" } }}
         >
-          Robinhood whole-portfolio tax desk. Three moves.
+          Robinhood whole-portfolio tax. Three moves.
         </Typography>
         <Box
           component="ol"
@@ -298,13 +309,13 @@ export default function LandingPage() {
             },
             {
               n: "02",
-              t: "Read the desk",
-              d: "1099 vs export first — toward Schedule D. Settlement date vs trade date. Then harvest, wash sales, and lots.",
+              t: "Read the compare",
+              d: "1099 vs export first — toward Schedule D. Then the harvest queue, wash-sale radar, and lot ledger.",
             },
             {
               n: "03",
               t: "Take the packet",
-              d: "Settlement-date FAQ on the desk. $49 unlocks lot-matched 1099-B and the CPA PDF for that tax year.",
+              d: `${PACKET_SCOPE_COPY} Not a filed Form 8949.`,
             },
           ].map((step) => (
             <Box
@@ -365,7 +376,7 @@ export default function LandingPage() {
               variant="h2"
               sx={{ maxWidth: 560, fontSize: { xs: "1.6rem", md: "2rem" } }}
             >
-              Sign in for the year that follows you — not a velvet rope.
+              Sign in for the year that follows you.
             </Typography>
             <Button
               variant="outlined"
@@ -435,7 +446,7 @@ export default function LandingPage() {
               </Link>
             )}
             <Link href="/dashboard" style={{ color: "inherit" }}>
-              Desk
+              Tax
             </Link>
           </Stack>
         </Container>

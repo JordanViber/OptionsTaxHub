@@ -1051,6 +1051,9 @@ describe("PositionsTable compact layout (~390px)", () => {
 
     expect(screen.getByTestId("positions-cards")).toBeInTheDocument();
     expect(screen.queryByTestId("positions-table")).not.toBeInTheDocument();
+    expect(screen.getByTestId("lot-ledger-legend")).toHaveTextContent("Candidate");
+    expect(screen.getByTestId("lot-ledger-legend")).toHaveTextContent("Wait");
+    expect(screen.getByTestId("lot-ledger-legend")).toHaveTextContent("Risk");
 
     const card = screen.getByTestId("position-row-AAPL");
     expect(card).toHaveTextContent("AAPL");
