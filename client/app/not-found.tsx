@@ -24,7 +24,7 @@ export default function NotFound() {
           Page not found
         </Typography>
         <Typography color="text.secondary" sx={{ mt: 1.5, maxWidth: 420 }}>
-          That address is not on the tax desk or the options tools.
+          That address is not on the tax page or the options tools.
         </Typography>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ mt: 3 }}>
           <Button component={NextLink} href={TAX_PATH} variant="contained">

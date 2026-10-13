@@ -433,8 +433,7 @@ test.describe("Dashboard Tabs & Components", () => {
       page.getByText("Consider harvesting this loss for tax savings."),
     ).toBeVisible();
 
-    // Replacement Candidates section
-    await expect(page.getByText("Replacement Candidates")).toBeVisible();
+    await expect(page.getByText("Replacements")).toBeVisible();
     await expect(page.getByText("QQQ", { exact: true })).toBeVisible();
     await expect(page.getByText("Invesco QQQ Trust")).toBeVisible();
     await expect(page.getByText("Tech sector ETF")).toBeVisible();
@@ -508,7 +507,7 @@ test.describe("Dashboard Tabs & Components", () => {
     await uploadTestCsv(page);
 
     await expect(
-      page.getByText("Wash-sale radar"),
+      page.getByRole("alert").filter({ hasText: /Wash-sale radar \(/ }),
     ).not.toBeVisible();
   });
 });

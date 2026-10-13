@@ -58,10 +58,76 @@ function compareUnrealizedPnlAsc(a: Position, b: Position): number {
   return aPnl - bPnl;
 }
 
-/** Phone-width desk (~390px): cards instead of a wide grid. */
+/** Below 1200px a card stack replaces the wide grid so columns do not overflow. */
 function useCompactLayout(): boolean {
   const theme = useTheme();
-  return useMediaQuery(theme.breakpoints.down("sm"), { noSsr: true });
+  return useMediaQuery(theme.breakpoints.down("lg"), { noSsr: true });
+}
+
+const FLAG_LEGEND = [
+  {
+    label: "Candidate",
+    detail: "a loss you could harvest",
+    title: "Candidate: an open loss you could sell",
+  },
+  {
+    label: "Wait",
+    detail: "a loss, but a recent buy of the same symbol may block it",
+    title: "Wait: a recent buy of the same symbol may block this loss",
+  },
+  {
+    label: "Risk",
+    detail: "wash-sale risk on this symbol",
+    title:
+      "Wash-sale risk: selling and buying the same symbol within 30 days can disallow the loss",
+  },
+  {
+    label: "ST",
+    detail: "short-term, held a year or less",
+    title: "Short-Term: held ≤ 1 year (taxed as ordinary income)",
+  },
+  {
+    label: "LT",
+    detail: "long-term, held more than a year",
+    title: "Long-Term: held > 1 year (lower capital gains tax rate)",
+  },
+  {
+    label: "STK",
+    detail: "stock",
+    title: "Stock position",
+  },
+  {
+    label: "OPT",
+    detail: "option",
+    title: "Options contract",
+  },
+] as const;
+
+function LotLedgerLegend() {
+  return (
+    <Box data-testid="lot-ledger-legend" sx={{ mb: 1.5, minWidth: 0 }}>
+      <Typography variant="body2" sx={{ fontWeight: 700, mb: 0.75 }}>
+        Flags
+      </Typography>
+      <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+        {FLAG_LEGEND.map((flag) => (
+          <Tooltip key={flag.label} title={flag.title}>
+            <Stack
+              direction="row"
+              spacing={0.75}
+              alignItems="center"
+              sx={{ minWidth: 0, maxWidth: "100%" }}
+            >
+              <Chip label={flag.label} size="small" variant="outlined" />
+              <Typography variant="caption" sx={{ color: "text.primary" }}>
+                {flag.detail}
+              </Typography>
+            </Stack>
+          </Tooltip>
+        ))}
+      </Stack>
+    </Box>
+  );
 }
 
 export function getPositionHarvestLabel(
@@ -622,8 +688,9 @@ function buildColumns(
   return [
     {
       field: "symbol",
-      headerName: "Position",
-      width: 260,
+      headerName: "Symbol",
+      flex: 1.4,
+      minWidth: 140,
       renderCell: (params) => {
         const lotCount = params.row.tax_lots?.length ?? 0;
         const rowId = getPositionRowId(params.row);
@@ -676,13 +743,15 @@ function buildColumns(
     {
       field: "quantity",
       headerName: "Qty",
-      width: 80,
+      flex: 0.5,
+      minWidth: 64,
       type: "number",
     },
     {
       field: "avg_cost_basis",
       headerName: "Avg Cost",
-      width: 110,
+      flex: 0.8,
+      minWidth: 92,
       type: "number",
       renderCell: (params) => (
         <Typography variant="body2">
@@ -693,7 +762,8 @@ function buildColumns(
     {
       field: "current_price",
       headerName: "Price",
-      width: 110,
+      flex: 0.7,
+      minWidth: 84,
       type: "number",
       renderCell: (params) => (
         <Typography variant="body2">
@@ -704,7 +774,8 @@ function buildColumns(
     {
       field: "market_value",
       headerName: "Mkt Value",
-      width: 120,
+      flex: 0.8,
+      minWidth: 96,
       type: "number",
       renderCell: (params) => (
         <Typography variant="body2">
@@ -715,7 +786,8 @@ function buildColumns(
     {
       field: "unrealized_pnl",
       headerName: "Unrealized P&L",
-      width: 140,
+      flex: 0.9,
+      minWidth: 112,
       type: "number",
       renderCell: (params) => (
         <PnlCell
@@ -727,7 +799,8 @@ function buildColumns(
     {
       field: "holding_period_days",
       headerName: "Holding",
-      width: 100,
+      flex: 0.7,
+      minWidth: 96,
       renderCell: (params) => {
         const days = params.value as number | null;
         if (days == null) return "—";
@@ -744,18 +817,20 @@ function buildColumns(
     {
       field: "harvest",
       headerName: "Harvest",
-      width: 120,
+      flex: 0.7,
+      minWidth: 96,
       sortable: false,
       renderCell: (params) => <HarvestChip position={params.row} />,
     },
     {
       field: "wash_sale_risk",
       headerName: "Wash Sale",
-      width: 100,
+      flex: 0.6,
+      minWidth: 88,
       renderCell: (params) => {
         if (!params.value) return null;
         return (
-          <Tooltip title="Wash-Sale Risk: selling and repurchasing within 30 days may disallow the loss deduction">
+          <Tooltip title="Wash-sale risk: selling and buying the same symbol within 30 days can disallow the loss">
             <Chip
               icon={<WarnIcon sx={{ fontSize: 14 }} />}
               label="Risk"
@@ -770,7 +845,8 @@ function buildColumns(
     {
       field: "asset_type",
       headerName: "Type",
-      width: 80,
+      flex: 0.4,
+      minWidth: 72,
       renderCell: (params) => (
         <Tooltip
           title={
@@ -955,6 +1031,7 @@ export default function PositionsTable({
       sx={{ width: "100%", maxWidth: "100%", minWidth: 0, overflow: "hidden" }}
       data-testid="positions-table-wrap"
     >
+      <LotLedgerLegend />
       {compact ? (
         <Stack
           spacing={1.25}

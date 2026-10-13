@@ -239,10 +239,11 @@ describe("Home page", () => {
       "href",
       "/options",
     );
-    expect(screen.getByRole("link", { name: "Sign In" })).toHaveAttribute(
-      "href",
-      "/auth/signin",
-    );
+    const signInLinks = screen.getAllByRole("link", { name: "Sign In" });
+    expect(signInLinks.length).toBeGreaterThan(0);
+    for (const link of signInLinks) {
+      expect(link).toHaveAttribute("href", "/auth/signin");
+    }
   });
 
   it("uses display_name when available", () => {

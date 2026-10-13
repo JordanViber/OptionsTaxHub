@@ -1000,6 +1000,26 @@ async def _maybe_parse_supplemental_1099(
     return summary, warnings, supplemental_bytes
 
 
+def _drop_sample_fixture_price_warnings(warnings: list[str]) -> list[str]:
+    """Fixed sample quotes are intentional, not a failed live lookup."""
+    skipped_prefixes = (
+        "Using CSV-provided price for ",
+        "Using CSV-provided option premium for ",
+        "Using CSV-provided prices",
+        "yfinance returned no data",
+        "Live price fetch timed out",
+        "Could not fetch live prices",
+        "Could not fetch live option prices",
+        "yfinance is not installed",
+        "No live option prices available",
+    )
+    return [
+        warning
+        for warning in warnings
+        if not warning.startswith(skipped_prefixes)
+    ]
+
+
 def _apply_live_prices_to_tax_lots(
     tax_lots: list,
     all_warnings: list[str],
@@ -1028,6 +1048,8 @@ def _apply_live_prices_to_tax_lots(
             fallback_prices,
             allow_network=False,
         )
+    if fixture_prices is not None:
+        price_warnings = _drop_sample_fixture_price_warnings(price_warnings)
     all_warnings.extend(price_warnings)
 
     option_labels = list(
@@ -1054,6 +1076,10 @@ def _apply_live_prices_to_tax_lots(
             option_labels,
             option_fallback_prices,
             allow_network=False,
+        )
+    if fixture_prices is not None:
+        option_price_warnings = _drop_sample_fixture_price_warnings(
+            option_price_warnings
         )
     all_warnings.extend(option_price_warnings)
 

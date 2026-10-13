@@ -11,6 +11,7 @@ import {
   Toolbar,
   Typography,
 } from "@mui/material";
+import { Login as LoginIcon, Settings as SettingsIcon } from "@mui/icons-material";
 import NextLink from "next/link";
 import { useAuth } from "@/app/context/auth";
 import { isEmailConfirmed } from "@/lib/supabase";
@@ -72,11 +73,20 @@ export default function OptionsPage() {
   return (
     <>
       <AppBar position="static" sx={{ zIndex: 40 }}>
-        <Toolbar sx={{ px: { xs: 1, sm: 2 }, gap: 0.5 }}>
+        <Toolbar
+          sx={{
+            px: { xs: 1, sm: 2 },
+            gap: 0.5,
+            flexWrap: "nowrap",
+            minWidth: 0,
+          }}
+        >
           <Wordmark href="/" />
           <Box sx={{ flexGrow: 1 }} />
           <Button
             color="inherit"
+            aria-label="Settings"
+            startIcon={<SettingsIcon />}
             onClick={() => {
               if (!user) {
                 router.push("/auth/signin?reason=profile");
@@ -84,18 +94,36 @@ export default function OptionsPage() {
               }
               router.push("/settings");
             }}
-            sx={{ textTransform: "none" }}
+            sx={{
+              textTransform: "none",
+              whiteSpace: "nowrap",
+              flexShrink: 0,
+              minWidth: { xs: 40, sm: 64 },
+              px: { xs: 1, sm: 1.5 },
+            }}
           >
-            Settings
+            <Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>
+              Settings
+            </Box>
           </Button>
           {!user && (
             <Button
               component={NextLink}
               href={OPTIONS_SIGN_IN_HREF}
+              aria-label="Sign In"
               variant="contained"
               size="small"
+              startIcon={<LoginIcon />}
+              sx={{
+                whiteSpace: "nowrap",
+                flexShrink: 0,
+                minWidth: { xs: 40, sm: 64 },
+                px: { xs: 1, sm: 1.5 },
+              }}
             >
-              Sign In
+              <Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>
+                Sign In
+              </Box>
             </Button>
           )}
         </Toolbar>

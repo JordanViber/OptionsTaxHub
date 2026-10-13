@@ -30,7 +30,7 @@ const API_URL = !_RAW_API_URL || _isLocalhost ? "" : _RAW_API_URL;
 
 export const YEAR_CLOSE_PACKET_TITLE = "Year-close packet — $49";
 export const YEAR_CLOSE_PACKET_COPY =
-  "This is a reconciliation packet, not a filed Form 8949. Lot-matched 1099-B is a worksheet for this run.";
+  "This is a reconciliation packet, not a filed Form 8949. The $49 buys the downloadable year-close PDF — lot-level 1099 reconciliation, wash chains, and harvest notes — plus updates for that tax year. It does not change the free 1099 totals, harvest queue, or wash-sale radar already on this page.";
 export const PACKET_CHECKOUT_INFLIGHT_KEY =
   "optionstaxhub-packet-checkout-inflight";
 export const PACKET_CHECKOUT_CANCELED_COPY =
@@ -679,11 +679,11 @@ function YearClosePacketPanelForAnalysis({
           <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
             {YEAR_CLOSE_PACKET_TITLE}
           </Typography>
-          <Typography variant="body2" color="text.secondary">
+          <Typography variant="body2">
             {YEAR_CLOSE_PACKET_COPY}{" "}
             {paid
-              ? "Unlocked for this tax year — later CSV updates stay included, no second $49."
-              : "One-time payment — not a subscription and not a tip. Unlocks lot-matched 1099-B, lot-level harvest instructions, wash-sale events, and the downloadable PDF."}
+              ? "Paid for this tax year. Later CSV updates stay included — no second $49."
+              : "One-time payment, not a subscription."}
           </Typography>
         </Box>
         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
@@ -746,9 +746,10 @@ function YearClosePacketPanelForAnalysis({
         )}
         {paid && !error && (
           <Typography variant="caption" color="success.main">
-            Payment confirmed. Unlocked for tax year{" "}
-            {analysis.tax_profile?.tax_year ?? "this year"}. Later updates this
-            year stay included — no second $49.
+            Payment confirmed for tax year{" "}
+            {analysis.tax_profile?.tax_year ?? "this year"}. The PDF includes
+            lot-level 1099 reconciliation, wash chains, and harvest notes.
+            Later updates this year stay included — no second $49.
           </Typography>
         )}
       </Stack>

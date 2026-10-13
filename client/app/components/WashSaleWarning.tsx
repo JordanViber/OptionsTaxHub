@@ -15,6 +15,8 @@ import {
   Warning as WarnIcon,
 } from "@mui/icons-material";
 import type { WashSaleFlag } from "@/lib/types";
+import { WASH_WINDOW_EXPLANATION } from "@/lib/supplemental1099";
+import GlossaryHint from "./GlossaryHint";
 
 interface WashSaleWarningProps {
   flags: WashSaleFlag[];
@@ -91,9 +93,10 @@ export default function WashSaleWarning({
             />
           ))}
         </Box>
-        <Typography variant="caption" color="text.secondary">
-          Pay $49 to see how much loss is disallowed and the sale/repurchase
-          dates — plus the printable CPA packet.
+        <Typography variant="caption" sx={{ color: "text.primary" }}>
+          Pay $49 for the PDF's sale and repurchase dates. The symbols above
+          stay on this page.{" "}
+          <GlossaryHint label="61-day window" explanation={WASH_WINDOW_EXPLANATION} />
           {taxYear ? ` Events are limited to tax year ${taxYear}.` : ""}
         </Typography>
       </Alert>
@@ -112,8 +115,7 @@ export default function WashSaleWarning({
         ticker{tickers.length === 1 ? "" : "s"})
       </Typography>
       <Typography
-        variant="caption"
-        color="text.secondary"
+        variant="body2"
         sx={{ mb: 1, display: "block" }}
       >
         Total disallowed loss:{" "}
@@ -124,14 +126,12 @@ export default function WashSaleWarning({
             maximumFractionDigits: 2,
           })}
         </strong>
-        . The IRS wash-sale rule disallows loss deductions when you repurchase
-        substantially identical securities within 30 days before or after the
-        sale (a 61-day window).
+        . That amount is added to the replacement lot's cost basis.{" "}
+        <GlossaryHint label="61-day window" explanation={WASH_WINDOW_EXPLANATION} />
         {taxYear
           ? ` This panel only shows sale events from tax year ${taxYear}.`
-          : ""}
-        The disallowed amount is added to the cost basis of the replacement
-        shares. Expand a ticker below for details.
+          : ""}{" "}
+        Expand a ticker below for details.
       </Typography>
 
       <Box sx={{ mt: 1 }}>

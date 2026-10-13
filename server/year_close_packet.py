@@ -33,34 +33,34 @@ PACKET_METADATA_PRODUCT = "year_close_packet"
 # the download so the $49 page is not a blank "Year-close packet" label.
 PACKET_CHECKOUT_NAME = "Year-close packet — ready for your CPA"
 PACKET_CHECKOUT_DESCRIPTION = (
-    "Walk into tax season with this run already organized: lot-matched 1099-B, "
-    "wash-sale flags on replacement lots, harvesting opportunities with estimated "
-    "tax savings, and a printable reconciliation you can send your CPA. "
-    "One-time $49. Instant PDF when you return. Not a filed Form 8949 — a "
-    "working packet for this analysis."
+    "Downloadable year-close PDF for this tax year: lot-level 1099 reconciliation, "
+    "wash chains, and harvest notes, plus updates for that tax year. "
+    "One-time $49. The free dashboard compare stays on the page. "
+    "Not a filed Form 8949."
 )
 PACKET_CHECKOUT_SUBMIT_MESSAGE = (
-    "One payment. Your year-close packet unlocks the moment you return to OptionsTaxHub."
+    "One payment. Your year-close PDF is ready when you return to OptionsTaxHub."
 )
 
 PACKET_DISCLAIMER = (
     "This is a reconciliation packet, not a filed Form 8949. "
-    "Lot-matched 1099-B is a worksheet for this run."
+    "The $49 buys this downloadable year-close PDF: lot-level 1099 "
+    "reconciliation (Lot-matched 1099-B), wash chains, and harvest notes, "
+    "plus updates for that tax year. It does not change the free 1099 totals, "
+    "harvest queue, or wash-sale radar."
 )
 
 SETTLEMENT_DATE_FAQ = (
-    "Robinhood 1099 uses settlement date, so a year-end short option "
-    "(for example SPX 12/31) can show a gain on the 1099 for a trade that "
-    "does not settle until January. Matched lots still show both dates so "
-    "the split is visible."
+    "Robinhood 1099 uses settlement date. Matched lots still show both dates "
+    "so the split is visible."
 )
 
-HARVEST_TITLE = "Harvest opportunities"
+HARVEST_TITLE = "Harvest queue"
 HARVEST_INTRO = (
     "Open lots with unrealized losses and estimated federal tax savings "
     "for this run. Not a filed Form 8949."
 )
-WASH_EVENTS_TITLE = "Wash-sale events"
+WASH_EVENTS_TITLE = "Wash-sale radar"
 
 LOT_MATCH_TITLE = "Lot-matched 1099-B"
 LOT_MATCH_INTRO = (
@@ -81,7 +81,7 @@ OPTIONS_WASH_SALE_FAQ = (
 COMPARE_TITLE = "1099 vs your export"
 COMPARE_INTRO = (
     "Two columns, totals only. Broker 1099 uses settlement date; "
-    "this export uses trade date. ST/LT nets include wash-sale disallowed "
+    "this export uses trade date. Short-term and long-term nets include wash-sale disallowed "
     "(1099 definition); wash is also shown separately."
 )
 UNKNOWN_1099_YEAR_COPY = (
@@ -91,12 +91,9 @@ UNKNOWN_1099_YEAR_COPY = (
 COMPARE_BROKER_HEADER = "Broker 1099 (settlement date)"
 COMPARE_EXPORT_HEADER = "This export (trade date)"
 COMPARE_GAP_COPY = (
-    "These totals often disagree. A year-end short option (for example SPX 12/31) "
-    "can print a gain on the 1099 while this export still shows a loss until January "
-    "settlement. That is not a software bug. The $49 packet lists matched, gap, and "
-    "unmatched lots. An incomplete export also shows up here. Traders on r/options have "
-    "reported the same gap -- a Robinhood 1099 showing +$2,699 while the export showed "
-    "a $542 loss."
+    "The 1099 uses settlement date and the export uses trade date. "
+    "A year-end short option such as SPX expiring 12/31 can settle in January. "
+    "That is not a software bug."
 )
 
 # Process-local cache for guest rows and same-worker tests. Signed-in

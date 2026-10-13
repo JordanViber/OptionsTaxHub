@@ -65,7 +65,7 @@ async function getAuthHeaders(): Promise<HeadersInit> {
 
 /**
  * Authorization header when a session exists; empty object for guests.
- * Used by analyze so a CSV can run without a velvet rope.
+ * Used by analyze so a CSV can run before an account exists.
  */
 async function getOptionalAuthHeaders(): Promise<HeadersInit> {
   try {

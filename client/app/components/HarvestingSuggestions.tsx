@@ -425,14 +425,14 @@ function SuggestionCard({
                 }}
               >
                 <SwapIcon sx={{ fontSize: 16 }} />
-                Replacement Candidates
+                Replacements
               </Typography>
               <Typography
                 variant="caption"
                 color="text.secondary"
                 sx={{ mb: 1, display: "block" }}
               >
-                Similar exposure without triggering wash-sale rules
+                A different symbol, so this sale is less likely to be a wash sale
               </Typography>
               <List dense disablePadding>
                 {suggestion.replacement_candidates.map((candidate) => (

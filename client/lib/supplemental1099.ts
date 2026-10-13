@@ -36,19 +36,31 @@ export const WASH_ACCOUNT_SCOPE_COPY =
 export const SUPPLEMENTAL_1099_COMPARE_TITLE = "1099 vs your export";
 
 export const SUPPLEMENTAL_1099_COMPARE_COPY =
-  "Two columns, totals only. Broker 1099 uses settlement date; this export uses trade date. ST/LT nets include wash-sale disallowed (1099 definition); wash is also shown separately. Lot-matched 1099-B is in the $49 packet.";
+  "Two columns, totals only. Broker 1099 uses settlement date; this export uses trade date. Short-term and long-term nets include wash-sale disallowed (1099 definition); wash is also shown separately. The $49 PDF is separate from this free compare.";
 
 export const SUPPLEMENTAL_1099_BROKER_COLUMN = "Broker 1099 (settlement date)";
 
 export const SUPPLEMENTAL_1099_EXPORT_COLUMN = "This export (trade date)";
 
+/** Sample figures. Landing preview only — do not reuse on a real user's compare or PDF. */
+export const ST_TOTALS_EXPLANATION =
+  "Short-term on the 1099 is +$2,699. This export's short-term result before wash-sale add-back is −$924. Both sides disallow $924, so the export column can read $0 after that add-back. A year-end short option (SPX 12/31) settles in January: the 1099 counts the gain, and this export does not yet. That is not a software bug.";
+
+/** Generic gap hint. No sample dollar figures. */
+export const ST_GAP_EXPLANATION =
+  "The 1099 uses settlement date and the export uses trade date. A year-end short option such as SPX expiring 12/31 can settle in January. That is not a software bug.";
+
+/** Landing wash-sale radar states this in full. Other screens use a tooltip. */
+export const WASH_WINDOW_EXPLANATION =
+  "The rule covers the same or a substantially identical security, including options or contracts to acquire it, bought within 30 days before or after the sale (a 61-day window). The disallowed loss is added to the replacement's basis. This app flags same-symbol matches.";
+
 export const SUPPLEMENTAL_1099_GAP_COPY =
-  "These totals often disagree. A year-end short option (for example SPX 12/31) can print a gain on the 1099 while this export still shows a loss until January settlement. That is not a software bug. " +
+  "These totals often disagree. " +
   WASH_ACCOUNT_SCOPE_COPY +
-  " The $49 packet lists matched, gap, and unmatched lots. An incomplete export also shows up here. Traders on r/options have reported the same gap — a Robinhood 1099 showing +$2,699 while the export showed a $542 loss.";
+  " Lot-level 1099 reconciliation is in the $49 PDF. An incomplete export also shows up here.";
 
 export const SUPPLEMENTAL_1099_SETTLEMENT_FAQ =
-  "Robinhood 1099 uses settlement date, so a year-end short option (for example SPX 12/31) can show a gain on the 1099 for a trade that does not settle until January. Matched lots still show both dates so the split is visible.";
+  "Robinhood 1099 uses settlement date. Matched lots still show both dates so the split is visible.";
 
 export const LOT_MATCHED_1099B_TITLE = "Lot-matched 1099-B";
 

@@ -90,7 +90,12 @@ describe("YearClosePacketPanel", () => {
     render(<YearClosePacketPanel analysis={analysis} />);
     expect(screen.getByText(YEAR_CLOSE_PACKET_TITLE)).toBeInTheDocument();
     expect(screen.getByText(/reconciliation packet, not a filed Form 8949/i)).toBeInTheDocument();
-    expect(screen.getByText(/Lot-matched 1099-B is a worksheet for this run/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/downloadable year-close PDF/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/does not change the free 1099 totals, harvest queue, or wash-sale radar/i),
+    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Download/i })).toBeInTheDocument();
     expect(screen.queryByText("Coffee")).not.toBeInTheDocument();
@@ -696,7 +701,7 @@ describe("YearClosePacketPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: /Pay \$49/i }));
 
     await waitFor(() =>
-      expect(screen.getByText(/Unlocked for this tax year/i)).toBeInTheDocument(),
+      expect(screen.getByText(/Payment confirmed for tax year/i)).toBeInTheDocument(),
     );
     expect(mockFetch).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeDisabled();
@@ -1219,7 +1224,7 @@ describe("YearClosePacketPanel", () => {
     expect(mockFetch.mock.calls[1][1].method).toBe("POST");
     expect(String(mockFetch.mock.calls[1][0])).not.toContain("/confirm");
     await waitFor(() =>
-      expect(screen.getByText(/Unlocked for this tax year/i)).toBeInTheDocument(),
+      expect(screen.getByText(/Payment confirmed for tax year/i)).toBeInTheDocument(),
     );
     expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeDisabled();
     expect(store["optionstaxhub-packet-paid:analysis-1"]).toBe(
