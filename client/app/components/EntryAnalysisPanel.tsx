@@ -11,8 +11,11 @@ import {
   ToggleButtonGroup,
   Typography,
 } from "@mui/material";
+import NextLink from "next/link";
 import { fetchRhStatus, useRhChainMutation } from "@/lib/api";
 import { useAuth } from "@/app/context/auth";
+import { OPTIONS_SIGN_IN_HREF } from "@/lib/safeNextPath";
+import { RH_CONNECTION_REQUIRED_COPY } from "@/lib/types";
 import type {
   LeapRankCandidate,
   Position,
@@ -107,6 +110,21 @@ function formatImpliedMove(rate: number, right: "call" | "put"): string {
 function rankErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) return error.message;
   return "Could not rank LEAPs. Rankings are hidden so we do not invent prices.";
+}
+
+function GuestSignInCta() {
+  return (
+    <Button
+      component={NextLink}
+      href={OPTIONS_SIGN_IN_HREF}
+      variant="contained"
+      size="small"
+      data-testid="entry-guest-signin"
+      sx={{ alignSelf: { xs: "stretch", sm: "flex-start" } }}
+    >
+      Sign in
+    </Button>
+  );
 }
 
 export default function EntryAnalysisPanel({
@@ -291,8 +309,15 @@ export default function EntryAnalysisPanel({
     }
   };
 
+  const singlePremiumHint =
+    structure === "single" &&
+    isEntryFail(analysis) &&
+    analysis.reason === "incomplete";
+
   let resultsNode;
-  if (isEntryFail(analysis)) {
+  if (singlePremiumHint) {
+    resultsNode = null;
+  } else if (isEntryFail(analysis)) {
     const fail = analysis;
     resultsNode = (
       <Typography
@@ -362,8 +387,10 @@ export default function EntryAnalysisPanel({
   const rankWarnings =
     rankResult && !isLeapRankFail(rankResult) ? rankResult.warnings : [];
   const showRankList = successfulRanks.length > 0;
-  const showRankError = Boolean(rankError);
-  const showRankIdle = !showRankList && !showRankError;
+  const guestConnectionWall =
+    !user && rankError === RH_CONNECTION_REQUIRED_COPY;
+  const showRankError = Boolean(rankError) && !guestConnectionWall;
+  const showRankIdle = !showRankList && !showRankError && !guestConnectionWall;
 
   return (
     <Box
@@ -399,13 +426,7 @@ export default function EntryAnalysisPanel({
                 : "Robinhood not connected for this account"}
             </Typography>
           ) : (
-            <Typography
-              variant="caption"
-              color="text.secondary"
-              data-testid="entry-rh-status"
-            >
-              Sign in to connect Robinhood for live top-3
-            </Typography>
+            <GuestSignInCta />
           )}
           <TextField
             label="Underlying"
@@ -512,6 +533,12 @@ export default function EntryAnalysisPanel({
             >
               Find the three long LEAPs that need the smallest annualized move
               to break even vs owning the stock.
+            </Typography>
+          ) : null}
+
+          {guestConnectionWall ? (
+            <Typography variant="body2" color="text.secondary">
+              Sign in to rank live LEAPs. You will come back to Options.
             </Typography>
           ) : null}
 
@@ -772,6 +799,7 @@ export default function EntryAnalysisPanel({
             />
             {structure === "single" ? (
               <TextField
+                id="entry-premium-field"
                 label="Premium (per share)"
                 value={premium}
                 onChange={(event) => setPremium(event.target.value)}
@@ -779,6 +807,16 @@ export default function EntryAnalysisPanel({
                   "data-testid": "entry-premium",
                   inputMode: "decimal",
                 }}
+                helperText={
+                  singlePremiumHint
+                    ? "Enter premium to see max gain, max loss, and breakeven."
+                    : undefined
+                }
+                FormHelperTextProps={
+                  {
+                    "data-testid": "entry-empty",
+                  } as never
+                }
                 size="small"
                 fullWidth
               />

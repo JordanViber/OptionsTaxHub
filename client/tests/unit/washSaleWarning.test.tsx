@@ -37,7 +37,7 @@ describe("WashSaleWarning", () => {
     // Component groups by ticker and shows "N events across M tickers"
     expect(
       screen.getByRole("heading", {
-        name: /Wash-Sale Rule Violations Detected/,
+        name: /Wash-sale radar/,
       }),
     ).toBeInTheDocument();
   });

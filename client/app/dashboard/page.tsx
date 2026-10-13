@@ -79,7 +79,7 @@ import {
   getBackendUnreachableMessage,
 } from "@/lib/api";
 import FirstRunEmptyState from "../components/FirstRunEmptyState";
-import EntryAnalysisPanel from "../components/EntryAnalysisPanel";
+import DeskNav from "../components/DeskNav";
 import Supplemental1099InsightsPanel from "../components/Supplemental1099InsightsPanel";
 import {
   SUPPLEMENTAL_1099_AFTER_FIRST_RUN_COPY,
@@ -431,7 +431,7 @@ function getRecommendedNextSteps(
   }
   if (analysis.suggestions.length > 0) {
     steps.push(
-      `Start with the ${analysis.suggestions.length} harvesting suggestion${analysis.suggestions.length === 1 ? "" : "s"} shown below.`,
+      `Start with the ${analysis.suggestions.length} harvesting suggestion${analysis.suggestions.length === 1 ? "" : "s"} in the harvest queue.`,
     );
   } else {
     steps.push(
@@ -441,7 +441,7 @@ function getRecommendedNextSteps(
 
   if (analysis.wash_sale_flags.length > 0) {
     steps.push(
-      "Review the wash-sale panel before relying on losses from affected symbols.",
+      "Review the wash-sale radar before relying on losses from affected symbols.",
     );
   }
 
@@ -841,6 +841,130 @@ function ResultsSection({
         )}
       </Box>
 
+      <Box data-testid="tax-section-kpis">
+        <PortfolioSummaryCards
+          summary={displayedAnalysis.summary}
+          preview={
+            packetUnlocked
+              ? undefined
+              : {
+                  locked: true,
+                  candidateCount: harvestTotals.count,
+                  openLossTotal: harvestTotals.totalLoss,
+                  potentialTaxSavings: harvestTotals.totalSavings,
+                }
+          }
+        />
+      </Box>
+
+      <Box data-testid="tax-section-1099">
+        {displayedAnalysis?.supplemental_1099 && (
+          <Supplemental1099InsightsPanel
+            summary={displayedAnalysis.supplemental_1099}
+            analysisTaxYear={displayedAnalysis.tax_profile?.tax_year ?? null}
+            realizedSummary={displayedAnalysis.summary?.realized_summary ?? null}
+            csvWashSaleDisallowed={csvWashSaleDisallowedTotal(
+              displayedAnalysis.wash_sale_flags,
+            )}
+            csvWashSaleFlags={displayedAnalysis.wash_sale_flags}
+            lotMatchReport={displayedAnalysis.lot_match_report ?? null}
+            locked={!packetUnlocked}
+          />
+        )}
+
+        {shouldPrompt1099Supplement && (
+          <Alert severity="info" variant="outlined">
+            <AlertTitle>{SUPPLEMENTAL_1099_AFTER_FIRST_RUN_TITLE}</AlertTitle>
+            {SUPPLEMENTAL_1099_AFTER_FIRST_RUN_COPY}
+          </Alert>
+        )}
+      </Box>
+
+      <Box data-testid="tax-section-wash">
+        {displayedAnalysis.wash_sale_flags.length > 0 && (
+          <WashSaleWarning
+            flags={displayedAnalysis.wash_sale_flags}
+            taxYear={displayedAnalysis.tax_profile?.tax_year}
+            locked={!packetUnlocked}
+          />
+        )}
+
+        {washChainsVisible(displayedAnalysis, packetUnlocked) && (
+          <WashSaleChainPanel chains={washSaleChains} />
+        )}
+
+        {showChainHint && (
+          <Alert
+            severity="info"
+            variant="outlined"
+            data-testid="wash-sale-chain-hint"
+          >
+            {washChainHint}
+          </Alert>
+        )}
+      </Box>
+
+      <Card
+        data-testid="tax-section-harvest"
+        sx={{ overflow: "hidden", maxWidth: "100%" }}
+      >
+        <Tabs
+          value={activeTab}
+          onChange={(_, v) => setActiveTab(v)}
+          sx={{ borderBottom: 1, borderColor: "divider", px: 2 }}
+        >
+          <Tab
+            label={`Harvest queue (${suggestionTabCount})`}
+            id="tab-suggestions"
+          />
+          <Tab
+            label={`Lot ledger (${displayedAnalysis.positions.length})`}
+            id="tab-positions"
+          />
+        </Tabs>
+
+        <CardContent>
+          {activeTab === 0 && (
+            <SuggestionsPanel
+              suggestions={displayedAnalysis.suggestions}
+              skippedSuggestionSymbols={skippedSuggestionSymbols}
+              lotsWithLosses={
+                displayedAnalysis.summary?.lots_with_losses ?? 0
+              }
+              locked={!packetUnlocked}
+              positions={displayedAnalysis.positions}
+            />
+          )}
+          {activeTab === 1 && (
+            <PositionsTable
+              positions={displayedAnalysis.positions}
+              washSaleFlags={displayedAnalysis.wash_sale_flags}
+              lotDetailsUnlocked={packetUnlocked}
+            />
+          )}
+        </CardContent>
+      </Card>
+
+      {recommendedNextSteps.length > 0 && (
+        <Alert severity="info" variant="outlined">
+          <AlertTitle>Recommended next steps</AlertTitle>
+          <Box component="ol" sx={{ pl: 2.5, my: 0 }}>
+            {recommendedNextSteps.map((step) => (
+              <Typography component="li" variant="body2" key={step}>
+                {step}
+              </Typography>
+            ))}
+          </Box>
+        </Alert>
+      )}
+
+      <Box data-testid="tax-section-packet">
+        <YearClosePacketPanel
+          analysis={displayedAnalysis}
+          onPaidChange={onPacketPaidChange}
+        />
+      </Box>
+
       {confidenceSummary && (
         <Alert severity={confidenceSummary.severity} variant="outlined">
           <AlertTitle>{confidenceSummary.label}</AlertTitle>
@@ -873,119 +997,6 @@ function ResultsSection({
           )}
         </Alert>
       )}
-
-      {displayedAnalysis?.supplemental_1099 && (
-        <Supplemental1099InsightsPanel
-          summary={displayedAnalysis.supplemental_1099}
-          analysisTaxYear={displayedAnalysis.tax_profile?.tax_year ?? null}
-          realizedSummary={displayedAnalysis.summary?.realized_summary ?? null}
-          csvWashSaleDisallowed={csvWashSaleDisallowedTotal(
-            displayedAnalysis.wash_sale_flags,
-          )}
-          csvWashSaleFlags={displayedAnalysis.wash_sale_flags}
-          lotMatchReport={displayedAnalysis.lot_match_report ?? null}
-          locked={!packetUnlocked}
-        />
-      )}
-
-      <YearClosePacketPanel
-        analysis={displayedAnalysis}
-        onPaidChange={onPacketPaidChange}
-      />
-
-      {shouldPrompt1099Supplement && (
-        <Alert severity="info" variant="outlined">
-          <AlertTitle>{SUPPLEMENTAL_1099_AFTER_FIRST_RUN_TITLE}</AlertTitle>
-          {SUPPLEMENTAL_1099_AFTER_FIRST_RUN_COPY}
-        </Alert>
-      )}
-
-      {recommendedNextSteps.length > 0 && (
-        <Alert severity="info" variant="outlined">
-          <AlertTitle>Recommended next steps</AlertTitle>
-          <Box component="ol" sx={{ pl: 2.5, my: 0 }}>
-            {recommendedNextSteps.map((step) => (
-              <Typography component="li" variant="body2" key={step}>
-                {step}
-              </Typography>
-            ))}
-          </Box>
-        </Alert>
-      )}
-
-      <PortfolioSummaryCards
-        summary={displayedAnalysis.summary}
-        preview={
-          packetUnlocked
-            ? undefined
-            : {
-                locked: true,
-                candidateCount: harvestTotals.count,
-                openLossTotal: harvestTotals.totalLoss,
-                potentialTaxSavings: harvestTotals.totalSavings,
-              }
-        }
-      />
-
-      {displayedAnalysis.wash_sale_flags.length > 0 && (
-        <WashSaleWarning
-          flags={displayedAnalysis.wash_sale_flags}
-          taxYear={displayedAnalysis.tax_profile?.tax_year}
-          locked={!packetUnlocked}
-        />
-      )}
-
-      {washChainsVisible(displayedAnalysis, packetUnlocked) && (
-        <WashSaleChainPanel chains={washSaleChains} />
-      )}
-
-      {showChainHint && (
-        <Alert
-          severity="info"
-          variant="outlined"
-          data-testid="wash-sale-chain-hint"
-        >
-          {washChainHint}
-        </Alert>
-      )}
-
-      <Card sx={{ overflow: "hidden", maxWidth: "100%" }}>
-        <Tabs
-          value={activeTab}
-          onChange={(_, v) => setActiveTab(v)}
-          sx={{ borderBottom: 1, borderColor: "divider", px: 2 }}
-        >
-          <Tab
-            label={`Suggestions (${suggestionTabCount})`}
-            id="tab-suggestions"
-          />
-          <Tab
-            label={`Positions (${displayedAnalysis.positions.length})`}
-            id="tab-positions"
-          />
-        </Tabs>
-
-        <CardContent>
-          {activeTab === 0 && (
-            <SuggestionsPanel
-              suggestions={displayedAnalysis.suggestions}
-              skippedSuggestionSymbols={skippedSuggestionSymbols}
-              lotsWithLosses={
-                displayedAnalysis.summary?.lots_with_losses ?? 0
-              }
-              locked={!packetUnlocked}
-              positions={displayedAnalysis.positions}
-            />
-          )}
-          {activeTab === 1 && (
-            <PositionsTable
-              positions={displayedAnalysis.positions}
-              washSaleFlags={displayedAnalysis.wash_sale_flags}
-              lotDetailsUnlocked={packetUnlocked}
-            />
-          )}
-        </CardContent>
-      </Card>
 
       <TaxDisclaimer />
     </>
@@ -1258,6 +1269,7 @@ export default function DashboardPage() {
   const washChainFetchedFor = useRef<string | null>(null);
   const [replaceBook, setReplaceBook] = useState(false);
   const [sampleLoading, setSampleLoading] = useState(false);
+  const [uploadOpen, setUploadOpen] = useState(false);
   const [sampleLoadError, setSampleLoadError] = useState<string | null>(null);
   const sampleAnalyzeStartedRef = useRef(false);
   const queryClient = useQueryClient();
@@ -1868,233 +1880,31 @@ export default function DashboardPage() {
     ? getAnalysisErrorMessage(error)
     : sampleLoadError;
 
-  return (
-    <>
-      <ServiceWorkerRegistration />
-
-      {/* Header AppBar */}
-      <AppBar position="static" sx={{ zIndex: 40 }}>
-        <Toolbar sx={{ px: { xs: 1, sm: 2 }, gap: { xs: 0.25, sm: 0.5 } }}>
-          <Wordmark href="/" />
-          <Box sx={{ flexGrow: 1 }} />
-
-          {/* Tip — icon-only on mobile */}
-          <IconButton
-            color="inherit"
-            onClick={() => setTipJarOpen(true)}
-            aria-label="Tip"
-            sx={{ display: { xs: "inline-flex", sm: "none" } }}
-          >
-            <HeartIcon sx={{ color: "#c46a58" }} />
-          </IconButton>
-          <Button
-            color="inherit"
-            startIcon={<HeartIcon sx={{ color: "#c46a58" }} />}
-            onClick={() => setTipJarOpen(true)}
+  const uploadSection = (
+          <Accordion
+            id="tax-upload"
+            data-testid="tax-upload"
+            expanded={!hasResults || uploadOpen}
+            onChange={(_, expanded) => {
+              if (hasResults) {
+                setUploadOpen(expanded);
+              }
+            }}
+            disableGutters
+            elevation={0}
             sx={{
-              textTransform: "none",
-              mr: 0.5,
-              display: { xs: "none", sm: "inline-flex" },
+              bgcolor: "transparent",
+              "&:before": { display: "none" },
             }}
           >
-            Tip
-          </Button>
-
-          {/* Saved runs — icon-only on mobile */}
-          <IconButton
-            color="inherit"
-            onClick={handleOpenSavedRuns}
-            aria-label="Saved runs"
-            sx={{ display: { xs: "inline-flex", sm: "none" } }}
-          >
-            <HistoryIcon />
-          </IconButton>
-          <Button
-            color="inherit"
-            startIcon={<HistoryIcon />}
-            onClick={handleOpenSavedRuns}
-            sx={{
-              textTransform: "none",
-              mr: 0.5,
-              display: { xs: "none", sm: "inline-flex" },
-            }}
-          >
-            Saved runs
-          </Button>
-
-          {/* Settings — icon-only on mobile */}
-          <IconButton
-            color="inherit"
-            onClick={handleOpenSettings}
-            aria-label="Settings"
-            sx={{ display: { xs: "inline-flex", sm: "none" } }}
-          >
-            <SettingsIcon />
-          </IconButton>
-          <Button
-            color="inherit"
-            startIcon={<SettingsIcon />}
-            onClick={handleOpenSettings}
-            sx={{
-              textTransform: "none",
-              mr: 0.5,
-              display: { xs: "none", sm: "inline-flex" },
-            }}
-          >
-            Settings
-          </Button>
-
-          {user ? (
-            <>
-              <Button
-                color="inherit"
-                onClick={(e) => setMenuAnchor(e.currentTarget)}
-                sx={{
-                  textTransform: "none",
-                  minWidth: "auto",
-                  px: { xs: 0.5, sm: 1 },
-                }}
-              >
-                <Avatar sx={{ width: 32, height: 32 }}>{avatarLetter}</Avatar>
-                <Typography
-                  component="span"
-                  sx={{ ml: 1, display: { xs: "none", sm: "inline" } }}
-                >
-                  {displayName}
+            {hasResults && (
+              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                <Typography sx={{ fontWeight: 600 }}>
+                  Upload CSV or 1099
                 </Typography>
-              </Button>
-              <Menu
-                anchorEl={menuAnchor}
-                open={Boolean(menuAnchor)}
-                onClose={() => setMenuAnchor(null)}
-                slotProps={{
-                  paper: { sx: { zIndex: 50 } },
-                }}
-              >
-                <MenuItem disabled>
-                  <Typography variant="body2">
-                    {displayName}
-                    {user.email ? ` (${user.email})` : ""}
-                  </Typography>
-                </MenuItem>
-                <MenuItem
-                  onClick={() => {
-                    setMenuAnchor(null);
-                    handleOpenSavedRuns();
-                  }}
-                >
-                  Saved runs
-                </MenuItem>
-                <MenuItem
-                  onClick={() => {
-                    setMenuAnchor(null);
-                    handleOpenSettings();
-                  }}
-                >
-                  Tax profile
-                </MenuItem>
-                <MenuItem onClick={handleSignOut}>
-                  <LogoutIcon sx={{ mr: 1 }} />
-                  Sign Out
-                </MenuItem>
-              </Menu>
-            </>
-          ) : (
-            <Button
-              component={NextLink}
-              href="/auth/signin"
-              variant="contained"
-              size="small"
-              sx={{ ml: 0.5 }}
-            >
-              Sign In
-            </Button>
-          )}
-        </Toolbar>
-      </AppBar>
-
-      {/* Tip Jar Dialog */}
-      <TipJar open={tipJarOpen} onClose={() => setTipJarOpen(false)} />
-
-      {/* History Drawer */}
-      <Drawer
-        anchor="left"
-        open={historyOpen}
-        onClose={() => setHistoryOpen(false)}
-      >
-        <Box sx={{ width: 300, pt: 2 }}>
-          <Typography
-            variant="h6"
-            component="h2"
-            sx={{
-              px: 2,
-              pb: 1,
-              fontWeight: 700,
-              display: "flex",
-              alignItems: "center",
-              gap: 1,
-            }}
-          >
-            <HistoryIcon /> Saved runs
-          </Typography>
-          <Divider />
-          <HistoryContent
-            history={history}
-            historyError={historyError || null}
-            historyLoading={historyLoading}
-            onItemClick={handleHistoryItemClick}
-            onDeleteClick={(id, filename) => setDeleteTarget({ id, filename })}
-          />
-        </Box>
-      </Drawer>
-
-      {/* Delete Confirmation Dialog */}
-      <Dialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)}>
-        <DialogTitle>Delete Analysis</DialogTitle>
-        <DialogContent>
-          <DialogContentText>
-            Are you sure you want to delete the analysis for{" "}
-            <strong>{deleteTarget?.filename}</strong>? This action cannot be
-            undone.
-          </DialogContentText>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setDeleteTarget(null)}>Cancel</Button>
-          <Button
-            onClick={handleDeleteConfirm}
-            color="error"
-            variant="contained"
-          >
-            Delete
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      {/* Loading bar — shows for new analysis (isPending) and history fetch (historyLoading) */}
-      {analyzing && <LinearProgress />}
-      {historyLoading && <LinearProgress color="secondary" />}
-
-      {/* Snackbar for history load feedback */}
-      <Snackbar
-        open={!!snackbar}
-        autoHideDuration={4000}
-        onClose={() => setSnackbar(null)}
-        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
-      >
-        <Alert
-          severity={snackbar?.severity ?? "info"}
-          onClose={() => setSnackbar(null)}
-          variant="filled"
-          sx={{ width: "100%" }}
-        >
-          {snackbar?.message}
-        </Alert>
-      </Snackbar>
-
-      {/* Main Content */}
-      <Container maxWidth="lg" sx={{ py: 3 }}>
-        <Stack spacing={3}>
-          {/* Upload Section */}
+              </AccordionSummary>
+            )}
+            <AccordionDetails sx={{ px: 0, py: hasResults ? 1 : 0 }}>
           <Card>
             <CardContent>
               <Stack spacing={2}>
@@ -2245,10 +2055,257 @@ export default function DashboardPage() {
               </Stack>
             </CardContent>
           </Card>
+            </AccordionDetails>
+          </Accordion>
+  );
 
-          <EntryAnalysisPanel
-            positions={hasResults ? displayedAnalysis?.positions ?? [] : []}
+  return (
+    <>
+      <ServiceWorkerRegistration />
+
+      {/* Header AppBar */}
+      <AppBar position="static" sx={{ zIndex: 40 }}>
+        <Toolbar sx={{ px: { xs: 1, sm: 2 }, gap: { xs: 0.25, sm: 0.5 } }}>
+          <Wordmark href="/" />
+          <Box sx={{ flexGrow: 1 }} />
+
+          {hasResults && (
+            <Button
+              color="inherit"
+              startIcon={<CloudUploadIcon />}
+              onClick={() => {
+                setUploadOpen(true);
+                window.requestAnimationFrame(() => {
+                  document
+                    .getElementById("tax-upload")
+                    ?.scrollIntoView?.({ block: "start" });
+                });
+              }}
+              data-testid="tax-upload-action"
+              sx={{ textTransform: "none", minWidth: 0, px: { xs: 1, sm: 1.5 } }}
+            >
+              Upload
+            </Button>
+          )}
+
+          {/* Tip — icon-only on mobile */}
+          <IconButton
+            color="inherit"
+            onClick={() => setTipJarOpen(true)}
+            aria-label="Tip"
+            sx={{ display: { xs: "inline-flex", sm: "none" } }}
+          >
+            <HeartIcon sx={{ color: "#c46a58" }} />
+          </IconButton>
+          <Button
+            color="inherit"
+            startIcon={<HeartIcon sx={{ color: "#c46a58" }} />}
+            onClick={() => setTipJarOpen(true)}
+            sx={{
+              textTransform: "none",
+              mr: 0.5,
+              display: { xs: "none", sm: "inline-flex" },
+            }}
+          >
+            Tip
+          </Button>
+
+          {/* Saved runs — icon-only on mobile */}
+          <IconButton
+            color="inherit"
+            onClick={handleOpenSavedRuns}
+            aria-label="Saved runs"
+            sx={{ display: { xs: "inline-flex", sm: "none" } }}
+          >
+            <HistoryIcon />
+          </IconButton>
+          <Button
+            color="inherit"
+            startIcon={<HistoryIcon />}
+            onClick={handleOpenSavedRuns}
+            sx={{
+              textTransform: "none",
+              mr: 0.5,
+              display: { xs: "none", sm: "inline-flex" },
+            }}
+          >
+            Saved runs
+          </Button>
+
+          {/* Settings — icon-only on mobile */}
+          <IconButton
+            color="inherit"
+            onClick={handleOpenSettings}
+            aria-label="Settings"
+            sx={{ display: { xs: "inline-flex", sm: "none" } }}
+          >
+            <SettingsIcon />
+          </IconButton>
+          <Button
+            color="inherit"
+            startIcon={<SettingsIcon />}
+            onClick={handleOpenSettings}
+            sx={{
+              textTransform: "none",
+              mr: 0.5,
+              display: { xs: "none", sm: "inline-flex" },
+            }}
+          >
+            Settings
+          </Button>
+
+          {user ? (
+            <>
+              <Button
+                color="inherit"
+                onClick={(e) => setMenuAnchor(e.currentTarget)}
+                sx={{
+                  textTransform: "none",
+                  minWidth: "auto",
+                  px: { xs: 0.5, sm: 1 },
+                }}
+              >
+                <Avatar sx={{ width: 32, height: 32 }}>{avatarLetter}</Avatar>
+                <Typography
+                  component="span"
+                  sx={{ ml: 1, display: { xs: "none", sm: "inline" } }}
+                >
+                  {displayName}
+                </Typography>
+              </Button>
+              <Menu
+                anchorEl={menuAnchor}
+                open={Boolean(menuAnchor)}
+                onClose={() => setMenuAnchor(null)}
+                slotProps={{
+                  paper: { sx: { zIndex: 50 } },
+                }}
+              >
+                <MenuItem disabled>
+                  <Typography variant="body2">
+                    {displayName}
+                    {user.email ? ` (${user.email})` : ""}
+                  </Typography>
+                </MenuItem>
+                <MenuItem
+                  onClick={() => {
+                    setMenuAnchor(null);
+                    handleOpenSavedRuns();
+                  }}
+                >
+                  Saved runs
+                </MenuItem>
+                <MenuItem
+                  onClick={() => {
+                    setMenuAnchor(null);
+                    handleOpenSettings();
+                  }}
+                >
+                  Tax profile
+                </MenuItem>
+                <MenuItem onClick={handleSignOut}>
+                  <LogoutIcon sx={{ mr: 1 }} />
+                  Sign Out
+                </MenuItem>
+              </Menu>
+            </>
+          ) : (
+            <Button
+              component={NextLink}
+              href="/auth/signin"
+              variant="contained"
+              size="small"
+              sx={{ ml: 0.5 }}
+            >
+              Sign In
+            </Button>
+          )}
+        </Toolbar>
+        <DeskNav />
+      </AppBar>
+
+      {/* Tip Jar Dialog */}
+      <TipJar open={tipJarOpen} onClose={() => setTipJarOpen(false)} />
+
+      {/* History Drawer */}
+      <Drawer
+        anchor="left"
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+      >
+        <Box sx={{ width: 300, pt: 2 }}>
+          <Typography
+            variant="h6"
+            component="h2"
+            sx={{
+              px: 2,
+              pb: 1,
+              fontWeight: 700,
+              display: "flex",
+              alignItems: "center",
+              gap: 1,
+            }}
+          >
+            <HistoryIcon /> Saved runs
+          </Typography>
+          <Divider />
+          <HistoryContent
+            history={history}
+            historyError={historyError || null}
+            historyLoading={historyLoading}
+            onItemClick={handleHistoryItemClick}
+            onDeleteClick={(id, filename) => setDeleteTarget({ id, filename })}
           />
+        </Box>
+      </Drawer>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)}>
+        <DialogTitle>Delete Analysis</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            Are you sure you want to delete the analysis for{" "}
+            <strong>{deleteTarget?.filename}</strong>? This action cannot be
+            undone.
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDeleteTarget(null)}>Cancel</Button>
+          <Button
+            onClick={handleDeleteConfirm}
+            color="error"
+            variant="contained"
+          >
+            Delete
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Loading bar — shows for new analysis (isPending) and history fetch (historyLoading) */}
+      {analyzing && <LinearProgress />}
+      {historyLoading && <LinearProgress color="secondary" />}
+
+      {/* Snackbar for history load feedback */}
+      <Snackbar
+        open={!!snackbar}
+        autoHideDuration={4000}
+        onClose={() => setSnackbar(null)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+      >
+        <Alert
+          severity={snackbar?.severity ?? "info"}
+          onClose={() => setSnackbar(null)}
+          variant="filled"
+          sx={{ width: "100%" }}
+        >
+          {snackbar?.message}
+        </Alert>
+      </Snackbar>
+
+      {/* Main Content */}
+      <Container maxWidth="lg" sx={{ py: 3 }}>
+        <Stack spacing={3}>
+          {!hasResults && uploadSection}
 
           {/* Backend health banner — shown when the API server is unreachable */}
           {backendChecked && backendDown && (
@@ -2357,6 +2414,7 @@ export default function DashboardPage() {
                 </AccordionDetails>
               </Accordion>
             )}
+          {hasResults && uploadSection}
         </Stack>
       </Container>
     </>

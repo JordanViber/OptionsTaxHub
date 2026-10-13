@@ -18,6 +18,7 @@ jest.mock("next/navigation", () => ({
   useRouter: () => ({
     push: mockPush,
   }),
+  usePathname: () => "/dashboard",
 }));
 
 // Mock auth context
@@ -742,11 +743,11 @@ describe("DashboardPage", () => {
     await waitFor(() => {
       expect(screen.getByText("Recommended next steps")).toBeInTheDocument();
       expect(
-        screen.getByText(/Start with the 1 harvesting suggestion shown below/i),
+        screen.getByText(/Start with the 1 harvesting suggestion in the harvest queue/i),
       ).toBeInTheDocument();
       expect(
         screen.getByText(
-          /Review the wash-sale panel before relying on losses/i,
+          /Review the wash-sale radar before relying on losses/i,
         ),
       ).toBeInTheDocument();
       expect(
@@ -794,7 +795,7 @@ describe("DashboardPage", () => {
       expect(screen.getByTestId("year-close-packet-panel")).toHaveTextContent(
         "$49",
       );
-      expect(screen.getByText(/Positions \(/i)).toBeInTheDocument();
+      expect(screen.getByText(/Lot ledger \(/i)).toBeInTheDocument();
       expect(
         screen.getByText("Previous-year 1099 supplement applied"),
       ).toBeInTheDocument();
@@ -852,16 +853,9 @@ describe("DashboardPage", () => {
     const csvInput = container.querySelector(
       'input[type="file"][accept=".csv"]',
     );
-    const pdfInput = container.querySelector(
-      'input[type="file"][accept=".pdf,application/pdf"]',
-    );
 
     if (!(csvInput instanceof HTMLInputElement)) {
       throw new TypeError("CSV input not found");
-    }
-
-    if (!(pdfInput instanceof HTMLInputElement)) {
-      throw new TypeError("PDF input not found");
     }
 
     fireEvent.change(csvInput, {
@@ -878,6 +872,17 @@ describe("DashboardPage", () => {
       expect(mockAnalyzeMutate).toHaveBeenCalledTimes(1);
     });
 
+    const uploadSummary = screen.queryByText("Upload CSV or 1099");
+    if (uploadSummary) {
+      fireEvent.click(uploadSummary);
+    }
+    const pdfInput = container.querySelector(
+      'input[type="file"][accept=".pdf,application/pdf"]',
+    );
+    if (!(pdfInput instanceof HTMLInputElement)) {
+      throw new TypeError("PDF input not found");
+    }
+
     fireEvent.change(pdfInput, {
       target: {
         files: [
@@ -888,8 +893,8 @@ describe("DashboardPage", () => {
 
     await waitFor(() => {
       expect(mockAnalyzeMutate).toHaveBeenCalledTimes(2);
-      expect(screen.getByText("Auto-applied to latest CSV")).toBeInTheDocument();
     });
+    expect(screen.getByText("Auto-applied to latest CSV")).toBeInTheDocument();
 
     expect(mockAnalyzeMutate.mock.calls[1][0]).toMatchObject({
       file: expect.objectContaining({ name: "portfolio.csv" }),
@@ -928,8 +933,11 @@ describe("DashboardPage", () => {
 
     await waitFor(() => {
       expect(mockAnalyzeMutate).toHaveBeenCalledTimes(1);
-      expect(screen.getByRole("button", { name: /Remove 1099 PDF/i })).toBeInTheDocument();
     });
+    fireEvent.click(screen.getByText("Upload CSV or 1099"));
+    expect(
+      screen.getByRole("button", { name: /Remove 1099 PDF/i }),
+    ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /Remove 1099 PDF/i }));
 
@@ -1021,10 +1029,16 @@ describe("DashboardPage", () => {
         screen.getByText(/Get started with your first analysis/i),
       ).toBeInTheDocument();
     });
-    expect(screen.getByTestId("entry-analysis-panel")).toBeInTheDocument();
-    expect(
-      screen.getByRole("heading", { name: /Analyze a new option/i }),
-    ).toBeInTheDocument();
+    expect(screen.queryByTestId("entry-analysis-panel")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Tax" })).toHaveAttribute(
+      "href",
+      "/dashboard",
+    );
+    expect(screen.getByRole("link", { name: "Options" })).toHaveAttribute(
+      "href",
+      "/options",
+    );
+    expect(screen.queryByTestId("tax-upload-action")).not.toBeInTheDocument();
     expect(screen.getByText(/Export from Robinhood/i)).toBeInTheDocument();
     expect(
       screen.getByRole("link", { name: /Download sample CSV/i }),
@@ -1623,156 +1637,36 @@ describe("DashboardPage", () => {
     });
   });
 
-  it("shows the options what-if on an empty desk without a CSV or $49", async () => {
+  it("keeps the options desk off the tax page and orders results around the answer", async () => {
+    mockAnalyzeData = { ...baseAnalysis };
     render(<DashboardPage />, { wrapper: createWrapper() });
 
     await waitFor(() => {
-      expect(screen.getByTestId("entry-analysis-panel")).toBeInTheDocument();
+      expect(screen.getByTestId("tax-section-kpis")).toBeInTheDocument();
     });
-    expect(
-      screen.getByText(/Enter premium to see max gain, max loss, and breakeven/i),
-    ).toBeInTheDocument();
-    expect(screen.getByTestId("entry-rank-leaps")).toBeInTheDocument();
-    expect(screen.queryByTestId("entry-rank-find")).not.toBeInTheDocument();
-    expect(screen.getByTestId("entry-rank-empty")).toBeInTheDocument();
-    expect(screen.queryByTestId("entry-context")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("entry-results")).not.toBeInTheDocument();
-  });
-
-  it("shows a vertical what-if on an empty desk without a CSV", async () => {
-    render(<DashboardPage />, { wrapper: createWrapper() });
-
-    await waitFor(() => {
-      expect(screen.getByTestId("entry-analysis-panel")).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByTestId("entry-structure-vertical"));
-    const future = new Date();
-    future.setFullYear(future.getFullYear() + 1);
-    const expiration = `${future.getFullYear()}-${String(future.getMonth() + 1).padStart(2, "0")}-${String(future.getDate()).padStart(2, "0")}`;
-
-    fireEvent.change(screen.getByTestId("entry-symbol"), {
-      target: { value: "NVDA" },
-    });
-    fireEvent.change(screen.getByTestId("entry-strike-lower"), {
-      target: { value: "250" },
-    });
-    fireEvent.change(screen.getByTestId("entry-strike-higher"), {
-      target: { value: "260" },
-    });
-    fireEvent.change(screen.getByTestId("entry-expiration"), {
-      target: { value: expiration },
-    });
-    fireEvent.change(screen.getByTestId("entry-premium-lower"), {
-      target: { value: "6.00" },
-    });
-    fireEvent.change(screen.getByTestId("entry-premium-higher"), {
-      target: { value: "2.00" },
-    });
-
-    expect(screen.getByTestId("entry-max-loss")).toHaveTextContent("$400.00");
-    expect(screen.getByTestId("entry-max-gain")).toHaveTextContent("$600.00");
-    expect(screen.getByTestId("entry-breakeven")).toHaveTextContent("$254.00");
-    expect(screen.queryByTestId("entry-context")).not.toBeInTheDocument();
-    expect(screen.getByTestId("entry-rank-leaps")).toBeInTheDocument();
-  });
-
-  it("shows a straddle what-if on an empty desk without a CSV", async () => {
-    render(<DashboardPage />, { wrapper: createWrapper() });
-
-    await waitFor(() => {
-      expect(screen.getByTestId("entry-analysis-panel")).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByTestId("entry-structure-straddle"));
-    const future = new Date();
-    future.setFullYear(future.getFullYear() + 1);
-    const expiration = `${future.getFullYear()}-${String(future.getMonth() + 1).padStart(2, "0")}-${String(future.getDate()).padStart(2, "0")}`;
-
-    fireEvent.change(screen.getByTestId("entry-symbol"), {
-      target: { value: "NVDA" },
-    });
-    fireEvent.change(screen.getByTestId("entry-strike"), {
-      target: { value: "250" },
-    });
-    fireEvent.change(screen.getByTestId("entry-expiration"), {
-      target: { value: expiration },
-    });
-    fireEvent.change(screen.getByTestId("entry-premium-call"), {
-      target: { value: "4.20" },
-    });
-    fireEvent.change(screen.getByTestId("entry-premium-put"), {
-      target: { value: "3.80" },
-    });
-
-    expect(screen.getByTestId("entry-max-loss")).toHaveTextContent("$800.00");
-    expect(screen.getByTestId("entry-max-gain")).toHaveTextContent("Unlimited");
-    expect(screen.getByTestId("entry-breakeven-low")).toHaveTextContent(
-      "$242.00",
-    );
-    expect(screen.getByTestId("entry-breakeven-high")).toHaveTextContent(
-      "$258.00",
-    );
-    expect(screen.queryByTestId("entry-context")).not.toBeInTheDocument();
-    expect(screen.getByTestId("entry-rank-leaps")).toBeInTheDocument();
-  });
-
-  it("adds one-line portfolio context when positions are loaded", async () => {
-    mockAnalyzeData = {
-      ...baseAnalysis,
-      packet_unlocked: false,
-      sample_run: false,
-      positions: [
-        {
-          position_id: "NVDA:stock",
-          symbol: "NVDA",
-          display_label: "NVDA",
-          quantity: 52,
-          avg_cost_basis: 280,
-          total_cost_basis: 14560,
-          current_price: 250,
-          market_value: 13000,
-          unrealized_pnl: -1560,
-          unrealized_pnl_pct: -10,
-          earliest_purchase_date: "2026-01-15",
-          holding_period_days: 200,
-          is_long_term: false,
-          asset_type: "stock",
-          tax_lots: [],
-          wash_sale_risk: false,
-        },
-      ],
-    };
-
-    render(<DashboardPage />, { wrapper: createWrapper() });
-
-    await waitFor(() => {
-      expect(screen.getByTestId("entry-analysis-panel")).toBeInTheDocument();
-    });
-
-    const future = new Date();
-    future.setFullYear(future.getFullYear() + 1);
-    const expiration = `${future.getFullYear()}-${String(future.getMonth() + 1).padStart(2, "0")}-${String(future.getDate()).padStart(2, "0")}`;
-
-    fireEvent.change(screen.getByTestId("entry-symbol"), {
-      target: { value: "NVDA" },
-    });
-    fireEvent.change(screen.getByTestId("entry-strike"), {
-      target: { value: "250" },
-    });
-    fireEvent.change(screen.getByTestId("entry-expiration"), {
-      target: { value: expiration },
-    });
-    fireEvent.change(screen.getByTestId("entry-premium"), {
-      target: { value: "4.20" },
-    });
-
-    expect(screen.getByTestId("entry-max-loss")).toHaveTextContent("$420.00");
-    expect(screen.getByTestId("entry-context")).toHaveTextContent(
-      "Open NVDA: 52 sh",
-    );
-    expect(screen.getByTestId("entry-context")).not.toHaveTextContent(
-      /wash|1099|harvest|\$49/i,
+    const sectionOrder = [
+      "tax-section-kpis",
+      "tax-section-1099",
+      "tax-section-wash",
+      "tax-section-harvest",
+      "tax-section-packet",
+      "tax-upload",
+    ];
+    const sections = sectionOrder.map((id) => screen.getByTestId(id));
+    for (let index = 0; index < sections.length - 1; index += 1) {
+      expect(
+        sections[index].compareDocumentPosition(sections[index + 1]) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    }
+    expect(screen.queryByTestId("entry-analysis-panel")).not.toBeInTheDocument();
+    expect(screen.getByTestId("tax-upload-action")).toBeInTheDocument();
+    expect(screen.getByText("Upload CSV or 1099")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Harvest queue/i })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Lot ledger/i })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Options" })).toHaveAttribute(
+      "href",
+      "/options",
     );
   });
 

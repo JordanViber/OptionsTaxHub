@@ -87,7 +87,18 @@ test.describe("Dashboard UI Fixes", () => {
     await uploadTestCsv(page);
 
     // Suggestions is the default tab. ST / STK / Risk chips live on the positions grid.
-    await page.getByRole("tab", { name: /Positions/ }).click();
+    // Firefox can focus the tab on the first click while a late font shift
+    // drops the click, so retry until the tab is actually selected.
+    const lotTab = page.getByRole("tab", { name: /Lot ledger/ });
+    await expect(async () => {
+      if ((await lotTab.getAttribute("aria-selected")) !== "true") {
+        await lotTab.evaluate((el) =>
+          el.scrollIntoView({ block: "center", inline: "nearest" }),
+        );
+        await lotTab.click();
+      }
+      await expect(lotTab).toHaveAttribute("aria-selected", "true");
+    }).toPass();
     const stChip = page.locator(".MuiChip-root", { hasText: /^ST$/ }).first();
     await expect(stChip).toBeVisible();
     await stChip.hover();
@@ -308,7 +319,7 @@ test.describe("Dashboard Upload & Results", () => {
     await uploadTestCsv(page);
 
     // Suggestions is the default tab; the positions DataGrid mounts on its own tab.
-    await page.getByRole("tab", { name: /Positions/ }).click();
+    await page.getByRole("tab", { name: /Lot ledger/ }).click();
     await expect(page.getByRole("grid").getByText("AAPL")).toBeVisible();
     await expect(page.getByRole("grid").getByText("MSFT")).toBeVisible();
   });
@@ -379,11 +390,11 @@ test.describe("Dashboard Tabs & Components", () => {
 
     // Positions tab is active by default — AAPL also appears in wash-sale warning, so use .first()
     await expect(page.getByText("AAPL").first()).toBeVisible();
-    await expect(page.getByRole('tab', { name: /Positions/ })).toBeVisible();
-    await expect(page.getByRole('tab', { name: /Suggestions/ })).toBeVisible();
+    await expect(page.getByRole('tab', { name: /Lot ledger/ })).toBeVisible();
+    await expect(page.getByRole('tab', { name: /Harvest queue/ })).toBeVisible();
 
     // Click Suggestions tab
-    await page.getByRole('tab', { name: /Suggestions/ }).click();
+    await page.getByRole('tab', { name: /Harvest queue/ }).click();
 
     // Suggestions content should show the AAPL suggestion card
     await expect(page.getByText("AAPL").first()).toBeVisible();
@@ -391,7 +402,7 @@ test.describe("Dashboard Tabs & Components", () => {
     await expect(page.getByText("Tax Savings", { exact: true })).toBeVisible();
 
     // Click back to Positions
-    await page.getByRole('tab', { name: /Positions/ }).click();
+    await page.getByRole('tab', { name: /Lot ledger/ }).click();
     await expect(page.getByRole('grid').getByText("MSFT")).toBeVisible();
   });
 
@@ -399,7 +410,7 @@ test.describe("Dashboard Tabs & Components", () => {
     await uploadTestCsv(page);
 
     // Switch to suggestions tab
-    await page.getByRole('tab', { name: /Suggestions/ }).click();
+    await page.getByRole('tab', { name: /Harvest queue/ }).click();
 
     // AI chip should be visible (ai_generated: true)
     await expect(
@@ -411,7 +422,7 @@ test.describe("Dashboard Tabs & Components", () => {
     page,
   }) => {
     await uploadTestCsv(page);
-    await page.getByRole('tab', { name: /Suggestions/ }).click();
+    await page.getByRole('tab', { name: /Harvest queue/ }).click();
 
     // Click expand button
     await page.getByRole("button", { name: "Show more" }).click();
@@ -437,7 +448,7 @@ test.describe("Dashboard Tabs & Components", () => {
     page,
   }) => {
     await uploadTestCsv(page);
-    await page.getByRole('tab', { name: /Suggestions/ }).click();
+    await page.getByRole('tab', { name: /Harvest queue/ }).click();
 
     // Wash-sale inline warning box
     await expect(
@@ -456,7 +467,7 @@ test.describe("Dashboard Tabs & Components", () => {
     );
 
     await uploadTestCsv(page);
-    await page.getByRole('tab', { name: /Suggestions/ }).click();
+    await page.getByRole('tab', { name: /Harvest queue/ }).click();
 
     await expect(
       page.getByText(
@@ -472,7 +483,7 @@ test.describe("Dashboard Tabs & Components", () => {
 
     await expect(
       page.getByText(
-        "Wash-Sale Rule Violations Detected (1 events across 1 ticker)",
+        "Wash-sale radar (1 event across 1 ticker)",
       ),
     ).toBeVisible();
     const aaplWash = page.getByRole("button", {
@@ -497,7 +508,7 @@ test.describe("Dashboard Tabs & Components", () => {
     await uploadTestCsv(page);
 
     await expect(
-      page.getByText("Wash-Sale Rule Violations Detected"),
+      page.getByText("Wash-sale radar"),
     ).not.toBeVisible();
   });
 });
@@ -774,7 +785,7 @@ test.describe("Open 2026 sample", () => {
         timeout: 20000,
       });
       await expect(page.getByText("Fresh upload")).toBeVisible();
-      await expect(page.getByText(/Positions \(2\)/)).toBeVisible();
+      await expect(page.getByText(/Lot ledger \(2\)/)).toBeVisible();
       await expect(page.getByText("Net Open Position Value")).toBeVisible();
       await expect(page.getByText("Analyzing portfolio...")).toHaveCount(0);
     });
@@ -861,12 +872,29 @@ test.describe("Open 2026 sample", () => {
     await expect(page.getByText("Tax Year: 2026")).toBeVisible({
       timeout: 20000,
     });
-    await expect(page.getByText("Portfolio Analysis")).toBeVisible();
+    await expect(page.getByTestId("tax-section-kpis")).toBeVisible();
+    await expect(page.getByTestId("tax-upload")).toBeVisible();
+    await expect(page.getByTestId("entry-analysis-panel")).toHaveCount(0);
+    await expect(
+      page.getByRole("navigation", { name: "Primary" }).getByRole("link", {
+        name: "Options",
+        exact: true,
+      }),
+    ).toBeVisible();
+    await page
+      .getByRole("navigation", { name: "Primary" })
+      .getByRole("link", { name: "Options", exact: true })
+      .click();
+    await expect(page).toHaveURL(/\/options/);
     await expect(
       page.getByRole("heading", { name: /Analyze a new option/i }),
     ).toBeVisible();
     await expect(page.getByTestId("entry-rank-leaps")).toBeVisible();
     await expect(page.getByTestId("entry-rank-find")).toHaveCount(0);
+    await expect(page.getByTestId("entry-guest-signin")).toHaveAttribute(
+      "href",
+      "/auth/signin?next=/options",
+    );
 
     await page.getByTestId("entry-symbol").fill("NVDA");
     await page.getByTestId("entry-strike").fill("250");
@@ -876,9 +904,8 @@ test.describe("Open 2026 sample", () => {
     await expect(page.getByTestId("entry-max-loss")).toHaveText("$420.00");
 
     await page.getByTestId("entry-rank-leaps").click();
-    await expect(page.getByTestId("entry-rank-error")).toHaveText(
-      RH_CONNECTION_REQUIRED_COPY,
-    );
+    await expect(page.getByText(RH_CONNECTION_REQUIRED_COPY)).toHaveCount(0);
+    await expect(page.getByTestId("entry-guest-signin")).toBeVisible();
     await expect(page.getByTestId("entry-rank-1")).toHaveCount(0);
     await expect(page.getByTestId("entry-results")).toBeVisible();
     await expect(page.getByTestId("entry-max-loss")).toHaveText("$420.00");
@@ -894,13 +921,18 @@ test.describe("Open 2026 sample", () => {
     await expect(page.getByRole("link", { name: /options desk/i })).toHaveCount(
       0,
     );
+    await page
+      .getByRole("navigation", { name: "Primary" })
+      .getByRole("link", { name: "Tax", exact: true })
+      .click();
+    await expect(page).toHaveURL(/\/dashboard/);
     await expect(page.getByRole("button", { name: /Pay \$49/i })).toBeVisible();
   });
 
   test("empty desk vertical what-if on phone-390", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await mockGuestDesk(page);
-    await page.goto("/dashboard");
+    await page.goto("/options");
     await expect(page.getByTestId("entry-analysis-panel")).toBeVisible({
       timeout: 15000,
     });
@@ -924,7 +956,7 @@ test.describe("Open 2026 sample", () => {
   }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await mockGuestDesk(page);
-    await page.goto("/dashboard");
+    await page.goto("/options");
     await expect(page.getByTestId("entry-analysis-panel")).toBeVisible({
       timeout: 15000,
     });
@@ -1108,13 +1140,10 @@ test.describe("Wash-sale chain explainer", () => {
       await expect(page.getByText("Tax Year: 2026")).toBeVisible({
         timeout: 20000,
       });
-      await expect(page.getByText(/Positions \(2\)/)).toBeVisible();
+      await expect(page.getByText(/Lot ledger \(2\)/)).toBeVisible();
       await expect(page.getByText("Net Open Position Value")).toBeVisible();
       await expect(page.getByRole("button", { name: "Pay $49" })).toBeVisible();
-      await expect(
-        page.getByRole("heading", { name: /Analyze a new option/i }),
-      ).toBeVisible();
-      await expect(page.getByTestId("entry-rank-leaps")).toBeVisible();
+      await expect(page.getByTestId("entry-analysis-panel")).toHaveCount(0);
       await expect(page.getByTestId("wash-sale-chain-card")).toBeVisible();
       await expect(page.getByText(amdSentence).first()).toBeVisible();
       await expect(
