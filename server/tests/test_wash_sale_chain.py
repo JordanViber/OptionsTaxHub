@@ -497,8 +497,8 @@ def test_option_only_wash_is_one_not_compared_chain():
     assert hop.form_1099_wash is None
     assert hop.replacement_buys == []
     assert hop.closed_lots == []
-    assert hop.proceeds == pytest.approx(0)
-    assert hop.cost_basis == pytest.approx(0)
+    assert hop.proceeds is None
+    assert hop.cost_basis is None
     assert hop.loss == pytest.approx(0)
     assert hop.engine_adjusted_cost_basis is None
     assert hop.open_lot_total_cost_basis is None
@@ -624,8 +624,8 @@ def test_option_flag_and_option_1099_rows_are_not_compared():
     assert hop.replacement_buys == []
     assert hop.open_lot_total_cost_basis is None
     assert hop.engine_adjusted_cost_basis is None
-    assert hop.proceeds == pytest.approx(0)
-    assert hop.cost_basis == pytest.approx(0)
+    assert hop.proceeds is None
+    assert hop.cost_basis is None
     assert flags[0].sale_loss == pytest.approx(6)
     assert flags[0].disallowed_loss == pytest.approx(6)
     assert flags[0].adjusted_cost_basis == pytest.approx(11)
@@ -1208,7 +1208,8 @@ def test_chain_copy_covers_remaining_branches():
     assert scaled[0].hops[0].sale_date == date(2026, 6, 10)
     assert scaled[0].hops[0].engine_disallowed_loss is None
     assert scaled[0].hops[0].disallowed_loss == pytest.approx(0)
-    assert scaled[0].hops[0].proceeds == pytest.approx(0)
+    assert scaled[0].hops[0].proceeds is None
+    assert scaled[0].hops[0].cost_basis is None
     assert scaled[0].hops[0].replacement_buys == []
     assert scaled[0].hops[0].form_1099_wash is None
     assert scaled[0].hops[0].hop_id.endswith(":f0")
@@ -3518,7 +3519,8 @@ def test_stock_chain_ignores_same_date_option_replacement_and_open_lot():
     assert all(chain.hops[0].plain_english == OPTION_LINE for chain in option_chains)
     assert all(chain.hops[0].engine_disallowed_loss is None for chain in option_chains)
     assert all(chain.hops[0].disallowed_loss == pytest.approx(0) for chain in option_chains)
-    assert all(chain.hops[0].proceeds == pytest.approx(0) for chain in option_chains)
+    assert all(chain.hops[0].proceeds is None for chain in option_chains)
+    assert all(chain.hops[0].cost_basis is None for chain in option_chains)
     assert all(chain.hops[0].replacement_buys == [] for chain in option_chains)
     assert {chain.hops[0].sale_date for chain in option_chains} == {
         date(2026, 7, 1),
@@ -3829,7 +3831,8 @@ def test_stock_sale_does_not_reconcile_an_option_1099_row():
     assert option[0].plain_english == OPTION_LINE
     assert option[0].hops[0].sale_date == sale
     assert option[0].hops[0].engine_disallowed_loss is None
-    assert option[0].hops[0].proceeds == pytest.approx(0)
+    assert option[0].hops[0].proceeds is None
+    assert option[0].hops[0].cost_basis is None
     assert option[0].hops[0].form_1099_wash is None
     assert stock
     assert all(chain.reconcile_status == "not_compared" for chain in stock)
@@ -3841,7 +3844,7 @@ def test_stock_sale_does_not_reconcile_an_option_1099_row():
 
 
 def test_option_flag_does_not_borrow_same_day_stock_proceeds():
-    """An option flag and a same-day same-qty stock sale are both not compared."""
+    """An option replacement is one option line. The stock sale's dollars stay off."""
     sale = date(2026, 6, 10)
     first = WashSaleFlag(
         symbol="AAPL",
@@ -3871,20 +3874,23 @@ def test_option_flag_does_not_borrow_same_day_stock_proceeds():
         ],
         wash_sale_flags=[first, second],
     )
-    option = [chain for chain in chains if chain.hops[0].asset_type == "option"]
-    stock = [chain for chain in chains if chain.hops[0].asset_type == "stock"]
-    assert len(option) == 1
-    assert len(stock) == 2
-    assert {chain.hops[0].hop_id.rsplit(":", 1)[-1] for chain in stock} == {"f0", "f1"}
-    assert len({chain.chain_id for chain in chains}) == 3
-    assert option[0].reconcile_status == "not_compared"
-    assert option[0].plain_english == OPTION_LINE
-    assert option[0].hops[0].proceeds == pytest.approx(0)
-    assert option[0].hops[0].sale_date == sale
-    assert option[0].hops[0].engine_disallowed_loss is None
-    assert all(chain.reconcile_status == "not_compared" for chain in stock)
-    assert all(chain.hops[0].proceeds == pytest.approx(0) for chain in stock)
-    assert all("neither was compared" in chain.plain_english for chain in stock)
+    assert len(chains) == 1
+    hop = chains[0].hops[0]
+    assert hop.asset_type == "option"
+    assert hop.not_compared_reason == "option"
+    assert chains[0].reconcile_status == "not_compared"
+    assert chains[0].plain_english == OPTION_LINE
+    assert hop.plain_english == OPTION_LINE
+    assert hop.proceeds is None
+    assert hop.cost_basis is None
+    assert hop.sale_date == sale
+    assert hop.engine_disallowed_loss is None
+    assert hop.form_1099_wash is None
+    assert hop.replacement_buys == []
+    assert "$" not in hop.plain_english
+    assert "400" not in hop.plain_english
+    assert "not a wash" not in hop.plain_english.lower()
+    assert "You sold" not in hop.plain_english
     assert first.disallowed_loss == pytest.approx(6)
     assert second.disallowed_loss == pytest.approx(6)
 
@@ -4379,7 +4385,8 @@ def test_option_1099_lots_do_not_hold_back_a_stock_wash():
     assert option[0].hops[0].sale_quantity == pytest.approx(10)
     assert option[0].plain_english == OPTION_LINE
     assert option[0].hops[0].form_1099_wash is None
-    assert option[0].hops[0].proceeds == pytest.approx(0)
+    assert option[0].hops[0].proceeds is None
+    assert option[0].hops[0].cost_basis is None
     assert flag.disallowed_loss == pytest.approx(200)
 
 
@@ -4566,8 +4573,245 @@ def test_stock_and_option_same_quantity_are_not_compared():
     assert all(OPTION_LINE not in chain.plain_english for chain in chains)
     assert all("did not flag a matching wash" not in chain.plain_english for chain in chains)
     assert all("Your 1099 reports" not in chain.plain_english for chain in chains)
+    assert "not a wash" not in hop.plain_english.lower()
+    assert "wash" not in hop.plain_english.lower()
     assert flag.disallowed_loss == pytest.approx(100)
     assert flag.sale_loss == pytest.approx(100)
+
+
+def test_overlap_reserves_only_the_matching_1099_quantity():
+    """An overlap hop does not consume a different same-day sale's 1099 row.
+
+    Flag A is 10 AMD on Jun 1, disallowed $100, with an option STC of 10.
+    Flag B is 4 AMD the same day, disallowed $40, and has no option close of 4.
+    """
+    sale = date(2026, 6, 1)
+    flag_a = WashSaleFlag(
+        symbol="AMD",
+        sale_date=sale,
+        sale_quantity=10,
+        sale_loss=100,
+        repurchase_date=date(2026, 6, 10),
+        repurchase_quantity=10,
+        disallowed_loss=100,
+        adjusted_cost_basis=500,
+    )
+    flag_b = WashSaleFlag(
+        symbol="AMD",
+        sale_date=sale,
+        sale_quantity=4,
+        sale_loss=40,
+        repurchase_date=date(2026, 6, 8),
+        repurchase_quantity=4,
+        disallowed_loss=40,
+        adjusted_cost_basis=220,
+    )
+    chains = _build(
+        transactions=[
+            _txn("AMD", TransCode.BTO, date(2026, 1, 1), 10, 1, AssetType.OPTION),
+            _txn("AMD", TransCode.BUY, date(2026, 1, 15), 10, 50),
+            _txn("AMD", TransCode.BUY, date(2026, 1, 16), 4, 50),
+            _txn("AMD", TransCode.SELL, sale, 10, 40),
+            _txn("AMD", TransCode.SELL, sale, 4, 40),
+            _txn("AMD", TransCode.STC, sale, 10, 2, AssetType.OPTION),
+            _txn("AMD", TransCode.BUY, date(2026, 6, 10), 10, 40),
+            _txn("AMD", TransCode.BUY, date(2026, 6, 8), 4, 45),
+        ],
+        wash_sale_flags=[flag_a, flag_b],
+        realized_events=[
+            _event("AMD", sale, 10, 500, 400, date(2026, 1, 15)),
+            _event("AMD", sale, 4, 200, 160, date(2026, 1, 16)),
+        ],
+        supplemental=_supplemental(2026),
+        lot_match_report=_report(
+            _row(
+                symbol="AMD",
+                description="AMD",
+                quantity=10,
+                export_trade_date=sale,
+                proceeds_1099=400,
+                cost_basis_1099=500,
+                wash_sale_disallowed=100,
+            ),
+            _row(
+                symbol="AMD",
+                description="AMD",
+                quantity=4,
+                export_trade_date=sale,
+                proceeds_1099=160,
+                cost_basis_1099=200,
+                wash_sale_disallowed=40,
+            ),
+        ),
+    )
+    assert len(chains) == 2
+    overlap = next(chain for chain in chains if chain.hops[0].sale_quantity == pytest.approx(10))
+    matched = next(chain for chain in chains if chain.hops[0].sale_quantity == pytest.approx(4))
+    assert overlap.hops[0].asset_type == "stock"
+    assert overlap.hops[0].not_compared_reason == "overlap"
+    assert overlap.reconcile_status == "not_compared"
+    assert overlap.hops[0].form_1099_wash is None
+    assert "neither was compared" in overlap.plain_english
+    assert matched.hops[0].asset_type == "stock"
+    assert matched.reconcile_status == "matches"
+    assert matched.hops[0].form_1099_wash == pytest.approx(40)
+    assert matched.hops[0].not_compared_reason != "overlap"
+    assert all(chain.hops[0].asset_type != "option" for chain in chains)
+    assert all(OPTION_LINE not in chain.plain_english for chain in chains)
+    assert all(chain.reconcile_status != "on_1099_only" for chain in chains)
+    assert all(chain.reconcile_status != "not_on_1099" for chain in chains)
+    assert "not a wash" not in overlap.plain_english.lower()
+    assert flag_a.disallowed_loss == pytest.approx(100)
+    assert flag_b.disallowed_loss == pytest.approx(40)
+
+
+def test_overlap_reserve_skips_rows_it_does_not_compare():
+    """Only a same-day row of the overlapping quantity is consumed."""
+    from wash_sale_chain import _reserve_overlap_1099_rows
+
+    sale = date(2026, 6, 1)
+    rows = [
+        _row(symbol="AMD", quantity=10, export_trade_date=sale, wash_sale_disallowed=100),
+        _row(symbol="AMD", quantity=4, export_trade_date=sale, wash_sale_disallowed=40),
+        _row(symbol="IBM", quantity=10, export_trade_date=sale, wash_sale_disallowed=1),
+        _row(symbol="AMD", quantity=10, export_trade_date=date(2026, 6, 2), wash_sale_disallowed=1),
+        _row(symbol="AMD", quantity=0, export_trade_date=sale, wash_sale_disallowed=1),
+    ]
+    used: set[int] = set()
+    _reserve_overlap_1099_rows(
+        rows, used, symbol="AMD", sale_date=sale, quantity=10
+    )
+    assert used == {0}
+    _reserve_overlap_1099_rows(
+        rows, used, symbol="AMD", sale_date=sale, quantity=10
+    )
+    assert used == {0}
+
+
+def test_option_replacement_beside_a_stock_buy_keeps_one_option_hop():
+    """A stock buy on the repurchase date does not drop the option wash flag."""
+    sale = date(2026, 6, 1)
+    repurchase = date(2026, 6, 8)
+    flag = WashSaleFlag(
+        symbol="AMD",
+        sale_date=sale,
+        sale_quantity=10,
+        sale_loss=600,
+        repurchase_date=repurchase,
+        repurchase_quantity=10,
+        disallowed_loss=600,
+        adjusted_cost_basis=1000,
+    )
+    option_open = _txn("AMD", TransCode.BTO, date(2026, 1, 1), 10, 2, AssetType.OPTION)
+    option_close = _txn("AMD", TransCode.STC, sale, 10, 1, AssetType.OPTION)
+    chains = _build(
+        transactions=[
+            option_open,
+            _txn("AMD", TransCode.BUY, date(2026, 1, 15), 10, 50),
+            _txn("AMD", TransCode.SELL, sale, 10, 40),
+            option_close,
+            _txn("IBM", TransCode.BTO, repurchase, 10, 1, AssetType.OPTION),
+            _txn("AMD", TransCode.BTO, date(2026, 6, 9), 10, 1, AssetType.OPTION),
+            _txn("AMD", TransCode.BTO, repurchase, 1, 1, AssetType.OPTION),
+            _txn("AMD", TransCode.BUY, repurchase, 10, 45),
+            _txn("AMD", TransCode.BTO, repurchase, 10, 1.5, AssetType.OPTION),
+        ],
+        wash_sale_flags=[flag],
+        realized_events=[
+            _event("AMD", sale, 10, 500, 400, date(2026, 1, 15)),
+        ],
+    )
+    assert option_close.price < option_open.price
+    assert len(chains) == 1
+    hop = chains[0].hops[0]
+    assert hop.asset_type == "option"
+    assert hop.not_compared_reason == "option"
+    assert hop.reconcile_status == "not_compared"
+    assert chains[0].plain_english == OPTION_LINE
+    assert hop.plain_english == OPTION_LINE
+    assert hop.proceeds is None
+    assert hop.cost_basis is None
+    assert hop.form_1099_wash is None
+    assert hop.replacement_buys == []
+    assert hop.closed_lots == []
+    assert hop.engine_disallowed_loss is None
+    assert hop.disallowed_loss == pytest.approx(0)
+    assert "$" not in hop.plain_english
+    assert "not a wash" not in hop.plain_english.lower()
+    assert "neither was compared" not in hop.plain_english
+    assert "You sold" not in hop.plain_english
+    assert flag.disallowed_loss == pytest.approx(600)
+    assert flag.sale_loss == pytest.approx(600)
+
+
+def test_split_buy_to_close_is_one_option_hop_without_dollars():
+    """Two option lots closed by a buy-to-close are not a stock dollar story."""
+    sale = date(2026, 6, 1)
+    flag = WashSaleFlag(
+        symbol="AMD",
+        sale_date=sale,
+        sale_quantity=2,
+        sale_loss=200,
+        repurchase_date=date(2026, 6, 8),
+        repurchase_quantity=2,
+        disallowed_loss=200,
+        adjusted_cost_basis=400,
+    )
+    lot_a = _event("AMD", sale, 1, 50, 150, date(2026, 1, 1))
+    lot_a.asset_type = AssetType.OPTION
+    lot_a.pnl = round(50 - 150, 2)
+    lot_b = _event("AMD", sale, 1, 50, 150, date(2026, 2, 1))
+    lot_b.asset_type = AssetType.OPTION
+    lot_b.pnl = round(50 - 150, 2)
+    other_stock = _event("AMD", sale, 5, 200, 150, date(2026, 1, 2))
+    chains = _build(
+        transactions=[
+            _txn("AMD", TransCode.STO, date(2026, 1, 1), 1, 0.50, AssetType.OPTION),
+            _txn("AMD", TransCode.STO, date(2026, 2, 1), 1, 0.50, AssetType.OPTION),
+            _txn("AMD", TransCode.BTC, sale, 0, 1.50, AssetType.OPTION),
+            _txn("AMD", TransCode.BTC, sale, 1, 1.50, AssetType.OPTION),
+            _txn("AMD", TransCode.BTC, sale, 1, 1.50, AssetType.OPTION),
+            _txn("AMD", TransCode.STO, date(2026, 6, 8), 2, 1.20, AssetType.OPTION),
+        ],
+        wash_sale_flags=[flag],
+        realized_events=[lot_a, lot_b, other_stock],
+    )
+    assert len(chains) == 1
+    hop = chains[0].hops[0]
+    assert hop.asset_type == "option"
+    assert hop.not_compared_reason == "option"
+    assert hop.reconcile_status == "not_compared"
+    assert hop.plain_english == OPTION_LINE
+    assert chains[0].plain_english == OPTION_LINE
+    assert hop.proceeds is None
+    assert hop.cost_basis is None
+    assert hop.form_1099_wash is None
+    assert hop.replacement_buys == []
+    assert hop.closed_lots == []
+    assert hop.engine_disallowed_loss is None
+    assert hop.disallowed_loss == pytest.approx(0)
+    assert "$" not in hop.plain_english
+    assert "not a wash" not in hop.plain_english.lower()
+    assert "You sold" not in hop.plain_english
+    assert "neither was compared" not in hop.plain_english
+    assert flag.disallowed_loss == pytest.approx(200)
+    assert flag.sale_loss == pytest.approx(200)
+    assert lot_a.pnl == pytest.approx(-100)
+    assert lot_b.pnl == pytest.approx(-100)
+
+    exact = _build(
+        transactions=[
+            _txn("AMD", TransCode.BTC, sale, 2, 1.50, AssetType.OPTION),
+        ],
+        wash_sale_flags=[flag],
+    )
+    assert len(exact) == 1
+    assert exact[0].hops[0].asset_type == "option"
+    assert exact[0].hops[0].not_compared_reason == "option"
+    assert exact[0].plain_english == OPTION_LINE
+    assert exact[0].hops[0].proceeds is None
+    assert exact[0].hops[0].cost_basis is None
+    assert "$" not in exact[0].plain_english
 
 
 def test_each_overlapping_stock_flag_keeps_a_hop():
