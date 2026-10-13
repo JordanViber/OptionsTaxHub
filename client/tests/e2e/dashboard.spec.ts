@@ -61,7 +61,10 @@ test.describe("Dashboard UI Fixes", () => {
   test("saving tax profile navigates back to dashboard", async ({ page }) => {
     // Navigate to settings
     await page.getByTestId("tax-settings-link").click();
-    await expect(page.getByRole("heading", { name: "Tax settings" })).toBeVisible({
+    await expect(page).toHaveURL(/\/settings/, { timeout: 10000 });
+    await expect(
+      page.getByRole("heading", { name: "Tax settings", exact: true }),
+    ).toBeVisible({
       timeout: 5000,
     });
 
@@ -545,20 +548,20 @@ test.describe("Dashboard User Menu & Navigation", () => {
     await page.getByRole("button", { name: "Account" }).click();
     await page.getByRole("menuitem", { name: "Tax settings" }).click();
 
-    await expect(page.getByRole("heading", { name: "Tax settings" })).toBeVisible({
-      timeout: 5000,
-    });
-    expect(page.url()).toMatch(/\/settings/);
+    await expect(page).toHaveURL(/\/settings/, { timeout: 10000 });
+    await expect(
+      page.getByRole("heading", { name: "Tax settings", exact: true }),
+    ).toBeVisible();
   });
 
   test("tax profile inline link navigates to settings", async ({ page }) => {
     // Click the "tax profile" button-link in the upload card description
     await page.getByTestId("tax-settings-link").click();
 
-    await expect(page.getByRole("heading", { name: "Tax settings" })).toBeVisible({
-      timeout: 5000,
-    });
-    expect(page.url()).toMatch(/\/settings/);
+    await expect(page).toHaveURL(/\/settings/, { timeout: 10000 });
+    await expect(
+      page.getByRole("heading", { name: "Tax settings", exact: true }),
+    ).toBeVisible();
   });
 });
 

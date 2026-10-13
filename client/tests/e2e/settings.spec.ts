@@ -27,7 +27,7 @@ test.describe("Settings Page", () => {
     await injectMockSession(page);
     await page.goto("/settings");
 
-    await expect(page.getByRole("heading", { name: "Tax settings" })).toBeVisible({
+    await expect(page.getByRole("heading", { name: "Tax settings", exact: true })).toBeVisible({
       timeout: 10000,
     });
     await expect(page.getByText("Your Tax Profile")).toBeVisible();
@@ -45,7 +45,7 @@ test.describe("Settings Page", () => {
     await injectMockSession(page);
     await page.goto("/settings");
 
-    await expect(page.getByRole("heading", { name: "Tax settings" })).toBeVisible({
+    await expect(page.getByRole("heading", { name: "Tax settings", exact: true })).toBeVisible({
       timeout: 10000,
     });
 
@@ -68,7 +68,7 @@ test.describe("Settings Page", () => {
     );
 
     await page.goto("/settings");
-    await expect(page.getByRole("heading", { name: "Tax settings" })).toBeVisible({
+    await expect(page.getByRole("heading", { name: "Tax settings", exact: true })).toBeVisible({
       timeout: 10000,
     });
 
@@ -89,7 +89,7 @@ test.describe("Settings Page", () => {
     await injectMockSession(page);
     await page.goto("/settings");
 
-    await expect(page.getByRole("heading", { name: "Tax settings" })).toBeVisible({
+    await expect(page.getByRole("heading", { name: "Tax settings", exact: true })).toBeVisible({
       timeout: 10000,
     });
 
@@ -104,7 +104,7 @@ test.describe("Settings Page", () => {
     await injectMockSession(page);
     await page.goto("/settings");
 
-    await expect(page.getByRole("heading", { name: "Tax settings" })).toBeVisible({
+    await expect(page.getByRole("heading", { name: "Tax settings", exact: true })).toBeVisible({
       timeout: 10000,
     });
 
@@ -126,7 +126,7 @@ test.describe("Settings Page", () => {
     await injectMockSession(page);
     await page.goto("/settings");
 
-    await expect(page.getByRole("heading", { name: "Tax settings" })).toBeVisible({
+    await expect(page.getByRole("heading", { name: "Tax settings", exact: true })).toBeVisible({
       timeout: 10000,
     });
 
