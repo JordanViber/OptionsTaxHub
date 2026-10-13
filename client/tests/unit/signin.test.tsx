@@ -5,6 +5,7 @@ import { useAuth } from "../../app/context/auth";
 
 jest.mock("next/navigation", () => ({
   useRouter: jest.fn(),
+  usePathname: () => "/auth/signin",
 }));
 
 jest.mock("../../app/context/auth", () => ({
@@ -140,6 +141,34 @@ describe("Sign In Page", () => {
 
     await waitFor(() => {
       expect(mockPush).toHaveBeenCalledWith("/options");
+    });
+    window.history.pushState({}, "", "/");
+  });
+
+  it("carries next into the sign-up link", async () => {
+    window.history.pushState({}, "", "/auth/signin?next=/options");
+    render(<SigninPage />);
+    await waitFor(() => {
+      expect(screen.getByRole("link", { name: /Sign up/i })).toHaveAttribute(
+        "href",
+        "/auth/signup?next=/options",
+      );
+    });
+    window.history.pushState({}, "", "/");
+  });
+
+  it("returns to the landing page when next=/", async () => {
+    window.history.pushState({}, "", "/auth/signin?next=/");
+    const { container } = render(<SigninPage />);
+    fireEvent.change(screen.getByLabelText(/Email/i), {
+      target: { value: "test@example.com" },
+    });
+    fireEvent.change(getInput(container, 'input[type="password"]'), {
+      target: { value: "password123" },
+    });
+    fireEvent.submit(getForm(container));
+    await waitFor(() => {
+      expect(mockPush).toHaveBeenCalledWith("/");
     });
     window.history.pushState({}, "", "/");
   });

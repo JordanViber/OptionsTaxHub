@@ -239,10 +239,10 @@ describe("Home page", () => {
       "href",
       "/options",
     );
-    const signInLinks = screen.getAllByRole("link", { name: "Sign In" });
+    const signInLinks = screen.getAllByRole("link", { name: "Sign in" });
     expect(signInLinks.length).toBeGreaterThan(0);
     for (const link of signInLinks) {
-      expect(link).toHaveAttribute("href", "/auth/signin");
+      expect(link).toHaveAttribute("href", "/auth/signin?next=/dashboard");
     }
   });
 
@@ -552,7 +552,8 @@ describe("Home page", () => {
 
     renderWithClient(<Home />);
 
-    fireEvent.click(screen.getByText("Settings"));
+    fireEvent.click(screen.getByText("Test User"));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Tax settings" }));
 
     expect(mockPush).toHaveBeenCalledWith("/settings");
   });

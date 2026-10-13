@@ -20,6 +20,8 @@ import {
   isEmailConfirmed,
   resendSignupConfirmation,
 } from "@/lib/supabase";
+import { TAX_PATH, safeNextPath, signInHref } from "@/lib/safeNextPath";
+import { useQueryNext } from "@/lib/useQueryNext";
 
 export const dynamic = "force-dynamic";
 
@@ -52,6 +54,10 @@ export default function ConfirmEmailPage() {
   const [error, setError] = useState("");
   const [info, setInfo] = useState("");
   const [resendLoading, setResendLoading] = useState(false);
+  const nextRaw = useQueryNext();
+  const returnPath = nextRaw ? safeNextPath(nextRaw) : TAX_PATH;
+  const continueLabel =
+    returnPath === TAX_PATH ? "Continue to dashboard" : "Continue";
 
   useEffect(() => {
     let cancelled = false;
@@ -140,14 +146,14 @@ export default function ConfirmEmailPage() {
               <Button
                 fullWidth
                 variant="contained"
-                onClick={() => router.push("/dashboard")}
+                onClick={() => router.push(returnPath)}
                 sx={{ py: 1.5 }}
               >
-                Continue to dashboard
+                {continueLabel}
               </Button>
               <Box sx={{ textAlign: "center" }}>
                 <Typography variant="body2">
-                  <MuiLink href="/auth/signin" sx={{ cursor: "pointer" }}>
+                  <MuiLink href={signInHref(returnPath)} sx={{ cursor: "pointer" }}>
                     Sign in
                   </MuiLink>
                 </Typography>
@@ -164,6 +170,7 @@ export default function ConfirmEmailPage() {
           resendLoading={resendLoading}
           info={info}
           error={error}
+          signInHref={signInHref(returnPath)}
         />
       ) : null}
 
@@ -191,7 +198,7 @@ export default function ConfirmEmailPage() {
               ) : null}
               <Box sx={{ textAlign: "center" }}>
                 <Typography variant="body2">
-                  <MuiLink href="/auth/signin" sx={{ cursor: "pointer" }}>
+                  <MuiLink href={signInHref(returnPath)} sx={{ cursor: "pointer" }}>
                     Back to sign in
                   </MuiLink>
                 </Typography>

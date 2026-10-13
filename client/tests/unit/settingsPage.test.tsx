@@ -9,6 +9,7 @@ const mockUseSaveTaxProfile = jest.fn();
 
 jest.mock("next/navigation", () => ({
   useRouter: () => ({ push: mockPush }),
+  usePathname: () => "/settings",
 }));
 
 jest.mock("../../app/context/auth", () => ({
@@ -70,7 +71,7 @@ describe("SettingsPage", () => {
 
       renderWithClient(<SettingsPage />);
 
-      expect(mockPush).toHaveBeenCalledWith("/auth/signin");
+      expect(mockPush).toHaveBeenCalledWith("/auth/signin?next=/settings");
     });
   });
 
@@ -93,7 +94,9 @@ describe("SettingsPage", () => {
         userId: "user-1",
       });
 
-      expect(screen.getByText("Tax Profile Settings")).toBeInTheDocument();
+      expect(
+        screen.getByRole("heading", { name: "Tax settings" }),
+      ).toBeInTheDocument();
       expect(screen.getByText("Your Tax Profile")).toBeInTheDocument();
       expect(screen.getByLabelText("Filing Status")).toBeInTheDocument();
       expect(
@@ -137,7 +140,7 @@ describe("SettingsPage", () => {
       expect(screen.getByTestId("tax-disclaimer")).toBeInTheDocument();
     });
 
-    it("renders dashboard back button", () => {
+    it("renders Tax and Options in the shared header", () => {
       mockUseAuth.mockReturnValue({
         user: { id: "user-1", email: "test@example.com" },
         loading: false,
@@ -150,9 +153,14 @@ describe("SettingsPage", () => {
 
       renderWithClient(<SettingsPage />);
 
-      expect(
-        screen.getByRole("button", { name: /Dashboard/ }),
-      ).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "Tax" })).toHaveAttribute(
+        "href",
+        "/dashboard",
+      );
+      expect(screen.getByRole("link", { name: "Options" })).toHaveAttribute(
+        "href",
+        "/options",
+      );
     });
 
     it("shows profile loading spinner while fetching profile", () => {
@@ -374,7 +382,7 @@ describe("SettingsPage", () => {
   });
 
   describe("Navigation", () => {
-    it("navigates to dashboard when back button is clicked", async () => {
+    it("offers Tax as the way back to the desk", () => {
       mockUseAuth.mockReturnValue({
         user: { id: "user-1", email: "test@example.com" },
         loading: false,
@@ -387,10 +395,10 @@ describe("SettingsPage", () => {
 
       renderWithClient(<SettingsPage />);
 
-      const backButton = screen.getByRole("button", { name: /Dashboard/ });
-      await userEvent.click(backButton);
-
-      expect(mockPush).toHaveBeenCalledWith("/dashboard");
+      expect(screen.getByRole("link", { name: "Tax" })).toHaveAttribute(
+        "href",
+        "/dashboard",
+      );
     });
 
     it("includes all form fields with proper labels", () => {

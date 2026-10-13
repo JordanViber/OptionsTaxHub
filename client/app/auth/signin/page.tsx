@@ -26,7 +26,8 @@ import {
   resendSignupConfirmation,
 } from "@/lib/supabase";
 import AuthPageShell from "@/app/components/AuthPageShell";
-import { OPTIONS_PATH, safeNextPath } from "@/lib/safeNextPath";
+import { OPTIONS_PATH, safeNextPath, signUpHref } from "@/lib/safeNextPath";
+import { useQueryNext } from "@/lib/useQueryNext";
 
 export const dynamic = "force-dynamic";
 
@@ -43,6 +44,8 @@ export default function SignInPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [resetMode, setResetMode] = useState(false);
   const [needsConfirmation, setNeedsConfirmation] = useState(false);
+  const nextRaw = useQueryNext();
+  const signUpLink = nextRaw ? signUpHref(nextRaw) : "/auth/signup";
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -266,7 +269,7 @@ export default function SignInPage() {
             <Box sx={{ textAlign: "center" }}>
               <Typography variant="body2">
                 Don&apos;t have an account?{" "}
-                <MuiLink href="/auth/signup" sx={{ cursor: "pointer" }}>
+                <MuiLink href={signUpLink} sx={{ cursor: "pointer" }}>
                   Sign up
                 </MuiLink>
               </Typography>

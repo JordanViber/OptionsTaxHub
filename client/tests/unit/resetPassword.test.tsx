@@ -4,6 +4,11 @@ import { useRouter } from "next/navigation";
 
 jest.mock("next/navigation", () => ({
   useRouter: jest.fn(),
+  usePathname: () => "/auth/reset-password",
+}));
+
+jest.mock("../../app/context/auth", () => ({
+  useAuth: () => ({ user: null, loading: false, signOut: jest.fn() }),
 }));
 
 const mockReplace = jest.fn();

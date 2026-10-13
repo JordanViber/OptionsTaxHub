@@ -4,6 +4,11 @@ import { useRouter } from "next/navigation";
 
 jest.mock("next/navigation", () => ({
   useRouter: jest.fn(),
+  usePathname: () => "/auth/confirm-email",
+}));
+
+jest.mock("../../app/context/auth", () => ({
+  useAuth: () => ({ user: null, loading: false, signOut: jest.fn() }),
 }));
 
 const mockPush = jest.fn();
@@ -51,6 +56,27 @@ describe("Confirm Email Page", () => {
       screen.getByRole("button", { name: /Continue to dashboard/i }),
     );
     expect(mockPush).toHaveBeenCalledWith("/dashboard");
+  });
+
+  it("continues to the page that started sign-up", async () => {
+    window.history.pushState({}, "", "/auth/confirm-email?next=/options");
+    mockConsume.mockResolvedValue({
+      session: {
+        user: {
+          email: "mira@example.com",
+          email_confirmed_at: "2026-01-01T00:00:00Z",
+        },
+      },
+      consumedLink: true,
+    });
+
+    render(<ConfirmEmailPage />);
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Continue" })).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect(mockPush).toHaveBeenCalledWith("/options");
+    window.history.pushState({}, "", "/");
   });
 
   it("shows check-email when visiting without a confirmation link", async () => {

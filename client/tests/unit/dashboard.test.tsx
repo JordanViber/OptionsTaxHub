@@ -1043,7 +1043,7 @@ describe("DashboardPage", () => {
       "href",
       "/options",
     );
-    expect(screen.queryByTestId("tax-upload-action")).not.toBeInTheDocument();
+    expect(screen.getByTestId("header-upload")).toBeInTheDocument();
     expect(screen.getByText(/Export from Robinhood/i)).toBeInTheDocument();
     expect(
       screen.getByRole("link", { name: /Download sample CSV/i }),
@@ -1372,9 +1372,13 @@ describe("DashboardPage", () => {
     try {
       render(<DashboardPage />, { wrapper: createWrapper() });
       fireEvent.click(screen.getAllByRole("button", { name: "Saved runs" })[0]);
-      expect(mockPush).toHaveBeenCalledWith("/auth/signin?reason=runs");
-      fireEvent.click(screen.getAllByRole("button", { name: "Settings" })[0]);
-      expect(mockPush).toHaveBeenCalledWith("/auth/signin?reason=profile");
+      expect(mockPush).toHaveBeenCalledWith(
+        "/auth/signin?next=/dashboard&reason=runs",
+      );
+      fireEvent.click(screen.getByTestId("tax-settings-link"));
+      expect(mockPush).toHaveBeenCalledWith(
+        "/auth/signin?next=/dashboard&reason=profile",
+      );
     } finally {
       mockAuthState.user = previousUser;
     }
@@ -1712,7 +1716,7 @@ describe("DashboardPage", () => {
       ).toBeTruthy();
     }
     expect(screen.queryByTestId("entry-analysis-panel")).not.toBeInTheDocument();
-    expect(screen.getByTestId("tax-upload-action")).toBeInTheDocument();
+    expect(screen.getByTestId("header-upload")).toBeInTheDocument();
     expect(screen.getByText("Upload CSV or 1099")).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /Harvest queue/i })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /Lot ledger/i })).toBeInTheDocument();

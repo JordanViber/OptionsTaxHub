@@ -5,6 +5,7 @@ import { useAuth } from "../../app/context/auth";
 
 jest.mock("next/navigation", () => ({
   useRouter: jest.fn(),
+  usePathname: () => "/auth/signup",
 }));
 
 jest.mock("next/link", () => {
