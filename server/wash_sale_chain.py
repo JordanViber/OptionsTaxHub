@@ -486,16 +486,15 @@ class _SaleGroup:
     """1099 rows that are one sale: same symbol and sell date.
 
     Rows are ordered by per-share proceeds. The first row's per-share
-    proceeds is the anchor price. A later row stays in that cluster when
-    its total proceeds are within the proceeds slack of anchor price times
-    its quantity. Slack is two cents plus half a cent per share. A
-    one-share fill at $10.00, $10.01, and $10.02 is one cluster: $10.02 is
-    two cents from $10.00, inside the 2.5-cent slack. A 1-share $10.00 row
-    and a 100-share $1000.50 row differ by fifty cents, inside the 52-cent
-    slack, and stay one sale. Ten shares a penny apart differ by ten cents,
-    outside the 7-cent slack, and stay apart. $33.33 and $66.67 (one share
-    and two shares at that price) are one sale. A zero-quantity row only
-    joins another zero-quantity row.
+    proceeds is the anchor price. A later row stays in that cluster only
+    when its total proceeds are within CENTS of the anchor price times its
+    quantity: the cent split of one fill. $33.33 and $66.67 (one share and
+    two shares) differ by one cent and stay one sale. One-share fills at
+    $10.00, $10.01, and $10.02 stay one sale: $10.02 is two cents from
+    $10.00, the CENTS bound. Ten shares at $100.00 and $100.05 differ by
+    five cents and stay apart. A 1-share $10.00 row and a 100-share
+    $1000.50 row differ by fifty cents and stay apart. A zero-quantity row
+    only joins another zero-quantity row.
     """
 
     symbol: str
@@ -518,10 +517,10 @@ def _group_rows(
     """Group unused 1099 rows that still carry a wash amount.
 
     Cluster by symbol and sale date. Sort by per-share proceeds, then start
-    a new cluster unless the row's total proceeds are within the proceeds
-    slack of the anchor price times its quantity. The anchor is the first
-    row's per-share proceeds. Slack is two cents plus half a cent per share.
-    A zero-quantity row only joins another zero-quantity row.
+    a new cluster unless the row's total proceeds are within CENTS of the
+    anchor price times its quantity. The anchor is the first row's per-share
+    proceeds. That is the cent split of one fill, not a wider per-share
+    slack. A zero-quantity row only joins another zero-quantity row.
     Equal prices keep their original index so the hop id stays on the first
     of those rows.
     """
@@ -586,23 +585,28 @@ def _target_unit_proceeds(
     return None
 
 
-def _proceeds_slack(quantity: float) -> float:
-    """Dollar window for one row: two cents plus half a cent per share."""
-    return CENTS + 0.005 * abs(float(quantity))
+def _within_cents(left: float, right: float) -> bool:
+    """True when two dollar amounts are at most CENTS apart.
+
+    Compare in integer cents so a value that is exactly two cents away
+    still matches when binary floats land just past 0.02.
+    """
+    return abs(round(float(left) * 100) - round(float(right) * 100)) <= round(CENTS * 100)
 
 
 def _row_total_matches_price(row: LotMatchRow, price: float) -> bool:
-    """True when total proceeds are within the proceeds slack of price times quantity.
+    """True when total proceeds are within CENTS of price times quantity.
 
-    Flag matching and leftover clustering both use this test. Fractional
-    shares use the same dollar slack as whole shares. A zero-quantity row
+    A flag with a sale price uses this cent match. Leftover rows use it
+    too, and only so they can be the cent split of that one fill. The
+    match does not widen by half a cent per share. A zero-quantity row
     has no total to compare and does not match.
     """
     quantity = float(row.quantity or 0.0)
     if abs(quantity) <= QTY_EPS:
         return False
     proceeds = float(row.proceeds_1099 or 0.0)
-    return abs(proceeds - float(price) * quantity) <= _proceeds_slack(quantity)
+    return _within_cents(proceeds, float(price) * quantity)
 
 
 def _row_unit_proceeds(row: LotMatchRow) -> float | None:
@@ -625,9 +629,9 @@ def _match_candidates(
     The sale date is the export trade date, or the 1099 sold date when the
     export date is missing. A csv_only row is export-only and is not a 1099
     match. A row belongs when abs(proceeds - target price * quantity) is
-    within the proceeds slack. With no target price, any row that has a
-    quantity is a candidate. A missing or zero quantity is not a candidate
-    and is not proof the sale is absent. That row blocks not_on_1099.
+    within CENTS. With no target price, any row that has a quantity is a
+    candidate. A missing or zero quantity is not a candidate and is not
+    proof the sale is absent. That row blocks not_on_1099.
     """
     candidates: list[tuple[int, LotMatchRow]] = []
     for index, row in enumerate(rows):
@@ -905,9 +909,9 @@ def _quiet_row_indices(
 ) -> set[int]:
     """Indexes one price would hold. Does not change ``used``.
 
-    Candidates sit within the proceeds slack of that unit price. An exact
-    quantity subset is held. More than 12 candidates, or no exact subset,
-    holds every candidate.
+    Candidates sit within CENTS of that unit price. An exact quantity
+    subset is held. More than 12 candidates, or no exact subset, holds
+    every candidate.
     """
     candidates = _match_candidates(
         rows,
@@ -948,10 +952,10 @@ def _reserve_same_day_1099_rows(
 ) -> None:
     """Hold back same-day 1099 rows so a quiet flag has no sibling claim.
 
-    Candidates sit within the proceeds slack of the sale's unit price.
-    An exact quantity subset is reserved. More than 12 candidates, or no
-    exact subset, reserves every candidate. Those rows are not compared
-    and are not explained as a wash the export missed.
+    Candidates sit within CENTS of the sale's unit price. An exact
+    quantity subset is reserved. More than 12 candidates, or no exact
+    subset, reserves every candidate. Those rows are not compared and
+    are not explained as a wash the export missed.
     """
     used.update(
         _quiet_row_indices(
@@ -983,8 +987,8 @@ def _reserve_quiet_1099_rows(
     """
     held: set[int] = set()
     # Distinct prices only. Two fills at one price are the same search.
-    # A row inside the slack of two different prices is ambiguous, so it
-    # is held even when it sits in no quantity subset.
+    # A row inside CENTS of two different prices is ambiguous, so it is
+    # held even when it sits in no quantity subset.
     seen_prices: list[float | None] = []
     ambiguous: dict[int, int] = {}
     for target in unit_targets:
@@ -1114,6 +1118,82 @@ def _bare_not_compared_hop(
     )
 
 
+def _buy_keeping(buy: Transaction, quantity: float) -> Transaction:
+    """A display copy with fewer shares. The caller's transaction stays put."""
+    return buy.model_copy(update={"quantity": quantity})
+
+
+def _buys_not_closed_by(
+    raw_buys: list[Transaction],
+    closed: list[_ClosedLot],
+    sale_date: date,
+) -> list[Transaction] | None:
+    """Window buys that are not the shares this sale closed.
+
+    Match a closed lot by its acquisition date and quantity. None means
+    those shares cannot be picked out without guessing, and the caller
+    shows no replacement buys and no moved-basis sentence.
+    """
+    if not closed:
+        return list(raw_buys)
+    needed: dict[date, float] = {}
+    for lot in closed:
+        when = lot.purchase_date
+        if when is None:
+            # A pre-sale buy might be the undated lot. Do not guess which.
+            if any(buy.activity_date < sale_date for buy in raw_buys):
+                return None
+            return list(raw_buys)
+        needed[when] = needed.get(when, 0.0) + float(lot.quantity)
+    drop: set[int] = set()
+    keep_qty: dict[int, float] = {}
+    for when, qty in needed.items():
+        day = [
+            (index, buy)
+            for index, buy in enumerate(raw_buys)
+            if buy.activity_date == when and index not in drop
+        ]
+        if not day:
+            continue
+        subsets = _qty_subsets(day, qty, lambda item: float(item[1].quantity))
+        if len(subsets) > 1:
+            return None
+        if len(subsets) == 1:
+            for index, _buy in subsets[0]:
+                drop.add(index)
+            continue
+        if len(day) != 1:
+            return None
+        index, buy = day[0]
+        # One buy on that day, and it is not an exact quantity match.
+        # A smaller buy cannot be the closed lot. A larger one keeps the
+        # unconsumed shares, which are the only candidate left that day.
+        if float(buy.quantity) <= qty + QTY_EPS:
+            return None
+        keep_qty[index] = float(buy.quantity) - qty
+    kept: list[Transaction] = []
+    for index, buy in enumerate(raw_buys):
+        if index in drop:
+            continue
+        if index in keep_qty:
+            kept.append(_buy_keeping(buy, keep_qty[index]))
+            continue
+        kept.append(buy)
+    return kept
+
+
+def _earliest_repurchase_is_closed_lot(
+    flag: WashSaleFlag,
+    closed: list[_ClosedLot],
+) -> bool:
+    """True when the flag's repurchase date is a lot this sale closed.
+
+    The engine's adjusted basis is that lot's cost plus the disallowance.
+    It is not the replacement buy's basis.
+    """
+    return any(lot.purchase_date == flag.repurchase_date for lot in closed)
+
+
 def _hop_from_flag(
     flag: WashSaleFlag,
     *,
@@ -1178,16 +1258,29 @@ def _hop_from_flag(
         else []
     )
     raw_buys = _buys_for_asset(raw_buys, asset)
-    buys = _allocate_buys(
-        raw_buys,
-        repurchase_quantity=float(flag.repurchase_quantity),
-        disallowed=float(flag.disallowed_loss),
-    )
-    _apply_display_scale(buys, raw_buys)
+    # The lot this sale closed is not a replacement, even when it sits in
+    # the 30-day window. If those shares cannot be picked out, show none.
+    replacement = _buys_not_closed_by(raw_buys, closed, flag.sale_date)
+    if replacement is None:
+        buys = []
+    else:
+        buys = _allocate_buys(
+            replacement,
+            repurchase_quantity=float(flag.repurchase_quantity),
+            disallowed=float(flag.disallowed_loss),
+        )
+        _apply_display_scale(buys, replacement)
     loss = _cents(float(flag.sale_loss))
     disallowed = _cents(float(flag.disallowed_loss))
     status: WashReconcileStatus = "not_compared"
     not_compared_reason = "no_1099"
+    # The engine prices adjusted basis off its earliest repurchase. When
+    # that date is the closed lot, the number is not this replacement's basis.
+    engine_basis = (
+        None
+        if _earliest_repurchase_is_closed_lot(flag, closed)
+        else _cents(float(flag.adjusted_cost_basis))
+    )
     return _HopDraft(
         hop_id=_hop_id(
             symbol,
@@ -1209,7 +1302,7 @@ def _hop_from_flag(
         buys=buys,
         disallowed_loss=disallowed,
         engine_disallowed_loss=disallowed,
-        engine_adjusted_cost_basis=_cents(float(flag.adjusted_cost_basis)),
+        engine_adjusted_cost_basis=engine_basis,
         original_purchase_date=acquired,
         original_holding_days=held_days,
         carryover_days=held_days,
@@ -1878,15 +1971,22 @@ def _refuse_same_day_1099_ties(
     used_rows: set[int],
     unassigned: set[int],
 ) -> None:
-    """Two same-day sales that could claim one 1099 row are both not compared.
+    """Two same-day sales that share a quantity-valid 1099 row are not compared.
 
-    Rows that sit in a quantity subset stay with those sales. A candidate
-    that fits no subset is its own not-compared entry. No sale is chosen.
+    The overlap is rows that sit in a quantity subset, not every row whose
+    proceeds are merely close. A wrong-size candidate does not tie the
+    sales. Past 12 candidates the subset is not searched, so every
+    candidate stays in the tie set instead of guessing the sales are apart.
+    A candidate that fits no subset of a tied sale is its own not-compared
+    entry. No sale is chosen.
     """
     comparable = [hop for hop in hops if hop.compare_1099]
     candidates_for: dict[int, list[int]] = {}
+    # Indexes that can actually form the sale. Over-cap hops keep every
+    # candidate: ruling them out would be a guess.
+    subset_for: dict[int, set[int]] = {}
     for hop in comparable:
-        candidates_for[id(hop)] = [
+        candidates = [
             index
             for index, _row in _match_candidates(
                 rows,
@@ -1896,6 +1996,24 @@ def _refuse_same_day_1099_ties(
                 target=hop.row_target,
             )
         ]
+        candidates_for[id(hop)] = candidates
+        chosen = [
+            (index, rows[index])
+            for index in candidates
+            if 0 <= index < len(rows)
+        ]
+        if len(chosen) > _MAX_MATCH_CANDIDATES:
+            subset_for[id(hop)] = set(candidates)
+            continue
+        found: set[int] = set()
+        for subset in _qty_subsets(
+            chosen,
+            hop.sale_quantity,
+            lambda item: float(item[1].quantity or 0.0),
+        ):
+            for index, _row in subset:
+                found.add(index)
+        subset_for[id(hop)] = found
     by_day: dict[tuple[str, date], list[_HopDraft]] = {}
     for hop in comparable:
         by_day.setdefault((hop.symbol, hop.sale_date), []).append(hop)
@@ -1915,9 +2033,9 @@ def _refuse_same_day_1099_ties(
                 parent[root_right] = root_left
 
         for left in range(len(day_hops)):
-            left_rows = set(candidates_for[id(day_hops[left])])
+            left_rows = subset_for[id(day_hops[left])]
             for right in range(left + 1, len(day_hops)):
-                right_rows = set(candidates_for[id(day_hops[right])])
+                right_rows = subset_for[id(day_hops[right])]
                 if left_rows & right_rows:
                     union(left, right)
         components: dict[int, list[_HopDraft]] = {}

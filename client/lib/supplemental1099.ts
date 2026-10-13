@@ -89,7 +89,7 @@ export function redactUnpaidLotMatch(analysis: PortfolioAnalysis): PortfolioAnal
   }
   const report = analysis.lot_match_report;
   const supplemental = analysis.supplemental_1099;
-  return {
+  const redacted: PortfolioAnalysis = {
     ...analysis,
     lot_match_report: report
       ? { ...report, matched: [], gap: [], unmatched: [] }
@@ -98,6 +98,8 @@ export function redactUnpaidLotMatch(analysis: PortfolioAnalysis): PortfolioAnal
       ? { ...supplemental, lots: [] }
       : supplemental,
   };
+  delete redacted.wash_sale_chains;
+  return redacted;
 }
 
 export function formatUsd(value: number): string {
