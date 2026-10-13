@@ -93,7 +93,7 @@ export default function WashSaleWarning({
             />
           ))}
         </Box>
-        <Typography variant="caption" sx={{ color: "text.primary" }}>
+        <Typography component="div" variant="caption" sx={{ color: "text.primary" }}>
           Pay $49 for the PDF's sale and repurchase dates. The symbols above
           stay on this page.{" "}
           <GlossaryHint label="61-day window" explanation={WASH_WINDOW_EXPLANATION} />
@@ -115,6 +115,7 @@ export default function WashSaleWarning({
         ticker{tickers.length === 1 ? "" : "s"})
       </Typography>
       <Typography
+        component="div"
         variant="body2"
         sx={{ mb: 1, display: "block" }}
       >

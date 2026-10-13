@@ -370,7 +370,7 @@ function HopDetails({ hop }: Readonly<{ hop: WashSaleHop }>) {
         )}
         {hop.engine_adjusted_cost_basis != null && (
           <Fact
-            label="Engine adjusted basis (source of truth)"
+            label="Adjusted basis"
             value={formatUsd(hop.engine_adjusted_cost_basis)}
           />
         )}

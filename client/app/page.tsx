@@ -15,6 +15,7 @@ import TaxDisclaimer from "./components/TaxDisclaimer";
 import Wordmark from "./components/Wordmark";
 import DeskPreview from "./components/DeskPreview";
 import {
+  PACKET_SCOPE_COPY,
   SCHEDULE_D_RECONCILE_COPY,
   WASH_ACCOUNT_SCOPE_COPY,
   WASH_WINDOW_EXPLANATION,
@@ -169,10 +170,7 @@ export default function LandingPage() {
               }}
             >
               {SCHEDULE_D_RECONCILE_COPY} Broker 1099 uses settlement date.
-              Your export uses trade date. Totals stay free. The $49 packet is
-              the downloadable year-close PDF: lot-level 1099 reconciliation,
-              wash chains, and harvest notes, plus updates for that tax year.
-              Lot-matched 1099-B is in that PDF — not a filed Form 8949.
+              Your export uses trade date. Totals stay free. {PACKET_SCOPE_COPY}
             </Typography>
             <Stack
               direction={{ xs: "column", sm: "row" }}
@@ -317,7 +315,7 @@ export default function LandingPage() {
             {
               n: "03",
               t: "Take the packet",
-              d: "The $49 PDF includes lot-level 1099 reconciliation, wash chains, and harvest notes, plus updates for that tax year. Not a filed Form 8949.",
+              d: `${PACKET_SCOPE_COPY} Not a filed Form 8949.`,
             },
           ].map((step) => (
             <Box

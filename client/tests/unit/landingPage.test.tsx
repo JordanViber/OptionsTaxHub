@@ -99,7 +99,7 @@ describe("LandingPage", () => {
     expect(screen.getByText(/your export uses trade date/i)).toBeInTheDocument();
     expect(screen.getByText(/CSV export plus the 1099/i)).toBeInTheDocument();
     expect(screen.getByText(/not a Form 8949 rebuild/i)).toBeInTheDocument();
-    expect(screen.getAllByText(/SPX 12\/31/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/SPX 12\/31/)).not.toBeInTheDocument();
     expect(screen.getAllByText(/not a software bug/i).length).toBeGreaterThan(0);
     expect(
       screen.getByText(WASH_ACCOUNT_SCOPE_COPY, { exact: false }),
@@ -270,11 +270,21 @@ describe("LandingPage", () => {
     ).toBeGreaterThan(0);
   });
 
-  it("claims lot-matched 1099-B on the packet and does not claim Form 8949 filing", () => {
+  it("describes the $49 PDF as a packaged year-close document", () => {
     mockUseAuth.mockReturnValue({ user: null, loading: false });
     renderWithClient(<LandingPage />);
 
-    expect(screen.getAllByText(/lot-matched 1099-B/i).length).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText(
+        /packages the reconciliation, wash chains, and harvest notes into a downloadable year-close document/i,
+      ).length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.queryByText(/Lot-matched 1099-B is in that PDF/i),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/lot-level 1099 reconciliation is in the \$49 PDF/i),
+    ).not.toBeInTheDocument();
     expect(screen.getAllByText(/not a filed Form 8949/i).length).toBeGreaterThan(0);
     expect(screen.getByText(/not a Form 8949 rebuild/i)).toBeInTheDocument();
     expect(screen.queryByText(/file your Form 8949/i)).not.toBeInTheDocument();
