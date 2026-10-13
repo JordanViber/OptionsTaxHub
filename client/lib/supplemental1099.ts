@@ -42,13 +42,17 @@ export const SUPPLEMENTAL_1099_BROKER_COLUMN = "Broker 1099 (settlement date)";
 
 export const SUPPLEMENTAL_1099_EXPORT_COLUMN = "This export (trade date)";
 
-/** Shown once, on the landing preview. Other screens use a tooltip. */
+/** Sample figures. Landing preview only — do not reuse on a real user's compare or PDF. */
 export const ST_TOTALS_EXPLANATION =
   "Short-term on the 1099 is +$2,699. This export's short-term result before wash-sale add-back is −$924. Both sides disallow $924, so the export column can read $0 after that add-back. A year-end short option (SPX 12/31) settles in January: the 1099 counts the gain, and this export does not yet. That is not a software bug.";
 
-/** Tooltip elsewhere. The landing wash-sale radar states this in full. */
+/** Generic gap hint. No sample dollar figures. */
+export const ST_GAP_EXPLANATION =
+  "The 1099 uses settlement date and the export uses trade date. A year-end short option such as SPX expiring 12/31 can settle in January. That is not a software bug.";
+
+/** Landing wash-sale radar states this in full. Other screens use a tooltip. */
 export const WASH_WINDOW_EXPLANATION =
-  "Same-symbol buys within 30 days before or after the sale (a 61-day window), with the disallowed loss added to the replacement lot's cost basis.";
+  "The rule covers the same or a substantially identical security, including options or contracts to acquire it, bought within 30 days before or after the sale (a 61-day window). The disallowed loss is added to the replacement's basis. This app flags same-symbol matches.";
 
 export const SUPPLEMENTAL_1099_GAP_COPY =
   "These totals often disagree. " +

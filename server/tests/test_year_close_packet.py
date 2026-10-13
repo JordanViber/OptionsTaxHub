@@ -6764,10 +6764,9 @@ def test_same_year_packet_pdf_has_two_column_compare_page():
     assert "$17,442.80" in compare
     assert "$300.00" in compare
     assert COMPARE_GAP_COPY in compare
-    assert "SPX 12/31" in compare
+    assert "settlement date" in compare
     assert "not a software bug" in compare
-    assert "+$2,699" in compare
-    assert "-$924" in compare
+    assert "2,699" not in compare
     assert "r/options" not in compare
 
     pdf_bytes = render_packet_pdf(payload)
@@ -6779,9 +6778,9 @@ def test_same_year_packet_pdf_has_two_column_compare_page():
     assert "This export (trade date)" in pdf_text
     assert "34,793.58" in pdf_text
     assert "300.00" in pdf_text
+    assert "settlement date" in pdf_text.lower()
     assert "not a software bug" in pdf_text.lower()
-    assert "2,699" in pdf_text
-    assert "924" in pdf_text
+    assert "2,699" not in pdf_text
     assert "r/options" not in pdf_text.lower()
 
 

@@ -135,7 +135,7 @@ describe("LandingPage", () => {
     expect(screen.getByText(/Whole book, not options-only/i)).toBeInTheDocument();
     expect(
       screen.getByText(
-        /Same-symbol buys within 30 days before or after the sale \(a 61-day window\)/,
+        /substantially identical security, including options or contracts to acquire it, bought within 30 days before or after the sale \(a 61-day window\)/,
       ),
     ).toBeInTheDocument();
     expect(

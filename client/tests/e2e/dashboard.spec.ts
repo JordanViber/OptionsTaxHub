@@ -507,7 +507,7 @@ test.describe("Dashboard Tabs & Components", () => {
     await uploadTestCsv(page);
 
     await expect(
-      page.getByText("Wash-sale radar"),
+      page.getByRole("alert").filter({ hasText: /Wash-sale radar \(/ }),
     ).not.toBeVisible();
   });
 });

@@ -12,7 +12,7 @@ import {
   LOT_MATCHED_1099B_LOCKED_COPY,
   LOT_MATCHED_1099B_TITLE,
   LOT_MATCHED_1099B_UNLOCKED_COPY,
-  ST_TOTALS_EXPLANATION,
+  ST_GAP_EXPLANATION,
   SUPPLEMENTAL_1099_APPLIED_COPY,
   SUPPLEMENTAL_1099_APPLIED_TITLE,
   SUPPLEMENTAL_1099_BROKER_COLUMN,
@@ -240,7 +240,7 @@ export default function Supplemental1099InsightsPanel({
             {SUPPLEMENTAL_1099_GAP_COPY}{" "}
             <GlossaryHint
               label="Why these totals disagree"
-              explanation={ST_TOTALS_EXPLANATION}
+              explanation={ST_GAP_EXPLANATION}
             />
           </Typography>
           <Stack
@@ -340,7 +340,7 @@ export default function Supplemental1099InsightsPanel({
           {SUPPLEMENTAL_1099_SETTLEMENT_FAQ}{" "}
           <GlossaryHint
             label="Year-end short"
-            explanation={ST_TOTALS_EXPLANATION}
+            explanation={ST_GAP_EXPLANATION}
           />
         </Typography>
         {washSaleDisallowed > 0 && (

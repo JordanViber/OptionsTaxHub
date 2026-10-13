@@ -58,8 +58,12 @@ describe("Supplemental1099InsightsPanel", () => {
     expect(screen.getByText(SUPPLEMENTAL_1099_SETTLEMENT_FAQ)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Year-end short" })).toHaveAttribute(
       "title",
-      expect.stringMatching(/SPX 12\/31/i),
+      expect.stringMatching(/SPX expiring 12\/31/i),
     );
+    expect(
+      screen.getByRole("button", { name: "Year-end short" }).getAttribute("title") ??
+        "",
+    ).not.toMatch(/2,699/);
     expect(
       screen.getByText(/Matched lots still show both dates/i),
     ).toBeInTheDocument();
@@ -145,7 +149,7 @@ describe("Supplemental1099InsightsPanel", () => {
     expect(screen.getByText(WASH_ACCOUNT_SCOPE_COPY, { exact: false })).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "Why these totals disagree" }),
-    ).toHaveAttribute("title", expect.stringMatching(/SPX 12\/31/i));
+    ).toHaveAttribute("title", expect.stringMatching(/SPX expiring 12\/31/i));
     expect(screen.getByText(SUPPLEMENTAL_1099_BROKER_COLUMN)).toBeInTheDocument();
     expect(screen.getByText(SUPPLEMENTAL_1099_EXPORT_COLUMN)).toBeInTheDocument();
     expect(screen.getByTestId("1099-vs-export-panel")).toBeInTheDocument();
@@ -172,12 +176,17 @@ describe("Supplemental1099InsightsPanel", () => {
     });
     expect(totalsHint).toHaveAttribute(
       "title",
-      expect.stringMatching(/SPX 12\/31/i),
+      expect.stringMatching(/settlement date/i),
+    );
+    expect(totalsHint).toHaveAttribute(
+      "title",
+      expect.stringMatching(/SPX expiring 12\/31/i),
     );
     expect(totalsHint).toHaveAttribute(
       "title",
       expect.stringMatching(/not a software bug/i),
     );
+    expect(totalsHint.getAttribute("title") ?? "").not.toMatch(/2,699/);
     expect(screen.queryByText(/r\/options/i)).not.toBeInTheDocument();
   });
 

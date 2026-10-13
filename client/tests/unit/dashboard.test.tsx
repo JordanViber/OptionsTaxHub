@@ -820,8 +820,12 @@ describe("DashboardPage", () => {
       ).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Year-end short" })).toHaveAttribute(
         "title",
-        expect.stringMatching(/SPX 12\/31/i),
+        expect.stringMatching(/SPX expiring 12\/31/i),
       );
+      expect(
+        screen.getByRole("button", { name: "Year-end short" }).getAttribute("title") ??
+          "",
+      ).not.toMatch(/2,699/);
       expect(
         screen.getByText(
           /Options and credit-spread wash-sale treatment can differ from the broker 1099/i,
@@ -1249,12 +1253,13 @@ describe("DashboardPage", () => {
       );
       expect(totalsHint).toHaveAttribute(
         "title",
-        expect.stringMatching(/SPX 12\/31/),
+        expect.stringMatching(/settlement date/i),
       );
       expect(totalsHint).toHaveAttribute(
         "title",
-        expect.stringMatching(/\$2,699/),
+        expect.stringMatching(/SPX expiring 12\/31/),
       );
+      expect(totalsHint.getAttribute("title") ?? "").not.toMatch(/2,699/);
       expect(screen.queryByText(/r\/options/i)).not.toBeInTheDocument();
       expect(
         screen.queryByText("Previous-year 1099 supplement applied"),

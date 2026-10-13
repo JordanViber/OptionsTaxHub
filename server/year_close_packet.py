@@ -91,11 +91,9 @@ UNKNOWN_1099_YEAR_COPY = (
 COMPARE_BROKER_HEADER = "Broker 1099 (settlement date)"
 COMPARE_EXPORT_HEADER = "This export (trade date)"
 COMPARE_GAP_COPY = (
-    "These totals often disagree. Short-term on the 1099 can be +$2,699 while "
-    "this export's short-term result before wash-sale add-back is -$924. "
-    "A year-end short option (SPX 12/31) can settle in January, so the 1099 "
-    "counts a gain this export has not booked yet. That is not a software bug. "
-    "This PDF lists matched, gap, and unmatched lots."
+    "The 1099 uses settlement date and the export uses trade date. "
+    "A year-end short option such as SPX expiring 12/31 can settle in January. "
+    "That is not a software bug."
 )
 
 # Process-local cache for guest rows and same-worker tests. Signed-in

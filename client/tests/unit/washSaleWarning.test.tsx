@@ -48,7 +48,7 @@ describe("WashSaleWarning", () => {
     expect(screen.getByRole("button", { name: "61-day window" })).toHaveAttribute(
       "title",
       expect.stringMatching(
-        /within 30 days before or after the sale \(a 61-day window\)/,
+        /substantially identical security, including options or contracts to acquire it, bought within 30 days before or after the sale \(a 61-day window\)/,
       ),
     );
     expect(
