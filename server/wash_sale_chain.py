@@ -4,9 +4,11 @@ Builds a display model from wash flags, FIFO realized events, and same-year
 1099-B lot matches. Does not rewrite wash_sale.py, lot basis, or tax totals.
 Does not set WashSaleFlag.purchase_date (that field feeds ST/LT wash splits).
 
-v1 explains stock sales only. An option flag or option 1099 row is one
-not-compared entry per symbol and sale date, with no dollar figure. A row
-whose instrument cannot be told is not compared and is not explained as stock.
+v1 explains stock sales only. An option flag or a positive-wash option
+1099 row is one not-compared entry per symbol and sale date, with no dollar
+figure. A $0-wash option 1099 row is reserved and is not matched to stock.
+A profitable option close is not called a wash. A row whose instrument
+cannot be told is not compared and is not explained as stock.
 """
 
 from __future__ import annotations
@@ -1967,6 +1969,118 @@ def _refuse_same_day_1099_ties(
                     unassigned.add(index)
 
 
+def _option_close_is_gain(
+    transactions: list[Transaction],
+    events: list[RealizedEvent],
+    *,
+    symbol: str,
+    sale_date: date,
+    quantity: float,
+) -> bool:
+    """True when this same-day option close made money.
+
+    A gain is not a wash. Matching option lots decide when they exist.
+    Otherwise one option STC is a gain when earlier option buys cover its
+    quantity and the premium is higher than that cost.
+    """
+    lot_pnls: list[float] = []
+    for event in events:
+        if not _is_option_asset(event.asset_type):
+            continue
+        if _symbol(event.symbol) != symbol or event.sale_date != sale_date:
+            continue
+        if float(event.quantity) <= QTY_EPS:
+            continue
+        if not _qty_close(float(event.quantity), quantity):
+            continue
+        lot_pnls.append(float(event.sale_proceeds) - float(event.cost_basis))
+    if lot_pnls:
+        return all(pnl > CENTS for pnl in lot_pnls)
+    sells = [
+        txn
+        for txn in transactions
+        if txn.trans_code == TransCode.STC
+        and _is_option_asset(txn.asset_type)
+        and _symbol(txn.instrument) == symbol
+        and txn.activity_date == sale_date
+        and _qty_close(txn.quantity, quantity)
+    ]
+    if len(sells) != 1:
+        return False
+    sell = sells[0]
+    remaining = float(sell.quantity)
+    cost = 0.0
+    covered = 0.0
+    opening = [
+        txn
+        for txn in transactions
+        if txn.trans_code == TransCode.BTO
+        and _is_option_asset(txn.asset_type)
+        and _symbol(txn.instrument) == symbol
+        and txn.activity_date <= sale_date
+    ]
+    opening.sort(key=lambda txn: txn.activity_date)
+    for txn in opening:
+        if remaining <= QTY_EPS:
+            break
+        take = min(float(txn.quantity), remaining)
+        if take <= QTY_EPS:
+            continue
+        cost += take * float(txn.price)
+        covered += take
+        remaining -= take
+    if covered + QTY_EPS < float(sell.quantity):
+        return False
+    proceeds = float(sell.quantity) * float(sell.price)
+    return proceeds - cost > CENTS
+
+
+def _replacement_is_option_only(
+    flag: WashSaleFlag,
+    transactions: list[Transaction],
+) -> bool:
+    """True when the flag's repurchase date has option buys and no stock buy.
+
+    A same-size stock sale makes the flag ambiguous. The replacement
+    instrument is what shows the flag is an option wash.
+    """
+    buys = [
+        txn
+        for txn in transactions
+        if txn.trans_code in _BUY_CODES
+        and _symbol(txn.instrument) == _symbol(flag.symbol)
+        and txn.activity_date == flag.repurchase_date
+    ]
+    if not buys:
+        return False
+    return all(_is_option_asset(txn.asset_type) for txn in buys)
+
+
+def _reserve_overlap_1099_rows(
+    rows: list[LotMatchRow],
+    used: set[int],
+    *,
+    symbol: str,
+    sale_date: date,
+) -> None:
+    """Consume same-symbol same-day 1099 rows the overlap hop accounts for.
+
+    The hop does not compare a wash total. Leaving the rows unused lets
+    _group_rows emit an on_1099_only chain that says the export missed a
+    wash. A missing quantity stays for the unknown-row pass.
+    """
+    for index, row in enumerate(rows):
+        if index in used:
+            continue
+        if _symbol(row.symbol) != symbol:
+            continue
+        if _row_sale_date(row) != sale_date:
+            continue
+        if not _lot_quantity_known(row.quantity):
+            continue
+        used.add(index)
+
+
 def _option_1099_hops(
     rows: list[LotMatchRow],
     used: set[int],
@@ -1976,13 +2090,14 @@ def _option_1099_hops(
 ) -> list[_HopDraft]:
     """Reserve option 1099 rows and return one hop per symbol and sale date.
 
-    The hop quantity is the total of that day's option lots. A lot quantity
-    is not an option close. The rows leave the stock candidate pools.
+    The option check runs before the wash gate. A $0 wash option row is
+    reserved like a positive-wash row so it never enters the stock pool
+    and never becomes a stock hop's form_1099_wash. Only a positive wash
+    becomes a hop. The hop quantity is the total of that day's positive-wash
+    option lots. A lot quantity is not an option close.
     """
     grouped: dict[tuple[str, date], list[tuple[int, LotMatchRow]]] = {}
     for index, row in enumerate(rows):
-        if float(row.wash_sale_disallowed or 0.0) < 0.01:
-            continue
         if not _row_involves_option(row, transactions=transactions, events=events):
             continue
         symbol = _symbol(row.symbol)
@@ -1990,6 +2105,8 @@ def _option_1099_hops(
         if not symbol or sale_date is None:
             continue
         used.add(index)
+        if float(row.wash_sale_disallowed or 0.0) < 0.01:
+            continue
         grouped.setdefault((symbol, sale_date), []).append((index, row))
     hops: list[_HopDraft] = []
     for (symbol, sale_date), members in grouped.items():
@@ -2084,15 +2201,33 @@ def build_wash_sale_chains(
                     reason="overlap",
                 )
             )
-            option_by_day.setdefault(
-                (symbol, flag.sale_date),
-                _option_hop(
-                    hop_id=_hop_id(symbol, flag.sale_date, quantity, f"o{flag_index}"),
-                    symbol=symbol,
-                    sale_date=flag.sale_date,
-                    sale_quantity=quantity,
-                ),
+            _reserve_overlap_1099_rows(
+                rows,
+                used_rows,
+                symbol=symbol,
+                sale_date=flag.sale_date,
             )
+            # A profitable option close is not a wash. Mention the option
+            # only for an option wash flag. A positive-wash option 1099 row
+            # is already in option_by_day.
+            if not _option_close_is_gain(
+                transactions,
+                realized_events,
+                symbol=symbol,
+                sale_date=flag.sale_date,
+                quantity=quantity,
+            ) and _replacement_is_option_only(flag, transactions):
+                option_by_day.setdefault(
+                    (symbol, flag.sale_date),
+                    _option_hop(
+                        hop_id=_hop_id(
+                            symbol, flag.sale_date, quantity, f"o{flag_index}"
+                        ),
+                        symbol=symbol,
+                        sale_date=flag.sale_date,
+                        sale_quantity=quantity,
+                    ),
+                )
         else:
             hop = _hop_from_flag(
                 flag,
