@@ -76,7 +76,7 @@ export default function WashSaleWarning({
         sx={{ "& .MuiAlert-message": { width: "100%" } }}
       >
         <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>
-          Wash-sale activity on this run ({meaningfulFlags.length} event
+          Wash-sale radar ({meaningfulFlags.length} event
           {meaningfulFlags.length === 1 ? "" : "s"} across {tickers.length}{" "}
           ticker{tickers.length === 1 ? "" : "s"})
         </Typography>
@@ -107,8 +107,9 @@ export default function WashSaleWarning({
       sx={{ "& .MuiAlert-message": { width: "100%" } }}
     >
       <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>
-        Wash-Sale Rule Violations Detected ({meaningfulFlags.length} events
-        across {tickers.length} ticker{tickers.length === 1 ? "" : "s"})
+        Wash-sale radar ({meaningfulFlags.length} event
+        {meaningfulFlags.length === 1 ? "" : "s"} across {tickers.length}{" "}
+        ticker{tickers.length === 1 ? "" : "s"})
       </Typography>
       <Typography
         variant="caption"

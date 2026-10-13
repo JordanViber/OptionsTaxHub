@@ -2,6 +2,21 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { LeapRankResponse } from "../../lib/types";
 import type { Position } from "../../lib/types";
 
+jest.mock("next/link", () => {
+  return ({
+    children,
+    href,
+    ...rest
+  }: {
+    children: React.ReactNode;
+    href: string;
+  }) => (
+    <a href={href} {...rest}>
+      {children}
+    </a>
+  );
+});
+
 const mockLeapRankMutateAsync = jest.fn();
 const mockLeapRankPending = { value: false };
 const mockRhChainMutateAsync = jest.fn();
@@ -189,9 +204,15 @@ describe("EntryAnalysisPanel", () => {
       screen.queryByRole("button", { name: /Find top 3/i }),
     ).not.toBeInTheDocument();
     expect(screen.getByTestId("entry-rank-leaps")).toHaveTextContent(/Rank LEAPs/i);
-    expect(screen.getByTestId("entry-rh-status")).toHaveTextContent(
-      /Sign in to connect Robinhood/i,
-    );
+    const guestSignIn = screen.getByTestId("entry-guest-signin");
+    expect(guestSignIn).toHaveAttribute("href", "/auth/signin?next=/options");
+    expect(guestSignIn).toHaveTextContent(/Sign in/i);
+    expect(
+      screen.queryByText(/Connect Robinhood after sign-in/i),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/Sign in to connect Robinhood/i),
+    ).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /connect robinhood/i }),
     ).not.toBeInTheDocument();
@@ -202,9 +223,16 @@ describe("EntryAnalysisPanel", () => {
     expect(screen.getByTestId("entry-rank-empty")).toHaveTextContent(
       /smallest annualized move to break even vs owning the stock/i,
     );
-    expect(screen.getByTestId("entry-empty")).toHaveTextContent(
+    const premium = screen.getByTestId("entry-premium");
+    const premiumHint = screen.getByTestId("entry-empty");
+    expect(premiumHint).toHaveTextContent(
       /Enter premium to see max gain, max loss, and breakeven/i,
     );
+    expect(premium).toHaveAttribute(
+      "aria-describedby",
+      premiumHint.getAttribute("id"),
+    );
+    expect(premiumHint.compareDocumentPosition(premium) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
     expect(screen.queryByTestId("entry-results")).not.toBeInTheDocument();
     expect(screen.queryByTestId("entry-context")).not.toBeInTheDocument();
     expect(screen.queryByTestId("entry-rank-1")).not.toBeInTheDocument();
@@ -529,10 +557,15 @@ describe("EntryAnalysisPanel", () => {
     });
     fireEvent.click(screen.getByTestId("entry-rank-leaps"));
     await waitFor(() => {
-      expect(screen.getByTestId("entry-rank-error")).toHaveTextContent(
-        RH_CONNECTION_REQUIRED_COPY,
-      );
+      expect(
+        screen.getByText(/Sign in to rank live LEAPs/i),
+      ).toBeInTheDocument();
     });
+    expect(screen.queryByText(RH_CONNECTION_REQUIRED_COPY)).not.toBeInTheDocument();
+    expect(screen.getByTestId("entry-guest-signin")).toHaveAttribute(
+      "href",
+      "/auth/signin?next=/options",
+    );
     expect(screen.queryByTestId("entry-rank-1")).not.toBeInTheDocument();
     expect(screen.getByTestId("entry-empty")).toBeInTheDocument();
     expect(mockLeapRankMutateAsync).not.toHaveBeenCalled();
@@ -553,10 +586,15 @@ describe("EntryAnalysisPanel", () => {
     expect(screen.getByTestId("entry-breakeven")).toHaveTextContent("$254.20");
     fireEvent.click(screen.getByTestId("entry-rank-leaps"));
     await waitFor(() => {
-      expect(screen.getByTestId("entry-rank-error")).toHaveTextContent(
-        RH_CONNECTION_REQUIRED_COPY,
-      );
+      expect(
+        screen.getByText(/Sign in to rank live LEAPs/i),
+      ).toBeInTheDocument();
     });
+    expect(screen.queryByText(RH_CONNECTION_REQUIRED_COPY)).not.toBeInTheDocument();
+    expect(screen.getByTestId("entry-guest-signin")).toHaveAttribute(
+      "href",
+      "/auth/signin?next=/options",
+    );
     expect(screen.getByTestId("entry-results")).toBeInTheDocument();
     expect(screen.getByTestId("entry-max-loss")).toHaveTextContent("$420.00");
     expect(screen.getByTestId("entry-max-gain")).toHaveTextContent("Unlimited");
