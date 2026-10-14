@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   AppBar,
   Avatar,
@@ -87,19 +87,25 @@ export default function AppShell({
   children,
   onUpload,
   onSavedRuns,
-  onSignOut,
 }: Readonly<{
   variant?: ShellVariant;
   children?: React.ReactNode;
   onUpload?: () => void;
   onSavedRuns?: () => void;
-  onSignOut?: () => void | Promise<void>;
 }>) {
   const pathname = usePathname() || "/";
   const router = useRouter();
   const queryClient = useQueryClient();
   const { user, signOut } = useAuth();
-  const compact = useMediaQuery(COMPACT_HEADER_QUERY);
+  const matchesCompact = useMediaQuery(COMPACT_HEADER_QUERY);
+  // SSR and the first client render omit the wide action row. Painting it
+  // before matchMedia runs overflows a 390px header on fast pages.
+  const [viewportReady, setViewportReady] = useState(false);
+  useEffect(() => {
+    setViewportReady(true);
+  }, []);
+  const compact = viewportReady && matchesCompact;
+  const showFullActions = viewportReady && !matchesCompact;
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
   const [accountAnchor, setAccountAnchor] = useState<HTMLElement | null>(null);
   const [tipOpen, setTipOpen] = useState(false);
@@ -167,10 +173,6 @@ export default function AppShell({
     // Drop this account's cached runs and tax profile before the next sign-in.
     queryClient.removeQueries({ queryKey: ["portfolio-history", userId] });
     queryClient.removeQueries({ queryKey: ["tax-profile", userId] });
-    if (onSignOut) {
-      await onSignOut();
-      return;
-    }
     await signOut();
     router.push("/auth/signin");
   };
@@ -247,7 +249,7 @@ export default function AppShell({
             })}
           </Box>
           <Box sx={{ flexGrow: 1 }} />
-          {!compact && (showLandingActions || showAppActions) ? (
+          {showFullActions && (showLandingActions || showAppActions) ? (
             <Box
               data-testid="header-actions"
               sx={{

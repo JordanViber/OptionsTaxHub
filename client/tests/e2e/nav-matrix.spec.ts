@@ -95,10 +95,6 @@ test.describe("nav matrix", () => {
           await expect(options).toHaveAttribute("href", "/options");
           await expect(page.getByText("Open Tax")).toHaveCount(0);
           await expect(page.getByRole("button", { name: /^Settings$/ })).toHaveCount(0);
-          const headerOverflow = await header.evaluate(
-            (el) => el.scrollWidth - el.clientWidth,
-          );
-          expect(headerOverflow).toBeLessThanOrEqual(1);
           if (compact) {
             await expect(header.getByTestId("header-menu")).toBeVisible();
             await expect(header.getByTestId("header-actions")).toHaveCount(0);
@@ -106,6 +102,10 @@ test.describe("nav matrix", () => {
             await expect(header.getByTestId("header-menu")).toHaveCount(0);
             await expect(header.getByTestId("header-actions")).toBeVisible();
           }
+          const headerOverflow = await header.evaluate(
+            (el) => el.scrollWidth - el.clientWidth,
+          );
+          expect(headerOverflow).toBeLessThanOrEqual(1);
 
           if (entry.path === "/dashboard") {
             await expect(tax).toHaveAttribute("aria-current", "page");
@@ -216,6 +216,109 @@ test.describe("nav matrix", () => {
           }),
         ).toBeVisible();
         await shoot(page, `${auth}-signin-${viewport.name}-header`);
+      });
+
+      test(`${auth} shell on the remaining pages at ${viewport.name}`, async ({
+        page,
+      }) => {
+        test.setTimeout(90_000);
+        await page.setViewportSize({
+          width: viewport.width,
+          height: viewport.height,
+        });
+        await mockGuest(page);
+        if (auth === "signed-in") {
+          await setupMockAuth(page);
+          await injectMockSession(page);
+        }
+        const compact = viewport.width <= 900;
+
+        const assertChrome = async (kind: "app" | "auth") => {
+          const header = page.getByTestId("app-header");
+          await expect(header).toBeVisible({ timeout: 15000 });
+          await expect(
+            header.getByRole("link", { name: "OptionsTaxHub" }),
+          ).toHaveAttribute("href", "/");
+          const nav = page.getByRole("navigation", { name: "Primary" });
+          await expect(nav.getByRole("link", { name: "Tax", exact: true })).toBeVisible();
+          await expect(
+            nav.getByRole("link", { name: "Options", exact: true }),
+          ).toBeVisible();
+          await expect(nav.getByRole("link", { name: "Tax", exact: true })).toHaveAttribute(
+            "href",
+            "/dashboard",
+          );
+          await expect(
+            nav.getByRole("link", { name: "Options", exact: true }),
+          ).toHaveAttribute("href", "/options");
+          if (kind === "auth") {
+            await expect(header.getByTestId("header-menu")).toHaveCount(0);
+            await expect(header.getByTestId("header-actions")).toHaveCount(0);
+          } else if (compact) {
+            await expect(header.getByTestId("header-menu")).toBeVisible();
+            await expect(header.getByTestId("header-actions")).toHaveCount(0);
+            await header.getByRole("button", { name: "Menu" }).click();
+            await expect(page.locator(".MuiMenu-paper")).toHaveCSS("opacity", "1");
+          } else {
+            await expect(header.getByTestId("header-menu")).toHaveCount(0);
+            await expect(header.getByTestId("header-actions")).toBeVisible();
+          }
+          const headerOverflow = await header.evaluate(
+            (el) => el.scrollWidth - el.clientWidth,
+          );
+          expect(headerOverflow).toBeLessThanOrEqual(1);
+          if (kind === "auth") {
+            return;
+          }
+          await expect(page.getByTestId("header-upload")).toBeVisible();
+          await expect(page.getByTestId("header-saved-runs")).toBeVisible();
+          if (auth === "signed-in") {
+            await expect(page.getByTestId("header-account")).toBeVisible();
+          } else {
+            await expect(page.getByTestId("header-sign-in")).toBeVisible();
+          }
+          if (compact) {
+            await page.keyboard.press("Escape");
+          }
+        };
+
+        if (auth === "guest") {
+          await page.goto("/settings");
+          await expect(page).toHaveURL(/\/auth\/signin\?next=\/settings/, {
+            timeout: 15000,
+          });
+          await assertChrome("auth");
+        } else {
+          await page.goto("/settings");
+          await expect(
+            page.getByRole("heading", { name: "Tax settings", exact: true }),
+          ).toBeVisible({ timeout: 15000 });
+          await assertChrome("app");
+        }
+
+        await page.goto("/privacy");
+        await expect(page.getByRole("heading", { name: "Privacy" })).toBeVisible();
+        await assertChrome("app");
+
+        await page.goto("/auth/signup");
+        await expect(page.getByRole("heading", { name: "Create Account" })).toBeVisible();
+        await assertChrome("auth");
+
+        await page.goto("/auth/confirm-email");
+        await assertChrome("auth");
+
+        await page.goto("/auth/reset-password");
+        await assertChrome("auth");
+
+        await page.goto("/tips/success");
+        await expect(page.getByText(/Thank You/)).toBeVisible();
+        await assertChrome("app");
+
+        await page.goto("/tips/cancel");
+        await expect(page.getByText("No Worries!")).toBeVisible();
+        await assertChrome("app");
+
+        await shoot(page, `${auth}-shell-${viewport.name}-header`);
       });
     }
   }

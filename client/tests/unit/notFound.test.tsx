@@ -1,4 +1,5 @@
-import { render, screen } from "@testing-library/react";
+import { render as rtlRender, screen } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import NotFound from "../../app/not-found";
 
 jest.mock("next/link", () => {
@@ -24,6 +25,13 @@ jest.mock("next/navigation", () => ({
 jest.mock("../../app/context/auth", () => ({
   useAuth: () => ({ user: null, loading: false, signOut: jest.fn() }),
 }));
+
+function render(ui: React.ReactElement) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  return rtlRender(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+}
 
 describe("NotFound", () => {
   it("renders a styled missing-page with Tax and Options links", () => {

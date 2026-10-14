@@ -1726,6 +1726,38 @@ describe("DashboardPage", () => {
     );
   });
 
+  it("signs out through the shared header menu", async () => {
+    mockSignOut.mockResolvedValue(undefined);
+    sessionStorage.setItem("optionstaxhub-analysis", "{\"ok\":true}");
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+    queryClient.setQueryData(["portfolio-history", "test-user"], [{ id: "h1" }]);
+    queryClient.setQueryData(["tax-profile", "test-user"], { tax_year: 2026 });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <DashboardPage />
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Account" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Sign Out" }));
+
+    await waitFor(() => {
+      expect(mockSignOut).toHaveBeenCalledTimes(1);
+    });
+    expect(sessionStorage.getItem("optionstaxhub-analysis")).toBeNull();
+    expect(
+      queryClient.getQueryData(["portfolio-history", "test-user"]),
+    ).toBeUndefined();
+    expect(queryClient.getQueryData(["tax-profile", "test-user"])).toBeUndefined();
+    expect(mockPush).toHaveBeenCalledWith("/auth/signin");
+  });
+
   it("redirects unconfirmed users away from the dashboard", async () => {
     mockAuthState.user.email_confirmed_at = null;
     render(<DashboardPage />, { wrapper: createWrapper() });

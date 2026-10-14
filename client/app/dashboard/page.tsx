@@ -1237,7 +1237,7 @@ export default function DashboardPage() {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const supplemental1099InputRef = useRef<HTMLInputElement>(null);
-  const { user, loading: authLoading, signOut } = useAuth();
+  const { user, loading: authLoading } = useAuth();
   const emailConfirmed = isEmailConfirmed(user);
   const confirmedUserId = emailConfirmed ? user?.id : undefined;
   const [activeTab, setActiveTab] = useState(0);
@@ -1741,20 +1741,6 @@ export default function DashboardPage() {
     }
   };
 
-  const handleSignOut = async () => {
-    sessionStorage.removeItem("optionstaxhub-analysis");
-    // Remove cached portfolio history when the user signs out to avoid
-    // briefly showing a previous user's history while refetching.
-    queryClient.removeQueries({
-      queryKey: ["portfolio-history", user?.id],
-    });
-    queryClient.removeQueries({
-      queryKey: ["tax-profile", user?.id],
-    });
-    await signOut();
-    router.push("/auth/signin");
-  };
-
   useEffect(() => {
     if (authLoading || !user) {
       return;
@@ -2062,7 +2048,6 @@ export default function DashboardPage() {
         });
       }}
       onSavedRuns={() => setHistoryOpen(true)}
-      onSignOut={handleSignOut}
     >
       <ServiceWorkerRegistration />
 

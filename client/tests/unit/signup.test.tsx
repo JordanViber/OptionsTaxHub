@@ -1,4 +1,5 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render as rtlRender, screen, fireEvent, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import SignupPage from "../../app/auth/signup/page";
 import { useRouter } from "next/navigation";
 import { useAuth } from "../../app/context/auth";
@@ -24,6 +25,13 @@ jest.mock("../../app/context/auth", () => ({
 
 const mockPush = jest.fn();
 const mockSignUp = jest.fn();
+
+function render(ui: React.ReactElement) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  return rtlRender(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+}
 
 const getInput = (container: HTMLElement, selector: string) => {
   const element = container.querySelector(selector);

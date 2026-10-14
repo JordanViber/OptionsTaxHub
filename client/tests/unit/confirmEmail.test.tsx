@@ -1,4 +1,5 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render as rtlRender, screen, fireEvent, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import ConfirmEmailPage from "../../app/auth/confirm-email/page";
 import { useRouter } from "next/navigation";
 
@@ -12,6 +13,13 @@ jest.mock("../../app/context/auth", () => ({
 }));
 
 const mockPush = jest.fn();
+
+function render(ui: React.ReactElement) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  return rtlRender(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+}
 const mockConsume = jest.fn();
 const mockResend = jest.fn();
 
