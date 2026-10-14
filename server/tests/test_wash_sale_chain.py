@@ -6625,7 +6625,11 @@ def test_undated_closed_lot_does_not_guess_a_pre_sale_replacement():
     hop = chains[0].hops[0]
     assert hop.replacement_buys == []
     assert "moved into" not in hop.plain_english
-    assert hop.engine_adjusted_cost_basis == pytest.approx(1100)
+    assert hop.engine_adjusted_cost_basis is None
+    assert hop.tacked_acquisition_date is None
+    assert hop.carryover_days is None
+    assert hop.not_compared_reason == "unidentified"
+    assert "illustrative" not in hop.plain_english
 
 
 def test_undated_closed_lot_keeps_a_buy_after_the_sale():
@@ -6816,4 +6820,57 @@ def test_post_sale_buys_short_of_repurchase_quantity_stay_quiet():
     assert flag.adjusted_cost_basis == pytest.approx(7000)
     assert [(txn.activity_date, txn.quantity, txn.price) for txn in txns] == [
         (txn.activity_date, txn.quantity, txn.price) for txn in before_txns
+    ]
+
+
+def test_prior_sale_lot_is_not_published_when_replacement_cannot_be_allocated():
+    """Buy 80 on May 25, sell them Jun 1, buy 100 Jun 5, sell those Jun 20.
+
+    Jun 20's window still holds the May 25 lot that Jun 1 already closed.
+    Those 80 shares do not cover the repurchase, so the hop does not publish
+    the engine basis (priced off that $10,000 lot), a tacked date, or
+    carryover days, and it does not call a missing split illustrative.
+    """
+    may = date(2026, 5, 25)
+    june_sale = date(2026, 6, 1)
+    june_buy = date(2026, 6, 5)
+    june_later = date(2026, 6, 20)
+    txns = [
+        _txn("AAPL", TransCode.BUY, may, 80, 125),
+        _txn("AAPL", TransCode.SELL, june_sale, 80, 100),
+        _txn("AAPL", TransCode.BUY, june_buy, 100, 110),
+        _txn("AAPL", TransCode.SELL, june_later, 100, 90),
+    ]
+    flags = detect_wash_sales(txns, tax_year=2026)
+    later_flag = next(flag for flag in flags if flag.sale_date == june_later)
+    assert later_flag.repurchase_date == may
+    assert later_flag.adjusted_cost_basis == pytest.approx(12000)
+    before = copy.deepcopy(txns)
+    before_basis = later_flag.adjusted_cost_basis
+    chains = _build(
+        transactions=txns,
+        wash_sale_flags=flags,
+        realized_events=[
+            _event("AAPL", june_sale, 80, 10000, 8000, may),
+            _event("AAPL", june_later, 100, 11000, 9000, june_buy),
+        ],
+    )
+    hop = next(
+        chain.hops[0] for chain in chains if chain.hops[0].sale_date == june_later
+    )
+    assert hop.replacement_buys == []
+    assert hop.engine_adjusted_cost_basis is None
+    assert hop.tacked_acquisition_date is None
+    assert hop.carryover_days is None
+    assert hop.not_compared_reason == "unidentified"
+    assert hop.reconcile_status == "not_compared"
+    assert "illustrative" not in hop.plain_english
+    earlier = next(
+        chain.hops[0] for chain in chains if chain.hops[0].sale_date == june_sale
+    )
+    assert earlier.not_compared_reason != "unidentified"
+    assert [buy.activity_date for buy in earlier.replacement_buys] == [june_buy]
+    assert later_flag.adjusted_cost_basis == pytest.approx(before_basis)
+    assert [(txn.activity_date, txn.quantity, txn.price) for txn in txns] == [
+        (txn.activity_date, txn.quantity, txn.price) for txn in before
     ]

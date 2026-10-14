@@ -1277,18 +1277,30 @@ def _hop_from_flag(
             repurchase_quantity=float(flag.repurchase_quantity),
             disallowed=float(flag.disallowed_loss),
         )
-        _apply_display_scale(buys, replacement)
+        if buys:
+            _apply_display_scale(buys, replacement)
     loss = _cents(float(flag.sale_loss))
     disallowed = _cents(float(flag.disallowed_loss))
     status: WashReconcileStatus = "not_compared"
-    not_compared_reason = "no_1099"
-    # The engine prices adjusted basis off its earliest repurchase. When
-    # that date is the closed lot, the number is not this replacement's basis.
-    engine_basis = (
-        None
-        if _earliest_repurchase_is_closed_lot(flag, closed)
-        else _cents(float(flag.adjusted_cost_basis))
-    )
+    # None means the closed shares cannot be picked out. A non-empty
+    # survivor list that allocates nothing is short of the repurchase.
+    # The engine basis can be an already-sold lot, so leave that basis
+    # and the tacked holding period off and stay unidentified. The hop
+    # then shows no dollar amounts. A sale with no buy list still compares.
+    if replacement is None or (replacement and not buys):
+        engine_basis = None
+        not_compared_reason = "unidentified"
+        compare_1099 = False
+    else:
+        not_compared_reason = "no_1099"
+        # The engine prices adjusted basis off its earliest repurchase. When
+        # that date is the closed lot, the number is not this replacement's basis.
+        engine_basis = (
+            None
+            if _earliest_repurchase_is_closed_lot(flag, closed)
+            else _cents(float(flag.adjusted_cost_basis))
+        )
+        compare_1099 = same_year and not unresolved
     return _HopDraft(
         hop_id=_hop_id(
             symbol,
@@ -1326,7 +1338,7 @@ def _hop_from_flag(
             sell,
             [event for _index, event in event_set],
         ),
-        compare_1099=same_year and not unresolved,
+        compare_1099=compare_1099,
     )
 
 
