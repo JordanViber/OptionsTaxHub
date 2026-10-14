@@ -239,10 +239,10 @@ describe("Home page", () => {
       "href",
       "/options",
     );
-    const signInLinks = screen.getAllByRole("link", { name: "Sign In" });
+    const signInLinks = screen.getAllByRole("link", { name: "Sign in" });
     expect(signInLinks.length).toBeGreaterThan(0);
     for (const link of signInLinks) {
-      expect(link).toHaveAttribute("href", "/auth/signin");
+      expect(link).toHaveAttribute("href", "/auth/signin?next=/dashboard");
     }
   });
 
@@ -552,7 +552,8 @@ describe("Home page", () => {
 
     renderWithClient(<Home />);
 
-    fireEvent.click(screen.getByText("Settings"));
+    fireEvent.click(screen.getByText("Test User"));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Settings" }));
 
     expect(mockPush).toHaveBeenCalledWith("/settings");
   });
@@ -663,7 +664,7 @@ describe("Home page", () => {
     expect(screen.queryByText("Analyzing portfolio...")).not.toBeInTheDocument();
     expect(mutate).not.toHaveBeenCalled();
     expect(
-      screen.queryByRole("button", { name: "Open the 2026 sample" }),
+      screen.queryByRole("button", { name: "Try the sample" }),
     ).not.toBeInTheDocument();
     expect(SAMPLE_FETCH_TIMEOUT_MS).toBe(8000);
   });
@@ -685,7 +686,7 @@ describe("Home page", () => {
 
     renderWithClient(<Home />);
     fireEvent.click(
-      screen.getByRole("button", { name: "Open the 2026 sample" }),
+      screen.getByRole("button", { name: "Try the sample" }),
     );
     expect(screen.getByText("Analyzing portfolio...")).toBeInTheDocument();
     expect(screen.queryByText("Analysis Failed")).not.toBeInTheDocument();
@@ -700,7 +701,7 @@ describe("Home page", () => {
     ).toBeInTheDocument();
     expect(screen.queryByText("Analyzing portfolio...")).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "Open the 2026 sample" }),
+      screen.queryByRole("button", { name: "Try the sample" }),
     ).not.toBeInTheDocument();
     expect(mutate).not.toHaveBeenCalled();
   });

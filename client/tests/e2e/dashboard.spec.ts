@@ -60,8 +60,11 @@ test.describe("Dashboard UI Fixes", () => {
   // --- Fix 2: Settings save navigates back to home ---
   test("saving tax profile navigates back to dashboard", async ({ page }) => {
     // Navigate to settings
-    await page.click("text=Settings");
-    await expect(page.getByText("Tax Profile Settings")).toBeVisible({
+    await page.getByTestId("tax-settings-link").click();
+    await expect(page).toHaveURL(/\/settings/, { timeout: 10000 });
+    await expect(
+      page.getByRole("heading", { name: "Settings", exact: true }),
+    ).toBeVisible({
       timeout: 5000,
     });
 
@@ -542,24 +545,23 @@ test.describe("Dashboard User Menu & Navigation", () => {
   });
 
   test("Settings button navigates to settings page", async ({ page }) => {
-    await page.getByRole("button", { name: "Settings" }).click();
+    await page.getByTestId("header-account").click();
+    await page.getByRole("menuitem", { name: "Settings" }).click();
 
-    await expect(page.getByText("Tax Profile Settings")).toBeVisible({
-      timeout: 5000,
-    });
-    expect(page.url()).toMatch(/\/settings/);
+    await expect(page).toHaveURL(/\/settings/, { timeout: 10000 });
+    await expect(
+      page.getByRole("heading", { name: "Settings", exact: true }),
+    ).toBeVisible();
   });
 
   test("tax profile inline link navigates to settings", async ({ page }) => {
     // Click the "tax profile" button-link in the upload card description
-    await page
-      .locator("button", { hasText: "tax profile" })
-      .click();
+    await page.getByTestId("tax-settings-link").click();
 
-    await expect(page.getByText("Tax Profile Settings")).toBeVisible({
-      timeout: 5000,
-    });
-    expect(page.url()).toMatch(/\/settings/);
+    await expect(page).toHaveURL(/\/settings/, { timeout: 10000 });
+    await expect(
+      page.getByRole("heading", { name: "Settings", exact: true }),
+    ).toBeVisible();
   });
 });
 
@@ -655,7 +657,8 @@ test.describe("Tip Jar", () => {
   });
 
   test("tip button opens tip jar dialog", async ({ page }) => {
-    await page.click("text=Tip");
+    await page.getByTestId("header-account").click();
+    await page.getByRole("menuitem", { name: "Tip" }).click();
     await expect(page.getByText("Support OptionsTaxHub")).toBeVisible();
     await expect(page.getByText("$3")).toBeVisible();
     await expect(page.getByText("$10")).toBeVisible();
@@ -663,14 +666,16 @@ test.describe("Tip Jar", () => {
   });
 
   test("tip jar shows all three tiers with descriptions", async ({ page }) => {
-    await page.click("text=Tip");
+    await page.getByTestId("header-account").click();
+    await page.getByRole("menuitem", { name: "Tip" }).click();
     await expect(page.getByText("Buy us a coffee")).toBeVisible();
     await expect(page.getByText("Buy us lunch")).toBeVisible();
     await expect(page.getByText("You're amazing!")).toBeVisible();
   });
 
   test("tip jar closes with close button", async ({ page }) => {
-    await page.click("text=Tip");
+    await page.getByTestId("header-account").click();
+    await page.getByRole("menuitem", { name: "Tip" }).click();
     await expect(page.getByText("Support OptionsTaxHub")).toBeVisible();
     await page.click('button[aria-label="close"]');
     await expect(page.getByText("Support OptionsTaxHub")).not.toBeVisible();
@@ -691,7 +696,8 @@ test.describe("Tip Jar", () => {
       });
     });
 
-    await page.click("text=Tip");
+    await page.getByTestId("header-account").click();
+    await page.getByRole("menuitem", { name: "Tip" }).click();
     // Click the Coffee tier card
     await page.getByText("Buy us a coffee").click();
     // Wait a moment for the request to be sent
@@ -708,13 +714,15 @@ test.describe("Tip Jar", () => {
       }),
     );
 
-    await page.click("text=Tip");
+    await page.getByTestId("header-account").click();
+    await page.getByRole("menuitem", { name: "Tip" }).click();
     await page.getByText("Buy us a coffee").click();
     await expect(page.getByRole("alert")).toBeVisible({ timeout: 5000 });
   });
 
   test("stripe footer text is visible", async ({ page }) => {
-    await page.click("text=Tip");
+    await page.getByTestId("header-account").click();
+    await page.getByRole("menuitem", { name: "Tip" }).click();
     await expect(
       page.getByText("Payments processed securely by Stripe"),
     ).toBeVisible();
@@ -757,10 +765,10 @@ test.describe("Open 2026 sample", () => {
     await page.goto("/");
     await expect(page.getByText(/toward Schedule D/i).first()).toBeVisible();
     await expect(
-      page.getByRole("button", { name: "Open the 2026 sample" }),
+      page.getByTestId("landing-try-sample"),
     ).toBeVisible();
     await expect(page.getByTestId("entry-analysis-panel")).toHaveCount(0);
-    await page.getByRole("button", { name: "Open the 2026 sample" }).click();
+    await page.getByTestId("landing-try-sample").click();
     await expect(page).toHaveURL(/\/dashboard/, { timeout: 30000 });
   }
 
@@ -866,7 +874,7 @@ test.describe("Open 2026 sample", () => {
     await expect(
       page.getByText(/Wash flags on a 1099 are often scoped to that one account/i),
     ).toBeVisible();
-    await page.getByRole("button", { name: "Open the 2026 sample" }).click();
+    await page.getByTestId("landing-try-sample").click();
     await expect(page).toHaveURL(/\/dashboard/, { timeout: 30000 });
     await expect(page.getByText("Tax Year: 2026")).toBeVisible({
       timeout: 20000,
@@ -1115,7 +1123,7 @@ test.describe("Wash-sale chain explainer", () => {
     page: Parameters<typeof setupMockAnalysis>[0],
   ) {
     await page.goto("/");
-    await page.getByRole("button", { name: "Open the 2026 sample" }).click();
+    await page.getByTestId("landing-try-sample").click();
     await expect(page).toHaveURL(/\/dashboard/, { timeout: 30000 });
   }
 
@@ -1256,7 +1264,7 @@ test.describe("JOR-88 product walk", () => {
     page: Parameters<typeof setupMockAnalysis>[0],
   ) {
     await page.goto("/");
-    await page.getByRole("button", { name: "Open the 2026 sample" }).click();
+    await page.getByTestId("landing-try-sample").click();
     await expect(page).toHaveURL(/\/dashboard/, { timeout: 30000 });
   }
 

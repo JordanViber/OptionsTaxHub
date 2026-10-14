@@ -19,6 +19,7 @@ export default function CheckEmailCard({
   resendLoading = false,
   info,
   error,
+  signInHref = "/auth/signin",
 }: Readonly<{
   email?: string;
   title?: string;
@@ -26,6 +27,7 @@ export default function CheckEmailCard({
   resendLoading?: boolean;
   info?: string;
   error?: string;
+  signInHref?: string;
 }>) {
   return (
     <Card>
@@ -63,7 +65,7 @@ export default function CheckEmailCard({
           <Box sx={{ textAlign: "center" }}>
             <Typography variant="body2">
               Already confirmed?{" "}
-              <MuiLink href="/auth/signin" sx={{ cursor: "pointer" }}>
+              <MuiLink href={signInHref} sx={{ cursor: "pointer" }}>
                 Sign in
               </MuiLink>
             </Typography>

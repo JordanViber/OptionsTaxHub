@@ -21,7 +21,10 @@ const mockSupabaseClient = {
 
 jest.mock("@/lib/supabase", () => ({
   getSupabaseClient: () => mockSupabaseClient,
-  getEmailConfirmRedirectTo: () => "http://localhost/auth/confirm-email",
+  getEmailConfirmRedirectTo: (next?: string | null) =>
+    next
+      ? `http://localhost/auth/confirm-email?next=${next}`
+      : "http://localhost/auth/confirm-email",
 }));
 
 // Import AFTER mock is set up
@@ -210,6 +213,32 @@ describe("Auth Context", () => {
         emailRedirectTo: "http://localhost/auth/confirm-email",
       },
     });
+  });
+
+  it("signUp carries next into the confirmation redirect", async () => {
+    mockSignUp.mockResolvedValue({ error: null });
+    window.history.pushState({}, "", "/auth/signup?next=/options");
+
+    const { result } = renderHook(() => useAuth(), { wrapper: createWrapper });
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    await act(async () => {
+      await result.current.signUp("leap@example.com", "password123", {
+        name: "Leap User",
+      });
+    });
+
+    expect(mockSignUp).toHaveBeenCalledWith(
+      expect.objectContaining({
+        options: expect.objectContaining({
+          emailRedirectTo: "http://localhost/auth/confirm-email?next=/options",
+        }),
+      }),
+    );
+    window.history.pushState({}, "", "/");
   });
 
   it("signUp throws when supabase returns error", async () => {

@@ -14,14 +14,18 @@ import { useAuth } from "@/app/context/auth";
 import TaxDisclaimer from "./components/TaxDisclaimer";
 import Wordmark from "./components/Wordmark";
 import DeskPreview from "./components/DeskPreview";
+import AppShell from "./components/AppShell";
 import {
   PACKET_SCOPE_COPY,
   SCHEDULE_D_RECONCILE_COPY,
   WASH_ACCOUNT_SCOPE_COPY,
   WASH_WINDOW_EXPLANATION,
 } from "@/lib/supplemental1099";
-
-const UPLOAD_INTENT_KEY = "oth-upload-intent";
+import {
+  rememberSampleIntent,
+  rememberUploadIntent,
+  signInHref,
+} from "@/lib/safeNextPath";
 
 export default function LandingPage() {
   const router = useRouter();
@@ -35,20 +39,12 @@ export default function LandingPage() {
   if (!mounted) return null;
 
   const openSample = () => {
-    try {
-      sessionStorage.setItem("oth-load-sample", "1");
-    } catch {
-      // ignore
-    }
+    rememberSampleIntent();
     router.push("/dashboard");
   };
 
   const openCsv = () => {
-    try {
-      sessionStorage.setItem(UPLOAD_INTENT_KEY, "1");
-    } catch {
-      // ignore
-    }
+    rememberUploadIntent();
     router.push("/dashboard");
   };
 
@@ -81,51 +77,7 @@ export default function LandingPage() {
         }}
       />
 
-      <Box
-        component="header"
-        sx={{
-          position: "relative",
-          zIndex: 30,
-          mx: "auto",
-          maxWidth: 1152,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 2,
-          px: { xs: 1.5, sm: 2.5 },
-          py: 2,
-          flexWrap: "nowrap",
-        }}
-      >
-        <Wordmark />
-        <Stack
-          direction="row"
-          spacing={1}
-          alignItems="center"
-          sx={{ flexShrink: 0 }}
-        >
-          <Button
-            component={Link}
-            href="/dashboard"
-            variant="outlined"
-            size="small"
-            sx={{ whiteSpace: "nowrap", flexShrink: 0 }}
-          >
-            Open Tax
-          </Button>
-          {!user && (
-            <Button
-              component={Link}
-              href="/auth/signin"
-              size="small"
-              sx={{ whiteSpace: "nowrap", flexShrink: 0 }}
-            >
-              Sign In
-            </Button>
-          )}
-        </Stack>
-      </Box>
-
+      <AppShell variant="landing">
       <Container
         maxWidth="lg"
         sx={{ position: "relative", zIndex: 10, pt: { xs: 4, md: 8 }, pb: 10 }}
@@ -180,10 +132,11 @@ export default function LandingPage() {
               <Button
                 variant="contained"
                 size="large"
+                data-testid="landing-try-sample"
                 onClick={openSample}
                 sx={{ py: 1.5, px: 3, fontWeight: 700 }}
               >
-                Open the 2026 sample
+                Try the sample
               </Button>
               <Button
                 variant="outlined"
@@ -381,7 +334,7 @@ export default function LandingPage() {
             <Button
               variant="outlined"
               component={Link}
-              href={user ? "/dashboard" : "/auth/signin"}
+              href={user ? "/dashboard" : signInHref("/")}
             >
               See what's kept
             </Button>
@@ -441,7 +394,7 @@ export default function LandingPage() {
               Privacy
             </Link>
             {!user && (
-              <Link href="/auth/signin" style={{ color: "inherit" }}>
+              <Link href={signInHref("/")} style={{ color: "inherit" }}>
                 Sign in
               </Link>
             )}
@@ -451,6 +404,7 @@ export default function LandingPage() {
           </Stack>
         </Container>
       </Box>
+      </AppShell>
     </Box>
   );
 }

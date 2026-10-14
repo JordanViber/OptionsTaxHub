@@ -3,11 +3,13 @@
 import { useRouter } from "next/navigation";
 import { Box, Button, Container, Stack, Typography } from "@mui/material";
 import { Home as HomeIcon } from "@mui/icons-material";
+import AppShell from "../../components/AppShell";
 
 export default function TipCancelPage() {
   const router = useRouter();
 
   return (
+    <AppShell>
     <Box
       sx={{
         minHeight: "100vh",
@@ -65,5 +67,6 @@ export default function TipCancelPage() {
         </Stack>
       </Container>
     </Box>
+    </AppShell>
   );
 }

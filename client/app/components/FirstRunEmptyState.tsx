@@ -11,10 +11,7 @@ import {
   Stack,
   Typography,
 } from "@mui/material";
-import {
-  Download as DownloadIcon,
-  Settings as SettingsIcon,
-} from "@mui/icons-material";
+import { Download as DownloadIcon } from "@mui/icons-material";
 import NextLink from "next/link";
 import {
   SUPPLEMENTAL_1099_FIRST_RUN_HINT,
@@ -43,7 +40,7 @@ export default function FirstRunEmptyState({
               Upload a Robinhood transactions CSV and, if you have it, the 1099
               PDF. OptionsTaxHub helps reconcile whole-portfolio 1099-B and
               wash-sale gaps toward Schedule D — export plus 1099, not a Form
-              8949 rebuild. Or open the 2026 sample — free, no card.
+              8949 rebuild. Or try the sample — free, no card.
             </Typography>
           </Box>
 
@@ -80,7 +77,7 @@ export default function FirstRunEmptyState({
                 onClick={onLoadSample}
                 sx={{ textTransform: "none" }}
               >
-                Open the 2026 sample
+                Try the sample
               </Button>
             )}
             <Button
@@ -92,15 +89,6 @@ export default function FirstRunEmptyState({
               sx={{ textTransform: "none" }}
             >
               Download sample CSV
-            </Button>
-            <Button
-              component={NextLink}
-              href={settingsHref}
-              variant="text"
-              startIcon={<SettingsIcon />}
-              sx={{ textTransform: "none" }}
-            >
-              Review tax profile
             </Button>
           </Stack>
 

@@ -1,10 +1,23 @@
-import { render, screen, act, fireEvent } from "@testing-library/react";
+import { render as rtlRender, screen, act, fireEvent } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 const mockPush = jest.fn();
 
 jest.mock("next/navigation", () => ({
   useRouter: () => ({ push: mockPush }),
+  usePathname: () => "/tips/success",
 }));
+
+jest.mock("../../app/context/auth", () => ({
+  useAuth: () => ({ user: null, loading: false, signOut: jest.fn() }),
+}));
+
+function render(ui: React.ReactElement) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  return rtlRender(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+}
 
 import TipSuccessPage from "../../app/tips/success/page";
 

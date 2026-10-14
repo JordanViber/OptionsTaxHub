@@ -1,10 +1,12 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render as rtlRender, screen, fireEvent, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import SigninPage from "../../app/auth/signin/page";
 import { useRouter } from "next/navigation";
 import { useAuth } from "../../app/context/auth";
 
 jest.mock("next/navigation", () => ({
   useRouter: jest.fn(),
+  usePathname: () => "/auth/signin",
 }));
 
 jest.mock("../../app/context/auth", () => ({
@@ -12,7 +14,15 @@ jest.mock("../../app/context/auth", () => ({
 }));
 
 const mockPush = jest.fn();
+const mockReplace = jest.fn();
 const mockSignIn = jest.fn();
+
+function render(ui: React.ReactElement) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  return rtlRender(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+}
 
 const getInput = (container: HTMLElement, selector: string) => {
   const element = container.querySelector(selector);
@@ -35,11 +45,13 @@ describe("Sign In Page", () => {
     jest.clearAllMocks();
     (useRouter as jest.Mock).mockReturnValue({
       push: mockPush,
+      replace: mockReplace,
     });
     mockSignIn.mockResolvedValue(undefined);
     (useAuth as jest.Mock).mockReturnValue({
       signIn: mockSignIn,
       user: null,
+      loading: false,
       isLoading: false,
     });
   });
@@ -140,6 +152,81 @@ describe("Sign In Page", () => {
 
     await waitFor(() => {
       expect(mockPush).toHaveBeenCalledWith("/options");
+    });
+    window.history.pushState({}, "", "/");
+  });
+
+  it("carries next into the sign-up link", async () => {
+    window.history.pushState({}, "", "/auth/signin?next=/options");
+    render(<SigninPage />);
+    await waitFor(() => {
+      expect(screen.getByRole("link", { name: /Sign up/i })).toHaveAttribute(
+        "href",
+        "/auth/signup?next=/options",
+      );
+    });
+    window.history.pushState({}, "", "/");
+  });
+
+  it("sends an already signed-in user to the safe next path", async () => {
+    window.history.pushState({}, "", "/auth/signin?next=/privacy");
+    (useAuth as jest.Mock).mockReturnValue({
+      signIn: mockSignIn,
+      user: {
+        email: "test@example.com",
+        email_confirmed_at: "2025-01-01T00:00:00Z",
+      },
+      loading: false,
+    });
+    render(<SigninPage />);
+    await waitFor(() => {
+      expect(mockReplace).toHaveBeenCalledWith("/privacy");
+    });
+    window.history.pushState({}, "", "/");
+  });
+
+  it("sends an already signed-in user to the dashboard for an unknown next", async () => {
+    window.history.pushState({}, "", "/auth/signin?next=/missing-page");
+    (useAuth as jest.Mock).mockReturnValue({
+      signIn: mockSignIn,
+      user: {
+        email: "test@example.com",
+        email_confirmed_at: "2025-01-01T00:00:00Z",
+      },
+      loading: false,
+    });
+    render(<SigninPage />);
+    await waitFor(() => {
+      expect(mockReplace).toHaveBeenCalledWith("/dashboard");
+    });
+    window.history.pushState({}, "", "/");
+  });
+
+  it("keeps an unconfirmed user on the sign-in page", async () => {
+    (useAuth as jest.Mock).mockReturnValue({
+      signIn: mockSignIn,
+      user: { email: "test@example.com", email_confirmed_at: null },
+      loading: false,
+    });
+    render(<SigninPage />);
+    expect(
+      screen.getByRole("heading", { name: /Sign In/i }),
+    ).toBeInTheDocument();
+    expect(mockReplace).not.toHaveBeenCalled();
+  });
+
+  it("returns to the landing page when next=/", async () => {
+    window.history.pushState({}, "", "/auth/signin?next=/");
+    const { container } = render(<SigninPage />);
+    fireEvent.change(screen.getByLabelText(/Email/i), {
+      target: { value: "test@example.com" },
+    });
+    fireEvent.change(getInput(container, 'input[type="password"]'), {
+      target: { value: "password123" },
+    });
+    fireEvent.submit(getForm(container));
+    await waitFor(() => {
+      expect(mockPush).toHaveBeenCalledWith("/");
     });
     window.history.pushState({}, "", "/");
   });

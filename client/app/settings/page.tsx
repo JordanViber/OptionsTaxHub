@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
-  AppBar,
   Box,
   Button,
   Card,
@@ -19,15 +18,16 @@ import {
   Alert,
   Stack,
   TextField,
-  Toolbar,
   Typography,
 } from "@mui/material";
-import { Save as SaveIcon, ArrowBack as BackIcon } from "@mui/icons-material";
+import { Save as SaveIcon } from "@mui/icons-material";
 import { useAuth } from "@/app/context/auth";
 import { useSaveTaxProfile, useTaxProfile } from "@/lib/api";
 import type { FilingStatus } from "@/lib/types";
 import { FILING_STATUS_LABELS, US_STATES } from "@/lib/types";
 import TaxDisclaimer from "@/app/components/TaxDisclaimer";
+import AppShell from "@/app/components/AppShell";
+import { signInHref } from "@/lib/safeNextPath";
 
 export const dynamic = "force-dynamic";
 
@@ -81,7 +81,7 @@ export default function SettingsPage() {
   // Redirect if not authenticated
   useEffect(() => {
     if (!authLoading && !user) {
-      router.push("/auth/signin");
+      router.push(signInHref("/settings"));
     }
   }, [authLoading, user, router]);
 
@@ -121,33 +121,11 @@ export default function SettingsPage() {
   }
 
   return (
-    <>
-      <AppBar position="static" sx={{ mb: 4 }}>
-        <Toolbar sx={{ px: { xs: 1, sm: 2 } }}>
-          <Button
-            color="inherit"
-            startIcon={<BackIcon />}
-            onClick={() => router.push("/dashboard")}
-            sx={{ mr: 2, textTransform: "none" }}
-          >
-            Dashboard
-          </Button>
-          <Typography
-            variant="h6"
-            component="div"
-            sx={{
-              flexGrow: 1,
-              fontWeight: 700,
-              fontSize: { xs: "1rem", sm: "1.25rem" },
-              whiteSpace: "nowrap",
-            }}
-          >
-            Tax Profile Settings
-          </Typography>
-        </Toolbar>
-      </AppBar>
-
+    <AppShell>
       <Container maxWidth="sm" sx={{ py: 2 }}>
+        <Typography variant="h4" sx={{ fontWeight: 700, mb: 2 }}>
+          Settings
+        </Typography>
         <Stack spacing={3}>
           <TaxDisclaimer />
 
@@ -279,6 +257,6 @@ export default function SettingsPage() {
           Tax profile saved successfully!
         </Alert>
       </Snackbar>
-    </>
+    </AppShell>
   );
 }

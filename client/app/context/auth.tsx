@@ -13,6 +13,7 @@ import {
   getEmailConfirmRedirectTo,
   getSupabaseClient,
 } from "@/lib/supabase";
+import { safeNextPath } from "@/lib/safeNextPath";
 
 interface AuthContextType {
   user: User | null;
@@ -88,7 +89,13 @@ export function AuthProvider({ children }: Readonly<{ children: ReactNode }>) {
       full_name: name,
       display_name: name,
     };
-    const emailRedirectTo = getEmailConfirmRedirectTo();
+    const next =
+      typeof window === "undefined"
+        ? null
+        : new URLSearchParams(window.location.search).get("next");
+    const emailRedirectTo = getEmailConfirmRedirectTo(
+      next ? safeNextPath(next) : null,
+    );
 
     const { error } = await getSupabaseClient().auth.signUp({
       email,
