@@ -7076,3 +7076,109 @@ def test_unallocated_reservation_follows_same_day_tie_handling():
     assert matched.hops[0].not_compared_reason != "unallocated"
     assert all(chain.reconcile_status != "not_on_1099" for chain in chains)
     assert all(chain.reconcile_status != "on_1099_only" for chain in chains)
+
+
+def test_unallocated_ten_share_row_does_not_tie_twenty_and_thirty():
+    """A quiet 10-share row must not make the 20- and 30-share sales ambiguous.
+
+    The 30-share hop can also be 10+20. That overlap is only the unallocated
+    sale's row. Each comparable sale has its own 1099 row and matches it.
+    """
+    sale = date(2026, 6, 1)
+    ambiguous = date(2026, 5, 10)
+    closed_20 = date(2026, 5, 15)
+    closed_30 = date(2026, 5, 20)
+    replacement = date(2026, 6, 5)
+    chains = _build(
+        transactions=[
+            _txn("AAPL", TransCode.BUY, ambiguous, 6, 100),
+            _txn("AAPL", TransCode.BUY, ambiguous, 6, 100),
+            _txn("AAPL", TransCode.BUY, closed_20, 20, 100),
+            _txn("AAPL", TransCode.BUY, closed_30, 30, 100),
+            _txn("AAPL", TransCode.SELL, sale, 10, 80),
+            _txn("AAPL", TransCode.SELL, sale, 20, 80),
+            _txn("AAPL", TransCode.SELL, sale, 30, 80),
+            _txn("AAPL", TransCode.BUY, replacement, 30, 90),
+        ],
+        wash_sale_flags=[
+            WashSaleFlag(
+                symbol="AAPL",
+                sale_date=sale,
+                sale_quantity=10,
+                sale_loss=200,
+                repurchase_date=ambiguous,
+                repurchase_quantity=10,
+                disallowed_loss=200,
+                adjusted_cost_basis=1200,
+            ),
+            WashSaleFlag(
+                symbol="AAPL",
+                sale_date=sale,
+                sale_quantity=20,
+                sale_loss=400,
+                repurchase_date=replacement,
+                repurchase_quantity=20,
+                disallowed_loss=400,
+                adjusted_cost_basis=2200,
+            ),
+            WashSaleFlag(
+                symbol="AAPL",
+                sale_date=sale,
+                sale_quantity=30,
+                sale_loss=600,
+                repurchase_date=replacement,
+                repurchase_quantity=30,
+                disallowed_loss=600,
+                adjusted_cost_basis=3300,
+            ),
+        ],
+        realized_events=[
+            _event("AAPL", sale, 10, 1000, 800, ambiguous),
+            _event("AAPL", sale, 20, 2000, 1600, closed_20),
+            _event("AAPL", sale, 30, 3000, 2400, closed_30),
+        ],
+        supplemental=_supplemental(2026),
+        lot_match_report=_report(
+            _row(
+                symbol="AAPL",
+                quantity=10,
+                export_trade_date=sale,
+                proceeds_1099=800,
+                cost_basis_1099=1000,
+                wash_sale_disallowed=50,
+            ),
+            _row(
+                symbol="AAPL",
+                quantity=20,
+                export_trade_date=sale,
+                proceeds_1099=1600,
+                cost_basis_1099=2000,
+                wash_sale_disallowed=400,
+            ),
+            _row(
+                symbol="AAPL",
+                quantity=30,
+                export_trade_date=sale,
+                proceeds_1099=2400,
+                cost_basis_1099=3000,
+                wash_sale_disallowed=600,
+            ),
+        ),
+    )
+    assert len(chains) == 3
+    by_qty = {chain.hops[0].sale_quantity: chain for chain in chains}
+    quiet = by_qty[10]
+    hop = quiet.hops[0]
+    assert hop.not_compared_reason == "unallocated"
+    assert quiet.reconcile_status == "not_compared"
+    assert hop.engine_adjusted_cost_basis is None
+    assert hop.tacked_acquisition_date is None
+    assert hop.carryover_days is None
+    assert hop.form_1099_wash is None
+    assert by_qty[20].reconcile_status == "matches"
+    assert by_qty[20].hops[0].form_1099_wash == pytest.approx(400)
+    assert by_qty[30].reconcile_status == "matches"
+    assert by_qty[30].hops[0].form_1099_wash == pytest.approx(600)
+    assert all(chain.reconcile_status != "not_on_1099" for chain in chains)
+    assert all(chain.hops[0].not_compared_reason != "ambiguous" for chain in chains)
+    assert all(chain.reconcile_status != "on_1099_only" for chain in chains)
