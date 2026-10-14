@@ -94,8 +94,8 @@ class _HopDraft:
     hop_index: int = 0
     from_engine: bool = True
     # Why a hop was not compared. Drives copy only; not a tax field.
-    # "" | "no_1099" | "ambiguous" | "over_cap" | "unidentified" | "option"
-    # | "unclassified" | "unassigned" | "unknown"
+    # "" | "no_1099" | "ambiguous" | "over_cap" | "unidentified" | "unallocated"
+    # | "option" | "unclassified" | "unassigned" | "unknown"
     not_compared_reason: str = ""
     # Display-only match bookkeeping. Not copied onto the API model.
     row_target: float | None = None
@@ -805,6 +805,10 @@ _UNIDENTIFIED_LINE = (
     "This sale could not be tied to one trade's proceeds and loss, "
     "so it was not compared."
 )
+_UNALLOCATED_LINE = (
+    "This sale's replacement shares could not be allocated, "
+    "so it was not compared."
+)
 _UNKNOWN_QTY_LINE = (
     "This 1099 sale has no quantity, so it was not compared."
 )
@@ -1277,18 +1281,30 @@ def _hop_from_flag(
             repurchase_quantity=float(flag.repurchase_quantity),
             disallowed=float(flag.disallowed_loss),
         )
-        _apply_display_scale(buys, replacement)
+        if buys:
+            _apply_display_scale(buys, replacement)
     loss = _cents(float(flag.sale_loss))
     disallowed = _cents(float(flag.disallowed_loss))
     status: WashReconcileStatus = "not_compared"
-    not_compared_reason = "no_1099"
-    # The engine prices adjusted basis off its earliest repurchase. When
-    # that date is the closed lot, the number is not this replacement's basis.
-    engine_basis = (
-        None
-        if _earliest_repurchase_is_closed_lot(flag, closed)
-        else _cents(float(flag.adjusted_cost_basis))
-    )
+    # None means the closed shares cannot be picked out. A non-empty
+    # survivor list that allocates nothing is short of the repurchase.
+    # The engine basis can be an already-sold lot, so leave that basis
+    # and the tacked holding period off and stay unallocated. Comparison
+    # stays off. A sale with no buy list still compares.
+    if replacement is None or (replacement and not buys):
+        engine_basis = None
+        not_compared_reason = "unallocated"
+        compare_1099 = False
+    else:
+        not_compared_reason = "no_1099"
+        # The engine prices adjusted basis off its earliest repurchase. When
+        # that date is the closed lot, the number is not this replacement's basis.
+        engine_basis = (
+            None
+            if _earliest_repurchase_is_closed_lot(flag, closed)
+            else _cents(float(flag.adjusted_cost_basis))
+        )
+        compare_1099 = same_year and not unresolved
     return _HopDraft(
         hop_id=_hop_id(
             symbol,
@@ -1326,7 +1342,7 @@ def _hop_from_flag(
             sell,
             [event for _index, event in event_set],
         ),
-        compare_1099=same_year and not unresolved,
+        compare_1099=compare_1099,
     )
 
 
@@ -1783,6 +1799,8 @@ def plain_english_line(hop: _HopDraft) -> str:
         return _unassigned_line(hop.symbol, hop.sale_date)
     if hop.not_compared_reason == "unidentified":
         return _UNIDENTIFIED_LINE
+    if hop.not_compared_reason == "unallocated":
+        return _UNALLOCATED_LINE
     if hop.not_compared_reason == "unknown":
         return _UNKNOWN_QTY_LINE
     listed = _listed_buys(hop)
@@ -2220,6 +2238,19 @@ def build_wash_sale_chains(
                 unit_targets=_quiet_unit_target(
                     flag, transactions, realized_events
                 ),
+            )
+        elif (
+            hop.not_compared_reason == "unallocated"
+            and hop.row_target is not None
+        ):
+            # Only this sale's price. The other same-day fill keeps its row.
+            _reserve_same_day_1099_rows(
+                rows,
+                used_rows,
+                symbol=hop.symbol,
+                sale_date=hop.sale_date,
+                quantity=hop.sale_quantity,
+                unit_target=hop.row_target,
             )
         engine_hops.append(hop)
     _refuse_same_day_1099_ties(engine_hops, rows, used_rows, unassigned)
