@@ -6628,7 +6628,7 @@ def test_undated_closed_lot_does_not_guess_a_pre_sale_replacement():
     assert hop.engine_adjusted_cost_basis is None
     assert hop.tacked_acquisition_date is None
     assert hop.carryover_days is None
-    assert hop.not_compared_reason == "unidentified"
+    assert hop.not_compared_reason == "unallocated"
     assert "illustrative" not in hop.plain_english
 
 
@@ -6862,7 +6862,7 @@ def test_prior_sale_lot_is_not_published_when_replacement_cannot_be_allocated():
     assert hop.engine_adjusted_cost_basis is None
     assert hop.tacked_acquisition_date is None
     assert hop.carryover_days is None
-    assert hop.not_compared_reason == "unidentified"
+    assert hop.not_compared_reason == "unallocated"
     assert hop.reconcile_status == "not_compared"
     assert "illustrative" not in hop.plain_english
     earlier = next(
@@ -6874,3 +6874,84 @@ def test_prior_sale_lot_is_not_published_when_replacement_cannot_be_allocated():
     assert [(txn.activity_date, txn.quantity, txn.price) for txn in txns] == [
         (txn.activity_date, txn.quantity, txn.price) for txn in before
     ]
+
+
+def test_unallocated_sale_does_not_take_the_sibling_1099_row():
+    """10 shares at $80 and 10 at $70 on the same day keep their own rows.
+
+    The $80 closed lot is two May 10 buys, so those shares cannot be picked
+    out and that hop stays unallocated. Reserving only the $80 price leaves
+    the $70 row for the sale that can be allocated.
+    """
+    sale = date(2026, 6, 1)
+    opened = date(2026, 5, 10)
+    other = date(2026, 5, 20)
+    chains = _build(
+        transactions=[
+            _txn("AAPL", TransCode.BUY, opened, 6, 100),
+            _txn("AAPL", TransCode.BUY, opened, 6, 90),
+            _txn("AAPL", TransCode.BUY, other, 10, 100),
+            _txn("AAPL", TransCode.SELL, sale, 10, 80),
+            _txn("AAPL", TransCode.SELL, sale, 10, 70),
+            _txn("AAPL", TransCode.BUY, date(2026, 6, 5), 10, 75),
+        ],
+        wash_sale_flags=[
+            WashSaleFlag(
+                symbol="AAPL",
+                sale_date=sale,
+                sale_quantity=10,
+                sale_loss=200,
+                repurchase_date=opened,
+                repurchase_quantity=10,
+                disallowed_loss=200,
+                adjusted_cost_basis=1200,
+            ),
+            WashSaleFlag(
+                symbol="AAPL",
+                sale_date=sale,
+                sale_quantity=10,
+                sale_loss=300,
+                repurchase_date=date(2026, 6, 5),
+                repurchase_quantity=10,
+                disallowed_loss=300,
+                adjusted_cost_basis=1050,
+            ),
+        ],
+        realized_events=[
+            _event("AAPL", sale, 10, 1000, 800, opened),
+            _event("AAPL", sale, 10, 1000, 700, other),
+        ],
+        supplemental=_supplemental(2026),
+        lot_match_report=_report(
+            _row(
+                symbol="AAPL",
+                quantity=10,
+                export_trade_date=sale,
+                proceeds_1099=800,
+                wash_sale_disallowed=200,
+            ),
+            _row(
+                symbol="AAPL",
+                quantity=10,
+                export_trade_date=sale,
+                proceeds_1099=700,
+                wash_sale_disallowed=300,
+            ),
+        ),
+    )
+    assert len(chains) == 2
+    quiet = next(chain for chain in chains if chain.hops[0].proceeds == pytest.approx(800))
+    matched = next(chain for chain in chains if chain.hops[0].proceeds == pytest.approx(700))
+    hop = quiet.hops[0]
+    assert quiet.reconcile_status == "not_compared"
+    assert hop.not_compared_reason == "unallocated"
+    assert hop.engine_adjusted_cost_basis is None
+    assert hop.tacked_acquisition_date is None
+    assert hop.carryover_days is None
+    assert hop.form_1099_wash is None
+    assert "illustrative" not in hop.plain_english
+    assert matched.reconcile_status == "matches"
+    assert matched.hops[0].form_1099_wash == pytest.approx(300)
+    assert matched.hops[0].not_compared_reason != "unallocated"
+    assert all(chain.reconcile_status != "not_on_1099" for chain in chains)
+    assert all(chain.reconcile_status != "on_1099_only" for chain in chains)

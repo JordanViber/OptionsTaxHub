@@ -236,7 +236,8 @@ class WashSaleHop(BaseModel):
     reconcile_status: WashReconcileStatus = "not_on_1099"
     difference: Optional[float] = None
     # Display only. "" | "no_1099" | "ambiguous" | "over_cap" | "unidentified"
-    # | "option" | "unclassified" | "overlap" | "unassigned" | "unknown".
+    # | "unallocated" | "option" | "unclassified" | "overlap" | "unassigned"
+    # | "unknown".
     # Not a tax field.
     not_compared_reason: str = ""
 
