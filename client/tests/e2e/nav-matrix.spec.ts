@@ -611,4 +611,77 @@ test.describe("nav matrix", () => {
     await expect(page).toHaveURL(/\/dashboard/, { timeout: 15000 });
     await expect(page.getByText("Tax Year: 2026")).toBeVisible({ timeout: 20000 });
   });
+
+  test("a long account name keeps Settings and Sign Out visible at 1280", async ({
+    page,
+  }) => {
+    const longName = "A".repeat(60);
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await mockGuest(page);
+    await setupMockAuth(page);
+    await injectMockSession(page, longName);
+    await page.goto("/dashboard");
+    const account = page.getByTestId("header-account");
+    await expect(account).toBeVisible({ timeout: 15000 });
+    await expect(account).toHaveAttribute("aria-label", longName);
+    const name = page.getByTestId("header-account-name");
+    await expect(name).toHaveCSS("text-overflow", "ellipsis");
+    await expect(name).toHaveCSS("max-width", "160px");
+    const clipped = await name.evaluate(
+      (element) => element.scrollWidth > element.clientWidth + 1,
+    );
+    expect(clipped).toBe(true);
+    await assertHeaderOneRow(page);
+    await account.click();
+    await expect(
+      page.getByRole("menuitem", { name: "Settings", exact: true }),
+    ).toBeVisible();
+    await expect(page.getByRole("menuitem", { name: "Sign Out" })).toBeVisible();
+  });
+});
+
+test.describe("install card stays in the first viewport", () => {
+  test.use({
+    viewport: { width: 390, height: 844 },
+    userAgent:
+      "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+    hasTouch: true,
+  });
+
+  test("shows under the header on the landing page and the dashboard", async ({
+    page,
+  }) => {
+    test.setTimeout(60_000);
+    await page.addInitScript(() => {
+      localStorage.setItem("appWasInstalled", "true");
+      localStorage.removeItem("installedMessageDismissed");
+      localStorage.removeItem("installPromptDismissed");
+    });
+    await mockGuest(page);
+
+    const assertInFirstViewport = async () => {
+      const card = page.getByTestId("install-prompt");
+      await expect(card).toBeVisible({ timeout: 15000 });
+      const box = await card.boundingBox();
+      const viewport = page.viewportSize();
+      expect(box && viewport).toBeTruthy();
+      expect(box!.y).toBeGreaterThanOrEqual(0);
+      expect(box!.y).toBeLessThan(viewport!.height);
+      expect(box!.y + box!.height).toBeLessThanOrEqual(viewport!.height);
+      const position = await card.evaluate(
+        (element) => getComputedStyle(element).position,
+      );
+      expect(position).not.toBe("fixed");
+      expect(position).not.toBe("absolute");
+    };
+
+    await page.goto("/");
+    await expect(page.getByTestId("app-header")).toBeVisible({ timeout: 15000 });
+    await assertInFirstViewport();
+
+    await page.evaluate(() => sessionStorage.removeItem("installPromptShown"));
+    await page.goto("/dashboard");
+    await expect(page.getByTestId("app-header")).toBeVisible({ timeout: 15000 });
+    await assertInFirstViewport();
+  });
 });

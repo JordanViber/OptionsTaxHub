@@ -1785,7 +1785,7 @@ describe("DashboardPage", () => {
       </QueryClientProvider>,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "Account" }));
+    fireEvent.click(await screen.findByTestId("header-account"));
     fireEvent.click(screen.getByRole("menuitem", { name: "Sign Out" }));
 
     await waitFor(() => {

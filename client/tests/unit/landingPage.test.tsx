@@ -74,9 +74,10 @@ describe("LandingPage", () => {
       within(header).getByRole("link", { name: "Options" }),
     ).toHaveAttribute("href", "/options");
     expect(screen.queryByText("Open Tax")).not.toBeInTheDocument();
-    expect(
-      within(header).getByRole("button", { name: "Account" }),
-    ).toBeInTheDocument();
+    expect(within(header).getByTestId("header-account")).toHaveAttribute(
+      "aria-label",
+      "test@example.com",
+    );
     expect(
       screen.getByRole("link", { name: "See what's kept" }),
     ).toHaveAttribute("href", "/dashboard");

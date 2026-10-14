@@ -545,7 +545,7 @@ test.describe("Dashboard User Menu & Navigation", () => {
   });
 
   test("Settings button navigates to settings page", async ({ page }) => {
-    await page.getByRole("button", { name: "Account" }).click();
+    await page.getByTestId("header-account").click();
     await page.getByRole("menuitem", { name: "Settings" }).click();
 
     await expect(page).toHaveURL(/\/settings/, { timeout: 10000 });
@@ -657,7 +657,7 @@ test.describe("Tip Jar", () => {
   });
 
   test("tip button opens tip jar dialog", async ({ page }) => {
-    await page.getByRole("button", { name: "Account" }).click();
+    await page.getByTestId("header-account").click();
     await page.getByRole("menuitem", { name: "Tip" }).click();
     await expect(page.getByText("Support OptionsTaxHub")).toBeVisible();
     await expect(page.getByText("$3")).toBeVisible();
@@ -666,7 +666,7 @@ test.describe("Tip Jar", () => {
   });
 
   test("tip jar shows all three tiers with descriptions", async ({ page }) => {
-    await page.getByRole("button", { name: "Account" }).click();
+    await page.getByTestId("header-account").click();
     await page.getByRole("menuitem", { name: "Tip" }).click();
     await expect(page.getByText("Buy us a coffee")).toBeVisible();
     await expect(page.getByText("Buy us lunch")).toBeVisible();
@@ -674,7 +674,7 @@ test.describe("Tip Jar", () => {
   });
 
   test("tip jar closes with close button", async ({ page }) => {
-    await page.getByRole("button", { name: "Account" }).click();
+    await page.getByTestId("header-account").click();
     await page.getByRole("menuitem", { name: "Tip" }).click();
     await expect(page.getByText("Support OptionsTaxHub")).toBeVisible();
     await page.click('button[aria-label="close"]');
@@ -696,7 +696,7 @@ test.describe("Tip Jar", () => {
       });
     });
 
-    await page.getByRole("button", { name: "Account" }).click();
+    await page.getByTestId("header-account").click();
     await page.getByRole("menuitem", { name: "Tip" }).click();
     // Click the Coffee tier card
     await page.getByText("Buy us a coffee").click();
@@ -714,14 +714,14 @@ test.describe("Tip Jar", () => {
       }),
     );
 
-    await page.getByRole("button", { name: "Account" }).click();
+    await page.getByTestId("header-account").click();
     await page.getByRole("menuitem", { name: "Tip" }).click();
     await page.getByText("Buy us a coffee").click();
     await expect(page.getByRole("alert")).toBeVisible({ timeout: 5000 });
   });
 
   test("stripe footer text is visible", async ({ page }) => {
-    await page.getByRole("button", { name: "Account" }).click();
+    await page.getByTestId("header-account").click();
     await page.getByRole("menuitem", { name: "Tip" }).click();
     await expect(
       page.getByText("Payments processed securely by Stripe"),

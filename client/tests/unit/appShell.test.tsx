@@ -111,7 +111,7 @@ describe("AppShell", () => {
       user_metadata: { display_name: "Ada" },
     };
     renderShell(<AppShell />);
-    fireEvent.click(screen.getByRole("button", { name: "Account" }));
+    fireEvent.click(screen.getByTestId("header-account"));
     fireEvent.click(screen.getByRole("menuitem", { name: "Settings" }));
     expect(mockPush).toHaveBeenCalledWith("/settings");
     expect(screen.queryByRole("button", { name: /^Settings$/ })).not.toBeInTheDocument();
@@ -156,11 +156,27 @@ describe("AppShell", () => {
     client.setQueryData(["portfolio-history", "user-1"], [{ id: "h1" }]);
     client.setQueryData(["tax-profile", "user-1"], { tax_year: 2026 });
 
+    const deleteCache = jest.fn(async () => true);
+    const cacheKeys = jest.fn(async () => [
+      "optionstaxhub-v6",
+      "optionstaxhub-v5",
+    ]);
+    Object.defineProperty(globalThis, "caches", {
+      configurable: true,
+      value: { keys: cacheKeys, delete: deleteCache },
+    });
+
     renderShell(<AppShell />, client);
-    fireEvent.click(screen.getByRole("button", { name: "Account" }));
+    expect(screen.getByTestId("header-account")).toHaveAttribute(
+      "aria-label",
+      "Ada",
+    );
+    fireEvent.click(screen.getByTestId("header-account"));
     fireEvent.click(screen.getByRole("menuitem", { name: "Sign Out" }));
 
     await waitFor(() => expect(mockAuth.signOut).toHaveBeenCalledTimes(1));
+    expect(deleteCache).toHaveBeenCalledWith("optionstaxhub-v6");
+    expect(deleteCache).toHaveBeenCalledWith("optionstaxhub-v5");
     expect(sessionStorage.getItem("optionstaxhub-analysis")).toBeNull();
     expect(client.getQueryData(["portfolio-history", "user-1"])).toBeUndefined();
     expect(client.getQueryData(["tax-profile", "user-1"])).toBeUndefined();
