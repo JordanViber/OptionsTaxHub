@@ -1288,10 +1288,13 @@ def _hop_from_flag(
     status: WashReconcileStatus = "not_compared"
     # None means the closed shares cannot be picked out. A non-empty
     # survivor list that allocates nothing is short of the repurchase.
-    # The engine basis can be an already-sold lot, so leave that basis
-    # and the tacked holding period off and stay unallocated. Comparison
+    # A non-empty window whose buys were all the lot being sold leaves an
+    # empty survivor list: that is not a replacement, and comparing it to
+    # a same-year $0 wash row would report the full disallowance. The
+    # engine basis can be an already-sold lot, so leave that basis and
+    # the tacked holding period off and stay unallocated. Comparison
     # stays off. A sale with no buy list still compares.
-    if replacement is None or (replacement and not buys):
+    if replacement is None or (bool(raw_buys) and not buys):
         engine_basis = None
         not_compared_reason = "unallocated"
         compare_1099 = False
@@ -2239,19 +2242,6 @@ def build_wash_sale_chains(
                     flag, transactions, realized_events
                 ),
             )
-        elif (
-            hop.not_compared_reason == "unallocated"
-            and hop.row_target is not None
-        ):
-            # Only this sale's price. The other same-day fill keeps its row.
-            _reserve_same_day_1099_rows(
-                rows,
-                used_rows,
-                symbol=hop.symbol,
-                sale_date=hop.sale_date,
-                quantity=hop.sale_quantity,
-                unit_target=hop.row_target,
-            )
         engine_hops.append(hop)
     _refuse_same_day_1099_ties(engine_hops, rows, used_rows, unassigned)
     for hop in engine_hops:
@@ -2263,6 +2253,22 @@ def build_wash_sale_chains(
                 unassigned,
                 claim_absence=claim_absence,
             )
+    # Unallocated reservation waits until same-day ties are refused and
+    # comparable sales have claimed a subset. Reserving earlier holds
+    # every exact quantity subset of the quiet sale, which can take the
+    # rows a larger same-price sibling needs. Only this sale's price is
+    # held, and only what the sibling did not already use.
+    for hop in engine_hops:
+        if hop.not_compared_reason != "unallocated" or hop.row_target is None:
+            continue
+        _reserve_same_day_1099_rows(
+            rows,
+            used_rows,
+            symbol=hop.symbol,
+            sale_date=hop.sale_date,
+            quantity=hop.sale_quantity,
+            unit_target=hop.row_target,
+        )
     if comparable and claim_absence:
         # One unknown-quantity row blocks absence for every same-day hop and
         # is not also emitted as a leftover chain.
