@@ -317,9 +317,9 @@ export async function injectMockSession(page: Page) {
         storageKeys.add(key);
       }
     }
-    for (const storageKey of storageKeys) {
+    storageKeys.forEach((storageKey) => {
       localStorage.setItem(storageKey, JSON.stringify(authData));
-    }
+    });
     try {
       sessionStorage.setItem(
         "optionstaxhub-packet-paid:local-analysis",
