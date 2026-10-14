@@ -640,6 +640,55 @@ describe("WashSaleChainPanel", () => {
     expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
   });
 
+  it("renders an unallocated sale as a quiet Not compared hop", () => {
+    const copy =
+      "This sale's replacement shares could not be allocated, so it was not compared.";
+    render(
+      <WashSaleChainPanel
+        chains={[
+          chain({
+            chain_id: "AAPL:2026-06-01:10:e0",
+            symbol: "AAPL",
+            reconcile_status: "not_compared",
+            plain_english: copy,
+            hops: [
+              hop({
+                hop_id: "AAPL:2026-06-01:10:e0",
+                symbol: "AAPL",
+                sale_date: "2026-06-01",
+                sale_quantity: 10,
+                proceeds: 800,
+                cost_basis: 1000,
+                loss: 200,
+                replacement_buys: [],
+                disallowed_loss: 200,
+                engine_disallowed_loss: 200,
+                form_1099_wash: null,
+                engine_adjusted_cost_basis: null,
+                tacked_acquisition_date: null,
+                carryover_days: null,
+                plain_english: copy,
+                reconcile_status: "not_compared",
+                not_compared_reason: "unallocated",
+              }),
+            ],
+          }),
+        ]}
+      />,
+    );
+    fireEvent.click(
+      screen.getByTestId("wash-sale-chain-open-AAPL:2026-06-01:10:e0"),
+    );
+    expect(screen.getAllByText("Not compared").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(copy).length).toBeGreaterThan(0);
+    expect(screen.queryByText("Proceeds")).not.toBeInTheDocument();
+    expect(screen.queryByText("Basis")).not.toBeInTheDocument();
+    expect(screen.queryByText("Disallowed")).not.toBeInTheDocument();
+    expect(screen.queryByText("$800.00")).not.toBeInTheDocument();
+    expect(screen.queryByText("$200.00")).not.toBeInTheDocument();
+    expect(screen.queryByText(/illustrative/i)).not.toBeInTheDocument();
+  });
+
   it("uses a full-screen dialog at phone width and still shows an empty hop list", () => {
     stubMatchMedia(true);
     render(
