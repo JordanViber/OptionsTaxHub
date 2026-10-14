@@ -1,4 +1,5 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render as rtlRender, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import OptionsPage from "../../app/options/page";
 import type { Position } from "../../lib/types";
 
@@ -35,6 +36,13 @@ jest.mock("next/navigation", () => ({
 jest.mock("../../app/context/auth", () => ({
   useAuth: () => mockAuth,
 }));
+
+function render(ui: React.ReactElement) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  return rtlRender(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+}
 
 jest.mock("../../lib/api", () => ({
   useRhChainMutation: () => ({
@@ -95,6 +103,15 @@ describe("Options page", () => {
       "href",
       "/options",
     );
+    expect(screen.getByTestId("header-upload")).toBeInTheDocument();
+    expect(screen.getByTestId("header-saved-runs")).toBeInTheDocument();
+    expect(screen.getByTestId("header-sign-in")).toHaveAttribute(
+      "href",
+      "/auth/signin?next=/options",
+    );
+    expect(
+      screen.queryByRole("button", { name: /^Settings$/ }),
+    ).not.toBeInTheDocument();
 
     const premium = screen.getByTestId("entry-premium");
     const hint = screen.getByTestId("entry-empty");

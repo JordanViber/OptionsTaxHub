@@ -27,7 +27,7 @@ test.describe("Settings Page", () => {
     await injectMockSession(page);
     await page.goto("/settings");
 
-    await expect(page.getByText("Tax Profile Settings")).toBeVisible({
+    await expect(page.getByRole("heading", { name: "Tax settings", exact: true })).toBeVisible({
       timeout: 10000,
     });
     await expect(page.getByText("Your Tax Profile")).toBeVisible();
@@ -45,7 +45,7 @@ test.describe("Settings Page", () => {
     await injectMockSession(page);
     await page.goto("/settings");
 
-    await expect(page.getByText("Tax Profile Settings")).toBeVisible({
+    await expect(page.getByRole("heading", { name: "Tax settings", exact: true })).toBeVisible({
       timeout: 10000,
     });
 
@@ -68,12 +68,14 @@ test.describe("Settings Page", () => {
     );
 
     await page.goto("/settings");
-    await expect(page.getByText("Tax Profile Settings")).toBeVisible({
+    await expect(page.getByRole("heading", { name: "Tax settings", exact: true })).toBeVisible({
       timeout: 10000,
     });
 
-    // Click the Dashboard back button
-    await page.getByRole("button", { name: "Dashboard" }).click();
+    await page
+      .getByRole("navigation", { name: "Primary" })
+      .getByRole("link", { name: "Tax", exact: true })
+      .click();
 
     // Should navigate to dashboard
     await expect(page.getByText("Portfolio Analysis")).toBeVisible({
@@ -87,7 +89,7 @@ test.describe("Settings Page", () => {
     await injectMockSession(page);
     await page.goto("/settings");
 
-    await expect(page.getByText("Tax Profile Settings")).toBeVisible({
+    await expect(page.getByRole("heading", { name: "Tax settings", exact: true })).toBeVisible({
       timeout: 10000,
     });
 
@@ -102,7 +104,7 @@ test.describe("Settings Page", () => {
     await injectMockSession(page);
     await page.goto("/settings");
 
-    await expect(page.getByText("Tax Profile Settings")).toBeVisible({
+    await expect(page.getByRole("heading", { name: "Tax settings", exact: true })).toBeVisible({
       timeout: 10000,
     });
 
@@ -124,7 +126,7 @@ test.describe("Settings Page", () => {
     await injectMockSession(page);
     await page.goto("/settings");
 
-    await expect(page.getByText("Tax Profile Settings")).toBeVisible({
+    await expect(page.getByRole("heading", { name: "Tax settings", exact: true })).toBeVisible({
       timeout: 10000,
     });
 

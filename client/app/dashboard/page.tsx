@@ -6,8 +6,6 @@ import {
   Accordion,
   AccordionSummary,
   AccordionDetails,
-  AppBar,
-  Toolbar,
   Container,
   Box,
   Card,
@@ -25,9 +23,6 @@ import {
   Snackbar,
   Stack,
   Typography,
-  Menu,
-  MenuItem,
-  Avatar,
   Tabs,
   Tab,
   LinearProgress,
@@ -45,16 +40,11 @@ import {
   CloudUpload as CloudUploadIcon,
   Error as ErrorIcon,
   ExpandMore as ExpandMoreIcon,
-  Login as LoginIcon,
-  Logout as LogoutIcon,
-  Settings as SettingsIcon,
   History as HistoryIcon,
-  Favorite as HeartIcon,
   Close as CloseIcon,
   CalendarToday as CalendarIcon,
 } from "@mui/icons-material";
 import NextLink from "next/link";
-import Wordmark from "../components/Wordmark";
 import ServiceWorkerRegistration from "../components/ServiceWorkerRegistration";
 import TaxDisclaimer from "../components/TaxDisclaimer";
 import PortfolioSummaryCards from "../components/PortfolioSummaryCards";
@@ -64,7 +54,6 @@ import WashSaleWarning from "../components/WashSaleWarning";
 import WashSaleChainPanel, {
   washChainsVisible,
 } from "../components/WashSaleChainPanel";
-import TipJar from "../components/TipJar";
 import {
   useAnalyzePortfolio,
   useTaxProfile,
@@ -80,7 +69,7 @@ import {
   getBackendUnreachableMessage,
 } from "@/lib/api";
 import FirstRunEmptyState from "../components/FirstRunEmptyState";
-import DeskNav from "../components/DeskNav";
+import AppShell from "../components/AppShell";
 import Supplemental1099InsightsPanel from "../components/Supplemental1099InsightsPanel";
 import {
   PACKET_SCOPE_COPY,
@@ -115,11 +104,15 @@ import type {
   Position,
 } from "@/lib/types";
 import { SAMPLE_FETCH_TIMEOUT_MS } from "@/lib/constants";
+import {
+  LOAD_SAMPLE_KEY,
+  OPEN_RUNS_KEY,
+  UPLOAD_INTENT_KEY,
+  signInHref,
+} from "@/lib/safeNextPath";
 
 export const dynamic = "force-dynamic";
 
-const UPLOAD_INTENT_KEY = "oth-upload-intent";
-const LOAD_SAMPLE_KEY = "oth-load-sample";
 const GUEST_UNSAVED_KEY = "oth-guest-unsaved";
 const GUEST_UNSAVED_FILENAME_KEY = "oth-guest-unsaved-filename";
 const SAMPLE_CSV_URL = "/sample-robinhood-transactions.csv";
@@ -812,7 +805,7 @@ function ResultsSection({
           December.{" "}
           <Button
             component={NextLink}
-            href="/auth/signin"
+            href={signInHref("/dashboard")}
             size="small"
             sx={{ textTransform: "none", minWidth: "auto", p: 0 }}
           >
@@ -1244,13 +1237,11 @@ export default function DashboardPage() {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const supplemental1099InputRef = useRef<HTMLInputElement>(null);
-  const { user, loading: authLoading, signOut } = useAuth();
+  const { user, loading: authLoading } = useAuth();
   const emailConfirmed = isEmailConfirmed(user);
   const confirmedUserId = emailConfirmed ? user?.id : undefined;
-  const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
   const [activeTab, setActiveTab] = useState(0);
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [tipJarOpen, setTipJarOpen] = useState(false);
   const [lastUploadedCsv, setLastUploadedCsv] = useState<File | null>(null);
   const [supplemental1099File, setSupplemental1099File] = useState<File | null>(
     null,
@@ -1448,17 +1439,9 @@ export default function DashboardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [confirmedUserId]);
 
-  const handleOpenSavedRuns = () => {
-    if (!user) {
-      router.push("/auth/signin?reason=runs");
-      return;
-    }
-    setHistoryOpen(true);
-  };
-
   const handleOpenSettings = () => {
     if (!user) {
-      router.push("/auth/signin?reason=profile");
+      router.push(signInHref("/dashboard", "profile"));
       return;
     }
     router.push("/settings");
@@ -1758,20 +1741,19 @@ export default function DashboardPage() {
     }
   };
 
-  const handleSignOut = async () => {
-    sessionStorage.removeItem("optionstaxhub-analysis");
-    // Remove cached portfolio history when the user signs out to avoid
-    // briefly showing a previous user's history while refetching.
-    queryClient.removeQueries({
-      queryKey: ["portfolio-history", user?.id],
-    });
-    queryClient.removeQueries({
-      queryKey: ["tax-profile", user?.id],
-    });
-    await signOut();
-    setMenuAnchor(null);
-    router.push("/auth/signin");
-  };
+  useEffect(() => {
+    if (authLoading || !user) {
+      return;
+    }
+    try {
+      if (sessionStorage.getItem(OPEN_RUNS_KEY) === "1") {
+        sessionStorage.removeItem(OPEN_RUNS_KEY);
+        setHistoryOpen(true);
+      }
+    } catch {
+      // ignore
+    }
+  }, [authLoading, user]);
 
   /**
    * Load a past analysis from history and display it.
@@ -1849,16 +1831,6 @@ export default function DashboardPage() {
     );
   }
 
-  const firstName = user?.user_metadata?.first_name as string | null;
-  const lastName = user?.user_metadata?.last_name as string | null;
-  const fullName = [firstName, lastName].filter(Boolean).join(" ");
-  const displayNameFromProfile =
-    (user?.user_metadata?.display_name as string | null) ||
-    (user?.user_metadata?.full_name as string | null);
-  const displayName =
-    displayNameFromProfile || fullName || user?.email || "Account";
-  const avatarLetter = displayName[0].toUpperCase();
-
   // displayedAnalysis is computed above (near sessionStorage effects)
   const analyzing = isPending || sampleLoading;
   const hasResults = !!displayedAnalysis && !forceEmpty;
@@ -1928,10 +1900,11 @@ export default function DashboardPage() {
                     Your{" "}
                     <Button
                       size="small"
+                      data-testid="tax-settings-link"
                       onClick={handleOpenSettings}
                       sx={{ textTransform: "none", p: 0, minWidth: "auto" }}
                     >
-                      tax profile
+                      Tax settings
                     </Button>{" "}
                     is used to calculate savings.
                   </Typography>
@@ -2067,183 +2040,16 @@ export default function DashboardPage() {
   );
 
   return (
-    <>
+    <AppShell
+      onUpload={() => {
+        setUploadOpen(true);
+        window.requestAnimationFrame(() => {
+          document.getElementById("tax-upload")?.scrollIntoView?.({ block: "start" });
+        });
+      }}
+      onSavedRuns={() => setHistoryOpen(true)}
+    >
       <ServiceWorkerRegistration />
-
-      {/* Header AppBar */}
-      <AppBar position="static" sx={{ zIndex: 40 }}>
-        <Toolbar
-          sx={{
-            px: { xs: 1, sm: 2 },
-            gap: { xs: 0.25, sm: 0.5 },
-            flexWrap: "nowrap",
-            minWidth: 0,
-          }}
-        >
-          <Wordmark href="/" />
-          <Box sx={{ flexGrow: 1 }} />
-
-          {hasResults && (
-            <Button
-              color="inherit"
-              aria-label="Upload"
-              data-testid="tax-upload-action"
-              startIcon={<CloudUploadIcon />}
-              onClick={() => {
-                setUploadOpen(true);
-                window.requestAnimationFrame(() => {
-                  document
-                    .getElementById("tax-upload")
-                    ?.scrollIntoView?.({ block: "start" });
-                });
-              }}
-              sx={{
-                textTransform: "none",
-                whiteSpace: "nowrap",
-                flexShrink: 0,
-                minWidth: { xs: 40, sm: 64 },
-                px: { xs: 1, sm: 1.5 },
-              }}
-            >
-              <Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>
-                Upload
-              </Box>
-            </Button>
-          )}
-
-          <Button
-            color="inherit"
-            aria-label="Tip"
-            startIcon={<HeartIcon sx={{ color: "#c46a58" }} />}
-            onClick={() => setTipJarOpen(true)}
-            sx={{
-              textTransform: "none",
-              flexShrink: 0,
-              minWidth: { xs: 40, sm: 64 },
-              px: { xs: 1, sm: 1.5 },
-            }}
-          >
-            <Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>
-              Tip
-            </Box>
-          </Button>
-
-          <Button
-            color="inherit"
-            aria-label="Saved runs"
-            startIcon={<HistoryIcon />}
-            onClick={handleOpenSavedRuns}
-            sx={{
-              textTransform: "none",
-              flexShrink: 0,
-              minWidth: { xs: 40, sm: 64 },
-              px: { xs: 1, sm: 1.5 },
-            }}
-          >
-            <Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>
-              Saved runs
-            </Box>
-          </Button>
-
-          <Button
-            color="inherit"
-            aria-label="Settings"
-            startIcon={<SettingsIcon />}
-            onClick={handleOpenSettings}
-            sx={{
-              textTransform: "none",
-              flexShrink: 0,
-              minWidth: { xs: 40, sm: 64 },
-              px: { xs: 1, sm: 1.5 },
-            }}
-          >
-            <Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>
-              Settings
-            </Box>
-          </Button>
-
-          {user ? (
-            <>
-              <Button
-                color="inherit"
-                onClick={(e) => setMenuAnchor(e.currentTarget)}
-                sx={{
-                  textTransform: "none",
-                  minWidth: "auto",
-                  px: { xs: 0.5, sm: 1 },
-                }}
-              >
-                <Avatar sx={{ width: 32, height: 32 }}>{avatarLetter}</Avatar>
-                <Typography
-                  component="span"
-                  sx={{ ml: 1, display: { xs: "none", sm: "inline" } }}
-                >
-                  {displayName}
-                </Typography>
-              </Button>
-              <Menu
-                anchorEl={menuAnchor}
-                open={Boolean(menuAnchor)}
-                onClose={() => setMenuAnchor(null)}
-                slotProps={{
-                  paper: { sx: { zIndex: 50 } },
-                }}
-              >
-                <MenuItem disabled>
-                  <Typography variant="body2">
-                    {displayName}
-                    {user.email ? ` (${user.email})` : ""}
-                  </Typography>
-                </MenuItem>
-                <MenuItem
-                  onClick={() => {
-                    setMenuAnchor(null);
-                    handleOpenSavedRuns();
-                  }}
-                >
-                  Saved runs
-                </MenuItem>
-                <MenuItem
-                  onClick={() => {
-                    setMenuAnchor(null);
-                    handleOpenSettings();
-                  }}
-                >
-                  Tax profile
-                </MenuItem>
-                <MenuItem onClick={handleSignOut}>
-                  <LogoutIcon sx={{ mr: 1 }} />
-                  Sign Out
-                </MenuItem>
-              </Menu>
-            </>
-          ) : (
-            <Button
-              component={NextLink}
-              href="/auth/signin"
-              aria-label="Sign In"
-              variant="contained"
-              size="small"
-              startIcon={<LoginIcon />}
-              sx={{
-                ml: 0.5,
-                whiteSpace: "nowrap",
-                flexShrink: 0,
-                minWidth: { xs: 40, sm: 64 },
-                px: { xs: 1, sm: 1.5 },
-              }}
-            >
-              <Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>
-                Sign In
-              </Box>
-            </Button>
-          )}
-        </Toolbar>
-        <DeskNav />
-      </AppBar>
-
-      {/* Tip Jar Dialog */}
-      <TipJar open={tipJarOpen} onClose={() => setTipJarOpen(false)} />
 
       {/* History Drawer */}
       <Drawer
@@ -2365,7 +2171,9 @@ export default function DashboardPage() {
           {!hasResults && !analyzing && !error && !sampleLoadError && (
             <FirstRunEmptyState
               onLoadSample={handleLoadSample}
-              settingsHref={user ? "/settings" : "/auth/signin?reason=profile"}
+              settingsHref={
+                user ? "/settings" : signInHref("/dashboard", "profile")
+              }
             />
           )}
 
@@ -2442,6 +2250,6 @@ export default function DashboardPage() {
           )}
         </Stack>
       </Container>
-    </>
+    </AppShell>
   );
 }

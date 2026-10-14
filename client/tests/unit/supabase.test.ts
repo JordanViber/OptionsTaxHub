@@ -335,6 +335,15 @@ describe("lib/supabase", () => {
       expect(redirectTo).not.toMatch(/localhost:3000/);
       expect(redirectTo).toContain(window.location.origin);
     });
+
+    it("keeps a safe next path on the confirmation link", () => {
+      expect(getEmailConfirmRedirectTo("/options")).toBe(
+        `${window.location.origin}/auth/confirm-email?next=/options`,
+      );
+      expect(getEmailConfirmRedirectTo("//evil.example")).toBe(
+        `${window.location.origin}/auth/confirm-email?next=/dashboard`,
+      );
+    });
   });
 
   describe("isEmailConfirmed", () => {

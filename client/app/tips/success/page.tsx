@@ -7,6 +7,7 @@ import {
   CheckCircleOutline as SuccessIcon,
   Home as HomeIcon,
 } from "@mui/icons-material";
+import AppShell from "../../components/AppShell";
 
 export default function TipSuccessPage() {
   const router = useRouter();
@@ -28,6 +29,7 @@ export default function TipSuccessPage() {
   }, [router]);
 
   return (
+    <AppShell>
     <Box
       sx={{
         minHeight: "100vh",
@@ -103,5 +105,6 @@ export default function TipSuccessPage() {
         </Stack>
       </Container>
     </Box>
+    </AppShell>
   );
 }

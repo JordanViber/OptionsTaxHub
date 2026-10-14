@@ -1,27 +1,21 @@
 "use client";
 
 import {
-  AppBar,
   Box,
   Container,
   Link as MuiLink,
   Stack,
-  Toolbar,
   Typography,
 } from "@mui/material";
-import Wordmark from "../components/Wordmark";
 import NextLink from "next/link";
 import TaxDisclaimer from "../components/TaxDisclaimer";
+import AppShell from "../components/AppShell";
+import { signInHref } from "@/lib/safeNextPath";
 
 export default function PrivacyPage() {
   return (
+    <AppShell>
     <Box sx={{ minHeight: "100vh", bgcolor: "background.default" }}>
-      <AppBar position="static" elevation={0}>
-        <Toolbar>
-          <Wordmark />
-        </Toolbar>
-      </AppBar>
-
       <Container maxWidth="md" sx={{ py: { xs: 4, md: 6 } }}>
         <Stack spacing={3}>
           <Typography variant="h4" sx={{ fontWeight: 800 }}>
@@ -89,12 +83,13 @@ export default function PrivacyPage() {
               Back to home
             </MuiLink>
             {" · "}
-            <MuiLink component={NextLink} href="/auth/signin">
+            <MuiLink component={NextLink} href={signInHref("/privacy")}>
               Sign in
             </MuiLink>
           </Typography>
         </Stack>
       </Container>
     </Box>
+    </AppShell>
   );
 }

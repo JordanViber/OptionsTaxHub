@@ -103,10 +103,12 @@ test.describe("Dashboard blocks unconfirmed sessions", () => {
           created_at: "2025-01-01T00:00:00Z",
         },
       };
-      localStorage.setItem(
+      for (const storageKey of [
         "sb-vgrlucxqncajjdoaoctq-auth-token",
-        JSON.stringify(authData),
-      );
+        "sb-127-auth-token",
+      ]) {
+        localStorage.setItem(storageKey, JSON.stringify(authData));
+      }
     });
 
     await page.goto("/dashboard");

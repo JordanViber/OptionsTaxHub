@@ -2,24 +2,12 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import {
-  AppBar,
-  Box,
-  Button,
-  CircularProgress,
-  Container,
-  Toolbar,
-  Typography,
-} from "@mui/material";
-import { Login as LoginIcon, Settings as SettingsIcon } from "@mui/icons-material";
-import NextLink from "next/link";
+import { Box, CircularProgress, Container, Typography } from "@mui/material";
 import { useAuth } from "@/app/context/auth";
 import { isEmailConfirmed } from "@/lib/supabase";
-import DeskNav from "../components/DeskNav";
+import AppShell from "../components/AppShell";
 import EntryAnalysisPanel from "../components/EntryAnalysisPanel";
-import Wordmark from "../components/Wordmark";
 import type { PortfolioAnalysis, Position } from "@/lib/types";
-import { OPTIONS_SIGN_IN_HREF } from "@/lib/safeNextPath";
 
 export const dynamic = "force-dynamic";
 
@@ -71,64 +59,7 @@ export default function OptionsPage() {
   }
 
   return (
-    <>
-      <AppBar position="static" sx={{ zIndex: 40 }}>
-        <Toolbar
-          sx={{
-            px: { xs: 1, sm: 2 },
-            gap: 0.5,
-            flexWrap: "nowrap",
-            minWidth: 0,
-          }}
-        >
-          <Wordmark href="/" />
-          <Box sx={{ flexGrow: 1 }} />
-          <Button
-            color="inherit"
-            aria-label="Settings"
-            startIcon={<SettingsIcon />}
-            onClick={() => {
-              if (!user) {
-                router.push("/auth/signin?reason=profile");
-                return;
-              }
-              router.push("/settings");
-            }}
-            sx={{
-              textTransform: "none",
-              whiteSpace: "nowrap",
-              flexShrink: 0,
-              minWidth: { xs: 40, sm: 64 },
-              px: { xs: 1, sm: 1.5 },
-            }}
-          >
-            <Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>
-              Settings
-            </Box>
-          </Button>
-          {!user && (
-            <Button
-              component={NextLink}
-              href={OPTIONS_SIGN_IN_HREF}
-              aria-label="Sign In"
-              variant="contained"
-              size="small"
-              startIcon={<LoginIcon />}
-              sx={{
-                whiteSpace: "nowrap",
-                flexShrink: 0,
-                minWidth: { xs: 40, sm: 64 },
-                px: { xs: 1, sm: 1.5 },
-              }}
-            >
-              <Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>
-                Sign In
-              </Box>
-            </Button>
-          )}
-        </Toolbar>
-        <DeskNav />
-      </AppBar>
+    <AppShell>
       <Container maxWidth="lg" sx={{ py: 3 }}>
         <Typography
           sx={{
@@ -146,6 +77,6 @@ export default function OptionsPage() {
         </Typography>
         <EntryAnalysisPanel positions={positions} />
       </Container>
-    </>
+    </AppShell>
   );
 }

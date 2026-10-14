@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 const mockPush = jest.fn();
@@ -6,6 +6,7 @@ const mockUseAuth = jest.fn();
 
 jest.mock("next/navigation", () => ({
   useRouter: () => ({ push: mockPush }),
+  usePathname: () => "/",
 }));
 
 jest.mock("../../app/context/auth", () => ({
@@ -64,14 +65,18 @@ describe("LandingPage", () => {
         name: /Your 1099 and your export will disagree/,
       }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Open Tax" })).toHaveAttribute(
+    const header = screen.getByTestId("app-header");
+    expect(within(header).getByRole("link", { name: "Tax" })).toHaveAttribute(
       "href",
       "/dashboard",
     );
-    expect(screen.getByRole("link", { name: "Tax" })).toHaveAttribute(
-      "href",
-      "/dashboard",
-    );
+    expect(
+      within(header).getByRole("link", { name: "Options" }),
+    ).toHaveAttribute("href", "/options");
+    expect(screen.queryByText("Open Tax")).not.toBeInTheDocument();
+    expect(
+      within(header).getByRole("button", { name: "Account" }),
+    ).toBeInTheDocument();
     expect(
       screen.getByRole("link", { name: "See what's kept" }),
     ).toHaveAttribute("href", "/dashboard");
@@ -113,13 +118,26 @@ describe("LandingPage", () => {
     expect(screen.queryByText(/CPA advice/i)).not.toBeInTheDocument();
   });
 
-  it("renders navigation with Sign In and Open Tax", () => {
+  it("renders header CTAs for the sample, Tax, Options, and Sign in", () => {
     mockUseAuth.mockReturnValue({ user: null, loading: false });
 
     renderWithClient(<LandingPage />);
 
-    expect(screen.getAllByText("Sign In").length).toBeGreaterThan(0);
-    expect(screen.getByText("Open Tax")).toBeInTheDocument();
+    const header = screen.getByTestId("app-header");
+    expect(
+      within(header).getByRole("button", { name: "Try the sample" }),
+    ).toBeInTheDocument();
+    expect(within(header).getByRole("link", { name: "Tax" })).toHaveAttribute(
+      "href",
+      "/dashboard",
+    );
+    expect(
+      within(header).getByRole("link", { name: "Options" }),
+    ).toHaveAttribute("href", "/options");
+    expect(
+      within(header).getByRole("link", { name: "Sign in" }),
+    ).toHaveAttribute("href", "/auth/signin?next=/");
+    expect(screen.queryByText("Open Tax")).not.toBeInTheDocument();
   });
 
   it("renders feature columns", () => {
@@ -177,7 +195,7 @@ describe("LandingPage", () => {
     expect(screen.getByText("Update the book")).toBeInTheDocument();
     expect(
       screen.getByRole("link", { name: "See what's kept" }),
-    ).toHaveAttribute("href", "/auth/signin");
+    ).toHaveAttribute("href", "/auth/signin?next=/");
   });
 
   it("sends signed-in See what's kept to the desk, not sign-in", () => {
@@ -241,20 +259,28 @@ describe("LandingPage", () => {
     expect(mockPush).toHaveBeenCalledWith("/dashboard");
   });
 
-  it("uses real links for Sign In and Open Tax", () => {
+  it("uses real links for Sign in, Tax, Options, and the wordmark", () => {
     mockUseAuth.mockReturnValue({ user: null, loading: false });
     renderWithClient(<LandingPage />);
 
-    const signIn = screen.getAllByRole("link", { name: /Sign In/i });
-    expect(signIn.length).toBeGreaterThan(0);
-    expect(signIn[0]).toHaveAttribute("href", "/auth/signin");
-    expect(screen.getByRole("link", { name: "Open Tax" })).toHaveAttribute(
+    const header = screen.getByTestId("app-header");
+    expect(within(header).getByRole("link", { name: "Sign in" })).toHaveAttribute(
+      "href",
+      "/auth/signin?next=/",
+    );
+    expect(within(header).getByRole("link", { name: "Tax" })).toHaveAttribute(
       "href",
       "/dashboard",
     );
-    const wordmarks = screen.getAllByRole("link", { name: /OptionsTaxHub/i });
-    expect(wordmarks.length).toBeGreaterThan(0);
-    expect(wordmarks[0]).toHaveAttribute("href", "/");
+    expect(
+      within(header).getByRole("link", { name: "Options" }),
+    ).toHaveAttribute("href", "/options");
+    expect(
+      within(header).getByRole("link", { name: /OptionsTaxHub/i }),
+    ).toHaveAttribute("href", "/");
+    fireEvent.click(within(header).getByRole("button", { name: "Try the sample" }));
+    expect(sessionStorage.getItem("oth-load-sample")).toBe("1");
+    expect(mockPush).toHaveBeenCalledWith("/dashboard");
   });
 
   it("does not claim in-memory-only storage or state tax savings", () => {

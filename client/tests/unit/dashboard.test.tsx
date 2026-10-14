@@ -1043,7 +1043,7 @@ describe("DashboardPage", () => {
       "href",
       "/options",
     );
-    expect(screen.queryByTestId("tax-upload-action")).not.toBeInTheDocument();
+    expect(screen.getByTestId("header-upload")).toBeInTheDocument();
     expect(screen.getByText(/Export from Robinhood/i)).toBeInTheDocument();
     expect(
       screen.getByRole("link", { name: /Download sample CSV/i }),
@@ -1372,9 +1372,13 @@ describe("DashboardPage", () => {
     try {
       render(<DashboardPage />, { wrapper: createWrapper() });
       fireEvent.click(screen.getAllByRole("button", { name: "Saved runs" })[0]);
-      expect(mockPush).toHaveBeenCalledWith("/auth/signin?reason=runs");
-      fireEvent.click(screen.getAllByRole("button", { name: "Settings" })[0]);
-      expect(mockPush).toHaveBeenCalledWith("/auth/signin?reason=profile");
+      expect(mockPush).toHaveBeenCalledWith(
+        "/auth/signin?next=/dashboard&reason=runs",
+      );
+      fireEvent.click(screen.getByTestId("tax-settings-link"));
+      expect(mockPush).toHaveBeenCalledWith(
+        "/auth/signin?next=/dashboard&reason=profile",
+      );
     } finally {
       mockAuthState.user = previousUser;
     }
@@ -1712,7 +1716,7 @@ describe("DashboardPage", () => {
       ).toBeTruthy();
     }
     expect(screen.queryByTestId("entry-analysis-panel")).not.toBeInTheDocument();
-    expect(screen.getByTestId("tax-upload-action")).toBeInTheDocument();
+    expect(screen.getByTestId("header-upload")).toBeInTheDocument();
     expect(screen.getByText("Upload CSV or 1099")).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /Harvest queue/i })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /Lot ledger/i })).toBeInTheDocument();
@@ -1720,6 +1724,38 @@ describe("DashboardPage", () => {
       "href",
       "/options",
     );
+  });
+
+  it("signs out through the shared header menu", async () => {
+    mockSignOut.mockResolvedValue(undefined);
+    sessionStorage.setItem("optionstaxhub-analysis", "{\"ok\":true}");
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+    queryClient.setQueryData(["portfolio-history", "test-user"], [{ id: "h1" }]);
+    queryClient.setQueryData(["tax-profile", "test-user"], { tax_year: 2026 });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <DashboardPage />
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Account" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Sign Out" }));
+
+    await waitFor(() => {
+      expect(mockSignOut).toHaveBeenCalledTimes(1);
+    });
+    expect(sessionStorage.getItem("optionstaxhub-analysis")).toBeNull();
+    expect(
+      queryClient.getQueryData(["portfolio-history", "test-user"]),
+    ).toBeUndefined();
+    expect(queryClient.getQueryData(["tax-profile", "test-user"])).toBeUndefined();
+    expect(mockPush).toHaveBeenCalledWith("/auth/signin");
   });
 
   it("redirects unconfirmed users away from the dashboard", async () => {

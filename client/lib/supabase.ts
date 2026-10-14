@@ -5,6 +5,7 @@ import {
   type SupabaseClient,
   type User,
 } from "@supabase/supabase-js";
+import { safeNextPath } from "@/lib/safeNextPath";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
@@ -27,11 +28,24 @@ export function getSupabaseClient() {
  * Confirmation links must land on this origin's /auth/confirm-email,
  * never a hardcoded localhost URL (staging/prod use window.location.origin).
  */
-export function getEmailConfirmRedirectTo(): string | undefined {
+export function getEmailConfirmRedirectTo(
+  next?: string | null,
+): string | undefined {
   if (typeof window === "undefined") {
     return undefined;
   }
-  return `${window.location.origin}/auth/confirm-email`;
+  const base = `${window.location.origin}/auth/confirm-email`;
+  if (!next) {
+    return base;
+  }
+  return `${base}?next=${safeNextPath(next)}`;
+}
+
+function currentNextParam(): string | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  return new URLSearchParams(window.location.search).get("next");
 }
 
 export function isEmailConfirmed(
@@ -83,7 +97,7 @@ function confirmOtpType(raw: string | null): EmailOtpType {
  * Sign up with email and password
  */
 export async function signUp(email: string, password: string) {
-  const emailRedirectTo = getEmailConfirmRedirectTo();
+  const emailRedirectTo = getEmailConfirmRedirectTo(currentNextParam());
   const { data, error } = await getSupabaseClient().auth.signUp({
     email,
     password,
@@ -157,7 +171,7 @@ export async function resetPasswordForEmail(email: string) {
  * Send another signup confirmation email. Confirm-email stays ON in Supabase.
  */
 export async function resendSignupConfirmation(email: string) {
-  const emailRedirectTo = getEmailConfirmRedirectTo();
+  const emailRedirectTo = getEmailConfirmRedirectTo(currentNextParam());
   const { error } = await getSupabaseClient().auth.resend({
     type: "signup",
     email,

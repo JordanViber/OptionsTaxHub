@@ -20,6 +20,8 @@ import { useAuth } from "@/app/context/auth";
 import AuthPageShell from "@/app/components/AuthPageShell";
 import CheckEmailCard from "@/app/components/CheckEmailCard";
 import { resendSignupConfirmation } from "@/lib/supabase";
+import { signInHref } from "@/lib/safeNextPath";
+import { useQueryNext } from "@/lib/useQueryNext";
 
 export const dynamic = "force-dynamic";
 
@@ -36,6 +38,8 @@ export default function SignUpPage() {
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [pendingEmail, setPendingEmail] = useState("");
   const [resendLoading, setResendLoading] = useState(false);
+  const nextRaw = useQueryNext();
+  const signInLink = nextRaw ? signInHref(nextRaw) : "/auth/signin";
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -104,6 +108,7 @@ export default function SignUpPage() {
           resendLoading={resendLoading}
           info={info}
           error={error}
+          signInHref={signInLink}
         />
       ) : (
         <Card>
@@ -224,7 +229,7 @@ export default function SignUpPage() {
               <Box sx={{ textAlign: "center" }}>
                 <Typography variant="body2">
                   Already have an account?{" "}
-                  <MuiLink href="/auth/signin" sx={{ cursor: "pointer" }}>
+                  <MuiLink href={signInLink} sx={{ cursor: "pointer" }}>
                     Sign in
                   </MuiLink>
                 </Typography>

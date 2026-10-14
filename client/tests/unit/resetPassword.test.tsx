@@ -1,12 +1,25 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render as rtlRender, screen, fireEvent, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import ResetPasswordPage from "../../app/auth/reset-password/page";
 import { useRouter } from "next/navigation";
 
 jest.mock("next/navigation", () => ({
   useRouter: jest.fn(),
+  usePathname: () => "/auth/reset-password",
+}));
+
+jest.mock("../../app/context/auth", () => ({
+  useAuth: () => ({ user: null, loading: false, signOut: jest.fn() }),
 }));
 
 const mockReplace = jest.fn();
+
+function render(ui: React.ReactElement) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  return rtlRender(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+}
 const mockEstablishRecoverySession = jest.fn();
 const mockUpdatePassword = jest.fn();
 const mockSignOut = jest.fn();
