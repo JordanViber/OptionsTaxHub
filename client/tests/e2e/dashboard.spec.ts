@@ -765,10 +765,10 @@ test.describe("Open 2026 sample", () => {
     await page.goto("/");
     await expect(page.getByText(/toward Schedule D/i).first()).toBeVisible();
     await expect(
-      page.getByRole("button", { name: "Try the sample" }),
+      page.getByTestId("landing-try-sample"),
     ).toBeVisible();
     await expect(page.getByTestId("entry-analysis-panel")).toHaveCount(0);
-    await page.getByRole("button", { name: "Try the sample" }).click();
+    await page.getByTestId("landing-try-sample").click();
     await expect(page).toHaveURL(/\/dashboard/, { timeout: 30000 });
   }
 
@@ -874,7 +874,7 @@ test.describe("Open 2026 sample", () => {
     await expect(
       page.getByText(/Wash flags on a 1099 are often scoped to that one account/i),
     ).toBeVisible();
-    await page.getByRole("button", { name: "Try the sample" }).click();
+    await page.getByTestId("landing-try-sample").click();
     await expect(page).toHaveURL(/\/dashboard/, { timeout: 30000 });
     await expect(page.getByText("Tax Year: 2026")).toBeVisible({
       timeout: 20000,
@@ -1123,7 +1123,7 @@ test.describe("Wash-sale chain explainer", () => {
     page: Parameters<typeof setupMockAnalysis>[0],
   ) {
     await page.goto("/");
-    await page.getByRole("button", { name: "Try the sample" }).click();
+    await page.getByTestId("landing-try-sample").click();
     await expect(page).toHaveURL(/\/dashboard/, { timeout: 30000 });
   }
 
@@ -1264,7 +1264,7 @@ test.describe("JOR-88 product walk", () => {
     page: Parameters<typeof setupMockAnalysis>[0],
   ) {
     await page.goto("/");
-    await page.getByRole("button", { name: "Try the sample" }).click();
+    await page.getByTestId("landing-try-sample").click();
     await expect(page).toHaveURL(/\/dashboard/, { timeout: 30000 });
   }
 
