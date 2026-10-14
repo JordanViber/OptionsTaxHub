@@ -8,11 +8,13 @@ import {
   Typography,
 } from "@mui/material";
 import NextLink from "next/link";
+import { useAuth } from "@/app/context/auth";
 import TaxDisclaimer from "../components/TaxDisclaimer";
 import AppShell from "../components/AppShell";
 import { signInHref } from "@/lib/safeNextPath";
 
 export default function PrivacyPage() {
+  const { user } = useAuth();
   return (
     <AppShell>
     <Box sx={{ minHeight: "100vh", bgcolor: "background.default" }}>
@@ -82,10 +84,14 @@ export default function PrivacyPage() {
             <MuiLink component={NextLink} href="/">
               Back to home
             </MuiLink>
-            {" · "}
-            <MuiLink component={NextLink} href={signInHref("/privacy")}>
-              Sign in
-            </MuiLink>
+            {user ? null : (
+              <>
+                {" · "}
+                <MuiLink component={NextLink} href={signInHref("/privacy")}>
+                  Sign in
+                </MuiLink>
+              </>
+            )}
           </Typography>
         </Stack>
       </Container>

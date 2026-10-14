@@ -28,6 +28,7 @@ import {
   LinearProgress,
   Divider,
   IconButton,
+  Link as MuiLink,
   Dialog,
   DialogTitle,
   DialogContent,
@@ -1439,14 +1440,6 @@ export default function DashboardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [confirmedUserId]);
 
-  const handleOpenSettings = () => {
-    if (!user) {
-      router.push(signInHref("/dashboard", "profile"));
-      return;
-    }
-    router.push("/settings");
-  };
-
   const handleKeepCurrentRun = () => {
     if (heldAnalysis) {
       setLoadedAnalysis(heldAnalysis);
@@ -1898,14 +1891,18 @@ export default function DashboardPage() {
                       signedIn: Boolean(confirmedUserId),
                     })}{" "}
                     Your{" "}
-                    <Button
-                      size="small"
+                    <MuiLink
+                      component={NextLink}
+                      href={
+                        user
+                          ? "/settings"
+                          : signInHref("/dashboard", "profile")
+                      }
                       data-testid="tax-settings-link"
-                      onClick={handleOpenSettings}
-                      sx={{ textTransform: "none", p: 0, minWidth: "auto" }}
+                      sx={{ fontWeight: 600 }}
                     >
-                      Tax settings
-                    </Button>{" "}
+                      Settings
+                    </MuiLink>{" "}
                     is used to calculate savings.
                   </Typography>
                 </Box>
@@ -2167,15 +2164,19 @@ export default function DashboardPage() {
             </Alert>
           )}
 
-          {/* First-run guidance when the user has not analyzed a CSV yet */}
-          {!hasResults && !analyzing && !error && !sampleLoadError && (
-            <FirstRunEmptyState
-              onLoadSample={handleLoadSample}
-              settingsHref={
-                user ? "/settings" : signInHref("/dashboard", "profile")
-              }
-            />
-          )}
+          {/* First-run guidance only when nothing is held on this device */}
+          {!hasResults &&
+            !analyzing &&
+            !error &&
+            !sampleLoadError &&
+            !(forceEmpty && heldAnalysis) && (
+              <FirstRunEmptyState
+                onLoadSample={handleLoadSample}
+                settingsHref={
+                  user ? "/settings" : signInHref("/dashboard", "profile")
+                }
+              />
+            )}
 
           {/* Results — shown ABOVE warnings so actionable info is immediately visible */}
           {hasResults && (

@@ -1,7 +1,7 @@
 // Service Worker for OptionsTaxHub PWA
 // v4: do not cache HTML documents — they contain version-specific ?v= script tags
 // that become stale whenever the dev server restarts or a new build is deployed.
-const CACHE_NAME = "optionstaxhub-v4";
+const CACHE_NAME = "optionstaxhub-v5";
 const API_URL = "http://localhost:8011";
 
 // Track recently shown notifications to prevent duplicates
@@ -95,17 +95,16 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // Treat API requests as network-only. Match either the configured API origin
-  // or any path starting with /api/ so local dev (same-origin) also bypasses cache.
-  if (url.origin === API_URL || url.pathname.startsWith("/api/")) {
-    event.respondWith(fetch(request));
+  // Do not intercept navigations or HTML. A rejected respondWith() is what
+  // the browser reports as a service-worker 503 on /dashboard.
+  const acceptHeader = request.headers.get("accept") || "";
+  if (request.mode === "navigate" || acceptHeader.includes("text/html")) {
     return;
   }
 
-  // Never cache HTML documents — they embed version-specific ?v= chunk URLs
-  // that change on every build. Caching the document causes stale JS/CSS 404s.
-  const acceptHeader = request.headers.get("accept") || "";
-  if (acceptHeader.includes("text/html")) {
+  // Treat API requests as network-only. Match either the configured API origin
+  // or any path starting with /api/ so local dev (same-origin) also bypasses cache.
+  if (url.origin === API_URL || url.pathname.startsWith("/api/")) {
     event.respondWith(fetch(request));
     return;
   }
@@ -116,21 +115,25 @@ self.addEventListener("fetch", (event) => {
       if (cached) {
         return cached;
       }
-      return fetch(request).then((response) => {
-        // Only cache GET requests with successful non-HTML responses
-        const contentType = response.headers.get("content-type") || "";
-        if (
-          response?.status === 200 &&
-          request.method === "GET" &&
-          !contentType.includes("text/html")
-        ) {
-          const responseClone = response.clone();
-          caches.open(CACHE_NAME).then((cache) => {
-            cache.put(request, responseClone);
-          });
-        }
-        return response;
-      });
+      return fetch(request)
+        .then((response) => {
+          // Only cache GET requests with successful non-HTML responses
+          const contentType = response.headers.get("content-type") || "";
+          if (
+            response?.status === 200 &&
+            request.method === "GET" &&
+            !contentType.includes("text/html")
+          ) {
+            const responseClone = response.clone();
+            caches.open(CACHE_NAME).then((cache) => {
+              cache.put(request, responseClone);
+            });
+          }
+          return response;
+        })
+        .catch(
+          () => new Response("", { status: 504, statusText: "Offline" }),
+        );
     }),
   );
 });

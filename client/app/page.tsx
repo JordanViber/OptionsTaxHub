@@ -132,10 +132,11 @@ export default function LandingPage() {
               <Button
                 variant="contained"
                 size="large"
+                data-testid="landing-try-sample"
                 onClick={openSample}
                 sx={{ py: 1.5, px: 3, fontWeight: 700 }}
               >
-                Open the 2026 sample
+                Try the sample
               </Button>
               <Button
                 variant="outlined"

@@ -153,7 +153,7 @@ export default function AppShell({
     }
   };
 
-  const goTaxSettings = () => {
+  const goSettings = () => {
     closeMenus();
     if (!user) {
       router.push(signInHref(pathname, "profile"));
@@ -215,7 +215,12 @@ export default function AppShell({
             gap: 0.75,
             flexWrap: "nowrap",
             minWidth: 0,
+            minHeight: 64,
+            height: 64,
+            maxHeight: 64,
+            overflow: "hidden",
           }}
+          style={{ flexWrap: "nowrap", height: 64, maxHeight: 64, overflow: "hidden" }}
         >
           <Wordmark href="/" />
           <Box
@@ -394,8 +399,8 @@ export default function AppShell({
             </MenuItem>
           )}
           {user ? (
-            <MenuItem data-testid="account-tax-settings" onClick={goTaxSettings}>
-              Tax settings
+            <MenuItem data-testid="account-settings" onClick={goSettings}>
+              Settings
             </MenuItem>
           ) : null}
           {user ? <MenuItem onClick={openTip}>Tip</MenuItem> : null}
@@ -422,8 +427,8 @@ export default function AppShell({
             </Typography>
           </MenuItem>
           <MenuItem onClick={goSavedRuns}>Saved runs</MenuItem>
-          <MenuItem data-testid="account-tax-settings" onClick={goTaxSettings}>
-            Tax settings
+          <MenuItem data-testid="account-settings" onClick={goSettings}>
+            Settings
           </MenuItem>
           <MenuItem onClick={openTip}>Tip</MenuItem>
           <MenuItem onClick={goSignOut}>

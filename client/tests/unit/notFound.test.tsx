@@ -48,5 +48,13 @@ describe("NotFound", () => {
       "href",
       "/options",
     );
+    expect(screen.getByTestId("not-found-sign-in")).toHaveAttribute(
+      "href",
+      "/auth/signin?next=/dashboard",
+    );
+    expect(screen.getByTestId("header-sign-in")).toHaveAttribute(
+      "href",
+      "/auth/signin?next=/dashboard",
+    );
   });
 });

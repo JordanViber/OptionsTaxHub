@@ -95,7 +95,7 @@ describe("SettingsPage", () => {
       });
 
       expect(
-        screen.getByRole("heading", { name: "Tax settings" }),
+        screen.getByRole("heading", { name: "Settings" }),
       ).toBeInTheDocument();
       expect(screen.getByText("Your Tax Profile")).toBeInTheDocument();
       expect(screen.getByLabelText("Filing Status")).toBeInTheDocument();

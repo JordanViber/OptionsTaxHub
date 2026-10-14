@@ -124,7 +124,7 @@ export default function SettingsPage() {
     <AppShell>
       <Container maxWidth="sm" sx={{ py: 2 }}>
         <Typography variant="h4" sx={{ fontWeight: 700, mb: 2 }}>
-          Tax settings
+          Settings
         </Typography>
         <Stack spacing={3}>
           <TaxDisclaimer />

@@ -105,14 +105,14 @@ describe("AppShell", () => {
     );
   });
 
-  it("opens Tax settings from the account menu", () => {
+  it("opens Settings from the account menu", () => {
     mockAuth.user = {
       email: "ada@example.com",
       user_metadata: { display_name: "Ada" },
     };
     renderShell(<AppShell />);
     fireEvent.click(screen.getByRole("button", { name: "Account" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Tax settings" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Settings" }));
     expect(mockPush).toHaveBeenCalledWith("/settings");
     expect(screen.queryByRole("button", { name: /^Settings$/ })).not.toBeInTheDocument();
   });

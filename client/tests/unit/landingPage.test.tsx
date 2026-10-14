@@ -48,7 +48,7 @@ describe("LandingPage", () => {
         name: /Your 1099 and your export will disagree/,
       }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Open the 2026 sample" })).toBeInTheDocument();
+    expect(screen.getByTestId("landing-try-sample")).toHaveTextContent("Try the sample");
   });
 
   it("does not bounce signed-in users off the product page", () => {
@@ -249,7 +249,7 @@ describe("LandingPage", () => {
 
     renderWithClient(<LandingPage />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Open the 2026 sample" }));
+    fireEvent.click(screen.getByTestId("landing-try-sample"));
     expect(sessionStorage.getItem("oth-load-sample")).toBe("1");
     expect(mockPush).toHaveBeenCalledWith("/dashboard");
 

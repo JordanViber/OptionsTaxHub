@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   Box,
   Card,
@@ -19,14 +20,15 @@ import { Visibility, VisibilityOff } from "@mui/icons-material";
 import { useAuth } from "@/app/context/auth";
 import AuthPageShell from "@/app/components/AuthPageShell";
 import CheckEmailCard from "@/app/components/CheckEmailCard";
-import { resendSignupConfirmation } from "@/lib/supabase";
-import { signInHref } from "@/lib/safeNextPath";
+import { isEmailConfirmed, resendSignupConfirmation } from "@/lib/supabase";
+import { safeNextPath, signInHref } from "@/lib/safeNextPath";
 import { useQueryNext } from "@/lib/useQueryNext";
 
 export const dynamic = "force-dynamic";
 
 export default function SignUpPage() {
-  const { signUp } = useAuth();
+  const router = useRouter();
+  const { signUp, user, loading: authLoading } = useAuth();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -40,6 +42,14 @@ export default function SignUpPage() {
   const [resendLoading, setResendLoading] = useState(false);
   const nextRaw = useQueryNext();
   const signInLink = nextRaw ? signInHref(nextRaw) : "/auth/signin";
+
+  useEffect(() => {
+    if (authLoading || !user || !isEmailConfirmed(user)) {
+      return;
+    }
+    const next = new URLSearchParams(window.location.search).get("next");
+    router.replace(safeNextPath(next));
+  }, [authLoading, user, router]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

@@ -33,7 +33,7 @@ export const dynamic = "force-dynamic";
 
 export default function SignInPage() {
   const router = useRouter();
-  const { signIn } = useAuth();
+  const { signIn, user, loading: authLoading } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -46,6 +46,14 @@ export default function SignInPage() {
   const [needsConfirmation, setNeedsConfirmation] = useState(false);
   const nextRaw = useQueryNext();
   const signUpLink = nextRaw ? signUpHref(nextRaw) : "/auth/signup";
+
+  useEffect(() => {
+    if (authLoading || !user || !isEmailConfirmed(user)) {
+      return;
+    }
+    const next = new URLSearchParams(window.location.search).get("next");
+    router.replace(safeNextPath(next));
+  }, [authLoading, user, router]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
