@@ -24,6 +24,7 @@ jest.mock("../../app/context/auth", () => ({
 }));
 
 const mockPush = jest.fn();
+const mockReplace = jest.fn();
 const mockSignUp = jest.fn();
 
 function render(ui: React.ReactElement) {
@@ -106,13 +107,49 @@ describe("Sign Up Page", () => {
     jest.clearAllMocks();
     (useRouter as jest.Mock).mockReturnValue({
       push: mockPush,
+      replace: mockReplace,
     });
     mockSignUp.mockResolvedValue(undefined);
     (useAuth as jest.Mock).mockReturnValue({
       signUp: mockSignUp,
       user: null,
+      loading: false,
       isLoading: false,
     });
+  });
+
+  it("sends an already signed-in user to the safe next path", async () => {
+    window.history.pushState({}, "", "/auth/signup?next=/options");
+    (useAuth as jest.Mock).mockReturnValue({
+      signUp: mockSignUp,
+      user: {
+        email: "test@example.com",
+        email_confirmed_at: "2025-01-01T00:00:00Z",
+      },
+      loading: false,
+    });
+    render(<SignupPage />);
+    await waitFor(() => {
+      expect(mockReplace).toHaveBeenCalledWith("/options");
+    });
+    window.history.pushState({}, "", "/");
+  });
+
+  it("sends an already signed-in user to the dashboard when next is missing", async () => {
+    window.history.pushState({}, "", "/auth/signup");
+    (useAuth as jest.Mock).mockReturnValue({
+      signUp: mockSignUp,
+      user: {
+        email: "test@example.com",
+        email_confirmed_at: "2025-01-01T00:00:00Z",
+      },
+      loading: false,
+    });
+    render(<SignupPage />);
+    await waitFor(() => {
+      expect(mockReplace).toHaveBeenCalledWith("/dashboard");
+    });
+    window.history.pushState({}, "", "/");
   });
 
   it("renders create account heading", () => {

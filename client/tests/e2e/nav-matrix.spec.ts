@@ -11,11 +11,76 @@ const APP_PAGES = [
 ] as const;
 
 const VIEWPORTS = [
+  { name: "1920", width: 1920, height: 1080 },
+  { name: "1440", width: 1440, height: 900 },
   { name: "1280", width: 1280, height: 800 },
   { name: "900", width: 900, height: 800 },
   { name: "768", width: 768, height: 800 },
   { name: "390", width: 390, height: 844 },
 ] as const;
+
+async function assertHeaderOneRow(page: Page) {
+  const header = page.getByTestId("app-header");
+  const box = await header.boundingBox();
+  expect(box?.height ?? 999).toBeLessThanOrEqual(80);
+  const actions = page.getByTestId("header-actions");
+  const menu = page.getByTestId("header-menu");
+  const actionCount = await actions.count();
+  const menuCount = await menu.count();
+  if (actionCount === 0 && menuCount === 0) {
+    return;
+  }
+  const nav = await page.getByTestId("primary-nav").boundingBox();
+  const sibling = actionCount > 0 ? actions : menu;
+  const siblingBox = await sibling.boundingBox();
+  expect(nav && siblingBox).toBeTruthy();
+  expect(Math.abs((nav?.y ?? 0) - (siblingBox?.y ?? 0))).toBeLessThan(12);
+}
+
+async function assertInstallDoesNotCover(page: Page) {
+  const covers = await page.evaluate(() => {
+    const nodes = Array.from(
+      document.querySelectorAll("[data-testid='install-prompt'], h3"),
+    );
+    for (const node of nodes) {
+      const element = node instanceof HTMLElement ? node : null;
+      if (!element) {
+        continue;
+      }
+      const isPrompt = element.getAttribute("data-testid") === "install-prompt";
+      const card = isPrompt
+        ? element
+        : element.textContent?.includes("Install OptionsTaxHub")
+          ? element.closest("div")
+          : null;
+      if (!card) {
+        continue;
+      }
+      const style = getComputedStyle(card);
+      if (style.position === "fixed" || style.position === "absolute") {
+        return true;
+      }
+      const content = document.querySelector("[data-testid='tax-upload']");
+      if (!content) {
+        continue;
+      }
+      const promptBox = card.getBoundingClientRect();
+      const contentBox = content.getBoundingClientRect();
+      const overlaps =
+        promptBox.width > 0 &&
+        contentBox.width > 0 &&
+        promptBox.left < contentBox.right &&
+        promptBox.right > contentBox.left &&
+        promptBox.top < contentBox.bottom &&
+        promptBox.bottom > contentBox.top;
+      if (overlaps) {
+        return true;
+      }
+    }
+    return false;
+  });
+  expect(covers).toBe(false);
+}
 
 async function mockGuest(page: Page) {
   await page.route("**/health", (route) =>
@@ -106,9 +171,13 @@ test.describe("nav matrix", () => {
             (el) => el.scrollWidth - el.clientWidth,
           );
           expect(headerOverflow).toBeLessThanOrEqual(1);
+          await assertHeaderOneRow(page);
 
           if (entry.path === "/dashboard") {
             await expect(tax).toHaveAttribute("aria-current", "page");
+            if (auth === "signed-in") {
+              await assertInstallDoesNotCover(page);
+            }
           }
           if (entry.path === "/options") {
             await expect(options).toHaveAttribute("aria-current", "page");
@@ -116,6 +185,14 @@ test.describe("nav matrix", () => {
           }
           if (entry.slug === "not-found") {
             await expect(page.getByTestId("not-found")).toBeVisible();
+            if (auth === "guest") {
+              await expect(page.getByTestId("not-found-sign-in")).toHaveAttribute(
+                "href",
+                "/auth/signin?next=/dashboard",
+              );
+            } else {
+              await expect(page.getByTestId("not-found-sign-in")).toHaveCount(0);
+            }
           }
 
           await shoot(page, `${auth}-${entry.slug}-${viewport.name}-header`);
@@ -141,6 +218,13 @@ test.describe("nav matrix", () => {
           if (auth === "signed-in") {
             await expect(page.getByTestId("header-account")).toBeVisible();
             await expect(page.getByTestId("header-sign-in")).toHaveCount(0);
+            if (!compact) {
+              await page.getByTestId("header-account").click();
+            }
+            await expect(
+              page.getByRole("menuitem", { name: "Settings", exact: true }),
+            ).toBeVisible();
+            await expect(page.getByText("Tax settings")).toHaveCount(0);
             actionSets.push("Upload|Saved runs|Account");
           } else {
             await expect(page.getByTestId("header-sign-in")).toBeVisible();
@@ -199,22 +283,40 @@ test.describe("nav matrix", () => {
           await page.keyboard.press("Escape");
         }
 
-        await page.goto("/auth/signin");
-        await expect(
-          page.getByTestId("app-header").getByRole("link", { name: "OptionsTaxHub" }),
-        ).toHaveAttribute("href", "/");
-        await expect(
-          page.getByRole("navigation", { name: "Primary" }).getByRole("link", {
-            name: "Tax",
-            exact: true,
-          }),
-        ).toBeVisible();
-        await expect(
-          page.getByRole("navigation", { name: "Primary" }).getByRole("link", {
-            name: "Options",
-            exact: true,
-          }),
-        ).toBeVisible();
+        if (auth === "signed-in") {
+          await page.goto("/auth/signin?next=/privacy");
+          await expect(page).toHaveURL(/\/privacy/, { timeout: 15000 });
+          await expect(page.getByRole("link", { name: "Sign in" })).toHaveCount(0);
+          if (compact) {
+            await page.getByTestId("header-menu").click();
+            await expect(
+              page.getByRole("menuitem", { name: "Settings", exact: true }),
+            ).toBeVisible();
+            await page.keyboard.press("Escape");
+          } else {
+            await expect(page.getByTestId("header-account")).toBeVisible();
+          }
+        } else {
+          await page.goto("/auth/signin");
+          await expect(
+            page.getByTestId("app-header").getByRole("link", { name: "OptionsTaxHub" }),
+          ).toHaveAttribute("href", "/");
+          await expect(
+            page.getByRole("navigation", { name: "Primary" }).getByRole("link", {
+              name: "Tax",
+              exact: true,
+            }),
+          ).toBeVisible();
+          await expect(
+            page.getByRole("navigation", { name: "Primary" }).getByRole("link", {
+              name: "Options",
+              exact: true,
+            }),
+          ).toBeVisible();
+          await expect(page.getByTestId("header-menu")).toHaveCount(0);
+          await expect(page.getByTestId("header-actions")).toHaveCount(0);
+        }
+        await assertHeaderOneRow(page);
         await shoot(page, `${auth}-signin-${viewport.name}-header`);
       });
 
@@ -267,6 +369,7 @@ test.describe("nav matrix", () => {
             (el) => el.scrollWidth - el.clientWidth,
           );
           expect(headerOverflow).toBeLessThanOrEqual(1);
+          await assertHeaderOneRow(page);
           if (kind === "auth") {
             return;
           }
@@ -291,18 +394,37 @@ test.describe("nav matrix", () => {
         } else {
           await page.goto("/settings");
           await expect(
-            page.getByRole("heading", { name: "Tax settings", exact: true }),
+            page.getByRole("heading", { name: "Settings", exact: true }),
           ).toBeVisible({ timeout: 15000 });
           await assertChrome("app");
+          await expect(page.getByText("Tax settings")).toHaveCount(0);
         }
 
         await page.goto("/privacy");
         await expect(page.getByRole("heading", { name: "Privacy" })).toBeVisible();
         await assertChrome("app");
+        if (auth === "signed-in") {
+          await expect(page.getByRole("link", { name: "Sign in" })).toHaveCount(0);
+          if (compact) {
+            await page.getByTestId("header-menu").click();
+            await expect(
+              page.getByRole("menuitem", { name: "Settings", exact: true }),
+            ).toBeVisible();
+            await page.keyboard.press("Escape");
+          } else {
+            await expect(page.getByTestId("header-account")).toBeVisible();
+          }
+        }
 
-        await page.goto("/auth/signup");
-        await expect(page.getByRole("heading", { name: "Create Account" })).toBeVisible();
-        await assertChrome("auth");
+        if (auth === "signed-in") {
+          await page.goto("/auth/signup?next=/options");
+          await expect(page).toHaveURL(/\/options/, { timeout: 15000 });
+          await assertChrome("app");
+        } else {
+          await page.goto("/auth/signup");
+          await expect(page.getByRole("heading", { name: "Create Account" })).toBeVisible();
+          await assertChrome("auth");
+        }
 
         await page.goto("/auth/confirm-email");
         await assertChrome("auth");
@@ -375,7 +497,7 @@ test.describe("nav matrix", () => {
     await expect(page.getByText("Tax Year: 2026")).toBeVisible({ timeout: 20000 });
 
     await page.goto("/");
-    await page.getByRole("button", { name: "Open the 2026 sample" }).click();
+    await page.getByTestId("landing-try-sample").click();
     await expect(page).toHaveURL(/\/dashboard/, { timeout: 15000 });
     await expect(page.getByText("Tax Year: 2026")).toBeVisible({ timeout: 20000 });
 
@@ -462,10 +584,10 @@ test.describe("nav matrix", () => {
 
     await page.goto("/options");
     await page.getByTestId("header-account").click();
-    await page.getByTestId("account-tax-settings").click();
+    await page.getByTestId("account-settings").click();
     await expect(page).toHaveURL(/\/settings/);
     await expect(
-      page.getByRole("heading", { name: "Tax settings", exact: true }),
+      page.getByRole("heading", { name: "Settings", exact: true }),
     ).toBeVisible();
   });
 
@@ -488,5 +610,78 @@ test.describe("nav matrix", () => {
     await page.getByTestId("header-try-sample").click();
     await expect(page).toHaveURL(/\/dashboard/, { timeout: 15000 });
     await expect(page.getByText("Tax Year: 2026")).toBeVisible({ timeout: 20000 });
+  });
+
+  test("a long account name keeps Settings and Sign Out visible at 1280", async ({
+    page,
+  }) => {
+    const longName = "A".repeat(60);
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await mockGuest(page);
+    await setupMockAuth(page);
+    await injectMockSession(page, longName);
+    await page.goto("/dashboard");
+    const account = page.getByTestId("header-account");
+    await expect(account).toBeVisible({ timeout: 15000 });
+    await expect(account).toHaveAttribute("aria-label", longName);
+    const name = page.getByTestId("header-account-name");
+    await expect(name).toHaveCSS("text-overflow", "ellipsis");
+    await expect(name).toHaveCSS("max-width", "160px");
+    const clipped = await name.evaluate(
+      (element) => element.scrollWidth > element.clientWidth + 1,
+    );
+    expect(clipped).toBe(true);
+    await assertHeaderOneRow(page);
+    await account.click();
+    await expect(
+      page.getByRole("menuitem", { name: "Settings", exact: true }),
+    ).toBeVisible();
+    await expect(page.getByRole("menuitem", { name: "Sign Out" })).toBeVisible();
+  });
+});
+
+test.describe("install card stays in the first viewport", () => {
+  test.use({
+    viewport: { width: 390, height: 844 },
+    userAgent:
+      "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+    hasTouch: true,
+  });
+
+  test("shows under the header on the landing page and the dashboard", async ({
+    page,
+  }) => {
+    test.setTimeout(60_000);
+    await page.addInitScript(() => {
+      localStorage.setItem("appWasInstalled", "true");
+      localStorage.removeItem("installedMessageDismissed");
+      localStorage.removeItem("installPromptDismissed");
+    });
+    await mockGuest(page);
+
+    const assertInFirstViewport = async () => {
+      const card = page.getByTestId("install-prompt");
+      await expect(card).toBeVisible({ timeout: 15000 });
+      const box = await card.boundingBox();
+      const viewport = page.viewportSize();
+      expect(box && viewport).toBeTruthy();
+      expect(box!.y).toBeGreaterThanOrEqual(0);
+      expect(box!.y).toBeLessThan(viewport!.height);
+      expect(box!.y + box!.height).toBeLessThanOrEqual(viewport!.height);
+      const position = await card.evaluate(
+        (element) => getComputedStyle(element).position,
+      );
+      expect(position).not.toBe("fixed");
+      expect(position).not.toBe("absolute");
+    };
+
+    await page.goto("/");
+    await expect(page.getByTestId("app-header")).toBeVisible({ timeout: 15000 });
+    await assertInFirstViewport();
+
+    await page.evaluate(() => sessionStorage.removeItem("installPromptShown"));
+    await page.goto("/dashboard");
+    await expect(page.getByTestId("app-header")).toBeVisible({ timeout: 15000 });
+    await assertInFirstViewport();
   });
 });

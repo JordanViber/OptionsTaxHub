@@ -7,10 +7,15 @@ jest.mock("next/link", () => {
   return ({
     children,
     href,
+    ...rest
   }: {
     children: React.ReactNode;
     href: string;
-  }) => <a href={href}>{children}</a>;
+  } & Record<string, unknown>) => (
+    <a href={href} {...rest}>
+      {children}
+    </a>
+  );
 });
 
 const mockPush = jest.fn();
@@ -1026,6 +1031,42 @@ describe("DashboardPage", () => {
     });
   });
 
+  it("shows one guest state when a held run is waiting for a new upload", async () => {
+    const previousUser = mockAuthState.user;
+    mockAuthState.user = null;
+    const saved = JSON.stringify({ ...baseAnalysis, sample_run: true });
+    Object.defineProperty(globalThis, "sessionStorage", {
+      value: {
+        getItem: jest.fn((key: string) => {
+          if (key === "oth-upload-intent") {
+            return "1";
+          }
+          if (key === "optionstaxhub-analysis") {
+            return saved;
+          }
+          return null;
+        }),
+        setItem: jest.fn(),
+        removeItem: jest.fn(),
+        clear: jest.fn(),
+      },
+      writable: true,
+    });
+    try {
+      render(<DashboardPage />, { wrapper: createWrapper() });
+      await waitFor(() => {
+        expect(
+          screen.getByRole("button", { name: "Keep current run" }),
+        ).toBeInTheDocument();
+      });
+      expect(
+        screen.queryByText(/Get started with your first analysis/i),
+      ).not.toBeInTheDocument();
+    } finally {
+      mockAuthState.user = previousUser;
+    }
+  });
+
   it("shows first-run empty state before any analysis exists", async () => {
     render(<DashboardPage />, { wrapper: createWrapper() });
 
@@ -1093,7 +1134,7 @@ describe("DashboardPage", () => {
       render(<DashboardPage />, { wrapper: createWrapper() });
 
       fireEvent.click(
-        await screen.findByRole("button", { name: "Open the 2026 sample" }),
+        await screen.findByRole("button", { name: "Try the sample" }),
       );
 
       await waitFor(() => {
@@ -1375,8 +1416,8 @@ describe("DashboardPage", () => {
       expect(mockPush).toHaveBeenCalledWith(
         "/auth/signin?next=/dashboard&reason=runs",
       );
-      fireEvent.click(screen.getByTestId("tax-settings-link"));
-      expect(mockPush).toHaveBeenCalledWith(
+      expect(screen.getByTestId("tax-settings-link")).toHaveAttribute(
+        "href",
         "/auth/signin?next=/dashboard&reason=profile",
       );
     } finally {
@@ -1744,7 +1785,7 @@ describe("DashboardPage", () => {
       </QueryClientProvider>,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "Account" }));
+    fireEvent.click(await screen.findByTestId("header-account"));
     fireEvent.click(screen.getByRole("menuitem", { name: "Sign Out" }));
 
     await waitFor(() => {

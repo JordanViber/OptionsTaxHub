@@ -107,6 +107,9 @@ describe("InstallPrompt", () => {
     await waitFor(() => {
       expect(screen.getByText("Install OptionsTaxHub")).toBeInTheDocument();
     });
+    expect(screen.getByTestId("install-prompt").className).not.toMatch(
+      /\bfixed\b|\babsolute\b|\bz-50\b/,
+    );
 
     fireEvent.click(screen.getByText("Install"));
 

@@ -23,6 +23,7 @@ import NextLink from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/app/context/auth";
+import InstallPrompt from "./InstallPrompt";
 import TipJar from "./TipJar";
 import Wordmark from "./Wordmark";
 import {
@@ -153,7 +154,7 @@ export default function AppShell({
     }
   };
 
-  const goTaxSettings = () => {
+  const goSettings = () => {
     closeMenus();
     if (!user) {
       router.push(signInHref(pathname, "profile"));
@@ -173,6 +174,14 @@ export default function AppShell({
     // Drop this account's cached runs and tax profile before the next sign-in.
     queryClient.removeQueries({ queryKey: ["portfolio-history", userId] });
     queryClient.removeQueries({ queryKey: ["tax-profile", userId] });
+    try {
+      if (typeof caches !== "undefined") {
+        const keys = await caches.keys();
+        await Promise.all(keys.map((key) => caches.delete(key)));
+      }
+    } catch {
+      // ignore
+    }
     await signOut();
     router.push("/auth/signin");
   };
@@ -215,7 +224,11 @@ export default function AppShell({
             gap: 0.75,
             flexWrap: "nowrap",
             minWidth: 0,
+            minHeight: 64,
+            height: 64,
+            maxHeight: 64,
           }}
+          style={{ flexWrap: "nowrap", height: 64, maxHeight: 64 }}
         >
           <Wordmark href="/" />
           <Box
@@ -297,13 +310,26 @@ export default function AppShell({
               {user ? (
                 <Button
                   color="inherit"
-                  aria-label="Account"
+                  aria-label={displayName}
                   data-testid="header-account"
                   onClick={(event) => setAccountAnchor(event.currentTarget)}
-                  sx={{ ...actionButtonSx, minWidth: "auto", px: 1 }}
+                  sx={{ ...actionButtonSx, minWidth: "auto", maxWidth: 220, px: 1 }}
                 >
-                  <Avatar sx={{ width: 32, height: 32 }}>{avatarLetter}</Avatar>
-                  <Typography component="span" sx={{ ml: 1 }}>
+                  <Avatar sx={{ width: 32, height: 32, flexShrink: 0 }}>
+                    {avatarLetter}
+                  </Avatar>
+                  <Typography
+                    component="span"
+                    data-testid="header-account-name"
+                    sx={{
+                      ml: 1,
+                      maxWidth: 160,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                      display: "block",
+                    }}
+                  >
                     {displayName}
                   </Typography>
                 </Button>
@@ -338,6 +364,8 @@ export default function AppShell({
           ) : null}
         </Toolbar>
       </AppBar>
+
+      <InstallPrompt />
 
       {compact && variant !== "auth" ? (
         <Menu
@@ -394,8 +422,8 @@ export default function AppShell({
             </MenuItem>
           )}
           {user ? (
-            <MenuItem data-testid="account-tax-settings" onClick={goTaxSettings}>
-              Tax settings
+            <MenuItem data-testid="account-settings" onClick={goSettings}>
+              Settings
             </MenuItem>
           ) : null}
           {user ? <MenuItem onClick={openTip}>Tip</MenuItem> : null}
@@ -422,8 +450,8 @@ export default function AppShell({
             </Typography>
           </MenuItem>
           <MenuItem onClick={goSavedRuns}>Saved runs</MenuItem>
-          <MenuItem data-testid="account-tax-settings" onClick={goTaxSettings}>
-            Tax settings
+          <MenuItem data-testid="account-settings" onClick={goSettings}>
+            Settings
           </MenuItem>
           <MenuItem onClick={openTip}>Tip</MenuItem>
           <MenuItem onClick={goSignOut}>

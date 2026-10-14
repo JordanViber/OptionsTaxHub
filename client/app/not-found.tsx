@@ -1,9 +1,15 @@
 "use client";
 
-import { Box, Container, Typography } from "@mui/material";
+import { Box, Container, Link as MuiLink, Typography } from "@mui/material";
+import NextLink from "next/link";
+import { usePathname } from "next/navigation";
+import { useAuth } from "@/app/context/auth";
+import { signInHref } from "@/lib/safeNextPath";
 import AppShell from "./components/AppShell";
 
 export default function NotFound() {
+  const pathname = usePathname() || "/";
+  const { user } = useAuth();
   return (
     <AppShell>
       <Box
@@ -25,6 +31,16 @@ export default function NotFound() {
             That address is not on the tax page or the options tools. Tax and
             Options are in the header.
           </Typography>
+          {user ? null : (
+            <MuiLink
+              component={NextLink}
+              href={signInHref(pathname)}
+              data-testid="not-found-sign-in"
+              sx={{ display: "inline-block", mt: 2 }}
+            >
+              Sign in
+            </MuiLink>
+          )}
         </Container>
       </Box>
     </AppShell>

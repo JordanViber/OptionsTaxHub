@@ -48,7 +48,7 @@ describe("LandingPage", () => {
         name: /Your 1099 and your export will disagree/,
       }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Open the 2026 sample" })).toBeInTheDocument();
+    expect(screen.getByTestId("landing-try-sample")).toHaveTextContent("Try the sample");
   });
 
   it("does not bounce signed-in users off the product page", () => {
@@ -74,9 +74,10 @@ describe("LandingPage", () => {
       within(header).getByRole("link", { name: "Options" }),
     ).toHaveAttribute("href", "/options");
     expect(screen.queryByText("Open Tax")).not.toBeInTheDocument();
-    expect(
-      within(header).getByRole("button", { name: "Account" }),
-    ).toBeInTheDocument();
+    expect(within(header).getByTestId("header-account")).toHaveAttribute(
+      "aria-label",
+      "test@example.com",
+    );
     expect(
       screen.getByRole("link", { name: "See what's kept" }),
     ).toHaveAttribute("href", "/dashboard");
@@ -249,7 +250,7 @@ describe("LandingPage", () => {
 
     renderWithClient(<LandingPage />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Open the 2026 sample" }));
+    fireEvent.click(screen.getByTestId("landing-try-sample"));
     expect(sessionStorage.getItem("oth-load-sample")).toBe("1");
     expect(mockPush).toHaveBeenCalledWith("/dashboard");
 

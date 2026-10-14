@@ -286,8 +286,8 @@ export async function setupMockAnalysis(
 /**
  * Inject a Supabase session into localStorage before page load.
  */
-export async function injectMockSession(page: Page) {
-  await page.addInitScript(() => {
+export async function injectMockSession(page: Page, displayName = "Test User") {
+  await page.addInitScript((name: string) => {
     const authData = {
       access_token: "mock-access-token",
       token_type: "bearer",
@@ -299,7 +299,7 @@ export async function injectMockSession(page: Page) {
         email: "test@optionstaxhub.com",
         email_confirmed_at: "2025-01-01T00:00:00Z",
         user_metadata: {
-          display_name: "Test User",
+          display_name: name,
           first_name: "Test",
           last_name: "User",
         },
@@ -328,7 +328,7 @@ export async function injectMockSession(page: Page) {
     } catch {
       // ignore
     }
-  });
+  }, displayName);
 }
 
 /**

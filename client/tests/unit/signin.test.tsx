@@ -14,6 +14,7 @@ jest.mock("../../app/context/auth", () => ({
 }));
 
 const mockPush = jest.fn();
+const mockReplace = jest.fn();
 const mockSignIn = jest.fn();
 
 function render(ui: React.ReactElement) {
@@ -44,11 +45,13 @@ describe("Sign In Page", () => {
     jest.clearAllMocks();
     (useRouter as jest.Mock).mockReturnValue({
       push: mockPush,
+      replace: mockReplace,
     });
     mockSignIn.mockResolvedValue(undefined);
     (useAuth as jest.Mock).mockReturnValue({
       signIn: mockSignIn,
       user: null,
+      loading: false,
       isLoading: false,
     });
   });
@@ -163,6 +166,53 @@ describe("Sign In Page", () => {
       );
     });
     window.history.pushState({}, "", "/");
+  });
+
+  it("sends an already signed-in user to the safe next path", async () => {
+    window.history.pushState({}, "", "/auth/signin?next=/privacy");
+    (useAuth as jest.Mock).mockReturnValue({
+      signIn: mockSignIn,
+      user: {
+        email: "test@example.com",
+        email_confirmed_at: "2025-01-01T00:00:00Z",
+      },
+      loading: false,
+    });
+    render(<SigninPage />);
+    await waitFor(() => {
+      expect(mockReplace).toHaveBeenCalledWith("/privacy");
+    });
+    window.history.pushState({}, "", "/");
+  });
+
+  it("sends an already signed-in user to the dashboard for an unknown next", async () => {
+    window.history.pushState({}, "", "/auth/signin?next=/missing-page");
+    (useAuth as jest.Mock).mockReturnValue({
+      signIn: mockSignIn,
+      user: {
+        email: "test@example.com",
+        email_confirmed_at: "2025-01-01T00:00:00Z",
+      },
+      loading: false,
+    });
+    render(<SigninPage />);
+    await waitFor(() => {
+      expect(mockReplace).toHaveBeenCalledWith("/dashboard");
+    });
+    window.history.pushState({}, "", "/");
+  });
+
+  it("keeps an unconfirmed user on the sign-in page", async () => {
+    (useAuth as jest.Mock).mockReturnValue({
+      signIn: mockSignIn,
+      user: { email: "test@example.com", email_confirmed_at: null },
+      loading: false,
+    });
+    render(<SigninPage />);
+    expect(
+      screen.getByRole("heading", { name: /Sign In/i }),
+    ).toBeInTheDocument();
+    expect(mockReplace).not.toHaveBeenCalled();
   });
 
   it("returns to the landing page when next=/", async () => {

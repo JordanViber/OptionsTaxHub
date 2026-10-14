@@ -189,7 +189,7 @@ export default function InstallPrompt() {
   if (appState === "installed") {
     // On mobile, show "Open App" button that will switch to the installed PWA
     return (
-      <div className="fixed bottom-4 left-4 right-4 md:left-auto md:right-4 md:max-w-sm bg-white dark:bg-gray-800 rounded-lg shadow-2xl border border-gray-200 dark:border-gray-700 p-4 z-50 animate-slide-up">
+      <div data-testid="install-prompt" className="mx-auto my-4 w-full max-w-sm bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 p-4">
         <div className="flex items-start gap-3">
           <div className="flex-shrink-0 w-12 h-12 bg-gradient-to-br from-green-500 to-green-700 rounded-lg flex items-center justify-center text-white text-2xl font-bold">
             ✓
@@ -225,7 +225,7 @@ export default function InstallPrompt() {
   // Show "Install" button if installable but not yet installed
   if (appState === "installable" && deferredPrompt) {
     return (
-      <div className="fixed bottom-4 left-4 right-4 md:left-auto md:right-4 md:max-w-sm bg-white dark:bg-gray-800 rounded-lg shadow-2xl border border-gray-200 dark:border-gray-700 p-4 z-50 animate-slide-up">
+      <div data-testid="install-prompt" className="mx-auto my-4 w-full max-w-sm bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 p-4">
         <div className="flex items-start gap-3">
           <div className="flex-shrink-0 w-12 h-12 bg-gradient-to-br from-blue-500 to-blue-700 rounded-lg flex items-center justify-center text-white text-2xl font-bold">
             $
