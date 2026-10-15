@@ -1288,10 +1288,13 @@ def _hop_from_flag(
     status: WashReconcileStatus = "not_compared"
     # None means the closed shares cannot be picked out. A non-empty
     # survivor list that allocates nothing is short of the repurchase.
-    # The engine basis can be an already-sold lot, so leave that basis
-    # and the tacked holding period off and stay unallocated. Comparison
+    # A non-empty window whose buys were all the lot being sold leaves an
+    # empty survivor list: that is not a replacement, and comparing it to
+    # a same-year $0 wash row would report the full disallowance. The
+    # engine basis can be an already-sold lot, so leave that basis and
+    # the tacked holding period off and stay unallocated. Comparison
     # stays off. A sale with no buy list still compares.
-    if replacement is None or (replacement and not buys):
+    if replacement is None or (bool(raw_buys) and not buys):
         engine_basis = None
         not_compared_reason = "unallocated"
         compare_1099 = False
@@ -1992,6 +1995,88 @@ def _unassigned_from_row(row: LotMatchRow, index: int) -> _HopDraft | None:
     )
 
 
+def _sale_subset_index_sets(
+    rows: list[LotMatchRow],
+    used: set[int],
+    hop: _HopDraft,
+) -> list[set[int]]:
+    """Quantity subsets for one hop, as sets of 1099 row indexes.
+
+    More than 12 candidates is not searched. That case is one set of every
+    candidate, the same set tie refusal keeps.
+    """
+    candidates = _match_candidates(
+        rows,
+        used=used,
+        symbol=hop.symbol,
+        sale_date=hop.sale_date,
+        target=hop.row_target,
+    )
+    if not candidates:
+        return []
+    if len(candidates) > _MAX_MATCH_CANDIDATES:
+        return [{index for index, _row in candidates}]
+    found: list[set[int]] = []
+    for subset in _qty_subsets(
+        candidates,
+        hop.sale_quantity,
+        lambda item: float(item[1].quantity or 0.0),
+    ):
+        found.append({index for index, _row in subset})
+    return found
+
+
+def _exact_unallocated_row_indexes(
+    hops: list[_HopDraft],
+    rows: list[LotMatchRow],
+    used: set[int],
+) -> set[int]:
+    """Rows that exactly make an unallocated sale. Does not change ``used``.
+
+    The over-cap fallback holds every same-price candidate. Those rows are
+    not an exact subset, so they stay out of this set and a sibling can
+    still match.
+    """
+    held: set[int] = set()
+    for hop in hops:
+        if hop.not_compared_reason != "unallocated" or hop.row_target is None:
+            continue
+        for subset in _sale_subset_index_sets(rows, used, hop):
+            if len(subset) > _MAX_MATCH_CANDIDATES:
+                continue
+            held.update(subset)
+    return held
+
+
+def _rows_comparable_sales_require(
+    hops: list[_HopDraft],
+    rows: list[LotMatchRow],
+    used: set[int],
+    quiet_rows: set[int],
+) -> set[int]:
+    """Rows a comparable sale still needs after quiet-only combinations drop.
+
+    A subset that avoids the unallocated sale's rows is enough. When every
+    subset uses one of those rows, the sale cannot match without them.
+    """
+    required: set[int] = set()
+    for hop in hops:
+        if not hop.compare_1099:
+            continue
+        subsets = _sale_subset_index_sets(rows, used, hop)
+        if not subsets:
+            continue
+        # One unsplittable over-cap set. Do not guess which rows are spare.
+        if len(subsets) == 1 and len(subsets[0]) > _MAX_MATCH_CANDIDATES:
+            required.update(subsets[0])
+            continue
+        clean = [subset for subset in subsets if subset.isdisjoint(quiet_rows)]
+        chosen = clean if clean else subsets
+        for subset in chosen:
+            required.update(subset)
+    return required
+
+
 def _refuse_same_day_1099_ties(
     hops: list[_HopDraft],
     rows: list[LotMatchRow],
@@ -2239,20 +2324,23 @@ def build_wash_sale_chains(
                     flag, transactions, realized_events
                 ),
             )
-        elif (
-            hop.not_compared_reason == "unallocated"
-            and hop.row_target is not None
-        ):
-            # Only this sale's price. The other same-day fill keeps its row.
-            _reserve_same_day_1099_rows(
-                rows,
-                used_rows,
-                symbol=hop.symbol,
-                sale_date=hop.sale_date,
-                quantity=hop.sale_quantity,
-                unit_target=hop.row_target,
-            )
         engine_hops.append(hop)
+    # An unallocated sale's own rows can invent a tie. A 30-share hop also
+    # matches 10+20, so it overlaps the 20-share hop even though each has
+    # its own row. Hold the quiet rows out of tie refusal when a comparable
+    # hop still has a subset that does not use them. Rows that hop cannot
+    # match without stay free, so three 10-share lots are not taken from a
+    # 20-share sibling before it matches.
+    quiet_rows = _exact_unallocated_row_indexes(engine_hops, rows, used_rows)
+    required_rows = _rows_comparable_sales_require(
+        engine_hops,
+        rows,
+        used_rows,
+        quiet_rows,
+    )
+    for index in quiet_rows:
+        if index not in required_rows:
+            used_rows.add(index)
     _refuse_same_day_1099_ties(engine_hops, rows, used_rows, unassigned)
     for hop in engine_hops:
         if hop.compare_1099 and hop.not_compared_reason != "ambiguous":
@@ -2263,6 +2351,20 @@ def build_wash_sale_chains(
                 unassigned,
                 claim_absence=claim_absence,
             )
+    # Rows a comparable sibling still needed were left free through tie
+    # refusal. Hold whatever that sibling did not claim, at this sale's
+    # price only, so a leftover lot is not a missed wash.
+    for hop in engine_hops:
+        if hop.not_compared_reason != "unallocated" or hop.row_target is None:
+            continue
+        _reserve_same_day_1099_rows(
+            rows,
+            used_rows,
+            symbol=hop.symbol,
+            sale_date=hop.sale_date,
+            quantity=hop.sale_quantity,
+            unit_target=hop.row_target,
+        )
     if comparable and claim_absence:
         # One unknown-quantity row blocks absence for every same-day hop and
         # is not also emitted as a leftover chain.
