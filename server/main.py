@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import os
 import logging
 import re
@@ -24,9 +25,8 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
 import io
-import json
 from typing import List, Dict, Any
-from pywebpush import webpush, WebPushException
+from pywebpush import webpush
 from pydantic import BaseModel, ValidationError
 
 from cors_origins import cors_allowed_origins
@@ -155,6 +155,17 @@ from db import (
     mark_packet_snapshot_paid,
     patch_analysis_result,
 )
+from push_subscriptions import (
+    CONFLICT as PUSH_CONFLICT,
+    INVALID as PUSH_INVALID,
+    LIMIT as PUSH_LIMIT,
+    UNAVAILABLE as PUSH_UNAVAILABLE,
+    delete_push_subscription as db_delete_push_subscription,
+    deliver_push,
+    get_push_subscription_for_user as db_get_push_subscription_for_user,
+    list_push_subscriptions as db_list_push_subscriptions,
+    save_push_subscription as db_save_push_subscription,
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -183,6 +194,11 @@ _AUTH_LEAP_RANK_MAX_PER_WINDOW = 60
 _LEAP_RANK_MAX_BUCKETS = 4096
 _guest_leap_rank_hits: dict[str, list[float]] = defaultdict(list)
 _auth_leap_rank_hits: dict[str, list[float]] = defaultdict(list)
+_PUSH_MUTATION_WINDOW_SECONDS = 60 * 60
+_PUSH_MUTATION_MAX_PER_WINDOW = 10
+_PUSH_MUTATION_MAX_BUCKETS = 4096
+_push_mutation_hits: dict[str, list[float]] = defaultdict(list)
+_PUSH_ADMIN_MIN_BYTES = 32
 _LEAP_RANK_SYMBOL_RE = re.compile(r"^[A-Z]{1,10}$")
 _LEAP_RANK_MAX_WINDOW_DAYS = 800
 rh_credential_store = EnvOthRhCredentialStore()
@@ -218,16 +234,14 @@ async def analysis_schema_missing(_request: Request, exc: AnalysisSchemaError):
     logger.error("Analysis history schema prerequisite is missing: %s", exc)
     return JSONResponse(status_code=503, content={"detail": str(exc)})
 
-# In-memory storage for push subscriptions
-# NOTE: This is temporary storage for development/MVP. Production implementation
-# will use database storage (see GitHub issue or backlog for migration task)
-push_subscriptions: List[Dict[str, Any]] = []
-
 # Pydantic models
 class PushSubscription(BaseModel):
     endpoint: str
     keys: Dict[str, str]
     expirationTime: Any = None
+
+class PushTestRequest(BaseModel):
+    endpoint: Optional[str] = None
 
 class PushNotification(BaseModel):
     title: str
@@ -274,6 +288,11 @@ else:
 def reset_guest_analyze_quota() -> None:
     """Clear guest analyze rate-limit buckets (tests only)."""
     _guest_analyze_hits.clear()
+
+
+def reset_push_rate_limit() -> None:
+    """Clear push subscribe/test rate-limit buckets (tests only)."""
+    _push_mutation_hits.clear()
 
 
 def reset_guest_leap_rank_quota() -> None:
@@ -366,6 +385,18 @@ def _enforce_ip_quota(
     if len(hits) >= max_per_window:
         raise HTTPException(status_code=429, detail=detail)
     hits.append(now)
+
+
+def _enforce_push_mutation_quota(request: Request) -> None:
+    """Per-IP quota for subscribe and test, using the same window as guest analyze."""
+    _enforce_ip_quota(
+        request,
+        _push_mutation_hits,
+        max_per_window=_PUSH_MUTATION_MAX_PER_WINDOW,
+        window_seconds=_PUSH_MUTATION_WINDOW_SECONDS,
+        max_buckets=_PUSH_MUTATION_MAX_BUCKETS,
+        detail="Too many push requests from this network. Try again later.",
+    )
 
 
 def _enforce_guest_analyze_quota(request: Request) -> None:
@@ -5289,99 +5320,132 @@ async def download_year_close_packet_post(
     )
 
 
+_PUSH_SAVE_ERRORS = {
+    PUSH_INVALID: (400, "Push subscription is invalid."),
+    PUSH_CONFLICT: (409, "Push subscription could not be saved."),
+    PUSH_UNAVAILABLE: (503, "Could not save push subscription."),
+    PUSH_LIMIT: (400, "Too many push devices are registered for this account."),
+}
+
+
+def _push_admin_or_error(request: Request) -> None:
+    """Broadcasts stay closed unless a long server-only key matches the header."""
+    configured = os.environ.get("PUSH_ADMIN_KEY", "")
+    try:
+        admin_key = configured.encode("ascii")
+    except UnicodeEncodeError:
+        admin_key = b""
+    if len(admin_key) < _PUSH_ADMIN_MIN_BYTES:
+        raise HTTPException(status_code=503, detail="Push broadcast is not configured.")
+    provided = request.headers.get("x-push-admin-key", "")
+    try:
+        provided_key = provided.encode("ascii")
+    except UnicodeEncodeError:
+        provided_key = None
+    if provided_key is None or not hmac.compare_digest(provided_key, admin_key):
+        raise HTTPException(status_code=403, detail="Push broadcast is not authorized.")
+
+
+def _deliver_owned_push(rows: list, notification: PushNotification) -> dict:
+    if not VAPID_PRIVATE_KEY or not VAPID_PUBLIC_KEY:
+        raise HTTPException(status_code=503, detail="VAPID keys are not configured.")
+    return deliver_push(
+        rows,
+        notification.model_dump(),
+        webpush=webpush,
+        vapid_private_key=VAPID_PRIVATE_KEY,
+        vapid_claims_sub=f"mailto:{VAPID_CLAIM_EMAIL}",
+        delete_subscription=lambda row: db_delete_push_subscription(
+            row.get("id"),
+            user_id=row.get("user_id"),
+        ),
+    )
+
+
+def _public_subscription(row: dict) -> dict:
+    return {
+        "id": row.get("id"),
+        "created_at": row.get("created_at"),
+        "expiration_time_ms": row.get("expiration_time_ms"),
+    }
+
+
 @app.post("/push/subscribe")
-async def subscribe_to_push(subscription: PushSubscription):
-    """Store push notification subscription"""
-    subscription_dict = subscription.model_dump()
-
-    # Check if subscription already exists
-    for existing in push_subscriptions:
-        if existing.get("endpoint") == subscription_dict["endpoint"]:
-            return {"message": "Subscription already exists", "count": len(push_subscriptions)}
-
-    push_subscriptions.append(subscription_dict)
-    logger.info(f"New push subscription added. Total subscriptions: {len(push_subscriptions)}")
-    return {"message": "Subscription stored", "count": len(push_subscriptions)}
+async def subscribe_to_push(
+    subscription: PushSubscription,
+    request: Request,
+    user_id: Annotated[str, Depends(get_current_user)],
+):
+    """Store a push endpoint for the authenticated user only."""
+    _enforce_push_mutation_quota(request)
+    result = db_save_push_subscription(user_id, subscription.model_dump())
+    if result in _PUSH_SAVE_ERRORS:
+        status, detail = _PUSH_SAVE_ERRORS[result]
+        raise HTTPException(status_code=status, detail=detail)
+    return {"message": "Subscription stored"}
 
 @app.post("/push/unsubscribe")
-async def unsubscribe_from_push(subscription: PushSubscription):
-    """Remove push notification subscription"""
-    subscription_dict = subscription.model_dump()
-
-    # Find and remove subscription
-    for i, existing in enumerate(push_subscriptions):
-        if existing.get("endpoint") == subscription_dict["endpoint"]:
-            push_subscriptions.pop(i)
-            logger.info(f"Push subscription removed. Total subscriptions: {len(push_subscriptions)}")
-            return {"message": "Subscription removed", "count": len(push_subscriptions)}
-
-    return {"message": "Subscription not found", "count": len(push_subscriptions)}
+async def unsubscribe_from_push(
+    subscription: PushSubscription,
+    user_id: Annotated[str, Depends(get_current_user)],
+):
+    """Remove only the authenticated user's matching push endpoint."""
+    row, lookup_ok = db_get_push_subscription_for_user(user_id, subscription.endpoint)
+    if not lookup_ok:
+        raise HTTPException(status_code=503, detail="Could not check push subscription.")
+    if row is None:
+        return {"message": "Subscription not found"}
+    deleted = db_delete_push_subscription(row.get("id"), user_id=user_id)
+    if deleted is None:
+        raise HTTPException(status_code=503, detail="Could not remove push subscription.")
+    if not deleted:
+        return {"message": "Subscription not found"}
+    return {"message": "Subscription removed"}
 
 @app.get("/push/subscriptions")
-async def get_subscriptions():
-    """Get count of active push subscriptions (for debugging)"""
-    return {"count": len(push_subscriptions), "subscriptions": push_subscriptions}
+async def get_subscriptions(user_id: Annotated[str, Depends(get_current_user)]):
+    """Owner metadata only. Endpoint URLs and keys are not returned."""
+    rows = db_list_push_subscriptions(user_id)
+    if rows is None:
+        raise HTTPException(status_code=503, detail="Could not load push subscriptions.")
+    public_rows = [_public_subscription(row) for row in rows]
+    return {"count": len(public_rows), "subscriptions": public_rows}
 
 @app.post("/push/send")
-async def send_push_notification(notification: PushNotification):
-    """Send push notification to all subscribed users"""
-
-    if not VAPID_PRIVATE_KEY or not VAPID_PUBLIC_KEY:
-        return {
-            "error": "VAPID keys not configured",
-            "message": "Please set VAPID_PRIVATE_KEY and VAPID_PUBLIC_KEY in .env",
-            "sent": 0,
-            "failed": 0
-        }
-
-    notification_data = {
-        "title": notification.title,
-        "body": notification.body,
-        "icon": notification.icon,
-        "badge": notification.badge,
-        "tag": notification.tag,
-        "data": notification.data
-    }
-
-    sent_count = 0
-    failed_count = 0
-
-    for subscription_info in push_subscriptions[:]:  # Use slice to allow removal during iteration
-        try:
-            webpush(
-                subscription_info=subscription_info,
-                data=json.dumps(notification_data),
-                vapid_private_key=VAPID_PRIVATE_KEY,
-                vapid_claims={
-                    "sub": f"mailto:{VAPID_CLAIM_EMAIL}"
-                }
-            )
-            sent_count += 1
-            logger.info(f"Push notification sent: {notification.title}")
-        except WebPushException as e:
-            failed_count += 1
-            logger.error(f"Push notification failed: {e}")
-            # If subscription is gone (410 Gone), remove it
-            if e.response and e.response.status_code == 410:
-                push_subscriptions.remove(subscription_info)
-                logger.info("Removed expired subscription")
-
-    return {
-        "message": f"Notification sent to {sent_count} subscribers",
-        "sent": sent_count,
-        "failed": failed_count,
-        "total_subscriptions": len(push_subscriptions)
-    }
+async def send_push_notification(notification: PushNotification, request: Request):
+    """Broadcast only with the server-only PUSH_ADMIN_KEY header."""
+    _push_admin_or_error(request)
+    rows = db_list_push_subscriptions()
+    if rows is None:
+        raise HTTPException(status_code=503, detail="Could not load push subscriptions.")
+    return _deliver_owned_push(rows, notification)
 
 @app.post("/push/test")
-async def test_push_notification():
-    """Send a test push notification to all subscribers"""
+async def test_push_notification(
+    request: Request,
+    user_id: Annotated[str, Depends(get_current_user)],
+    body: Optional[PushTestRequest] = None,
+):
+    """Send a test to the caller's own devices, never to anyone else's."""
+    _enforce_push_mutation_quota(request)
+    endpoint = body.endpoint if body is not None else None
+    if endpoint:
+        row, lookup_ok = db_get_push_subscription_for_user(user_id, endpoint)
+        if not lookup_ok:
+            raise HTTPException(status_code=503, detail="Could not verify push subscription.")
+        if row is None:
+            raise HTTPException(status_code=404, detail="Push subscription not found.")
+        rows = [row]
+    else:
+        rows = db_list_push_subscriptions(user_id)
+        if rows is None:
+            raise HTTPException(status_code=503, detail="Could not load push subscriptions.")
     notification = PushNotification(
         title="Test Notification",
         body="This is a test notification from OptionsTaxHub!",
-        tag="test"
+        tag="test",
     )
-    return await send_push_notification(notification)
+    return _deliver_owned_push(rows, notification)
 
 def run():
     # Local default is 8011. Render injects $PORT — do not hardcode 8011 in production.
