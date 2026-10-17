@@ -137,9 +137,9 @@
 3. Should see full-screen app
 
 ### Push Notifications
-1. Complete backend setup first
-2. Grant notification permission
-3. Test with backend `/push/send` endpoint
+1. Complete backend setup first, including the push subscription migration
+2. Sign in and grant notification permission
+3. Test with `POST /push/test` as that user. Broadcasts use `POST /push/send` and the server-only admin key described in `PWA_SETUP.md`
 
 ## 🔗 Resources
 

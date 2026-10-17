@@ -35,93 +35,53 @@ No additional setup needed! The following are already configured:
 - [x] Install prompt component
 - [x] Service worker registration
 
-## Backend Setup (TODO)
+## Backend Setup
 
 ### Push Notifications
 
-To enable server-triggered push notifications, add these endpoints to your FastAPI backend:
+Subscribe, unsubscribe, list, and test require a signed-in Supabase user. The
+server stores each endpoint with that user's id in `push_subscriptions`.
+Apply `server/migrations/013_push_subscriptions.sql` before enabling push in
+an environment. Do not apply it to a database you have not chosen, and do not
+apply it from this repository's automated jobs.
+
+No route returns endpoint URLs or encryption keys. `GET /push/subscriptions`
+returns only the caller's subscription ids and timestamps. `POST /push/test`
+delivers to the caller's own devices. Pass `{ "endpoint": "<the browser's PushSubscription endpoint>" }`
+to target the current device, or `{}` to target every device that account owns.
+A signed-out visitor cannot subscribe; the client leaves notifications off.
+
+`POST /push/send` is the broadcast. It stays disabled until the API process
+has `PUSH_ADMIN_KEY` set to at least 32 ASCII characters. The caller sends
+that value in the `X-Push-Admin-Key` header. Generate it outside the repo
+(for example `openssl rand -base64 32`) and put it only in the server
+environment you intend to broadcast from, such as the Render dashboard for
+that one service. Do not commit a value, do not add it to `render.yaml`, and
+do not put it in a `NEXT_PUBLIC_*` variable or browser code. Messages are
+kept for up to a day (`TTL` 86400) so an offline device can still receive a
+deadline reminder.
 
 #### 1. Generate VAPID Keys
 
 ```bash
-# Install web-push library
 pip install pywebpush
-
-# Generate VAPID keys (run once)
 python3 -c "from pywebpush import vapid; print(vapid.Vapid().generate_keys())"
 ```
 
-Add the keys to your `.env`:
+Add the keys to the server environment:
+
 ```
 VAPID_PUBLIC_KEY=your_public_key_here
 VAPID_PRIVATE_KEY=your_private_key_here
 VAPID_CLAIM_EMAIL=your_email@example.com
 ```
 
-#### 2. Add Backend Endpoints
+#### 2. Send a Tax Deadline Reminder
 
-Add to `server/main.py`:
-
-```python
-from pywebpush import webpush, WebPushException
-import json
-import os
-
-# Store subscriptions (use database in production)
-subscriptions = []
-
-@app.post("/push/subscribe")
-async def subscribe_to_push(subscription: dict):
-    """Store push notification subscription"""
-    subscriptions.append(subscription)
-    return {"message": "Subscription stored"}
-
-@app.post("/push/unsubscribe")
-async def unsubscribe_from_push(subscription: dict):
-    """Remove push notification subscription"""
-    subscriptions.remove(subscription)
-    return {"message": "Subscription removed"}
-
-@app.post("/push/send")
-async def send_push_notification(
-    title: str,
-    body: str,
-    tag: str = "default"
-):
-    """Send push notification to all subscribed users"""
-    notification_data = {
-        "title": title,
-        "body": body,
-        "icon": "/icons/icon-192x192.svg",
-        "tag": tag
-    }
-
-    for subscription in subscriptions:
-        try:
-            webpush(
-                subscription_info=subscription,
-                data=json.dumps(notification_data),
-                vapid_private_key=os.getenv("VAPID_PRIVATE_KEY"),
-                vapid_claims={
-                    "sub": f"mailto:{os.getenv('VAPID_CLAIM_EMAIL')}"
-                }
-            )
-        except WebPushException as e:
-            print(f"Push failed: {e}")
-
-    return {"message": f"Sent to {len(subscriptions)} subscribers"}
-```
-
-#### 3. Example: Send Tax Deadline Reminder
-
-```python
-# Trigger from your tax calculation logic
-await send_push_notification(
-    title="Tax Deadline Approaching",
-    body="Year-end tax-loss harvesting deadline in 7 days",
-    tag="tax-deadline"
-)
-```
+Call `POST /push/send` from a server-side job with `X-Push-Admin-Key`.
+Do not call the broadcast endpoint from browser code. The list route does
+not return endpoint URLs, so a device test is `POST /push/test` from the
+signed-in browser that already holds the `PushSubscription`.
 
 ## Testing
 
@@ -136,9 +96,9 @@ await send_push_notification(
 3. Install and open from home screen
 
 ### Test Push Notifications
-1. Grant notification permission when prompted
-2. From backend, call `/push/send` endpoint
-3. Should receive notification even when app is closed
+1. Sign in, then grant notification permission when prompted
+2. Call `POST /push/test` with that user's bearer token
+3. Confirm the notification reaches only that account's devices, including when the app is closed
 
 ## Icons
 
@@ -150,16 +110,20 @@ Current icons are SVG placeholders. To replace with custom designs:
 
 ## Environment Variables
 
-Add to `.env.local`:
+Add to the frontend `.env.local`:
 ```
 NEXT_PUBLIC_VAPID_PUBLIC_KEY=your_public_key_here
 NEXT_PUBLIC_API_URL=http://localhost:8011
 ```
 
+`PUSH_ADMIN_KEY` is not a frontend variable and is not listed here with a
+value. Set it only on the server when you are ready to allow broadcasts.
+
 ## Production Checklist
 
 - [ ] Generate production VAPID keys
-- [ ] Store push subscriptions in database (not in-memory)
+- [ ] Apply `server/migrations/013_push_subscriptions.sql` to the database you intend to use
+- [ ] Set a server-only `PUSH_ADMIN_KEY` of at least 32 characters before enabling broadcasts
 - [ ] Add HTTPS (required for service workers)
 - [ ] Replace placeholder icons with branded designs
 - [ ] Test on real iOS and Android devices

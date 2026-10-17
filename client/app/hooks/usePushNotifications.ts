@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { getSupabaseClient } from "@/lib/supabase";
 
 export interface NotificationPayload {
   title: string;
@@ -18,6 +19,7 @@ export function usePushNotifications() {
     null,
   );
   const [isSupported, setIsSupported] = useState(false);
+  const [lastError, setLastError] = useState<string | null>(null);
 
   useEffect(() => {
     if (
@@ -53,33 +55,47 @@ export function usePushNotifications() {
       return null;
     }
 
+    const accessToken = await readPushAccessToken();
+    if (!accessToken) {
+      setLastError("Sign in to enable notifications on this device.");
+      return null;
+    }
+
     try {
       const registration = await navigator.serviceWorker.ready;
-
-      // Generate VAPID keys on server and use them here
-      // For now, using a placeholder - you'll need to generate real keys
       const vapidPublicKey =
         process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY ||
         "BEl62iUYgUivxIkv69yViEuiBIa-Ib37J8xQmrEcxWLcNV5UvvhL_r0E4z-C0";
-
       const convertedVapidKey = urlBase64ToUint8Array(vapidPublicKey);
-
       const sub = await registration.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: convertedVapidKey as BufferSource,
       });
+      const result = await postPushSubscription(
+        "/push/subscribe",
+        sub,
+        accessToken,
+      );
 
-      setSubscription(sub);
-
-      // Send subscription to backend
-      await sendSubscriptionToBackend(sub);
-
-      return sub;
-    } catch (error) {
-      // Subscription failed - graceful degradation for unsupported browsers
-      if (error instanceof Error) {
-        // Log error for debugging but don't throw
+      if (result !== "accepted") {
+        if (result === "rejected") {
+          try {
+            await sub.unsubscribe();
+          } catch {
+            // The browser subscription could not be rolled back.
+          }
+          setLastError("Notifications were not enabled for this account.");
+        } else {
+          setLastError("Notifications could not be enabled. Try again.");
+        }
+        return null;
       }
+
+      setLastError(null);
+      setSubscription(sub);
+      return sub;
+    } catch {
+      setLastError("Notifications could not be enabled. Try again.");
       return null;
     }
   };
@@ -87,19 +103,28 @@ export function usePushNotifications() {
   const unsubscribe = async () => {
     if (!subscription) return false;
 
+    const accessToken = await readPushAccessToken();
+    if (!accessToken) {
+      setLastError("Sign in to disable notifications on this device.");
+      return false;
+    }
+
+    const result = await postPushSubscription(
+      "/push/unsubscribe",
+      subscription,
+      accessToken,
+    );
+    if (result !== "accepted") {
+      setLastError("Notifications could not be disabled. Try again.");
+      return false;
+    }
+
     try {
       await subscription.unsubscribe();
-
-      // Remove subscription from backend
-      await removeSubscriptionFromBackend(subscription);
-
       setSubscription(null);
+      setLastError(null);
       return true;
-    } catch (error) {
-      // Unsubscribe failed - graceful degradation
-      if (error instanceof Error) {
-        // Log error for debugging but don't throw
-      }
+    } catch {
       return false;
     }
   };
@@ -108,6 +133,7 @@ export function usePushNotifications() {
     isSupported,
     permission,
     subscription,
+    lastError,
     requestPermission,
     subscribe,
     unsubscribe,
@@ -149,46 +175,36 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array {
   return outputArray;
 }
 
-// Send subscription to backend
-async function sendSubscriptionToBackend(subscription: PushSubscription) {
-  try {
-    const response = await fetch(getPushEndpoint("/push/subscribe"), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(subscription),
-    });
+type PushPostResult = "accepted" | "rejected" | "unavailable";
 
-    if (!response.ok) {
-      throw new Error("Failed to send subscription to backend");
-    }
-  } catch (error) {
-    // Backend subscription registration failed - non-critical for PWA functionality
-    if (error instanceof Error) {
-      // Log error for debugging but don't re-throw
-    }
+async function readPushAccessToken(): Promise<string | null> {
+  try {
+    const { data, error } = await getSupabaseClient().auth.refreshSession();
+    if (error || !data.session?.access_token) return null;
+    return data.session.access_token;
+  } catch {
+    return null;
   }
 }
 
-// Remove subscription from backend
-async function removeSubscriptionFromBackend(subscription: PushSubscription) {
+async function postPushSubscription(
+  path: string,
+  subscription: PushSubscription,
+  accessToken: string,
+): Promise<PushPostResult> {
   try {
-    const response = await fetch(getPushEndpoint("/push/unsubscribe"), {
+    const response = await fetch(getPushEndpoint(path), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
       },
       body: JSON.stringify(subscription),
     });
-
-    if (!response.ok) {
-      throw new Error("Failed to remove subscription from backend");
-    }
-  } catch (error) {
-    // Backend subscription removal failed - non-critical for PWA functionality
-    if (error instanceof Error) {
-      // Log error for debugging but don't re-throw
-    }
+    if (response.ok) return "accepted";
+    if (response.status === 401 || response.status === 409) return "rejected";
+    return "unavailable";
+  } catch {
+    return "unavailable";
   }
 }
