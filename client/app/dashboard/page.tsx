@@ -105,6 +105,10 @@ import type {
   Position,
 } from "@/lib/types";
 import { consumeAutomaticSampleRerun } from "@/lib/automaticSampleRerun";
+import {
+  consumePacketResumeLocalHandoff,
+  PACKET_RESUME_REUPLOAD_COPY,
+} from "@/lib/packetResumeLocal";
 import { SAMPLE_FETCH_TIMEOUT_MS } from "@/lib/constants";
 import {
   DASHBOARD_RESUME_CHECKOUT_PATH,
@@ -1291,6 +1295,8 @@ export default function DashboardPage() {
   const [uploadOpen, setUploadOpen] = useState(false);
   const [sampleLoadError, setSampleLoadError] = useState<string | null>(null);
   const sampleAnalyzeStartedRef = useRef(false);
+  const resumeReuploadArmed = useRef(false);
+  const [resumeReuploadNotice, setResumeReuploadNotice] = useState(false);
   const queryClient = useQueryClient();
 
   // Load the user's tax profile for analyze params
@@ -1867,6 +1873,17 @@ export default function DashboardPage() {
     }
   }, [authLoading, user, emailConfirmed, router]);
 
+  useEffect(() => {
+    if (resumeReuploadArmed.current) {
+      setResumeReuploadNotice(true);
+    }
+  }, []);
+
+  // Cross-tab handoff must be in sessionStorage before the effects above read it.
+  if (consumePacketResumeLocalHandoff()) {
+    resumeReuploadArmed.current = true;
+  }
+
   if (authLoading) {
     return (
       <Box
@@ -2206,6 +2223,12 @@ export default function DashboardPage() {
             <Alert severity="warning">
               <AlertTitle>Analysis service unreachable</AlertTitle>
               {getBackendUnreachableMessage()}
+            </Alert>
+          )}
+
+          {resumeReuploadNotice && (
+            <Alert severity="info" data-testid="packet-resume-reupload">
+              {PACKET_RESUME_REUPLOAD_COPY}
             </Alert>
           )}
 

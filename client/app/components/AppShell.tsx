@@ -26,6 +26,7 @@ import { useAuth } from "@/app/context/auth";
 import InstallPrompt from "./InstallPrompt";
 import TipJar from "./TipJar";
 import Wordmark from "./Wordmark";
+import { clearPacketResumeLocal } from "@/lib/packetResumeLocal";
 import {
   OPTIONS_PATH,
   TAX_PATH,
@@ -171,6 +172,7 @@ export default function AppShell({
     } catch {
       // ignore
     }
+    clearPacketResumeLocal();
     // Drop this account's cached runs and tax profile before the next sign-in.
     queryClient.removeQueries({ queryKey: ["portfolio-history", userId] });
     queryClient.removeQueries({ queryKey: ["tax-profile", userId] });

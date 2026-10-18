@@ -16,6 +16,10 @@ import {
 } from "@mui/icons-material";
 import { getSession } from "@/lib/supabase";
 import {
+  clearPacketResumeLocal,
+  rememberPacketResumeLocal,
+} from "@/lib/packetResumeLocal";
+import {
   DASHBOARD_RESUME_CHECKOUT_PATH,
   PACKET_RESUME_CHECKOUT_KEY,
   PACKET_RESUME_SAMPLE_KEY,
@@ -551,6 +555,7 @@ function YearClosePacketPanelForAnalysis({
       // This effect strips packet_canceled before the resume effect reads the
       // URL. Drop the guest-pay marker here so a closed checkout cannot reopen.
       clearSessionItem(PACKET_RESUME_CHECKOUT_KEY);
+      clearPacketResumeLocal();
       persistConfirmFlag(false);
       persistResumeFlag(false);
       setBusy(null);
@@ -604,6 +609,7 @@ function YearClosePacketPanelForAnalysis({
         if (analysis.sample_run) {
           writeSessionItem(PACKET_RESUME_SAMPLE_KEY, "1");
         }
+        rememberPacketResumeLocal(analysis.sample_run === true);
         try {
           router.push(signInHref(DASHBOARD_RESUME_CHECKOUT_PATH));
         } catch (navError) {
@@ -733,6 +739,7 @@ function YearClosePacketPanelForAnalysis({
       }
       packetResumeCheckoutLocked = true;
       clearSessionItem(PACKET_RESUME_CHECKOUT_KEY);
+      clearPacketResumeLocal();
       stripResumeCheckoutParam();
       await handlePayRef.current({ guestRedirect: false });
     })();

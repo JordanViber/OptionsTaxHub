@@ -11,6 +11,10 @@ export const OPEN_RUNS_KEY = "oth-open-runs";
 export const RESUME_CHECKOUT_PARAM = "resume_checkout";
 export const PACKET_RESUME_CHECKOUT_KEY = "optionstaxhub-packet-resume-checkout";
 export const PACKET_RESUME_SAMPLE_KEY = "optionstaxhub-packet-resume-sample";
+/** Cross-tab handoff. Payload is only {v, sample, exp} — never a run or tax data. */
+export const PACKET_RESUME_LOCAL_KEY = "optionstaxhub-packet-resume";
+export const PACKET_RESUME_LOCAL_TTL_MS = 30 * 60 * 1000;
+export const PACKET_RESUME_LOCAL_VERSION = 1;
 export const DASHBOARD_RESUME_CHECKOUT_PATH = `${TAX_PATH}?${RESUME_CHECKOUT_PARAM}=1`;
 
 const ALLOWED_RETURN_PATHS = new Set<string>([

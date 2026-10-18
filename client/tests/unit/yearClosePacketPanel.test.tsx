@@ -13,6 +13,9 @@ import YearClosePacketPanel, {
 import {
   DASHBOARD_RESUME_CHECKOUT_PATH,
   PACKET_RESUME_CHECKOUT_KEY,
+  PACKET_RESUME_LOCAL_KEY,
+  PACKET_RESUME_LOCAL_TTL_MS,
+  PACKET_RESUME_LOCAL_VERSION,
   PACKET_RESUME_SAMPLE_KEY,
   safeNextPath,
 } from "../../lib/safeNextPath";
@@ -128,6 +131,7 @@ describe("YearClosePacketPanel", () => {
       writable: true,
     });
     window.history.replaceState(null, "", "/dashboard");
+    localStorage.clear();
     globalThis.URL.createObjectURL = jest.fn(() => "blob:packet");
     globalThis.URL.revokeObjectURL = jest.fn();
   });
@@ -370,6 +374,7 @@ describe("YearClosePacketPanel", () => {
     const init = mockFetch.mock.calls[0][1];
     expect(JSON.parse(init.body).analysis_id).toBe("analysis-1");
     expect(mockFetch.mock.calls[0][0]).not.toContain("/api/tips/checkout");
+    expect(localStorage.getItem(PACKET_RESUME_LOCAL_KEY)).toBeNull();
     expect(store["optionstaxhub-packet-pending:analysis-1"]).toBe("cs_test_packet");
     expect(store["optionstaxhub-packet-pending-url:analysis-1"]).toBe(
       "https://checkout.stripe.com/c/pay/cs_test_packet",
@@ -394,6 +399,20 @@ describe("YearClosePacketPanel", () => {
     expect(mockFetch).not.toHaveBeenCalled();
     expect(store[PACKET_RESUME_CHECKOUT_KEY]).toBe("1");
     expect(store[PACKET_RESUME_SAMPLE_KEY]).toBe("1");
+    const handoff = JSON.parse(
+      localStorage.getItem(PACKET_RESUME_LOCAL_KEY) as string,
+    ) as Record<string, unknown>;
+    expect(Object.keys(handoff).sort()).toEqual(["exp", "sample", "v"]);
+    expect(handoff).toEqual({
+      v: PACKET_RESUME_LOCAL_VERSION,
+      sample: true,
+      exp: expect.any(Number),
+    });
+    expect(handoff.exp as number).toBeGreaterThan(Date.now());
+    expect(handoff.exp as number).toBeLessThanOrEqual(
+      Date.now() + PACKET_RESUME_LOCAL_TTL_MS + 1000,
+    );
+    expect(JSON.stringify(handoff)).not.toMatch(/analysis|tax|position|symbol/i);
     expect(store[PACKET_CHECKOUT_INFLIGHT_KEY]).toBeUndefined();
     expect(screen.queryByText(/Authentication required/i)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
@@ -408,6 +427,10 @@ describe("YearClosePacketPanel", () => {
     });
     expect(store[PACKET_RESUME_CHECKOUT_KEY]).toBe("1");
     expect(store[PACKET_RESUME_SAMPLE_KEY]).toBeUndefined();
+    expect(JSON.parse(localStorage.getItem(PACKET_RESUME_LOCAL_KEY) as string)).toMatchObject({
+      v: PACKET_RESUME_LOCAL_VERSION,
+      sample: false,
+    });
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
@@ -427,6 +450,10 @@ describe("YearClosePacketPanel", () => {
 
   it("auto-starts checkout once when resume_checkout=1 and a session exists", async () => {
     store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    localStorage.setItem(
+      PACKET_RESUME_LOCAL_KEY,
+      JSON.stringify({ v: 1, sample: true, exp: Date.now() + 60_000 }),
+    );
     window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
     mockFetch.mockResolvedValueOnce(checkoutOk());
 
@@ -443,6 +470,7 @@ describe("YearClosePacketPanel", () => {
     expect(JSON.parse(init.body).analysis_id).toBe("analysis-1");
     expect(window.location.search).not.toContain("resume_checkout");
     expect(store[PACKET_RESUME_CHECKOUT_KEY]).toBeUndefined();
+    expect(localStorage.getItem(PACKET_RESUME_LOCAL_KEY)).toBeNull();
   });
 
   it("does not auto-start a second checkout after the resume marker is consumed", async () => {
@@ -532,6 +560,10 @@ describe("YearClosePacketPanel", () => {
 
   it("does not auto-start checkout when packet_canceled is present", async () => {
     store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    localStorage.setItem(
+      PACKET_RESUME_LOCAL_KEY,
+      JSON.stringify({ v: 1, sample: false, exp: Date.now() + 60_000 }),
+    );
     window.history.replaceState(
       null,
       "",
@@ -542,6 +574,7 @@ describe("YearClosePacketPanel", () => {
       expect(screen.getByTestId("packet-checkout-canceled")).toBeInTheDocument();
     });
     expect(mockFetch).not.toHaveBeenCalled();
+    expect(localStorage.getItem(PACKET_RESUME_LOCAL_KEY)).toBeNull();
   });
 
   it("does not auto-start checkout without a saved analysis id", async () => {
