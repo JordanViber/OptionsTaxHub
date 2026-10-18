@@ -156,6 +156,14 @@ jest.mock("../../app/components/TipJar", () => ({
 }));
 
 import DashboardPage from "../../app/dashboard/page";
+import { resetAutomaticSampleRerunForTests } from "../../lib/automaticSampleRerun";
+import { resetPacketResumeCheckoutLock } from "../../app/components/YearClosePacketPanel";
+import { resetPacketResumeLocalForTests } from "../../lib/packetResumeLocal";
+import {
+  PACKET_RESUME_CHECKOUT_KEY,
+  PACKET_RESUME_LOCAL_KEY,
+  PACKET_RESUME_SAMPLE_KEY,
+} from "../../lib/safeNextPath";
 
 const baseAnalysis: PortfolioAnalysis = {
   analysis_id: "analysis-test-1",
@@ -260,6 +268,9 @@ describe("DashboardPage", () => {
     mockCleanupOrphanHistory.mockClear();
     mockDeleteAnalysis.mockClear();
     mockSessionValue = null;
+    resetPacketResumeLocalForTests();
+    localStorage.removeItem(PACKET_RESUME_LOCAL_KEY);
+    window.history.replaceState(null, "", "/dashboard");
     // Mock sessionStorage
     Object.defineProperty(globalThis, "sessionStorage", {
       value: {
@@ -1807,6 +1818,318 @@ describe("DashboardPage", () => {
       expect(mockPush).toHaveBeenCalledWith("/auth/confirm-email");
     });
     expect(screen.queryByText(/Portfolio Analysis/i)).not.toBeInTheDocument();
+  });
+
+  it("sends an unconfirmed resume visit to confirm-email with next", async () => {
+    window.history.pushState({}, "", "/dashboard?resume_checkout=1");
+    mockAuthState.user.email_confirmed_at = null;
+    try {
+      render(<DashboardPage />, { wrapper: createWrapper() });
+      await waitFor(() => {
+        expect(mockPush).toHaveBeenCalledWith(
+          `/auth/confirm-email?next=${encodeURIComponent("/dashboard?resume_checkout=1")}`,
+        );
+      });
+    } finally {
+      window.history.pushState({}, "", "/dashboard");
+    }
+  });
+
+  it("re-runs the sample once when checkout says the guest snapshot is gone", async () => {
+    resetAutomaticSampleRerunForTests();
+    resetPacketResumeCheckoutLock();
+    const store = new Map<string, string>();
+    Object.defineProperty(globalThis, "sessionStorage", {
+      value: {
+        getItem: jest.fn((key: string) => store.get(key) ?? null),
+        setItem: jest.fn((key: string, value: string) => {
+          store.set(key, value);
+        }),
+        removeItem: jest.fn((key: string) => {
+          store.delete(key);
+        }),
+        clear: jest.fn(() => {
+          store.clear();
+        }),
+      },
+      writable: true,
+    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/year-close-packet/checkout")) {
+        return {
+          ok: false,
+          status: 409,
+          json: async () => ({
+            detail:
+              "This guest snapshot must be restored from its matching analysis before checkout.",
+          }),
+        };
+      }
+      if (url.includes("sample-robinhood")) {
+        return {
+          ok: true,
+          blob: async () => new Blob(["sample"], { type: "text/csv" }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    }) as unknown as typeof fetch;
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      sample_run: true,
+      packet_unlocked: false,
+    };
+    window.history.replaceState(null, "", "/dashboard");
+
+    try {
+      render(<DashboardPage />, { wrapper: createWrapper() });
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
+      });
+      fireEvent.click(screen.getByRole("button", { name: /Pay \$49/i }));
+      await waitFor(() => {
+        expect(mockAnalyzeMutate).toHaveBeenCalledTimes(1);
+      });
+      expect(store.get("optionstaxhub-packet-resume-checkout")).toBe("1");
+      expect(store.get("optionstaxhub-packet-resume-sample")).toBe("1");
+      expect(window.location.search).toContain("resume_checkout=1");
+      expect(
+        screen.queryByText(/guest snapshot must be restored/i),
+      ).not.toBeInTheDocument();
+    } finally {
+      globalThis.fetch = originalFetch;
+      window.history.replaceState(null, "", "/dashboard");
+    }
+  });
+
+  function installSessionStore(): Map<string, string> {
+    const store = new Map<string, string>();
+    Object.defineProperty(globalThis, "sessionStorage", {
+      configurable: true,
+      value: {
+        getItem: jest.fn((key: string) => store.get(key) ?? null),
+        setItem: jest.fn((key: string, value: string) => {
+          store.set(key, value);
+        }),
+        removeItem: jest.fn((key: string) => {
+          store.delete(key);
+        }),
+        clear: jest.fn(() => {
+          store.clear();
+        }),
+      },
+    });
+    return store;
+  }
+
+  function handoffFetch(checkoutCalls: Array<{ url: string; authorization: string; body: string }>) {
+    return jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/api/year-close-packet/checkout")) {
+        const headers = (init?.headers ?? {}) as Record<string, string>;
+        checkoutCalls.push({
+          url,
+          authorization: headers.Authorization || "",
+          body: typeof init?.body === "string" ? init.body : "",
+        });
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            checkout_url: "https://checkout.stripe.com/c/pay/cs_test_resume",
+            session_id: "cs_test_resume",
+          }),
+        };
+      }
+      if (url.includes("sample-robinhood")) {
+        return {
+          ok: true,
+          blob: async () => new Blob(["sample"], { type: "text/csv" }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    }) as unknown as typeof fetch;
+  }
+
+  it("resumes a sample checkout once from localStorage when sessionStorage is empty", async () => {
+    resetAutomaticSampleRerunForTests();
+    resetPacketResumeCheckoutLock();
+    installSessionStore();
+    localStorage.setItem(
+      PACKET_RESUME_LOCAL_KEY,
+      JSON.stringify({ v: 1, sample: true, exp: Date.now() + 60_000 }),
+    );
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    mockAnalyzeData = null;
+    mockAnalyzeMutate.mockImplementation((_payload, options) => {
+      options?.onSuccess?.({
+        ...baseAnalysis,
+        analysis_id: "analysis-resume-1",
+        sample_run: true,
+        packet_unlocked: false,
+      });
+    });
+    const checkoutCalls: Array<{ url: string; authorization: string; body: string }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = handoffFetch(checkoutCalls);
+
+    try {
+      render(<DashboardPage />, { wrapper: createWrapper() });
+      await waitFor(() => {
+        expect(checkoutCalls).toHaveLength(1);
+      });
+      expect(mockAnalyzeMutate).toHaveBeenCalledTimes(1);
+      expect(checkoutCalls[0].url).toContain("/api/year-close-packet/checkout");
+      expect(checkoutCalls[0].authorization).toBe("Bearer mock-jwt-token");
+      expect(JSON.parse(checkoutCalls[0].body).analysis_id).toBe("analysis-resume-1");
+      expect(localStorage.getItem(PACKET_RESUME_LOCAL_KEY)).toBeNull();
+      expect(screen.queryByTestId("packet-resume-reupload")).not.toBeInTheDocument();
+      await act(async () => {
+        await new Promise((resolve) => {
+          setTimeout(resolve, 30);
+        });
+      });
+      expect(checkoutCalls).toHaveLength(1);
+    } finally {
+      globalThis.fetch = originalFetch;
+      window.history.replaceState(null, "", "/dashboard");
+    }
+  });
+
+  it("ignores an expired local resume key without a sample re-run or checkout", async () => {
+    resetAutomaticSampleRerunForTests();
+    resetPacketResumeCheckoutLock();
+    const store = installSessionStore();
+    localStorage.setItem(
+      PACKET_RESUME_LOCAL_KEY,
+      JSON.stringify({ v: 1, sample: true, exp: Date.now() - 1 }),
+    );
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    const checkoutCalls: Array<{ url: string; authorization: string; body: string }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = handoffFetch(checkoutCalls);
+
+    try {
+      render(<DashboardPage />, { wrapper: createWrapper() });
+      await screen.findByText(/Get started with your first analysis/i);
+      await act(async () => {
+        await new Promise((resolve) => {
+          setTimeout(resolve, 30);
+        });
+      });
+      expect(mockAnalyzeMutate).not.toHaveBeenCalled();
+      expect(checkoutCalls).toHaveLength(0);
+      expect(localStorage.getItem(PACKET_RESUME_LOCAL_KEY)).toBeNull();
+      expect(store.get(PACKET_RESUME_CHECKOUT_KEY)).toBeUndefined();
+      expect(store.get(PACKET_RESUME_SAMPLE_KEY)).toBeUndefined();
+      expect(screen.queryByTestId("packet-resume-reupload")).not.toBeInTheDocument();
+    } finally {
+      globalThis.fetch = originalFetch;
+      window.history.replaceState(null, "", "/dashboard");
+    }
+  });
+
+  it("deletes invalid resume handoffs without starting checkout", async () => {
+    resetAutomaticSampleRerunForTests();
+    resetPacketResumeCheckoutLock();
+    const store = installSessionStore();
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    const checkoutCalls: Array<{ url: string; authorization: string; body: string }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = handoffFetch(checkoutCalls);
+    const invalid = ["{", JSON.stringify({ v: 2, sample: true, exp: Date.now() + 60_000 }), JSON.stringify({ v: 1, sample: "yes", exp: Date.now() + 60_000 })];
+
+    try {
+      for (const raw of invalid) {
+        localStorage.setItem(PACKET_RESUME_LOCAL_KEY, raw);
+        store.clear();
+        const view = render(<DashboardPage />, { wrapper: createWrapper() });
+        await screen.findByText(/Get started with your first analysis/i);
+        expect(localStorage.getItem(PACKET_RESUME_LOCAL_KEY)).toBeNull();
+        expect(store.get(PACKET_RESUME_CHECKOUT_KEY)).toBeUndefined();
+        view.unmount();
+      }
+      expect(mockAnalyzeMutate).not.toHaveBeenCalled();
+      expect(checkoutCalls).toHaveLength(0);
+      expect(screen.queryByTestId("packet-resume-reupload")).not.toBeInTheDocument();
+    } finally {
+      globalThis.fetch = originalFetch;
+      window.history.replaceState(null, "", "/dashboard");
+    }
+  });
+
+  it("asks for the CSV again when an uploaded resume has no stored analysis", async () => {
+    resetAutomaticSampleRerunForTests();
+    resetPacketResumeCheckoutLock();
+    const store = installSessionStore();
+    localStorage.setItem(
+      PACKET_RESUME_LOCAL_KEY,
+      JSON.stringify({ v: 1, sample: false, exp: Date.now() + 60_000 }),
+    );
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    const checkoutCalls: Array<{ url: string; authorization: string; body: string }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = handoffFetch(checkoutCalls);
+
+    try {
+      render(<DashboardPage />, { wrapper: createWrapper() });
+      const alert = await screen.findByTestId("packet-resume-reupload");
+      expect(alert).toHaveTextContent("Re-upload your CSV to continue to checkout.");
+      expect(alert.className).toEqual(expect.stringMatching(/MuiAlert-(standard|outlined|filled)Info/));
+      expect(mockAnalyzeMutate).not.toHaveBeenCalled();
+      expect(checkoutCalls).toHaveLength(0);
+      expect(localStorage.getItem(PACKET_RESUME_LOCAL_KEY)).toBeNull();
+      expect(store.get(PACKET_RESUME_CHECKOUT_KEY)).toBeUndefined();
+      expect(store.get(PACKET_RESUME_SAMPLE_KEY)).toBeUndefined();
+    } finally {
+      globalThis.fetch = originalFetch;
+      window.history.replaceState(null, "", "/dashboard");
+    }
+  });
+
+  it("resumes checkout once when an uploaded handoff still has a stored analysis", async () => {
+    resetAutomaticSampleRerunForTests();
+    resetPacketResumeCheckoutLock();
+    const store = installSessionStore();
+    store.set(
+      "optionstaxhub-analysis",
+      JSON.stringify({
+        ...baseAnalysis,
+        sample_run: false,
+        packet_unlocked: false,
+      }),
+    );
+    localStorage.setItem(
+      PACKET_RESUME_LOCAL_KEY,
+      JSON.stringify({ v: 1, sample: false, exp: Date.now() + 60_000 }),
+    );
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    const checkoutCalls: Array<{ url: string; authorization: string; body: string }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = handoffFetch(checkoutCalls);
+
+    try {
+      render(<DashboardPage />, { wrapper: createWrapper() });
+      await waitFor(() => {
+        expect(checkoutCalls).toHaveLength(1);
+      });
+      expect(mockAnalyzeMutate).not.toHaveBeenCalled();
+      expect(checkoutCalls[0].authorization).toBe("Bearer mock-jwt-token");
+      expect(checkoutCalls[0].url).toContain("/api/year-close-packet/checkout");
+      expect(JSON.parse(checkoutCalls[0].body).analysis_id).toBe("analysis-test-1");
+      expect(localStorage.getItem(PACKET_RESUME_LOCAL_KEY)).toBeNull();
+      expect(screen.queryByTestId("packet-resume-reupload")).not.toBeInTheDocument();
+      await act(async () => {
+        await new Promise((resolve) => {
+          setTimeout(resolve, 30);
+        });
+      });
+      expect(checkoutCalls).toHaveLength(1);
+    } finally {
+      globalThis.fetch = originalFetch;
+      window.history.replaceState(null, "", "/dashboard");
+    }
   });
 
 });

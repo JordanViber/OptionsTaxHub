@@ -1,17 +1,62 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { getSession } from "@/lib/supabase";
 import YearClosePacketPanel, {
   compactAnalysis,
   purchaseDateFromSuggestionId,
   PACKET_CHECKOUT_CANCELED_COPY,
   PACKET_CHECKOUT_INFLIGHT_KEY,
   isYearClosePacketPaid,
+  resetPacketResumeCheckoutLock,
   YEAR_CLOSE_PACKET_TITLE,
   yearClosePacketStorageId,
 } from "../../app/components/YearClosePacketPanel";
+import {
+  DASHBOARD_RESUME_CHECKOUT_PATH,
+  PACKET_RESUME_CHECKOUT_KEY,
+  PACKET_RESUME_LOCAL_KEY,
+  PACKET_RESUME_LOCAL_TTL_MS,
+  PACKET_RESUME_LOCAL_VERSION,
+  PACKET_RESUME_SAMPLE_KEY,
+  safeNextPath,
+} from "../../lib/safeNextPath";
 import type { PortfolioAnalysis } from "../../lib/types";
+
+const mockPush = jest.fn();
+jest.mock("next/navigation", () => ({
+  useRouter: () => ({
+    push: mockPush,
+    replace: jest.fn(),
+  }),
+  usePathname: () => "/dashboard",
+}));
 
 const mockFetch = jest.fn();
 globalThis.fetch = mockFetch;
+
+const signedInSession = {
+  access_token: "mock-jwt-token",
+  user: { email_confirmed_at: "2025-01-01T00:00:00Z" },
+};
+
+function checkoutOk() {
+  return {
+    ok: true,
+    status: 200,
+    json: () =>
+      Promise.resolve({
+        checkout_url: "https://checkout.stripe.com/c/pay/cs_test_packet",
+        session_id: "cs_test_packet",
+      }),
+  };
+}
+
+function checkoutConflict(detail: string) {
+  return {
+    ok: false,
+    status: 409,
+    json: () => Promise.resolve({ detail }),
+  };
+}
 
 const analysis: PortfolioAnalysis = {
   analysis_id: "analysis-1",
@@ -63,6 +108,10 @@ describe("YearClosePacketPanel", () => {
 
   beforeEach(() => {
     mockFetch.mockReset();
+    mockPush.mockReset();
+    resetPacketResumeCheckoutLock();
+    (getSession as jest.Mock).mockReset();
+    (getSession as jest.Mock).mockResolvedValue(signedInSession);
     for (const key of Object.keys(store)) {
       delete store[key];
     }
@@ -82,6 +131,7 @@ describe("YearClosePacketPanel", () => {
       writable: true,
     });
     window.history.replaceState(null, "", "/dashboard");
+    localStorage.clear();
     globalThis.URL.createObjectURL = jest.fn(() => "blob:packet");
     globalThis.URL.revokeObjectURL = jest.fn();
   });
@@ -324,10 +374,313 @@ describe("YearClosePacketPanel", () => {
     const init = mockFetch.mock.calls[0][1];
     expect(JSON.parse(init.body).analysis_id).toBe("analysis-1");
     expect(mockFetch.mock.calls[0][0]).not.toContain("/api/tips/checkout");
+    expect(localStorage.getItem(PACKET_RESUME_LOCAL_KEY)).toBeNull();
     expect(store["optionstaxhub-packet-pending:analysis-1"]).toBe("cs_test_packet");
     expect(store["optionstaxhub-packet-pending-url:analysis-1"]).toBe(
       "https://checkout.stripe.com/c/pay/cs_test_packet",
     );
+  });
+
+  it("sends a guest Pay $49 click to sign-in and does not call checkout", async () => {
+    (getSession as jest.Mock).mockResolvedValueOnce(null);
+    render(
+      <YearClosePacketPanel analysis={{ ...analysis, sample_run: true }} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Pay \$49/i }));
+
+    await waitFor(() => {
+      expect(mockPush).toHaveBeenCalled();
+    });
+    const href = String(mockPush.mock.calls[0][0]);
+    const next = new URL(href, "https://optionstaxhub.invalid").searchParams.get(
+      "next",
+    );
+    expect(safeNextPath(next)).toBe(DASHBOARD_RESUME_CHECKOUT_PATH);
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(store[PACKET_RESUME_CHECKOUT_KEY]).toBe("1");
+    expect(store[PACKET_RESUME_SAMPLE_KEY]).toBe("1");
+    const handoff = JSON.parse(
+      localStorage.getItem(PACKET_RESUME_LOCAL_KEY) as string,
+    ) as Record<string, unknown>;
+    expect(Object.keys(handoff).sort()).toEqual(["exp", "sample", "v"]);
+    expect(handoff).toEqual({
+      v: PACKET_RESUME_LOCAL_VERSION,
+      sample: true,
+      exp: expect.any(Number),
+    });
+    expect(handoff.exp as number).toBeGreaterThan(Date.now());
+    expect(handoff.exp as number).toBeLessThanOrEqual(
+      Date.now() + PACKET_RESUME_LOCAL_TTL_MS + 1000,
+    );
+    expect(JSON.stringify(handoff)).not.toMatch(/analysis|tax|position|symbol/i);
+    expect(store[PACKET_CHECKOUT_INFLIGHT_KEY]).toBeUndefined();
+    expect(screen.queryByText(/Authentication required/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
+  });
+
+  it("does not mark a non-sample guest run for sample re-run", async () => {
+    (getSession as jest.Mock).mockResolvedValueOnce(null);
+    render(<YearClosePacketPanel analysis={analysis} />);
+    fireEvent.click(screen.getByRole("button", { name: /Pay \$49/i }));
+    await waitFor(() => {
+      expect(mockPush).toHaveBeenCalled();
+    });
+    expect(store[PACKET_RESUME_CHECKOUT_KEY]).toBe("1");
+    expect(store[PACKET_RESUME_SAMPLE_KEY]).toBeUndefined();
+    expect(JSON.parse(localStorage.getItem(PACKET_RESUME_LOCAL_KEY) as string)).toMatchObject({
+      v: PACKET_RESUME_LOCAL_VERSION,
+      sample: false,
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("shows the navigation error when sign-in routing throws", async () => {
+    (getSession as jest.Mock).mockResolvedValueOnce(null);
+    mockPush.mockImplementation(() => {
+      throw new Error("nav failed");
+    });
+    render(<YearClosePacketPanel analysis={analysis} />);
+    fireEvent.click(screen.getByRole("button", { name: /Pay \$49/i }));
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent("nav failed");
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(store[PACKET_CHECKOUT_INFLIGHT_KEY]).toBeUndefined();
+  });
+
+  it("auto-starts checkout once when resume_checkout=1 and a session exists", async () => {
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    localStorage.setItem(
+      PACKET_RESUME_LOCAL_KEY,
+      JSON.stringify({ v: 1, sample: true, exp: Date.now() + 60_000 }),
+    );
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    mockFetch.mockResolvedValueOnce(checkoutOk());
+
+    render(<YearClosePacketPanel analysis={analysis} />);
+
+    await waitFor(() => {
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+    const [url, init] = mockFetch.mock.calls[0];
+    expect(url).toContain("/api/year-close-packet/checkout");
+    expect(url).not.toContain("/api/tips/checkout");
+    expect(init.method).toBe("POST");
+    expect(init.headers.Authorization).toBe("Bearer mock-jwt-token");
+    expect(JSON.parse(init.body).analysis_id).toBe("analysis-1");
+    expect(window.location.search).not.toContain("resume_checkout");
+    expect(store[PACKET_RESUME_CHECKOUT_KEY]).toBeUndefined();
+    expect(localStorage.getItem(PACKET_RESUME_LOCAL_KEY)).toBeNull();
+  });
+
+  it("does not auto-start a second checkout after the resume marker is consumed", async () => {
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    mockFetch.mockResolvedValue(checkoutOk());
+
+    const first = render(<YearClosePacketPanel analysis={analysis} />);
+    await waitFor(() => {
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+    first.unmount();
+
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    render(<YearClosePacketPanel analysis={analysis} />);
+    await new Promise((resolve) => {
+      setTimeout(resolve, 30);
+    });
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the resume marker when the session is not ready", async () => {
+    (getSession as jest.Mock).mockResolvedValue(null);
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+
+    render(<YearClosePacketPanel analysis={analysis} />);
+    await new Promise((resolve) => {
+      setTimeout(resolve, 30);
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockPush).not.toHaveBeenCalled();
+    expect(store[PACKET_RESUME_CHECKOUT_KEY]).toBe("1");
+    expect(window.location.search).toContain("resume_checkout=1");
+    expect(screen.queryByText(/Authentication required/i)).not.toBeInTheDocument();
+  });
+
+  it("does not auto-start checkout when the packet is already unlocked", async () => {
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    render(
+      <YearClosePacketPanel
+        analysis={{ ...analysis, packet_unlocked: true, packet_session_id: "cs_test_year" }}
+      />,
+    );
+    await new Promise((resolve) => {
+      setTimeout(resolve, 30);
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(store[PACKET_RESUME_CHECKOUT_KEY]).toBe("1");
+  });
+
+  it("does not auto-start checkout for a paid storage flag", async () => {
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    store["optionstaxhub-packet-paid:analysis-1"] = "cs_test_paid";
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    render(<YearClosePacketPanel analysis={analysis} />);
+    await new Promise((resolve) => {
+      setTimeout(resolve, 40);
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("does not auto-start checkout when packet_session is present", async () => {
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    window.history.replaceState(
+      null,
+      "",
+      "/dashboard?packet_session=cs_test_packet&packet_analysis=analysis-1&resume_checkout=1",
+    );
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ paid: true, analysis_id: "analysis-1" }),
+    });
+    render(<YearClosePacketPanel analysis={analysis} />);
+    await waitFor(() => {
+      expect(mockFetch).toHaveBeenCalled();
+    });
+    expect(String(mockFetch.mock.calls[0][0])).toContain(
+      "/api/year-close-packet/confirm",
+    );
+    expect(String(mockFetch.mock.calls[0][0])).not.toContain(
+      "/api/year-close-packet/checkout",
+    );
+  });
+
+  it("does not auto-start checkout when packet_canceled is present", async () => {
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    localStorage.setItem(
+      PACKET_RESUME_LOCAL_KEY,
+      JSON.stringify({ v: 1, sample: false, exp: Date.now() + 60_000 }),
+    );
+    window.history.replaceState(
+      null,
+      "",
+      "/dashboard?packet_canceled=1&resume_checkout=1",
+    );
+    render(<YearClosePacketPanel analysis={analysis} />);
+    await waitFor(() => {
+      expect(screen.getByTestId("packet-checkout-canceled")).toBeInTheDocument();
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(localStorage.getItem(PACKET_RESUME_LOCAL_KEY)).toBeNull();
+  });
+
+  it("does not auto-start checkout without a saved analysis id", async () => {
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    render(
+      <YearClosePacketPanel analysis={{ ...analysis, analysis_id: undefined }} />,
+    );
+    await new Promise((resolve) => {
+      setTimeout(resolve, 30);
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("asks for one sample re-run when a guest snapshot 409 matches", async () => {
+    const onSampleRerunForCheckout = jest.fn(() => true);
+    const details = [
+      "This guest snapshot must be restored from its matching analysis before checkout.",
+      "No owner-scoped private snapshot for this analysis.",
+      "Re-run it before checkout.",
+    ];
+    for (const detail of details) {
+      mockFetch.mockReset();
+      mockFetch.mockResolvedValueOnce(checkoutConflict(detail));
+      const view = render(
+        <YearClosePacketPanel
+          analysis={{ ...analysis, sample_run: true }}
+          onSampleRerunForCheckout={onSampleRerunForCheckout}
+        />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: /Pay \$49/i }));
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
+      });
+      expect(screen.queryByText(detail)).not.toBeInTheDocument();
+      expect(store[PACKET_CHECKOUT_INFLIGHT_KEY]).toBeUndefined();
+      view.unmount();
+    }
+    expect(onSampleRerunForCheckout).toHaveBeenCalledTimes(3);
+
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    mockFetch.mockResolvedValueOnce(checkoutOk());
+    render(
+      <YearClosePacketPanel
+        analysis={{ ...analysis, sample_run: true }}
+        onSampleRerunForCheckout={onSampleRerunForCheckout}
+      />,
+    );
+    await waitFor(() => {
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+    expect(String(mockFetch.mock.calls[0][0])).toContain(
+      "/api/year-close-packet/checkout",
+    );
+  });
+
+  it("shows the server detail when the sample re-run budget is spent", async () => {
+    const detail =
+      "This guest snapshot must be restored from its matching analysis before checkout.";
+    mockFetch.mockResolvedValueOnce(checkoutConflict(detail));
+    render(
+      <YearClosePacketPanel
+        analysis={{ ...analysis, sample_run: true }}
+        onSampleRerunForCheckout={() => false}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Pay \$49/i }));
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(detail);
+    });
+  });
+
+  it("does not re-run a non-sample CSV when checkout returns 409", async () => {
+    const detail =
+      "This guest snapshot must be restored from its matching analysis before checkout.";
+    const onSampleRerunForCheckout = jest.fn(() => true);
+    mockFetch.mockResolvedValueOnce(checkoutConflict(detail));
+    render(
+      <YearClosePacketPanel
+        analysis={analysis}
+        onSampleRerunForCheckout={onSampleRerunForCheckout}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Pay \$49/i }));
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(detail);
+    });
+    expect(onSampleRerunForCheckout).not.toHaveBeenCalled();
+  });
+
+  it("still shows the auth error when confirm runs without a session", async () => {
+    (getSession as jest.Mock).mockResolvedValue(null);
+    window.history.replaceState(
+      null,
+      "",
+      "/dashboard?packet_session=cs_test_packet&packet_analysis=analysis-1",
+    );
+    render(<YearClosePacketPanel analysis={analysis} />);
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "Authentication required. Please sign in.",
+      );
+    });
+    expect(mockPush).not.toHaveBeenCalled();
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 
   it("keeps the canonical checkout ID through confirm and download for guest IDs", async () => {

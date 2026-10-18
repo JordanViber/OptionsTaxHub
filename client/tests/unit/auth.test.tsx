@@ -241,6 +241,37 @@ describe("Auth Context", () => {
     window.history.pushState({}, "", "/");
   });
 
+  it("signUp carries resume_checkout next into the confirmation redirect", async () => {
+    mockSignUp.mockResolvedValue({ error: null });
+    const resume = "/dashboard?resume_checkout=1";
+    window.history.pushState(
+      {},
+      "",
+      `/auth/signup?next=${encodeURIComponent(resume)}`,
+    );
+
+    const { result } = renderHook(() => useAuth(), { wrapper: createWrapper });
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    await act(async () => {
+      await result.current.signUp("leap@example.com", "password123", {
+        name: "Leap User",
+      });
+    });
+
+    expect(mockSignUp).toHaveBeenCalledWith(
+      expect.objectContaining({
+        options: expect.objectContaining({
+          emailRedirectTo: `http://localhost/auth/confirm-email?next=${resume}`,
+        }),
+      }),
+    );
+    window.history.pushState({}, "", "/");
+  });
+
   it("signUp throws when supabase returns error", async () => {
     const authError = new Error("Email already registered");
     mockSignUp.mockResolvedValue({ error: authError });

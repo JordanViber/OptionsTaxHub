@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Box, CircularProgress, Container, Typography } from "@mui/material";
 import { useAuth } from "@/app/context/auth";
 import { isEmailConfirmed } from "@/lib/supabase";
+import { TAX_PATH, nextParam, safeNextPath } from "@/lib/safeNextPath";
 import AppShell from "../components/AppShell";
 import EntryAnalysisPanel from "../components/EntryAnalysisPanel";
 import type { PortfolioAnalysis, Position } from "@/lib/types";
@@ -39,6 +40,14 @@ export default function OptionsPage() {
       return;
     }
     if (user && !emailConfirmed) {
+      const rawNext = new URLSearchParams(window.location.search).get("next");
+      if (rawNext) {
+        const next = safeNextPath(rawNext);
+        if (next !== TAX_PATH) {
+          router.push(`/auth/confirm-email?next=${nextParam(next)}`);
+          return;
+        }
+      }
       router.push("/auth/confirm-email");
     }
   }, [authLoading, user, emailConfirmed, router]);

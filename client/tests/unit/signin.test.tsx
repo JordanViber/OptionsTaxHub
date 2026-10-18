@@ -168,6 +168,47 @@ describe("Sign In Page", () => {
     window.history.pushState({}, "", "/");
   });
 
+  it("carries a resume-checkout next into the sign-up link", async () => {
+    const resume = "/dashboard?resume_checkout=1";
+    window.history.pushState(
+      {},
+      "",
+      `/auth/signin?next=${encodeURIComponent(resume)}`,
+    );
+    render(<SigninPage />);
+    await waitFor(() => {
+      expect(screen.getByRole("link", { name: /Sign up/i })).toHaveAttribute(
+        "href",
+        `/auth/signup?next=${encodeURIComponent(resume)}`,
+      );
+    });
+    expect(
+      screen.getByText("Sign in to pay $49 and return to checkout."),
+    ).toBeInTheDocument();
+    window.history.pushState({}, "", "/");
+  });
+
+  it("returns to resume checkout after sign-in", async () => {
+    const resume = "/dashboard?resume_checkout=1";
+    window.history.pushState(
+      {},
+      "",
+      `/auth/signin?next=${encodeURIComponent(resume)}`,
+    );
+    const { container } = render(<SigninPage />);
+    fireEvent.change(screen.getByLabelText(/Email/i), {
+      target: { value: "test@example.com" },
+    });
+    fireEvent.change(getInput(container, 'input[type="password"]'), {
+      target: { value: "password123" },
+    });
+    fireEvent.submit(getForm(container));
+    await waitFor(() => {
+      expect(mockPush).toHaveBeenCalledWith(resume);
+    });
+    window.history.pushState({}, "", "/");
+  });
+
   it("sends an already signed-in user to the safe next path", async () => {
     window.history.pushState({}, "", "/auth/signin?next=/privacy");
     (useAuth as jest.Mock).mockReturnValue({

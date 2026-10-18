@@ -344,6 +344,24 @@ describe("lib/supabase", () => {
         `${window.location.origin}/auth/confirm-email?next=/dashboard`,
       );
     });
+
+    it("encodes a resume-checkout next on the confirmation link", () => {
+      const resume = "/dashboard?resume_checkout=1";
+      const redirectTo = getEmailConfirmRedirectTo(resume);
+      expect(redirectTo).toBe(
+        `${window.location.origin}/auth/confirm-email?next=${encodeURIComponent(resume)}`,
+      );
+      const next = new URL(redirectTo || "http://localhost").searchParams.get(
+        "next",
+      );
+      expect(next).toBe(resume);
+      expect(getEmailConfirmRedirectTo("/options")).toBe(
+        `${window.location.origin}/auth/confirm-email?next=/options`,
+      );
+      expect(getEmailConfirmRedirectTo("//evil.example")).toBe(
+        `${window.location.origin}/auth/confirm-email?next=/dashboard`,
+      );
+    });
   });
 
   describe("isEmailConfirmed", () => {

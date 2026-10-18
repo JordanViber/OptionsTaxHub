@@ -152,6 +152,10 @@ describe("AppShell", () => {
       user_metadata: { display_name: "Ada" },
     };
     sessionStorage.setItem("optionstaxhub-analysis", "{\"sample\":true}");
+    localStorage.setItem(
+      "optionstaxhub-packet-resume",
+      JSON.stringify({ v: 1, sample: true, exp: Date.now() + 60_000 }),
+    );
     const client = new QueryClient();
     client.setQueryData(["portfolio-history", "user-1"], [{ id: "h1" }]);
     client.setQueryData(["tax-profile", "user-1"], { tax_year: 2026 });
@@ -178,6 +182,7 @@ describe("AppShell", () => {
     expect(deleteCache).toHaveBeenCalledWith("optionstaxhub-v6");
     expect(deleteCache).toHaveBeenCalledWith("optionstaxhub-v5");
     expect(sessionStorage.getItem("optionstaxhub-analysis")).toBeNull();
+    expect(localStorage.getItem("optionstaxhub-packet-resume")).toBeNull();
     expect(client.getQueryData(["portfolio-history", "user-1"])).toBeUndefined();
     expect(client.getQueryData(["tax-profile", "user-1"])).toBeUndefined();
     expect(mockPush).toHaveBeenCalledWith("/auth/signin");

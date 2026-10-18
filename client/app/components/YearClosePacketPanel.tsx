@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   Alert,
   Box,
@@ -14,7 +15,25 @@ import {
   Payments as PayIcon,
 } from "@mui/icons-material";
 import { getSession } from "@/lib/supabase";
+import {
+  clearPacketResumeLocal,
+  rememberPacketResumeLocal,
+} from "@/lib/packetResumeLocal";
+import {
+  DASHBOARD_RESUME_CHECKOUT_PATH,
+  PACKET_RESUME_CHECKOUT_KEY,
+  PACKET_RESUME_SAMPLE_KEY,
+  RESUME_CHECKOUT_PARAM,
+  signInHref,
+} from "@/lib/safeNextPath";
 import type { PortfolioAnalysis } from "@/lib/types";
+
+let packetResumeCheckoutLocked = false;
+
+/** Tests only. A full reload already starts unlocked. */
+export function resetPacketResumeCheckoutLock(): void {
+  packetResumeCheckoutLocked = false;
+}
 
 const _RAW_API_URL = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
 const _isLocalhost = (() => {
@@ -156,6 +175,28 @@ function clearSessionItem(key: string): void {
   }
 }
 
+function isGuestSnapshotRerunDetail(detail: string): boolean {
+  return (
+    /guest snapshot must be restored/i.test(detail) ||
+    /no owner-scoped private snapshot/i.test(detail) ||
+    /re-run it before checkout/i.test(detail)
+  );
+}
+
+function stripResumeCheckoutParam(): void {
+  try {
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has(RESUME_CHECKOUT_PARAM)) {
+      return;
+    }
+    url.searchParams.delete(RESUME_CHECKOUT_PARAM);
+    const next = `${url.pathname}${url.search}${url.hash}`;
+    window.history.replaceState(window.history.state, "", next);
+  } catch {
+    // ignore
+  }
+}
+
 function stripPacketQueryParams(): void {
   try {
     const url = new URL(window.location.href);
@@ -245,6 +286,7 @@ function triggerPdfDownload(blob: Blob): void {
 export default function YearClosePacketPanel(props: Readonly<{
   analysis: PortfolioAnalysis;
   onPaidChange?: (paid: boolean) => void;
+  onSampleRerunForCheckout?: () => boolean;
 }>) {
   const identity = yearClosePacketStorageId(props.analysis);
   return (
@@ -253,6 +295,7 @@ export default function YearClosePacketPanel(props: Readonly<{
       analysis={props.analysis}
       analysisStorageId={identity}
       onPaidChange={props.onPaidChange}
+      onSampleRerunForCheckout={props.onSampleRerunForCheckout}
     />
   );
 }
@@ -261,11 +304,14 @@ function YearClosePacketPanelForAnalysis({
   analysis,
   analysisStorageId,
   onPaidChange,
+  onSampleRerunForCheckout,
 }: Readonly<{
   analysis: PortfolioAnalysis;
   analysisStorageId: string;
   onPaidChange?: (paid: boolean) => void;
+  onSampleRerunForCheckout?: () => boolean;
 }>) {
+  const router = useRouter();
   const analysisId = analysis.analysis_id || "local-analysis";
   const [canonicalAnalysisId, setCanonicalAnalysisId] = useState(
     () => readSessionItem(canonicalStorageKey(analysisStorageId)) || analysisId,
@@ -506,15 +552,21 @@ function YearClosePacketPanelForAnalysis({
 
     if (canceled || (inflight && !pendingSessionId)) {
       clearSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY);
+      // This effect strips packet_canceled before the resume effect reads the
+      // URL. Drop the guest-pay marker here so a closed checkout cannot reopen.
+      clearSessionItem(PACKET_RESUME_CHECKOUT_KEY);
+      clearPacketResumeLocal();
       persistConfirmFlag(false);
       persistResumeFlag(false);
       setBusy(null);
       setCanceledNotice(true);
       stripPacketQueryParams();
+      stripResumeCheckoutParam();
     }
   }, [analysis, analysisId, analysisStorageId]);
 
-  const handlePay = async () => {
+  const handlePay = async (options?: { guestRedirect?: boolean }) => {
+    const guestRedirect = options?.guestRedirect !== false;
     if (existingPacketDownload || extraChargeRefund) {
       return;
     }
@@ -545,8 +597,32 @@ function YearClosePacketPanelForAnalysis({
     setBusy("pay");
     setError(null);
     setCanceledNotice(false);
-    writeSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY, analysisStorageId);
     try {
+      const session = await getSession();
+      if (!session?.access_token) {
+        if (!guestRedirect) {
+          setError("Authentication required. Please sign in.");
+          setBusy(null);
+          return;
+        }
+        writeSessionItem(PACKET_RESUME_CHECKOUT_KEY, "1");
+        if (analysis.sample_run) {
+          writeSessionItem(PACKET_RESUME_SAMPLE_KEY, "1");
+        }
+        rememberPacketResumeLocal(analysis.sample_run === true);
+        try {
+          router.push(signInHref(DASHBOARD_RESUME_CHECKOUT_PATH));
+        } catch (navError) {
+          setError(
+            navError instanceof Error
+              ? navError.message
+              : "Could not open sign-in.",
+          );
+        }
+        setBusy(null);
+        return;
+      }
+      writeSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY, analysisStorageId);
       const headers = await authHeaders();
       const response = await fetch(`${API_URL}/api/year-close-packet/checkout`, {
         method: "POST",
@@ -558,7 +634,19 @@ function YearClosePacketPanelForAnalysis({
       });
       if (!response.ok) {
         const errData = await response.json().catch(() => null);
-        throw new Error(errData?.detail || "Failed to start checkout.");
+        const detail = String(errData?.detail || "");
+        if (
+          response.status === 409 &&
+          analysis.sample_run &&
+          isGuestSnapshotRerunDetail(detail) &&
+          onSampleRerunForCheckout?.()
+        ) {
+          packetResumeCheckoutLocked = false;
+          clearSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY);
+          setBusy(null);
+          return;
+        }
+        throw new Error(detail || "Failed to start checkout.");
       }
       const data = await response.json();
       if (data?.already_paid === true && typeof data?.session_id === "string") {
@@ -610,6 +698,63 @@ function YearClosePacketPanelForAnalysis({
       setBusy(null);
     }
   };
+
+  const handlePayRef = useRef(handlePay);
+  handlePayRef.current = handlePay;
+
+  // After sign-in, start the same checkout once. Do not send the guest back
+  // to sign-in from here, and do not touch packet_session / packet_canceled.
+  useEffect(() => {
+    if (packetResumeCheckoutLocked) {
+      return;
+    }
+    if (
+      paid ||
+      analysis.packet_unlocked ||
+      missingAnalysisId ||
+      existingPacketDownload ||
+      extraChargeRefund
+    ) {
+      return;
+    }
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("packet_session") || params.get("packet_canceled") === "1") {
+      return;
+    }
+    if (params.get(RESUME_CHECKOUT_PARAM) !== "1") {
+      return;
+    }
+    if (readSessionItem(PACKET_RESUME_CHECKOUT_KEY) !== "1") {
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      const session = await getSession();
+      if (cancelled || packetResumeCheckoutLocked) {
+        return;
+      }
+      if (!session?.access_token) {
+        return;
+      }
+      packetResumeCheckoutLocked = true;
+      clearSessionItem(PACKET_RESUME_CHECKOUT_KEY);
+      clearPacketResumeLocal();
+      stripResumeCheckoutParam();
+      await handlePayRef.current({ guestRedirect: false });
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    paid,
+    analysis.packet_unlocked,
+    missingAnalysisId,
+    existingPacketDownload,
+    extraChargeRefund,
+    analysisStorageId,
+  ]);
 
   const handleDownload = async () => {
     setBusy("download");
@@ -696,7 +841,9 @@ function YearClosePacketPanelForAnalysis({
                 <PayIcon />
               )
             }
-            onClick={handlePay}
+            onClick={() => {
+              void handlePay();
+            }}
             disabled={
               busy !== null ||
               paid ||
