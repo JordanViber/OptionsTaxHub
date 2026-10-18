@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import Home from "../../app/dashboard/page";
+import { resetAutomaticSampleRerunForTests } from "../../lib/automaticSampleRerun";
 import { SAMPLE_FETCH_TIMEOUT_MS } from "../../lib/constants";
 import { persistGuestAnalysis } from "../../lib/api";
 import { resetGuestPersistInFlight } from "../../lib/guest-persist-lock";
@@ -201,7 +202,9 @@ describe("Home page", () => {
     (persistGuestAnalysis as jest.Mock).mockClear();
     (persistGuestAnalysis as jest.Mock).mockResolvedValue(true);
     resetGuestPersistInFlight();
+    resetAutomaticSampleRerunForTests();
     sessionStorage.clear();
+    window.history.replaceState(null, "", "/dashboard");
     originalFetch = globalThis.fetch;
   });
 
@@ -585,6 +588,34 @@ describe("Home page", () => {
     await waitFor(() => {
       expect(screen.queryByText("Sign Out")).not.toBeInTheDocument();
     });
+  });
+
+  it("re-runs the sample once when resume checkout has no stored analysis", async () => {
+    const mutate = jest.fn();
+    setupMocks(createAuthMock(null, false), createAnalyzeMock({ mutate }));
+    sessionStorage.setItem("optionstaxhub-packet-resume-sample", "1");
+    sessionStorage.setItem("optionstaxhub-packet-resume-checkout", "1");
+    window.history.pushState({}, "", "/dashboard?resume_checkout=1");
+    mockSampleCsvFetch();
+
+    renderWithClient(<Home />);
+
+    await waitFor(() => {
+      expect(mutate).toHaveBeenCalledTimes(1);
+    });
+    expect(mutate.mock.calls[0][0]).toMatchObject({
+      file: expect.objectContaining({
+        name: "sample-robinhood-transactions.csv",
+      }),
+    });
+
+    renderWithClient(<Home />);
+    await act(async () => {
+      await new Promise((resolve) => {
+        setTimeout(resolve, 30);
+      });
+    });
+    expect(mutate).toHaveBeenCalledTimes(1);
   });
 
   it("does not start the landing sample while auth is still loading", async () => {

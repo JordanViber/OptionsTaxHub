@@ -8,6 +8,14 @@ export const OPTIONS_SIGN_IN_HREF = `/auth/signin?next=${OPTIONS_PATH}`;
 export const UPLOAD_INTENT_KEY = "oth-upload-intent";
 export const LOAD_SAMPLE_KEY = "oth-load-sample";
 export const OPEN_RUNS_KEY = "oth-open-runs";
+export const RESUME_CHECKOUT_PARAM = "resume_checkout";
+export const PACKET_RESUME_CHECKOUT_KEY = "optionstaxhub-packet-resume-checkout";
+export const PACKET_RESUME_SAMPLE_KEY = "optionstaxhub-packet-resume-sample";
+/** Cross-tab handoff. Payload is only {v, sample, exp} — never a run or tax data. */
+export const PACKET_RESUME_LOCAL_KEY = "optionstaxhub-packet-resume";
+export const PACKET_RESUME_LOCAL_TTL_MS = 30 * 60 * 1000;
+export const PACKET_RESUME_LOCAL_VERSION = 1;
+export const DASHBOARD_RESUME_CHECKOUT_PATH = `${TAX_PATH}?${RESUME_CHECKOUT_PARAM}=1`;
 
 const ALLOWED_RETURN_PATHS = new Set<string>([
   HOME_PATH,
@@ -17,19 +25,46 @@ const ALLOWED_RETURN_PATHS = new Set<string>([
   PRIVACY_PATH,
 ]);
 
+const SAFE_NEXT_ORIGIN = "https://optionstaxhub.invalid";
+
+/** Encode next only when a query marker would split or truncate the href. */
+export function nextParam(path: string): string {
+  return /[?&#%]/.test(path) ? encodeURIComponent(path) : path;
+}
+
 /** Only known in-app paths are safe post-sign-in returns. */
 export function safeNextPath(raw: string | null | undefined): string {
-  if (!raw) {
+  if (!raw || typeof raw !== "string") {
     return TAX_PATH;
   }
-  const path = raw.split("?")[0]?.split("#")[0] ?? "";
-  if (!path.startsWith("/") || path.startsWith("//") || path.includes("\\")) {
+  if (
+    !raw.startsWith("/") ||
+    raw.startsWith("//") ||
+    raw.includes("\\") ||
+    raw.includes("://")
+  ) {
     return TAX_PATH;
   }
-  if (path.includes("://")) {
+  let url: URL;
+  try {
+    url = new URL(raw, SAFE_NEXT_ORIGIN);
+  } catch {
     return TAX_PATH;
   }
-  return ALLOWED_RETURN_PATHS.has(path) ? path : TAX_PATH;
+  if (url.origin !== SAFE_NEXT_ORIGIN) {
+    return TAX_PATH;
+  }
+  const path = url.pathname;
+  if (!ALLOWED_RETURN_PATHS.has(path)) {
+    return TAX_PATH;
+  }
+  if (
+    path === TAX_PATH &&
+    url.searchParams.get(RESUME_CHECKOUT_PARAM) === "1"
+  ) {
+    return DASHBOARD_RESUME_CHECKOUT_PATH;
+  }
+  return path;
 }
 
 export function signInHref(
@@ -38,11 +73,11 @@ export function signInHref(
 ): string {
   const next = safeNextPath(from);
   const reasonPart = reason ? `&reason=${reason}` : "";
-  return `/auth/signin?next=${next}${reasonPart}`;
+  return `/auth/signin?next=${nextParam(next)}${reasonPart}`;
 }
 
 export function signUpHref(from: string | null | undefined): string {
-  return `/auth/signup?next=${safeNextPath(from)}`;
+  return `/auth/signup?next=${nextParam(safeNextPath(from))}`;
 }
 
 export function rememberUploadIntent(): void {

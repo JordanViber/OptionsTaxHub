@@ -87,6 +87,32 @@ describe("Confirm Email Page", () => {
     window.history.pushState({}, "", "/");
   });
 
+  it("continues to dashboard resume-checkout after confirmation", async () => {
+    const resume = "/dashboard?resume_checkout=1";
+    window.history.pushState(
+      {},
+      "",
+      `/auth/confirm-email?next=${encodeURIComponent(resume)}`,
+    );
+    mockConsume.mockResolvedValue({
+      session: {
+        user: {
+          email: "mira@example.com",
+          email_confirmed_at: "2026-01-01T00:00:00Z",
+        },
+      },
+      consumedLink: true,
+    });
+
+    render(<ConfirmEmailPage />);
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Continue" })).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect(mockPush).toHaveBeenCalledWith(resume);
+    window.history.pushState({}, "", "/");
+  });
+
   it("shows check-email when visiting without a confirmation link", async () => {
     render(<ConfirmEmailPage />);
 
