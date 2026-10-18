@@ -104,11 +104,18 @@ import type {
   AnalysisHistoryItem,
   Position,
 } from "@/lib/types";
+import { consumeAutomaticSampleRerun } from "@/lib/automaticSampleRerun";
 import { SAMPLE_FETCH_TIMEOUT_MS } from "@/lib/constants";
 import {
+  DASHBOARD_RESUME_CHECKOUT_PATH,
   LOAD_SAMPLE_KEY,
   OPEN_RUNS_KEY,
+  PACKET_RESUME_CHECKOUT_KEY,
+  PACKET_RESUME_SAMPLE_KEY,
+  RESUME_CHECKOUT_PARAM,
   UPLOAD_INTENT_KEY,
+  nextParam,
+  safeNextPath,
   signInHref,
 } from "@/lib/safeNextPath";
 
@@ -116,6 +123,19 @@ export const dynamic = "force-dynamic";
 
 const GUEST_UNSAVED_KEY = "oth-guest-unsaved";
 const GUEST_UNSAVED_FILENAME_KEY = "oth-guest-unsaved-filename";
+
+function rearmResumeCheckout(): void {
+  try {
+    sessionStorage.setItem(PACKET_RESUME_CHECKOUT_KEY, "1");
+    sessionStorage.setItem(PACKET_RESUME_SAMPLE_KEY, "1");
+    const url = new URL(window.location.href);
+    url.searchParams.set(RESUME_CHECKOUT_PARAM, "1");
+    const next = `${url.pathname}${url.search}${url.hash}`;
+    window.history.replaceState(window.history.state, "", next);
+  } catch {
+    // ignore quota / private-mode failures
+  }
+}
 const SAMPLE_CSV_URL = "/sample-robinhood-transactions.csv";
 const SAMPLE_CSV_FILENAME = "sample-robinhood-transactions.csv";
 const SAMPLE_1099_URL = "/sample-robinhood-1099-2026.pdf";
@@ -1790,6 +1810,59 @@ export default function DashboardPage() {
       return;
     }
     if (user && !emailConfirmed) {
+      return;
+    }
+    if (sampleAnalyzeStartedRef.current) {
+      return;
+    }
+    let resumeSample = false;
+    let hasAnalysis = false;
+    let wantsResume = false;
+    try {
+      if (sessionStorage.getItem(LOAD_SAMPLE_KEY) === "1") {
+        return;
+      }
+      resumeSample = sessionStorage.getItem(PACKET_RESUME_SAMPLE_KEY) === "1";
+      hasAnalysis = Boolean(sessionStorage.getItem("optionstaxhub-analysis"));
+      const params = new URLSearchParams(window.location.search);
+      wantsResume =
+        params.get(RESUME_CHECKOUT_PARAM) === "1" ||
+        sessionStorage.getItem(PACKET_RESUME_CHECKOUT_KEY) === "1";
+    } catch {
+      return;
+    }
+    if (!resumeSample || hasAnalysis || !wantsResume) {
+      return;
+    }
+    if (!consumeAutomaticSampleRerun()) {
+      return;
+    }
+    handleLoadSample();
+    // The sample loader is stable for this mount; auth gates the start.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authLoading, user, emailConfirmed]);
+
+  const handleSampleRerunForCheckout = (): boolean => {
+    if (!consumeAutomaticSampleRerun()) {
+      return false;
+    }
+    rearmResumeCheckout();
+    handleLoadSample();
+    return true;
+  };
+
+  useEffect(() => {
+    if (authLoading) {
+      return;
+    }
+    if (user && !emailConfirmed) {
+      const next = safeNextPath(
+        `${window.location.pathname}${window.location.search}`,
+      );
+      if (next === DASHBOARD_RESUME_CHECKOUT_PATH) {
+        router.push(`/auth/confirm-email?next=${nextParam(next)}`);
+        return;
+      }
       router.push("/auth/confirm-email");
     }
   }, [authLoading, user, emailConfirmed, router]);
@@ -2246,6 +2319,7 @@ export default function DashboardPage() {
               <YearClosePacketPanel
                 analysis={displayedAnalysis}
                 onPaidChange={setPacketPaid}
+                onSampleRerunForCheckout={handleSampleRerunForCheckout}
               />
             </Box>
           )}

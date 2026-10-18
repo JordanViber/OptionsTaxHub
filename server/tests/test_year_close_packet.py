@@ -1013,6 +1013,145 @@ def test_checkout_claims_guest_snapshot_and_keeps_its_full_payload(monkeypatch):
     assert _FAKE_PACKET_SNAPSHOTS[("test-user-123", analysis_id)]["packet_payload"] == original
 
 
+def _compact_client_analysis(analysis: dict) -> dict:
+    """Mirror YearClosePacketPanel.compactAnalysis. Do not loosen the server matcher."""
+
+    def purchase_date(suggestion_id: str) -> str | None:
+        parts = [part for part in (suggestion_id or "").split("::") if part]
+        token = parts[3] if len(parts) > 3 else ""
+        if len(token) == 10 and token[4] == "-" and token[7] == "-":
+            return token
+        return None
+
+    summary = analysis.get("summary") if isinstance(analysis.get("summary"), dict) else {}
+    suggestions = []
+    for suggestion in analysis.get("suggestions") or []:
+        suggestions.append(
+            {
+                "symbol": suggestion.get("symbol"),
+                "display_label": suggestion.get("display_label"),
+                "suggestion_id": suggestion.get("suggestion_id"),
+                "lot_details": suggestion.get("lot_details"),
+                "quantity": suggestion.get("quantity"),
+                "purchase_date": purchase_date(str(suggestion.get("suggestion_id") or "")),
+                "cost_basis_per_share": suggestion.get("cost_basis_per_share"),
+                "estimated_loss": suggestion.get("estimated_loss"),
+                "tax_savings_estimate": suggestion.get("tax_savings_estimate"),
+                "is_long_term": suggestion.get("is_long_term"),
+                "wash_sale_risk": suggestion.get("wash_sale_risk"),
+                "wash_sale_explanation": suggestion.get("wash_sale_explanation"),
+            }
+        )
+    return {
+        "analysis_id": analysis.get("analysis_id"),
+        "tax_profile": analysis.get("tax_profile"),
+        "supplemental_1099": analysis.get("supplemental_1099"),
+        "wash_sale_flags": analysis.get("wash_sale_flags"),
+        "summary": {"realized_summary": summary.get("realized_summary")},
+        "tax_lots": [
+            {
+                "symbol": lot.get("symbol"),
+                "quantity": lot.get("quantity"),
+                "purchase_date": lot.get("purchase_date"),
+                "wash_sale_disallowed": lot.get("wash_sale_disallowed"),
+            }
+            for lot in (analysis.get("tax_lots") or [])
+        ],
+        "lot_match_report": analysis.get("lot_match_report"),
+        "suggestions": suggestions,
+    }
+
+
+def test_guest_compact_analysis_checkout_claims_snapshot_in_test_mode(monkeypatch):
+    _test_stripe_env(monkeypatch)
+    analysis_id = "11111111-1111-4111-8111-111111111111"
+    full = {
+        **SAMPLE_ANALYSIS,
+        "analysis_id": analysis_id,
+        "sample_run": True,
+        "tax_profile": {"tax_year": 2026, "filing_status": "single", "state": "CA"},
+        "supplemental_1099": {
+            **SAMPLE_ANALYSIS["supplemental_1099"],
+            "tax_year": 2026,
+            "lots": [{"symbol": "AMD", "quantity": 10, "private": True}],
+        },
+        "summary": {
+            "total_market_value": 1000,
+            "realized_summary": {"net_st": -300.0, "net_lt": 0.0},
+            "positions_count": 1,
+        },
+        "tax_lots": [
+            {
+                **SAMPLE_ANALYSIS["tax_lots"][0],
+                "cost_basis_per_share": 155,
+                "current_price": 125,
+                "is_long_term": False,
+            }
+        ],
+        "lot_match_report": {
+            "matched": [{"symbol": "AMD", "quantity": 10, "lot_id": "private-row"}],
+            "gap": [{"symbol": "NVDA", "quantity": 2}],
+            "unmatched": [],
+            "matched_count": 1,
+            "gap_count": 1,
+            "unmatched_count": 0,
+        },
+        "suggestions": [
+            {
+                "symbol": "AMD",
+                "display_label": "AMD",
+                "suggestion_id": "AMD::stock::stock-lot::2025-01-02::155::10",
+                "lot_details": "Tax lot opened Jan 02, 2025 at $155.00/share",
+                "action": "SELL",
+                "quantity": 10,
+                "current_price": 125,
+                "cost_basis_per_share": 155,
+                "estimated_loss": 300,
+                "tax_savings_estimate": 66,
+                "holding_period_days": 120,
+                "is_long_term": False,
+                "wash_sale_risk": True,
+                "wash_sale_explanation": "Recent AMD buy inside 30 days.",
+                "replacement_candidates": [{"symbol": "QQQ"}],
+                "ai_explanation": "drop me",
+                "ai_generated": False,
+                "priority": 1,
+            }
+        ],
+        "wash_sale_chains": [{"symbol": "AMD", "private": True}],
+        "activity_book": {"transactions": [{"symbol": "AMD", "private": True}]},
+    }
+    remember_analysis(analysis_id, "", full)
+    original = PACKET_STORE[analysis_id]["payload"]
+    captured = {}
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "create",
+        lambda **kwargs: captured.update(kwargs) or FakeCheckoutSession(**kwargs),
+    )
+
+    response = client.post(
+        "/api/year-close-packet/checkout",
+        json={"analysis_id": analysis_id, "analysis": _compact_client_analysis(full)},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["amount"] == 4900
+    assert body["stripe_mode"] == "test"
+    assert body["checkout_url"].startswith("https://checkout.stripe.com/")
+    assert captured["api_key"] == "sk_test_packet_key"
+    assert "sk_live" not in captured["api_key"]
+    assert "packet_session={CHECKOUT_SESSION_ID}" in captured["success_url"]
+    assert "packet_analysis=" in captured["success_url"]
+    assert captured["cancel_url"].endswith("/dashboard?packet_canceled=1")
+    assert "resume_checkout" not in captured["success_url"]
+    assert "resume_checkout" not in captured["cancel_url"]
+    assert PACKET_STORE[analysis_id]["user_id"] == "test-user-123"
+    assert PACKET_STORE[analysis_id]["payload"] == original
+    assert PACKET_STORE[analysis_id]["payload"]["lot_match_report"]["matched"]
+
+
 def test_checkout_rejects_guest_snapshot_claimed_with_only_an_id(monkeypatch):
     _test_stripe_env(monkeypatch)
     analysis_id = SAMPLE_ANALYSIS["analysis_id"]

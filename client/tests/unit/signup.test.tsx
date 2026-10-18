@@ -187,6 +187,69 @@ describe("Sign Up Page", () => {
     expect(signInLink).toHaveAttribute("href", "/auth/signin");
   });
 
+  it("keeps resume next on the sign-in link", async () => {
+    const resume = "/dashboard?resume_checkout=1";
+    window.history.pushState(
+      {},
+      "",
+      `/auth/signup?next=${encodeURIComponent(resume)}`,
+    );
+    render(<SignupPage />);
+    await waitFor(() => {
+      expect(screen.getByRole("link", { name: /Sign in/i })).toHaveAttribute(
+        "href",
+        `/auth/signin?next=${encodeURIComponent(resume)}`,
+      );
+    });
+    window.history.pushState({}, "", "/");
+  });
+
+  it("keeps resume next on the check-email sign-in link after submit", async () => {
+    const resume = "/dashboard?resume_checkout=1";
+    window.history.pushState(
+      {},
+      "",
+      `/auth/signup?next=${encodeURIComponent(resume)}`,
+    );
+    const { container } = render(<SignupPage />);
+    fillForm(container);
+    fireEvent.submit(getForm(container));
+    await waitFor(() => {
+      expect(
+        screen.getByRole("heading", { name: /Check your email/i }),
+      ).toBeInTheDocument();
+    });
+    await waitFor(() => {
+      expect(screen.getByRole("link", { name: /Sign in/i })).toHaveAttribute(
+        "href",
+        `/auth/signin?next=${encodeURIComponent(resume)}`,
+      );
+    });
+    window.history.pushState({}, "", "/");
+  });
+
+  it("sends an already signed-in user to resume checkout", async () => {
+    const resume = "/dashboard?resume_checkout=1";
+    window.history.pushState(
+      {},
+      "",
+      `/auth/signup?next=${encodeURIComponent(resume)}`,
+    );
+    (useAuth as jest.Mock).mockReturnValue({
+      signUp: mockSignUp,
+      user: {
+        email: "test@example.com",
+        email_confirmed_at: "2025-01-01T00:00:00Z",
+      },
+      loading: false,
+    });
+    render(<SignupPage />);
+    await waitFor(() => {
+      expect(mockReplace).toHaveBeenCalledWith(resume);
+    });
+    window.history.pushState({}, "", "/");
+  });
+
   it("links back to home", () => {
     render(<SignupPage />);
     const homeLink = screen.getByRole("link", { name: /OptionsTaxHub/i });

@@ -158,4 +158,31 @@ describe("Options page", () => {
       expect(mockPush).toHaveBeenCalledWith("/auth/confirm-email");
     });
   });
+
+  it("keeps an explicit next on the confirm-email redirect", async () => {
+    window.history.pushState({}, "", "/options?next=/options");
+    mockAuth.user = { id: "user-1", email_confirmed_at: null };
+    render(<OptionsPage />);
+    await waitFor(() => {
+      expect(mockPush).toHaveBeenCalledWith("/auth/confirm-email?next=/options");
+    });
+    window.history.pushState({}, "", "/");
+  });
+
+  it("drops a next that safeNextPath collapses to the dashboard", async () => {
+    window.history.pushState(
+      {},
+      "",
+      `/options?next=${encodeURIComponent("/dashboard")}`,
+    );
+    mockAuth.user = { id: "user-1", email_confirmed_at: null };
+    render(<OptionsPage />);
+    await waitFor(() => {
+      expect(mockPush).toHaveBeenCalledWith("/auth/confirm-email");
+    });
+    expect(mockPush).not.toHaveBeenCalledWith(
+      expect.stringContaining("resume_checkout"),
+    );
+    window.history.pushState({}, "", "/");
+  });
 });

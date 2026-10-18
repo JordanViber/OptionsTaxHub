@@ -156,6 +156,8 @@ jest.mock("../../app/components/TipJar", () => ({
 }));
 
 import DashboardPage from "../../app/dashboard/page";
+import { resetAutomaticSampleRerunForTests } from "../../lib/automaticSampleRerun";
+import { resetPacketResumeCheckoutLock } from "../../app/components/YearClosePacketPanel";
 
 const baseAnalysis: PortfolioAnalysis = {
   analysis_id: "analysis-test-1",
@@ -1807,6 +1809,89 @@ describe("DashboardPage", () => {
       expect(mockPush).toHaveBeenCalledWith("/auth/confirm-email");
     });
     expect(screen.queryByText(/Portfolio Analysis/i)).not.toBeInTheDocument();
+  });
+
+  it("sends an unconfirmed resume visit to confirm-email with next", async () => {
+    window.history.pushState({}, "", "/dashboard?resume_checkout=1");
+    mockAuthState.user.email_confirmed_at = null;
+    try {
+      render(<DashboardPage />, { wrapper: createWrapper() });
+      await waitFor(() => {
+        expect(mockPush).toHaveBeenCalledWith(
+          `/auth/confirm-email?next=${encodeURIComponent("/dashboard?resume_checkout=1")}`,
+        );
+      });
+    } finally {
+      window.history.pushState({}, "", "/dashboard");
+    }
+  });
+
+  it("re-runs the sample once when checkout says the guest snapshot is gone", async () => {
+    resetAutomaticSampleRerunForTests();
+    resetPacketResumeCheckoutLock();
+    const store = new Map<string, string>();
+    Object.defineProperty(globalThis, "sessionStorage", {
+      value: {
+        getItem: jest.fn((key: string) => store.get(key) ?? null),
+        setItem: jest.fn((key: string, value: string) => {
+          store.set(key, value);
+        }),
+        removeItem: jest.fn((key: string) => {
+          store.delete(key);
+        }),
+        clear: jest.fn(() => {
+          store.clear();
+        }),
+      },
+      writable: true,
+    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/year-close-packet/checkout")) {
+        return {
+          ok: false,
+          status: 409,
+          json: async () => ({
+            detail:
+              "This guest snapshot must be restored from its matching analysis before checkout.",
+          }),
+        };
+      }
+      if (url.includes("sample-robinhood")) {
+        return {
+          ok: true,
+          blob: async () => new Blob(["sample"], { type: "text/csv" }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    }) as unknown as typeof fetch;
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      sample_run: true,
+      packet_unlocked: false,
+    };
+    window.history.replaceState(null, "", "/dashboard");
+
+    try {
+      render(<DashboardPage />, { wrapper: createWrapper() });
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
+      });
+      fireEvent.click(screen.getByRole("button", { name: /Pay \$49/i }));
+      await waitFor(() => {
+        expect(mockAnalyzeMutate).toHaveBeenCalledTimes(1);
+      });
+      expect(store.get("optionstaxhub-packet-resume-checkout")).toBe("1");
+      expect(store.get("optionstaxhub-packet-resume-sample")).toBe("1");
+      expect(window.location.search).toContain("resume_checkout=1");
+      expect(
+        screen.queryByText(/guest snapshot must be restored/i),
+      ).not.toBeInTheDocument();
+    } finally {
+      globalThis.fetch = originalFetch;
+      window.history.replaceState(null, "", "/dashboard");
+    }
   });
 
 });

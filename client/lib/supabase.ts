@@ -5,7 +5,7 @@ import {
   type SupabaseClient,
   type User,
 } from "@supabase/supabase-js";
-import { safeNextPath } from "@/lib/safeNextPath";
+import { nextParam, safeNextPath } from "@/lib/safeNextPath";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
@@ -38,7 +38,7 @@ export function getEmailConfirmRedirectTo(
   if (!next) {
     return base;
   }
-  return `${base}?next=${safeNextPath(next)}`;
+  return `${base}?next=${nextParam(safeNextPath(next))}`;
 }
 
 function currentNextParam(): string | null {

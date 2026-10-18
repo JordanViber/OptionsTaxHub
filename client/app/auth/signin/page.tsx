@@ -26,7 +26,12 @@ import {
   resendSignupConfirmation,
 } from "@/lib/supabase";
 import AuthPageShell from "@/app/components/AuthPageShell";
-import { OPTIONS_PATH, safeNextPath, signUpHref } from "@/lib/safeNextPath";
+import {
+  DASHBOARD_RESUME_CHECKOUT_PATH,
+  OPTIONS_PATH,
+  safeNextPath,
+  signUpHref,
+} from "@/lib/safeNextPath";
 import { useQueryNext } from "@/lib/useQueryNext";
 
 export const dynamic = "force-dynamic";
@@ -67,6 +72,10 @@ export default function SignInPage() {
       setInfo(
         "Sign in to keep filing status, income, and tax year with your account.",
       );
+    } else if (
+      safeNextPath(params.get("next")) === DASHBOARD_RESUME_CHECKOUT_PATH
+    ) {
+      setInfo("Sign in to pay $49 and return to checkout.");
     } else if (safeNextPath(params.get("next")) === OPTIONS_PATH) {
       setInfo("Sign in to continue on Options.");
     }

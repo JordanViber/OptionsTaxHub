@@ -185,3 +185,110 @@ test.describe("Sign Up Page", () => {
     await expect(page.locator('button[type="submit"]')).toBeDisabled();
   });
 });
+
+test.describe("Sign-up carries resume checkout", () => {
+  test("sign-up carries next from sign-in through confirm", async ({
+    page,
+    browserName,
+  }) => {
+    test.skip(browserName === "webkit", "WebKit auth mocking limitation");
+    test.setTimeout(60_000);
+
+    const resume = "/dashboard?resume_checkout=1";
+    const encoded = encodeURIComponent(resume);
+    let signupRequest = "";
+
+    await page.goto(`/auth/signin?next=${encoded}`);
+    const signUp = page.getByRole("link", { name: "Sign up" });
+    await expect(signUp).toHaveAttribute("href", `/auth/signup?next=${encoded}`);
+    await signUp.click();
+    await expect(page).toHaveURL(new RegExp(`next=${encoded}`));
+    await expect(
+      page.getByRole("heading", { name: "Create Account" }),
+    ).toBeVisible();
+
+    await page.route("**/auth/v1/signup*", async (route) => {
+      signupRequest = `${route.request().url()}\n${route.request().postData() || ""}`;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          user: {
+            ...MOCK_USER,
+            email: "newuser@example.com",
+            email_confirmed_at: null,
+          },
+          session: null,
+        }),
+      });
+    });
+
+    // The sign-in href stays /auth/signin until useQueryNext runs after
+    // hydration. Submitting before that is a native GET that drops next.
+    await expect(page.getByRole("link", { name: "Sign in" })).toHaveAttribute(
+      "href",
+      `/auth/signin?next=${encoded}`,
+    );
+
+    await page.getByLabel("Name").fill("New User");
+    await page.getByRole("textbox", { name: "Email" }).fill("newuser@example.com");
+    await page.locator('input[type="password"]').first().fill("password123");
+    await page.locator('input[type="password"]').nth(1).fill("password123");
+    await page.getByRole("button", { name: "Create Account" }).click();
+
+    await expect(
+      page.getByRole("heading", { name: "Check your email" }),
+    ).toBeVisible({ timeout: 15000 });
+    const signupUrl = new URL(signupRequest.split("\n")[0]);
+    const redirectTo = signupUrl.searchParams.get("redirect_to") ?? "";
+    expect(redirectTo).toContain("/auth/confirm-email");
+    expect(new URL(redirectTo).searchParams.get("next")).toBe(
+      "/dashboard?resume_checkout=1",
+    );
+    await expect(page.getByRole("link", { name: "Sign in" })).toHaveAttribute(
+      "href",
+      `/auth/signin?next=${encoded}`,
+    );
+
+    await page.route("**/auth/v1/token*", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ...MOCK_SESSION,
+          user: {
+            ...MOCK_USER,
+            email_confirmed_at: "2026-01-01T00:00:00Z",
+          },
+        }),
+      }),
+    );
+    await page.route("**/auth/v1/user*", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ...MOCK_USER,
+          email_confirmed_at: "2026-01-01T00:00:00Z",
+        }),
+      }),
+    );
+    await page.route("**/api/**", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([]),
+      }),
+    );
+
+    await page.goto(`/auth/confirm-email?code=pkce-confirm-code&next=${encoded}`);
+    await expect(page.getByRole("button", { name: "Continue" })).toBeVisible({
+      timeout: 15000,
+    });
+    await page.getByRole("button", { name: "Continue" }).click();
+    await expect(page).toHaveURL(/\/dashboard/, { timeout: 15000 });
+    const landed = new URL(page.url());
+    expect(landed.pathname).toBe("/dashboard");
+    expect(landed.searchParams.get("resume_checkout")).toBe("1");
+  });
+});
