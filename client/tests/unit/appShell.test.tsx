@@ -152,13 +152,42 @@ describe("AppShell", () => {
       user_metadata: { display_name: "Ada" },
     };
     sessionStorage.setItem("optionstaxhub-analysis", "{\"sample\":true}");
+    sessionStorage.setItem("optionstaxhub-packet-resume-checkout", "1");
+    sessionStorage.setItem("optionstaxhub-packet-resume-sample", "1");
+    sessionStorage.setItem(
+      "optionstaxhub-packet-resume-analysis",
+      JSON.stringify({ analysisId: "analysis-1", taxYear: 2025 }),
+    );
     localStorage.setItem(
       "optionstaxhub-packet-resume",
-      JSON.stringify({ v: 1, sample: true, exp: Date.now() + 60_000 }),
+      JSON.stringify({
+        v: 2,
+        sample: true,
+        exp: Date.now() + 60_000,
+        analysisId: "analysis-1",
+        taxYear: 2025,
+      }),
+    );
+    localStorage.setItem("optionstaxhub-packet-checkout-started", String(Date.now()));
+    localStorage.setItem("optionstaxhub-packet-paid:keep", "cs_test_keep");
+    sessionStorage.setItem("optionstaxhub-packet-paid:analysis-1", "cs_test_paid");
+    sessionStorage.setItem(
+      "optionstaxhub-packet-canonical:analysis-1",
+      "analysis-1",
+    );
+    sessionStorage.setItem("optionstaxhub-packet-pending:analysis-1", "cs_test_open");
+    sessionStorage.setItem(
+      "optionstaxhub-packet-checkout-inflight",
+      "analysis-1",
     );
     const client = new QueryClient();
     client.setQueryData(["portfolio-history", "user-1"], [{ id: "h1" }]);
     client.setQueryData(["tax-profile", "user-1"], { tax_year: 2026 });
+    client.setQueryData(
+      ["year-close-packet-entitlement", "user-1", 2026],
+      { paid: true },
+    );
+    client.setQueryData(["portfolio-history", "other-user"], [{ id: "h2" }]);
 
     const deleteCache = jest.fn(async () => true);
     const cacheKeys = jest.fn(async () => [
@@ -182,9 +211,24 @@ describe("AppShell", () => {
     expect(deleteCache).toHaveBeenCalledWith("optionstaxhub-v6");
     expect(deleteCache).toHaveBeenCalledWith("optionstaxhub-v5");
     expect(sessionStorage.getItem("optionstaxhub-analysis")).toBeNull();
+    expect(sessionStorage.getItem("optionstaxhub-packet-resume-checkout")).toBeNull();
+    expect(sessionStorage.getItem("optionstaxhub-packet-resume-sample")).toBeNull();
+    expect(sessionStorage.getItem("optionstaxhub-packet-resume-analysis")).toBeNull();
     expect(localStorage.getItem("optionstaxhub-packet-resume")).toBeNull();
+    expect(localStorage.getItem("optionstaxhub-packet-checkout-started")).toBeNull();
+    expect(localStorage.getItem("optionstaxhub-packet-paid:keep")).toBeNull();
+    expect(sessionStorage.getItem("optionstaxhub-packet-paid:analysis-1")).toBeNull();
+    expect(
+      sessionStorage.getItem("optionstaxhub-packet-canonical:analysis-1"),
+    ).toBeNull();
+    expect(sessionStorage.getItem("optionstaxhub-packet-pending:analysis-1")).toBeNull();
+    expect(sessionStorage.getItem("optionstaxhub-packet-checkout-inflight")).toBeNull();
     expect(client.getQueryData(["portfolio-history", "user-1"])).toBeUndefined();
     expect(client.getQueryData(["tax-profile", "user-1"])).toBeUndefined();
+    expect(
+      client.getQueryData(["year-close-packet-entitlement", "user-1", 2026]),
+    ).toBeUndefined();
+    expect(client.getQueryData(["portfolio-history", "other-user"])).toBeUndefined();
     expect(mockPush).toHaveBeenCalledWith("/auth/signin");
   });
 });

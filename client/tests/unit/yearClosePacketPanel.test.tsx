@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { getSession } from "@/lib/supabase";
 import YearClosePacketPanel, {
   compactAnalysis,
@@ -7,11 +7,15 @@ import YearClosePacketPanel, {
   PACKET_CHECKOUT_INFLIGHT_KEY,
   isYearClosePacketPaid,
   resetPacketResumeCheckoutLock,
+  PACKET_ENTITLEMENT_UNCONFIRMED_COPY,
+  PACKET_PROMOTION_UNCONFIRMED_COPY,
   YEAR_CLOSE_PACKET_TITLE,
   yearClosePacketStorageId,
 } from "../../app/components/YearClosePacketPanel";
 import {
   DASHBOARD_RESUME_CHECKOUT_PATH,
+  PACKET_CHECKOUT_STARTED_KEY,
+  PACKET_RESUME_ANALYSIS_KEY,
   PACKET_RESUME_CHECKOUT_KEY,
   PACKET_RESUME_LOCAL_KEY,
   PACKET_RESUME_LOCAL_TTL_MS,
@@ -19,6 +23,7 @@ import {
   PACKET_RESUME_SAMPLE_KEY,
   safeNextPath,
 } from "../../lib/safeNextPath";
+import { PACKET_CHECKOUT_OTHER_TAB_COPY } from "../../app/components/YearClosePacketPanel";
 import type { PortfolioAnalysis } from "../../lib/types";
 
 const mockPush = jest.fn();
@@ -48,6 +53,29 @@ function checkoutOk() {
         session_id: "cs_test_packet",
       }),
   };
+}
+
+function unpaidEntitlement() {
+  return {
+    ok: true,
+    status: 200,
+    json: () => Promise.resolve({ paid: false, tax_year: 2025 }),
+  };
+}
+
+function mockEntitlementThen(checkout: unknown) {
+  mockFetch.mockImplementation(async (url: RequestInfo | URL) => {
+    if (String(url).includes("/api/year-close-packet/entitlement")) {
+      return unpaidEntitlement();
+    }
+    return checkout;
+  });
+}
+
+function checkoutPosts() {
+  return mockFetch.mock.calls.filter((call) =>
+    String(call[0]).includes("/api/year-close-packet/checkout"),
+  );
 }
 
 function checkoutConflict(detail: string) {
@@ -346,10 +374,36 @@ describe("YearClosePacketPanel", () => {
         }}
       />,
     );
+    expect(screen.getByText(/Paid for this tax year/i)).toBeInTheDocument();
     expect(
       screen.getByText(/later updates this year stay included/i),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /Pay \$49/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Download/i })).toBeInTheDocument();
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("does not post checkout when Pay would have been clicked on an unlocked packet", async () => {
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    store[PACKET_RESUME_ANALYSIS_KEY] = JSON.stringify({
+      analysisId: "analysis-1",
+      taxYear: 2025,
+    });
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    render(
+      <YearClosePacketPanel
+        analysis={{
+          ...analysis,
+          packet_unlocked: true,
+          packet_session_id: "cs_test_year",
+        }}
+      />,
+    );
+    await new Promise((resolve) => {
+      setTimeout(resolve, 30);
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: /Pay \$49/i })).not.toBeInTheDocument();
   });
 
   it("starts packet checkout, not tips checkout", async () => {
@@ -402,17 +456,28 @@ describe("YearClosePacketPanel", () => {
     const handoff = JSON.parse(
       localStorage.getItem(PACKET_RESUME_LOCAL_KEY) as string,
     ) as Record<string, unknown>;
-    expect(Object.keys(handoff).sort()).toEqual(["exp", "sample", "v"]);
+    expect(Object.keys(handoff).sort()).toEqual([
+      "analysisId",
+      "exp",
+      "sample",
+      "taxYear",
+      "v",
+    ]);
     expect(handoff).toEqual({
       v: PACKET_RESUME_LOCAL_VERSION,
       sample: true,
       exp: expect.any(Number),
+      analysisId: "analysis-1",
+      taxYear: 2025,
     });
     expect(handoff.exp as number).toBeGreaterThan(Date.now());
     expect(handoff.exp as number).toBeLessThanOrEqual(
       Date.now() + PACKET_RESUME_LOCAL_TTL_MS + 1000,
     );
-    expect(JSON.stringify(handoff)).not.toMatch(/analysis|tax|position|symbol/i);
+    expect(JSON.stringify(handoff)).not.toMatch(/position|symbol|csv|filing|income|lot/i);
+    expect(store[PACKET_RESUME_ANALYSIS_KEY]).toBe(
+      JSON.stringify({ analysisId: "analysis-1", taxYear: 2025 }),
+    );
     expect(store[PACKET_CHECKOUT_INFLIGHT_KEY]).toBeUndefined();
     expect(screen.queryByText(/Authentication required/i)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
@@ -430,6 +495,29 @@ describe("YearClosePacketPanel", () => {
     expect(JSON.parse(localStorage.getItem(PACKET_RESUME_LOCAL_KEY) as string)).toMatchObject({
       v: PACKET_RESUME_LOCAL_VERSION,
       sample: false,
+      analysisId: "analysis-1",
+      taxYear: 2025,
+    });
+    expect(store[PACKET_RESUME_ANALYSIS_KEY]).toBe(
+      JSON.stringify({ analysisId: "analysis-1", taxYear: 2025 }),
+    );
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("clears a stale sample resume flag on a non-sample guest Pay", async () => {
+    (getSession as jest.Mock).mockResolvedValueOnce(null);
+    store[PACKET_RESUME_SAMPLE_KEY] = "1";
+    render(<YearClosePacketPanel analysis={analysis} />);
+    fireEvent.click(screen.getByRole("button", { name: /Pay \$49/i }));
+    await waitFor(() => {
+      expect(mockPush).toHaveBeenCalled();
+    });
+    expect(store[PACKET_RESUME_SAMPLE_KEY]).toBeUndefined();
+    expect(JSON.parse(localStorage.getItem(PACKET_RESUME_LOCAL_KEY) as string)).toMatchObject({
+      v: PACKET_RESUME_LOCAL_VERSION,
+      sample: false,
+      analysisId: "analysis-1",
+      taxYear: 2025,
     });
     expect(mockFetch).not.toHaveBeenCalled();
   });
@@ -448,21 +536,31 @@ describe("YearClosePacketPanel", () => {
     expect(store[PACKET_CHECKOUT_INFLIGHT_KEY]).toBeUndefined();
   });
 
-  it("auto-starts checkout once when resume_checkout=1 and a session exists", async () => {
+  it("posts checkout once when the resume analysis id and tax year match", async () => {
     store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    store[PACKET_RESUME_ANALYSIS_KEY] = JSON.stringify({
+      analysisId: "analysis-1",
+      taxYear: 2025,
+    });
     localStorage.setItem(
       PACKET_RESUME_LOCAL_KEY,
-      JSON.stringify({ v: 1, sample: true, exp: Date.now() + 60_000 }),
+      JSON.stringify({
+        v: 2,
+        sample: true,
+        exp: Date.now() + 60_000,
+        analysisId: "analysis-1",
+        taxYear: 2025,
+      }),
     );
     window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
-    mockFetch.mockResolvedValueOnce(checkoutOk());
+    mockEntitlementThen(checkoutOk());
 
     render(<YearClosePacketPanel analysis={analysis} />);
 
     await waitFor(() => {
-      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(checkoutPosts()).toHaveLength(1);
     });
-    const [url, init] = mockFetch.mock.calls[0];
+    const [url, init] = checkoutPosts()[0];
     expect(url).toContain("/api/year-close-packet/checkout");
     expect(url).not.toContain("/api/tips/checkout");
     expect(init.method).toBe("POST");
@@ -471,16 +569,218 @@ describe("YearClosePacketPanel", () => {
     expect(window.location.search).not.toContain("resume_checkout");
     expect(store[PACKET_RESUME_CHECKOUT_KEY]).toBeUndefined();
     expect(localStorage.getItem(PACKET_RESUME_LOCAL_KEY)).toBeNull();
+    expect(localStorage.getItem(PACKET_CHECKOUT_STARTED_KEY)).toMatch(/^\d+$/);
+  });
+
+  it("does not post checkout when the resume analysis id does not match", async () => {
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    store[PACKET_RESUME_ANALYSIS_KEY] = JSON.stringify({
+      analysisId: "other-run",
+      taxYear: 2025,
+    });
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    render(<YearClosePacketPanel analysis={analysis} />);
+    await new Promise((resolve) => {
+      setTimeout(resolve, 30);
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(store[PACKET_RESUME_CHECKOUT_KEY]).toBe("1");
+  });
+
+  it("does not post checkout when the resume analysis id is missing", async () => {
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    localStorage.setItem(
+      PACKET_RESUME_LOCAL_KEY,
+      JSON.stringify({ v: 1, sample: false, exp: Date.now() + 60_000 }),
+    );
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    render(<YearClosePacketPanel analysis={analysis} />);
+    await new Promise((resolve) => {
+      setTimeout(resolve, 30);
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(localStorage.getItem(PACKET_CHECKOUT_STARTED_KEY)).toBeNull();
+  });
+
+  it("posts checkout for a re-run sample with the same tax year", async () => {
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    store[PACKET_RESUME_SAMPLE_KEY] = "1";
+    store[PACKET_RESUME_ANALYSIS_KEY] = JSON.stringify({
+      analysisId: "original-sample",
+      taxYear: 2025,
+    });
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    mockEntitlementThen(checkoutOk());
+    render(
+      <YearClosePacketPanel
+        analysis={{ ...analysis, analysis_id: "rerun-sample", sample_run: true }}
+      />,
+    );
+    await waitFor(() => {
+      expect(checkoutPosts()).toHaveLength(1);
+    });
+    expect(checkoutPosts()[0][1].headers.Authorization).toBe(
+      "Bearer mock-jwt-token",
+    );
+    expect(JSON.parse(checkoutPosts()[0][1].body).analysis_id).toBe(
+      "rerun-sample",
+    );
+  });
+
+  it("shows Checkout opened in your other tab and does not post when resume_checkout=1 and checkout started recently", async () => {
+    localStorage.setItem(PACKET_CHECKOUT_STARTED_KEY, String(Date.now()));
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    render(<YearClosePacketPanel analysis={analysis} />);
+    expect(await screen.findByTestId("packet-checkout-other-tab")).toHaveTextContent(
+      PACKET_CHECKOUT_OTHER_TAB_COPY,
+    );
+    expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
+    await new Promise((resolve) => {
+      setTimeout(resolve, 30);
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(window.location.search).not.toContain("resume_checkout");
+  });
+
+  it("shows the other-tab note when the mounted analysis matches a recent claim", async () => {
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    store[PACKET_RESUME_ANALYSIS_KEY] = JSON.stringify({
+      analysisId: "analysis-1",
+      taxYear: 2025,
+    });
+    const started = String(Date.now());
+    localStorage.setItem(PACKET_CHECKOUT_STARTED_KEY, started);
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    render(<YearClosePacketPanel analysis={analysis} />);
+    expect(await screen.findByTestId("packet-checkout-other-tab")).toHaveTextContent(
+      PACKET_CHECKOUT_OTHER_TAB_COPY,
+    );
+    expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(localStorage.getItem(PACKET_CHECKOUT_STARTED_KEY)).toBe(started);
+    expect(store[PACKET_RESUME_ANALYSIS_KEY]).toBeUndefined();
+  });
+
+  it("keeps the expected run and ignores Pay when a recent claim is for a different analysis", async () => {
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    store[PACKET_RESUME_SAMPLE_KEY] = "1";
+    store[PACKET_RESUME_ANALYSIS_KEY] = JSON.stringify({
+      analysisId: "origin-id",
+      taxYear: 2025,
+    });
+    const started = String(Date.now());
+    localStorage.setItem(PACKET_CHECKOUT_STARTED_KEY, started);
+    localStorage.setItem(
+      PACKET_RESUME_LOCAL_KEY,
+      JSON.stringify({
+        v: 2,
+        sample: false,
+        exp: Date.now() + 60_000,
+        analysisId: "origin-id",
+        taxYear: 2025,
+      }),
+    );
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    const view = render(<YearClosePacketPanel analysis={analysis} />);
+    const pay = screen.getByRole("button", { name: /Pay \$49/i });
+    expect(pay).toBeDisabled();
+    fireEvent.click(pay);
+    await new Promise((resolve) => {
+      setTimeout(resolve, 30);
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("packet-checkout-other-tab")).not.toBeInTheDocument();
+    expect(store[PACKET_RESUME_ANALYSIS_KEY]).toContain("origin-id");
+    expect(store[PACKET_RESUME_CHECKOUT_KEY]).toBe("1");
+    expect(store[PACKET_RESUME_SAMPLE_KEY]).toBe("1");
+    expect(localStorage.getItem(PACKET_RESUME_LOCAL_KEY)).toContain("origin-id");
+    expect(localStorage.getItem(PACKET_CHECKOUT_STARTED_KEY)).toBe(started);
+    expect(window.location.search).toContain("resume_checkout=1");
+
+    delete store[PACKET_RESUME_CHECKOUT_KEY];
+    delete store[PACKET_RESUME_SAMPLE_KEY];
+    delete store[PACKET_RESUME_ANALYSIS_KEY];
+    view.rerender(<YearClosePacketPanel analysis={analysis} />);
+    expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
+  });
+
+  it("writes checkout-started before the checkout POST and does not post when that timestamp is already recent", async () => {
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    store[PACKET_RESUME_ANALYSIS_KEY] = JSON.stringify({
+      analysisId: "analysis-1",
+      taxYear: 2025,
+    });
+    const started = String(Date.now() - 1000);
+    localStorage.setItem(PACKET_CHECKOUT_STARTED_KEY, started);
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    render(<YearClosePacketPanel analysis={analysis} />);
+    expect(await screen.findByTestId("packet-checkout-other-tab")).toHaveTextContent(
+      PACKET_CHECKOUT_OTHER_TAB_COPY,
+    );
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(localStorage.getItem(PACKET_CHECKOUT_STARTED_KEY)).toBe(started);
+  });
+
+  it("aborts auto-resume when another tab writes checkout-started during getSession", async () => {
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    store[PACKET_RESUME_ANALYSIS_KEY] = JSON.stringify({
+      analysisId: "analysis-1",
+      taxYear: 2025,
+    });
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    (getSession as jest.Mock).mockImplementation(async () => {
+      localStorage.setItem(PACKET_CHECKOUT_STARTED_KEY, String(Date.now() - 50));
+      return signedInSession;
+    });
+    render(<YearClosePacketPanel analysis={analysis} />);
+    expect(await screen.findByTestId("packet-checkout-other-tab")).toHaveTextContent(
+      PACKET_CHECKOUT_OTHER_TAB_COPY,
+    );
+    await new Promise((resolve) => {
+      setTimeout(resolve, 30);
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("aborts the checkout POST when another tab replaces the claim after getSession", async () => {
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    store[PACKET_RESUME_ANALYSIS_KEY] = JSON.stringify({
+      analysisId: "analysis-1",
+      taxYear: 2025,
+    });
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    let calls = 0;
+    (getSession as jest.Mock).mockImplementation(async () => {
+      calls += 1;
+      if (calls >= 2) {
+        localStorage.setItem(PACKET_CHECKOUT_STARTED_KEY, "1");
+      }
+      return signedInSession;
+    });
+    mockEntitlementThen(checkoutOk());
+    render(<YearClosePacketPanel analysis={analysis} />);
+    expect(await screen.findByTestId("packet-checkout-other-tab")).toHaveTextContent(
+      PACKET_CHECKOUT_OTHER_TAB_COPY,
+    );
+    await new Promise((resolve) => {
+      setTimeout(resolve, 30);
+    });
+    expect(checkoutPosts()).toHaveLength(0);
+    expect(localStorage.getItem(PACKET_CHECKOUT_STARTED_KEY)).toBe("1");
   });
 
   it("does not auto-start a second checkout after the resume marker is consumed", async () => {
     store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    store[PACKET_RESUME_ANALYSIS_KEY] = JSON.stringify({
+      analysisId: "analysis-1",
+      taxYear: 2025,
+    });
     window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
-    mockFetch.mockResolvedValue(checkoutOk());
+    mockEntitlementThen(checkoutOk());
 
     const first = render(<YearClosePacketPanel analysis={analysis} />);
     await waitFor(() => {
-      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(checkoutPosts()).toHaveLength(1);
     });
     first.unmount();
 
@@ -490,12 +790,16 @@ describe("YearClosePacketPanel", () => {
     await new Promise((resolve) => {
       setTimeout(resolve, 30);
     });
-    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(checkoutPosts()).toHaveLength(1);
   });
 
   it("leaves the resume marker when the session is not ready", async () => {
     (getSession as jest.Mock).mockResolvedValue(null);
     store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    store[PACKET_RESUME_ANALYSIS_KEY] = JSON.stringify({
+      analysisId: "analysis-1",
+      taxYear: 2025,
+    });
     window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
 
     render(<YearClosePacketPanel analysis={analysis} />);
@@ -505,6 +809,7 @@ describe("YearClosePacketPanel", () => {
     expect(mockFetch).not.toHaveBeenCalled();
     expect(mockPush).not.toHaveBeenCalled();
     expect(store[PACKET_RESUME_CHECKOUT_KEY]).toBe("1");
+    expect(localStorage.getItem(PACKET_CHECKOUT_STARTED_KEY)).toBeNull();
     expect(window.location.search).toContain("resume_checkout=1");
     expect(screen.queryByText(/Authentication required/i)).not.toBeInTheDocument();
   });
@@ -521,7 +826,8 @@ describe("YearClosePacketPanel", () => {
       setTimeout(resolve, 30);
     });
     expect(mockFetch).not.toHaveBeenCalled();
-    expect(store[PACKET_RESUME_CHECKOUT_KEY]).toBe("1");
+    expect(store[PACKET_RESUME_CHECKOUT_KEY]).toBeUndefined();
+    expect(localStorage.getItem(PACKET_CHECKOUT_STARTED_KEY)).toBeNull();
   });
 
   it("does not auto-start checkout for a paid storage flag", async () => {
@@ -577,6 +883,174 @@ describe("YearClosePacketPanel", () => {
     expect(localStorage.getItem(PACKET_RESUME_LOCAL_KEY)).toBeNull();
   });
 
+  it("keeps Pay disabled and posts no checkout while entitlement is pending, then hides Pay when the year is paid", async () => {
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    store[PACKET_RESUME_ANALYSIS_KEY] = JSON.stringify({
+      analysisId: "analysis-1",
+      taxYear: 2025,
+    });
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    let resolveEntitlement: (value: unknown) => void = () => {};
+    const pending = new Promise((resolve) => {
+      resolveEntitlement = resolve;
+    });
+    mockFetch.mockImplementation((url: RequestInfo | URL) => {
+      if (String(url).includes("/api/year-close-packet/entitlement")) {
+        return pending;
+      }
+      return Promise.resolve(checkoutOk());
+    });
+
+    render(<YearClosePacketPanel analysis={analysis} />);
+
+    const pay = screen.getByRole("button", { name: /Pay \$49/i });
+    expect(pay).toBeDisabled();
+    await waitFor(() => {
+      expect(mockFetch).toHaveBeenCalled();
+    });
+    expect(checkoutPosts()).toHaveLength(0);
+    expect(pay).toBeDisabled();
+
+    await act(async () => {
+      resolveEntitlement({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          paid: true,
+          tax_year: 2025,
+          session_id: "cs_test_paid_year",
+          analysis_id: "analysis-1",
+        }),
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: /Pay \$49/i })).not.toBeInTheDocument();
+    });
+    expect(screen.getByText(/Payment confirmed for tax year 2025/i)).toBeInTheDocument();
+    expect(checkoutPosts()).toHaveLength(0);
+    expect(screen.queryByText(PACKET_CHECKOUT_CANCELED_COPY)).not.toBeInTheDocument();
+  });
+
+  async function expectManualPayAfterFailedEntitlement() {
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
+    });
+    expect(screen.getByTestId("packet-entitlement-unconfirmed")).toHaveTextContent(
+      PACKET_ENTITLEMENT_UNCONFIRMED_COPY,
+    );
+    expect(checkoutPosts()).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: /Pay \$49/i }));
+    await waitFor(() => {
+      expect(checkoutPosts()).toHaveLength(1);
+    });
+  }
+
+  it("leaves Pay enabled with a purchase-status message and no automatic checkout when entitlement returns 503", async () => {
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    store[PACKET_RESUME_ANALYSIS_KEY] = JSON.stringify({
+      analysisId: "analysis-1",
+      taxYear: 2025,
+    });
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    mockFetch.mockImplementation(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/api/year-close-packet/entitlement")) {
+        return {
+          ok: false,
+          status: 503,
+          json: async () => ({ detail: "Could not verify existing packet access." }),
+        };
+      }
+      return checkoutOk();
+    });
+
+    render(<YearClosePacketPanel analysis={analysis} />);
+    await expectManualPayAfterFailedEntitlement();
+  });
+
+  it("leaves Pay enabled with a purchase-status message and no automatic checkout when the entitlement request fails", async () => {
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    store[PACKET_RESUME_ANALYSIS_KEY] = JSON.stringify({
+      analysisId: "analysis-1",
+      taxYear: 2025,
+    });
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    mockFetch.mockImplementation(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/api/year-close-packet/entitlement")) {
+        throw new Error("network down");
+      }
+      return checkoutOk();
+    });
+
+    render(<YearClosePacketPanel analysis={analysis} />);
+    await expectManualPayAfterFailedEntitlement();
+  });
+
+  it("hides the closed-without-payment note when the year is paid and clears resume state", async () => {
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    store[PACKET_RESUME_SAMPLE_KEY] = "1";
+    store[PACKET_RESUME_ANALYSIS_KEY] = JSON.stringify({
+      analysisId: "analysis-1",
+      taxYear: 2025,
+    });
+    localStorage.setItem(
+      PACKET_RESUME_LOCAL_KEY,
+      JSON.stringify({
+        v: 2,
+        sample: false,
+        exp: Date.now() + 60_000,
+        analysisId: "analysis-1",
+        taxYear: 2025,
+      }),
+    );
+    localStorage.setItem(PACKET_CHECKOUT_STARTED_KEY, String(Date.now()));
+    window.history.replaceState(null, "", "/dashboard?packet_canceled=1");
+    render(
+      <YearClosePacketPanel
+        analysis={{
+          ...analysis,
+          packet_unlocked: true,
+          packet_session_id: "cs_test_year",
+        }}
+      />,
+    );
+    await waitFor(() => {
+      expect(screen.getByText(/Payment confirmed for tax year 2025/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId("packet-checkout-canceled")).not.toBeInTheDocument();
+    expect(screen.queryByText(PACKET_CHECKOUT_CANCELED_COPY)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Pay \$49/i })).not.toBeInTheDocument();
+    expect(localStorage.getItem(PACKET_RESUME_LOCAL_KEY)).toBeNull();
+    expect(localStorage.getItem(PACKET_CHECKOUT_STARTED_KEY)).toBeNull();
+    expect(store[PACKET_RESUME_CHECKOUT_KEY]).toBeUndefined();
+    expect(store[PACKET_RESUME_SAMPLE_KEY]).toBeUndefined();
+    expect(store[PACKET_RESUME_ANALYSIS_KEY]).toBeUndefined();
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("does not show a stale paid flag on a guest or sample run", async () => {
+    store["optionstaxhub-packet-paid:analysis-1"] = "cs_test_other_account";
+    store["optionstaxhub-packet-canonical:analysis-1"] = "analysis-1";
+    render(
+      <YearClosePacketPanel
+        guest
+        analysis={{
+          ...analysis,
+          sample_run: true,
+          packet_unlocked: true,
+          packet_session_id: "cs_test_other_account",
+        }}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
+    expect(screen.queryByText(/Paid for this tax year/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Payment confirmed for tax year/i)).not.toBeInTheDocument();
+    await new Promise((resolve) => {
+      setTimeout(resolve, 30);
+    });
+    expect(checkoutPosts()).toHaveLength(0);
+  });
+
   it("does not auto-start checkout without a saved analysis id", async () => {
     store[PACKET_RESUME_CHECKOUT_KEY] = "1";
     window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
@@ -616,8 +1090,13 @@ describe("YearClosePacketPanel", () => {
     expect(onSampleRerunForCheckout).toHaveBeenCalledTimes(3);
 
     store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    store[PACKET_RESUME_SAMPLE_KEY] = "1";
+    store[PACKET_RESUME_ANALYSIS_KEY] = JSON.stringify({
+      analysisId: "original-sample",
+      taxYear: 2025,
+    });
     window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
-    mockFetch.mockResolvedValueOnce(checkoutOk());
+    mockEntitlementThen(checkoutOk());
     render(
       <YearClosePacketPanel
         analysis={{ ...analysis, sample_run: true }}
@@ -625,9 +1104,9 @@ describe("YearClosePacketPanel", () => {
       />,
     );
     await waitFor(() => {
-      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(checkoutPosts()).toHaveLength(1);
     });
-    expect(String(mockFetch.mock.calls[0][0])).toContain(
+    expect(String(checkoutPosts()[0][0])).toContain(
       "/api/year-close-packet/checkout",
     );
   });
@@ -664,6 +1143,94 @@ describe("YearClosePacketPanel", () => {
       expect(screen.getByRole("alert")).toHaveTextContent(detail);
     });
     expect(onSampleRerunForCheckout).not.toHaveBeenCalled();
+  });
+
+  it("releases the checkout claim on a guest-snapshot 409 so the sample re-run posts once more", async () => {
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    store[PACKET_RESUME_SAMPLE_KEY] = "1";
+    store[PACKET_RESUME_ANALYSIS_KEY] = JSON.stringify({
+      analysisId: "original-sample",
+      taxYear: 2025,
+    });
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    const onSampleRerunForCheckout = jest.fn(() => {
+      store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+      store[PACKET_RESUME_SAMPLE_KEY] = "1";
+      window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+      return true;
+    });
+    const checkoutResponses = [
+      checkoutConflict(
+        "This guest snapshot must be restored from its matching analysis before checkout.",
+      ),
+      checkoutOk(),
+    ];
+    mockFetch.mockImplementation(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/api/year-close-packet/entitlement")) {
+        return unpaidEntitlement();
+      }
+      return checkoutResponses.shift();
+    });
+    const view = render(
+      <YearClosePacketPanel
+        analysis={{
+          ...analysis,
+          analysis_id: "original-sample",
+          sample_run: true,
+        }}
+        onSampleRerunForCheckout={onSampleRerunForCheckout}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(onSampleRerunForCheckout).toHaveBeenCalledTimes(1);
+    });
+    expect(checkoutPosts()).toHaveLength(1);
+    expect(localStorage.getItem(PACKET_CHECKOUT_STARTED_KEY)).toBeNull();
+    expect(screen.queryByTestId("packet-checkout-other-tab")).not.toBeInTheDocument();
+
+    view.rerender(
+      <YearClosePacketPanel
+        analysis={{
+          ...analysis,
+          analysis_id: "rerun-sample",
+          sample_run: true,
+        }}
+        onSampleRerunForCheckout={onSampleRerunForCheckout}
+      />,
+    );
+    await waitFor(() => {
+      expect(checkoutPosts()).toHaveLength(2);
+    });
+    const postedIds = checkoutPosts().map((call) => {
+      const init = call[1] as { body?: string };
+      return JSON.parse(init.body || "{}").analysis_id;
+    });
+    expect(postedIds).toEqual(["original-sample", "rerun-sample"]);
+    expect(screen.queryByText(PACKET_CHECKOUT_OTHER_TAB_COPY)).not.toBeInTheDocument();
+  });
+
+  it("releases the checkout claim when checkout returns 500", async () => {
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    store[PACKET_RESUME_ANALYSIS_KEY] = JSON.stringify({
+      analysisId: "analysis-1",
+      taxYear: 2025,
+    });
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    mockEntitlementThen({
+      ok: false,
+      status: 500,
+      json: () => Promise.resolve({ detail: "Stripe is down" }),
+    });
+    render(<YearClosePacketPanel analysis={analysis} />);
+    await waitFor(() => {
+      expect(checkoutPosts()).toHaveLength(1);
+    });
+    await waitFor(() => {
+      expect(localStorage.getItem(PACKET_CHECKOUT_STARTED_KEY)).toBeNull();
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent("Stripe is down");
+    expect(screen.queryByTestId("packet-checkout-other-tab")).not.toBeInTheDocument();
   });
 
   it("still shows the auth error when confirm runs without a session", async () => {
@@ -1057,11 +1624,521 @@ describe("YearClosePacketPanel", () => {
       expect(screen.getByText(/Payment confirmed for tax year/i)).toBeInTheDocument(),
     );
     expect(mockFetch).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /Pay \$49/i })).not.toBeInTheDocument();
     expect(store["optionstaxhub-packet-paid:analysis-1"]).toBe(
       "cs_test_existing_year",
     );
   });
+
+  it("releases the checkout claim when resume checkout is already paid", async () => {
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    store[PACKET_RESUME_ANALYSIS_KEY] = JSON.stringify({
+      analysisId: "analysis-1",
+      taxYear: 2025,
+    });
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    mockFetch.mockImplementation(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/api/year-close-packet/entitlement")) {
+        return {
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({
+              paid: true,
+              tax_year: 2025,
+              session_id: "cs_test_existing_year",
+              analysis_id: "analysis-1",
+            }),
+        };
+      }
+      return {
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            already_paid: true,
+            session_id: "cs_test_existing_year",
+            analysis_id: "analysis-1",
+          }),
+      };
+    });
+
+    render(<YearClosePacketPanel analysis={analysis} />);
+
+    await waitFor(() =>
+      expect(screen.getByText(/Payment confirmed for tax year/i)).toBeInTheDocument(),
+    );
+    expect(localStorage.getItem(PACKET_CHECKOUT_STARTED_KEY)).toBeNull();
+    expect(checkoutPosts()).toHaveLength(0);
+    expect(store["optionstaxhub-packet-paid:analysis-1"]).toBe(
+      "cs_test_existing_year",
+    );
+  });
+
+  it("promotes a paid year recorded on a different analysis and downloads without opening Stripe", async () => {
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    store[PACKET_RESUME_ANALYSIS_KEY] = JSON.stringify({
+      analysisId: "analysis-1",
+      taxYear: 2025,
+    });
+    localStorage.setItem(
+      PACKET_RESUME_LOCAL_KEY,
+      JSON.stringify({
+        v: 2,
+        sample: false,
+        exp: Date.now() + 60_000,
+        analysisId: "analysis-1",
+        taxYear: 2025,
+      }),
+    );
+    localStorage.setItem(
+      PACKET_CHECKOUT_STARTED_KEY,
+      String(Date.now() - 6 * 60 * 1000),
+    );
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    const consoleError = jest.spyOn(console, "error").mockImplementation(() => {});
+    mockFetch.mockImplementation(async (url: RequestInfo | URL) => {
+      const target = String(url);
+      if (target.includes("/api/year-close-packet/entitlement")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            paid: true,
+            tax_year: 2025,
+            session_id: "cs_test_other_analysis",
+            analysis_id: "analysis-paid-other",
+          }),
+        };
+      }
+      if (target.includes("/api/year-close-packet/checkout")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            already_paid: true,
+            session_id: "cs_test_other_analysis",
+            analysis_id: "analysis-1",
+          }),
+        };
+      }
+      if (target.includes("/api/year-close-packet/download")) {
+        return {
+          ok: true,
+          status: 200,
+          blob: async () => new Blob(["%PDF-1.4"], { type: "application/pdf" }),
+        };
+      }
+      return checkoutOk();
+    });
+
+    try {
+      render(<YearClosePacketPanel analysis={analysis} />);
+      await waitFor(() => {
+        expect(screen.getByText(/Payment confirmed for tax year 2025/i)).toBeInTheDocument();
+      });
+      expect(checkoutPosts()).toHaveLength(1);
+      expect(JSON.parse(String(checkoutPosts()[0][1].body)).analysis_id).toBe(
+        "analysis-1",
+      );
+      expect(window.location.href).not.toContain("checkout.stripe.com");
+      expect(
+        consoleError.mock.calls.some((call) =>
+          call.some((arg) =>
+            String(arg?.message || arg).includes("Not implemented: navigation"),
+          ),
+        ),
+      ).toBe(false);
+      expect(screen.queryByRole("button", { name: /Pay \$49/i })).not.toBeInTheDocument();
+      expect(store["optionstaxhub-packet-paid:analysis-1"]).toBe(
+        "cs_test_other_analysis",
+      );
+      expect(localStorage.getItem(PACKET_CHECKOUT_STARTED_KEY)).toBeNull();
+      expect(localStorage.getItem(PACKET_RESUME_LOCAL_KEY)).toBeNull();
+      expect(store[PACKET_RESUME_CHECKOUT_KEY]).toBeUndefined();
+      expect(store[PACKET_RESUME_ANALYSIS_KEY]).toBeUndefined();
+
+      const download = screen.getByRole("button", { name: /Download/i });
+      expect(download).toBeEnabled();
+      fireEvent.click(download);
+      await waitFor(() => {
+        expect(
+          mockFetch.mock.calls.some((call) =>
+            String(call[0]).includes("/api/year-close-packet/download"),
+          ),
+        ).toBe(true);
+      });
+      const downloadCall = mockFetch.mock.calls.find((call) =>
+        String(call[0]).includes("/api/year-close-packet/download"),
+      );
+      expect(String(downloadCall?.[0])).toContain("analysis_id=analysis-1");
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(window.location.href).not.toContain("checkout.stripe.com");
+      expect(checkoutPosts()).toHaveLength(1);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  function armMatchingResume() {
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    store[PACKET_RESUME_ANALYSIS_KEY] = JSON.stringify({
+      analysisId: "analysis-1",
+      taxYear: 2025,
+    });
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+  }
+
+  function paidEntitlementWithoutAnalysis(analysisId?: string) {
+    const body: {
+      paid: boolean;
+      tax_year: number;
+      session_id: string;
+      analysis_id?: string;
+    } = {
+      paid: true,
+      tax_year: 2025,
+      session_id: "cs_test_missing_analysis",
+    };
+    if (analysisId !== undefined) {
+      body.analysis_id = analysisId;
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => body,
+    };
+  }
+
+  it("promotes when paid entitlement omits analysis_id and enables Download only after already_paid", async () => {
+    armMatchingResume();
+    let resolveCheckout: (value: unknown) => void = () => {};
+    const checkoutPending = new Promise((resolve) => {
+      resolveCheckout = resolve;
+    });
+    mockFetch.mockImplementation((url: RequestInfo | URL) => {
+      const target = String(url);
+      if (target.includes("/api/year-close-packet/entitlement")) {
+        return Promise.resolve(paidEntitlementWithoutAnalysis());
+      }
+      if (target.includes("/api/year-close-packet/checkout")) {
+        return checkoutPending;
+      }
+      return Promise.resolve(checkoutOk());
+    });
+
+    render(<YearClosePacketPanel analysis={{ ...analysis, packet_unlocked: false }} />);
+
+    await waitFor(() => {
+      expect(checkoutPosts()).toHaveLength(1);
+    });
+    expect(screen.getByRole("button", { name: /Download/i })).toBeDisabled();
+    expect(screen.queryByText(/Payment confirmed for tax year/i)).not.toBeInTheDocument();
+    expect(store["optionstaxhub-packet-paid:analysis-1"]).toBeUndefined();
+    expect(window.location.href).not.toContain("checkout.stripe.com");
+
+    await act(async () => {
+      resolveCheckout({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          already_paid: true,
+          session_id: "cs_test_missing_analysis",
+          analysis_id: "analysis-1",
+        }),
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /Download/i })).toBeEnabled();
+    });
+    expect(screen.getByText(/Payment confirmed for tax year 2025/i)).toBeInTheDocument();
+    expect(checkoutPosts()).toHaveLength(1);
+    expect(JSON.parse(String(checkoutPosts()[0][1].body)).analysis_id).toBe("analysis-1");
+    expect(store["optionstaxhub-packet-paid:analysis-1"]).toBe("cs_test_missing_analysis");
+    expect(screen.queryByRole("button", { name: /Pay \$49/i })).not.toBeInTheDocument();
+    expect(window.location.href).not.toContain("checkout.stripe.com");
+  });
+
+  it("stays unconfirmed without Download or a second checkout when promotion returns a checkout url", async () => {
+    armMatchingResume();
+    const consoleError = jest.spyOn(console, "error").mockImplementation(() => {});
+    mockFetch.mockImplementation(async (url: RequestInfo | URL) => {
+      const target = String(url);
+      if (target.includes("/api/year-close-packet/entitlement")) {
+        return paidEntitlementWithoutAnalysis();
+      }
+      if (target.includes("/api/year-close-packet/checkout")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            checkout_url: "https://checkout.stripe.com/c/pay/cs_test_second",
+            session_id: "cs_test_second",
+          }),
+        };
+      }
+      return checkoutOk();
+    });
+
+    try {
+      render(<YearClosePacketPanel analysis={{ ...analysis, packet_unlocked: false }} />);
+      await waitFor(() => {
+        expect(screen.getByTestId("packet-entitlement-unconfirmed")).toHaveTextContent(
+          PACKET_PROMOTION_UNCONFIRMED_COPY,
+        );
+      });
+      expect(screen.queryByRole("button", { name: /Download/i })).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeDisabled();
+      expect(checkoutPosts()).toHaveLength(1);
+      expect(window.location.href).not.toContain("checkout.stripe.com");
+      expect(mockPush).not.toHaveBeenCalled();
+      expect(
+        consoleError.mock.calls.some((call) =>
+          call.some((arg) =>
+            String(arg?.message || arg).includes("Not implemented: navigation"),
+          ),
+        ),
+      ).toBe(false);
+      expect(screen.queryByText(/Payment confirmed for tax year/i)).not.toBeInTheDocument();
+      expect(store["optionstaxhub-packet-paid:analysis-1"]).toBeUndefined();
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("enables Download when the same run later arrives unlocked after a failed promotion", async () => {
+    armMatchingResume();
+    mockFetch.mockImplementation(async (url: RequestInfo | URL) => {
+      const target = String(url);
+      if (target.includes("/api/year-close-packet/entitlement")) {
+        return paidEntitlementWithoutAnalysis();
+      }
+      if (target.includes("/api/year-close-packet/checkout")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            checkout_url: "https://checkout.stripe.com/c/pay/cs_test_second",
+            session_id: "cs_test_second",
+          }),
+        };
+      }
+      return checkoutOk();
+    });
+
+    const view = render(
+      <YearClosePacketPanel analysis={{ ...analysis, packet_unlocked: false }} />,
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId("packet-entitlement-unconfirmed")).toHaveTextContent(
+        PACKET_PROMOTION_UNCONFIRMED_COPY,
+      );
+    });
+    expect(screen.queryByRole("button", { name: /Download/i })).not.toBeInTheDocument();
+    expect(checkoutPosts()).toHaveLength(1);
+
+    view.rerender(
+      <YearClosePacketPanel
+        analysis={{
+          ...analysis,
+          packet_unlocked: true,
+          packet_session_id: "cs_test_refetched",
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /Download/i })).toBeEnabled();
+    });
+    expect(screen.getByText(/Payment confirmed for tax year 2025/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Pay \$49/i })).not.toBeInTheDocument();
+    expect(screen.queryByTestId("packet-entitlement-unconfirmed")).not.toBeInTheDocument();
+    expect(checkoutPosts()).toHaveLength(1);
+    expect(window.location.href).not.toContain("checkout.stripe.com");
+  });
+
+  it("stays unconfirmed when promotion throws", async () => {
+    armMatchingResume();
+    mockFetch.mockImplementation(async (url: RequestInfo | URL) => {
+      const target = String(url);
+      if (target.includes("/api/year-close-packet/entitlement")) {
+        return paidEntitlementWithoutAnalysis();
+      }
+      if (target.includes("/api/year-close-packet/checkout")) {
+        throw new Error("network down");
+      }
+      return checkoutOk();
+    });
+
+    render(<YearClosePacketPanel analysis={{ ...analysis, packet_unlocked: false }} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("packet-entitlement-unconfirmed")).toHaveTextContent(
+        PACKET_PROMOTION_UNCONFIRMED_COPY,
+      );
+    });
+    expect(screen.queryByRole("button", { name: /Download/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeDisabled();
+    expect(screen.queryByText(/Pay or refresh/i)).not.toBeInTheDocument();
+    expect(checkoutPosts()).toHaveLength(1);
+    expect(window.location.href).not.toContain("checkout.stripe.com");
+    expect(screen.queryByText(/Payment confirmed for tax year/i)).not.toBeInTheDocument();
+  });
+
+  it("shows a promotion 409 detail and leaves Pay usable", async () => {
+    armMatchingResume();
+    const detail =
+      "Payment was received, but this analysis has no source document. Run a new analysis for this tax year.";
+    mockFetch.mockImplementation(async (url: RequestInfo | URL) => {
+      const target = String(url);
+      if (target.includes("/api/year-close-packet/entitlement")) {
+        return paidEntitlementWithoutAnalysis();
+      }
+      if (target.includes("/api/year-close-packet/checkout")) {
+        return {
+          ok: false,
+          status: 409,
+          json: async () => ({ detail }),
+        };
+      }
+      return checkoutOk();
+    });
+
+    render(<YearClosePacketPanel analysis={{ ...analysis, packet_unlocked: false }} />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(detail);
+      expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
+    });
+    expect(screen.queryByText(PACKET_PROMOTION_UNCONFIRMED_COPY)).not.toBeInTheDocument();
+    expect(screen.queryByText(PACKET_ENTITLEMENT_UNCONFIRMED_COPY)).not.toBeInTheDocument();
+    expect(screen.queryByTestId("packet-entitlement-unconfirmed")).not.toBeInTheDocument();
+    expect(checkoutPosts()).toHaveLength(1);
+    expect(screen.queryByText(/Payment confirmed for tax year/i)).not.toBeInTheDocument();
+  });
+
+  it("enables Download when the same run unlocks while promotion checkout is pending", async () => {
+    armMatchingResume();
+    let resolveCheckout: (value: unknown) => void = () => {};
+    const checkoutPending = new Promise((resolve) => {
+      resolveCheckout = resolve;
+    });
+    mockFetch.mockImplementation((url: RequestInfo | URL) => {
+      const target = String(url);
+      if (target.includes("/api/year-close-packet/entitlement")) {
+        return Promise.resolve(paidEntitlementWithoutAnalysis());
+      }
+      if (target.includes("/api/year-close-packet/checkout")) {
+        return checkoutPending;
+      }
+      return Promise.resolve(checkoutOk());
+    });
+
+    const view = render(
+      <YearClosePacketPanel analysis={{ ...analysis, packet_unlocked: false }} />,
+    );
+    await waitFor(() => {
+      expect(checkoutPosts()).toHaveLength(1);
+    });
+    expect(screen.getByRole("button", { name: /Download/i })).toBeDisabled();
+
+    view.rerender(
+      <YearClosePacketPanel
+        analysis={{
+          ...analysis,
+          packet_unlocked: true,
+          packet_session_id: "cs_test_refetched",
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /Download/i })).toBeEnabled();
+    });
+    expect(screen.getByText(/Payment confirmed for tax year 2025/i)).toBeInTheDocument();
+    expect(checkoutPosts()).toHaveLength(1);
+
+    await act(async () => {
+      resolveCheckout({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          already_paid: true,
+          session_id: "cs_test_missing_analysis",
+          analysis_id: "analysis-1",
+        }),
+      });
+    });
+    expect(screen.getByRole("button", { name: /Download/i })).toBeEnabled();
+    expect(checkoutPosts()).toHaveLength(1);
+  });
+
+  it("marks a packet_unlocked run paid immediately when entitlement would omit analysis_id", async () => {
+    armMatchingResume();
+    mockFetch.mockImplementation(async () => {
+      throw new Error("entitlement must not be requested");
+    });
+
+    render(
+      <YearClosePacketPanel
+        analysis={{
+          ...analysis,
+          packet_unlocked: true,
+          packet_session_id: "cs_test_unlocked",
+        }}
+      />,
+    );
+
+    expect(screen.getByText(/Payment confirmed for tax year 2025/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Download/i })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: /Pay \$49/i })).not.toBeInTheDocument();
+    expect(store["optionstaxhub-packet-paid:analysis-1"]).toBe("cs_test_unlocked");
+    await new Promise((resolve) => {
+      setTimeout(resolve, 30);
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(checkoutPosts()).toHaveLength(0);
+  });
+
+  it.each(["", "   ", "\n\t"])(
+    "treats entitlement analysis_id %j as missing and promotes once",
+    async (blankAnalysisId) => {
+      armMatchingResume();
+      mockFetch.mockImplementation(async (url: RequestInfo | URL) => {
+        const target = String(url);
+        if (target.includes("/api/year-close-packet/entitlement")) {
+          return paidEntitlementWithoutAnalysis(blankAnalysisId);
+        }
+        if (target.includes("/api/year-close-packet/checkout")) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              already_paid: true,
+              session_id: "cs_test_missing_analysis",
+              analysis_id: "analysis-1",
+            }),
+          };
+        }
+        return checkoutOk();
+      });
+
+      const view = render(
+        <YearClosePacketPanel analysis={{ ...analysis, packet_unlocked: false }} />,
+      );
+      await waitFor(() => {
+        expect(checkoutPosts()).toHaveLength(1);
+        expect(screen.getByText(/Payment confirmed for tax year 2025/i)).toBeInTheDocument();
+      });
+      expect(screen.getByRole("button", { name: /Download/i })).toBeEnabled();
+      expect(store["optionstaxhub-packet-paid:analysis-1"]).toBe(
+        "cs_test_missing_analysis",
+      );
+      view.unmount();
+      mockFetch.mockReset();
+      resetPacketResumeCheckoutLock();
+    },
+  );
 
   it("treats Stripe cancel_url as a closed checkout, not a hang", async () => {
     window.history.replaceState(null, "", "/dashboard?packet_canceled=1");
@@ -1072,6 +2149,19 @@ describe("YearClosePacketPanel", () => {
         PACKET_CHECKOUT_CANCELED_COPY,
       );
     });
+    expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
+  });
+
+  it("releases the checkout claim when Stripe sends the shopper back canceled", async () => {
+    const started = String(Date.now());
+    localStorage.setItem(PACKET_CHECKOUT_STARTED_KEY, started);
+    window.history.replaceState(null, "", "/dashboard?packet_canceled=1");
+    render(<YearClosePacketPanel analysis={analysis} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("packet-checkout-canceled")).toBeInTheDocument();
+    });
+    expect(localStorage.getItem(PACKET_CHECKOUT_STARTED_KEY)).toBeNull();
     expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
   });
 
@@ -1579,7 +2669,7 @@ describe("YearClosePacketPanel", () => {
     await waitFor(() =>
       expect(screen.getByText(/Payment confirmed for tax year/i)).toBeInTheDocument(),
     );
-    expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /Pay \$49/i })).not.toBeInTheDocument();
     expect(store["optionstaxhub-packet-paid:analysis-1"]).toBe(
       "cs_test_finalizing_checkout",
     );

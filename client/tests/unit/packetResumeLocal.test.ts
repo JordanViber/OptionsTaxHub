@@ -1,11 +1,20 @@
 import {
+  clearPacketCheckoutStarted,
+  clearPacketCheckoutStartedIfClaim,
   clearPacketResumeLocal,
   consumePacketResumeLocalHandoff,
+  packetCheckoutStartedRecently,
   PACKET_RESUME_REUPLOAD_COPY,
+  readPacketCheckoutStarted,
+  rememberPacketCheckoutStarted,
   rememberPacketResumeLocal,
   resetPacketResumeLocalForTests,
+  resumeAnalysisMatches,
 } from "../../lib/packetResumeLocal";
 import {
+  PACKET_CHECKOUT_STARTED_KEY,
+  PACKET_CHECKOUT_STARTED_TTL_MS,
+  PACKET_RESUME_ANALYSIS_KEY,
   PACKET_RESUME_CHECKOUT_KEY,
   PACKET_RESUME_LOCAL_KEY,
   PACKET_RESUME_LOCAL_TTL_MS,
@@ -30,46 +39,116 @@ describe("packetResumeLocal", () => {
     window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
   });
 
-  it("writes only v, sample, and exp", () => {
-    rememberPacketResumeLocal(true, NOW);
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it("writes only v, sample, exp, analysisId, and taxYear", () => {
+    rememberPacketResumeLocal({
+      sample: true,
+      analysisId: "analysis-1",
+      taxYear: 2026,
+      now: NOW,
+    });
     const raw = localStorage.getItem(PACKET_RESUME_LOCAL_KEY);
     expect(raw).toBe(
       JSON.stringify({
         v: PACKET_RESUME_LOCAL_VERSION,
         sample: true,
         exp: NOW + PACKET_RESUME_LOCAL_TTL_MS,
+        analysisId: "analysis-1",
+        taxYear: 2026,
       }),
     );
     const parsed = JSON.parse(raw as string) as Record<string, unknown>;
-    expect(Object.keys(parsed).sort()).toEqual(["exp", "sample", "v"]);
-    expect(raw).not.toMatch(/analysis|tax|position|symbol|csv/i);
+    expect(Object.keys(parsed).sort()).toEqual([
+      "analysisId",
+      "exp",
+      "sample",
+      "taxYear",
+      "v",
+    ]);
+    expect(raw).not.toMatch(/position|symbol|csv|filing|income|lot|disclaimer/i);
 
-    rememberPacketResumeLocal(false, NOW);
+    rememberPacketResumeLocal({
+      sample: false,
+      analysisId: "analysis-2",
+      taxYear: 2025,
+      now: NOW,
+    });
     expect(JSON.parse(localStorage.getItem(PACKET_RESUME_LOCAL_KEY) as string)).toEqual({
-      v: 1,
+      v: 2,
       sample: false,
       exp: NOW + PACKET_RESUME_LOCAL_TTL_MS,
+      analysisId: "analysis-2",
+      taxYear: 2025,
     });
   });
 
+  it("omits analysisId when the guest run has no id", () => {
+    rememberPacketResumeLocal({ sample: true, analysisId: "", taxYear: Number.NaN, now: NOW });
+    const parsed = JSON.parse(localStorage.getItem(PACKET_RESUME_LOCAL_KEY) as string);
+    expect(Object.keys(parsed).sort()).toEqual(["exp", "sample", "v"]);
+    expect(parsed.v).toBe(2);
+  });
+
   it("restores a valid sample handoff into sessionStorage and deletes the key", () => {
-    writeRaw({ v: 1, sample: true, exp: NOW + 1000, analysis_id: "nope" });
+    writeRaw({
+      v: 2,
+      sample: true,
+      exp: NOW + 1000,
+      analysisId: "analysis-1",
+      taxYear: 2026,
+      positions: [{ symbol: "NOPE" }],
+      tax_profile: { estimated_annual_income: 1 },
+    });
     expect(consumePacketResumeLocalHandoff(NOW)).toBe(false);
     expect(sessionStorage.getItem(PACKET_RESUME_CHECKOUT_KEY)).toBe("1");
     expect(sessionStorage.getItem(PACKET_RESUME_SAMPLE_KEY)).toBe("1");
+    expect(sessionStorage.getItem(PACKET_RESUME_ANALYSIS_KEY)).toBe(
+      JSON.stringify({ analysisId: "analysis-1", taxYear: 2026 }),
+    );
+    expect(sessionStorage.getItem(PACKET_RESUME_ANALYSIS_KEY)).not.toMatch(/NOPE|income/);
     expect(localStorage.getItem(PACKET_RESUME_LOCAL_KEY)).toBeNull();
   });
 
   it("keeps an uploaded handoff when the analysis is still stored", () => {
-    sessionStorage.setItem("optionstaxhub-analysis", "{\"analysis_id\":\"a\"}");
-    writeRaw({ v: 1, sample: false, exp: NOW + 1000 });
+    sessionStorage.setItem(
+      "optionstaxhub-analysis",
+      JSON.stringify({
+        analysis_id: "analysis-1",
+        tax_profile: { tax_year: 2026 },
+      }),
+    );
+    writeRaw({
+      v: 2,
+      sample: false,
+      exp: NOW + 1000,
+      analysisId: "analysis-1",
+      taxYear: 2026,
+    });
     expect(consumePacketResumeLocalHandoff(NOW)).toBe(false);
     expect(sessionStorage.getItem(PACKET_RESUME_CHECKOUT_KEY)).toBe("1");
     expect(sessionStorage.getItem(PACKET_RESUME_SAMPLE_KEY)).toBeNull();
+    expect(sessionStorage.getItem(PACKET_RESUME_ANALYSIS_KEY)).toBe(
+      JSON.stringify({ analysisId: "analysis-1", taxYear: 2026 }),
+    );
     expect(localStorage.getItem(PACKET_RESUME_LOCAL_KEY)).toBeNull();
     expect(PACKET_RESUME_REUPLOAD_COPY).toBe(
       "Re-upload your CSV to continue to checkout.",
     );
+  });
+
+  it("treats a v1 key as a missing id and does not store an expected analysis", () => {
+    sessionStorage.setItem("optionstaxhub-analysis", "{\"analysis_id\":\"a\"}");
+    writeRaw({ v: 1, sample: false, exp: NOW + 1000, analysisId: "analysis-1", taxYear: 2026 });
+    expect(consumePacketResumeLocalHandoff(NOW)).toBe(false);
+    expect(sessionStorage.getItem(PACKET_RESUME_CHECKOUT_KEY)).toBe("1");
+    expect(sessionStorage.getItem(PACKET_RESUME_ANALYSIS_KEY)).toBeNull();
+    expect(resumeAnalysisMatches({
+      analysis_id: "analysis-1",
+      tax_profile: { tax_year: 2026 },
+    })).toBe(false);
   });
 
   it("asks for a re-upload when an uploaded handoff has no stored analysis", () => {
@@ -77,12 +156,52 @@ describe("packetResumeLocal", () => {
     expect(consumePacketResumeLocalHandoff(NOW)).toBe(true);
     expect(sessionStorage.getItem(PACKET_RESUME_CHECKOUT_KEY)).toBeNull();
     expect(sessionStorage.getItem(PACKET_RESUME_SAMPLE_KEY)).toBeNull();
+    expect(sessionStorage.getItem(PACKET_RESUME_ANALYSIS_KEY)).toBeNull();
     expect(localStorage.getItem(PACKET_RESUME_LOCAL_KEY)).toBeNull();
     expect(consumePacketResumeLocalHandoff(NOW + 10)).toBe(true);
   });
 
+  it("keeps a named uploaded handoff for a history lookup when nothing is stored", () => {
+    writeRaw({
+      v: 2,
+      sample: false,
+      exp: NOW + 1000,
+      analysisId: "saved-1",
+      taxYear: 2026,
+    });
+    expect(consumePacketResumeLocalHandoff(NOW)).toBe(false);
+    expect(sessionStorage.getItem(PACKET_RESUME_CHECKOUT_KEY)).toBe("1");
+    expect(sessionStorage.getItem(PACKET_RESUME_ANALYSIS_KEY)).toBe(
+      JSON.stringify({ analysisId: "saved-1", taxYear: 2026 }),
+    );
+    expect(localStorage.getItem(PACKET_RESUME_LOCAL_KEY)).toBeNull();
+  });
+
+  it("counts a re-run sample with the same tax year as a match", () => {
+    sessionStorage.setItem(PACKET_RESUME_SAMPLE_KEY, "1");
+    sessionStorage.setItem(
+      PACKET_RESUME_ANALYSIS_KEY,
+      JSON.stringify({ analysisId: "original-sample", taxYear: 2026 }),
+    );
+    expect(resumeAnalysisMatches({
+      analysis_id: "new-sample-id",
+      sample_run: true,
+      tax_profile: { tax_year: 2026 },
+    })).toBe(true);
+    expect(resumeAnalysisMatches({
+      analysis_id: "new-sample-id",
+      sample_run: true,
+      tax_profile: { tax_year: 2025 },
+    })).toBe(false);
+    expect(resumeAnalysisMatches({
+      analysis_id: "other-run",
+      sample_run: false,
+      tax_profile: { tax_year: 2026 },
+    })).toBe(false);
+  });
+
   it("ignores an expired key and deletes it", () => {
-    writeRaw({ v: 1, sample: true, exp: NOW });
+    writeRaw({ v: 2, sample: true, exp: NOW, analysisId: "analysis-1", taxYear: 2026 });
     expect(consumePacketResumeLocalHandoff(NOW)).toBe(false);
     expect(sessionStorage.getItem(PACKET_RESUME_CHECKOUT_KEY)).toBeNull();
     expect(localStorage.getItem(PACKET_RESUME_LOCAL_KEY)).toBeNull();
@@ -90,13 +209,13 @@ describe("packetResumeLocal", () => {
 
   it.each([
     ["bad json", "{"],
-    ["wrong version", { v: 2, sample: true, exp: NOW + 1000 }],
-    ["sample string", { v: 1, sample: "yes", exp: NOW + 1000 }],
-    ["missing sample", { v: 1, exp: NOW + 1000 }],
-    ["exp string", { v: 1, sample: true, exp: String(NOW + 1000) }],
-    ["exp infinite", "{\"v\":1,\"sample\":true,\"exp\":1e309}"],
-    ["exp past", { v: 1, sample: true, exp: NOW - 1 }],
-    ["array", [{ v: 1, sample: true, exp: NOW + 1000 }]],
+    ["wrong version", { v: 3, sample: true, exp: NOW + 1000, analysisId: "a", taxYear: 2026 }],
+    ["sample string", { v: 2, sample: "yes", exp: NOW + 1000, analysisId: "a", taxYear: 2026 }],
+    ["missing sample", { v: 2, exp: NOW + 1000, analysisId: "a", taxYear: 2026 }],
+    ["exp string", { v: 2, sample: true, exp: String(NOW + 1000), analysisId: "a", taxYear: 2026 }],
+    ["exp infinite", "{\"v\":2,\"sample\":true,\"exp\":1e309,\"analysisId\":\"a\",\"taxYear\":2026}"],
+    ["exp past", { v: 2, sample: true, exp: NOW - 1, analysisId: "a", taxYear: 2026 }],
+    ["array", [{ v: 2, sample: true, exp: NOW + 1000 }]],
     ["null", null],
     ["empty", ""],
   ])("deletes an invalid handoff (%s)", (_label, payload) => {
@@ -104,22 +223,69 @@ describe("packetResumeLocal", () => {
     expect(consumePacketResumeLocalHandoff(NOW)).toBe(false);
     expect(sessionStorage.getItem(PACKET_RESUME_CHECKOUT_KEY)).toBeNull();
     expect(sessionStorage.getItem(PACKET_RESUME_SAMPLE_KEY)).toBeNull();
+    expect(sessionStorage.getItem(PACKET_RESUME_ANALYSIS_KEY)).toBeNull();
     expect(localStorage.getItem(PACKET_RESUME_LOCAL_KEY)).toBeNull();
   });
 
-  it("leaves a valid key alone when the page is not resuming checkout", () => {
-    window.history.replaceState(null, "", "/dashboard");
-    writeRaw({ v: 1, sample: true, exp: NOW + 1000 });
+  it("leaves a valid key alone off the dashboard", () => {
+    window.history.replaceState(null, "", "/auth/signin");
+    writeRaw({ v: 2, sample: true, exp: NOW + 1000, analysisId: "a", taxYear: 2026 });
     expect(consumePacketResumeLocalHandoff(NOW)).toBe(false);
     expect(localStorage.getItem(PACKET_RESUME_LOCAL_KEY)).not.toBeNull();
     expect(sessionStorage.getItem(PACKET_RESUME_CHECKOUT_KEY)).toBeNull();
   });
 
+  it("adopts a valid handoff on a plain dashboard", () => {
+    window.history.replaceState(null, "", "/dashboard");
+    writeRaw({ v: 2, sample: true, exp: NOW + 1000, analysisId: "a", taxYear: 2026 });
+    expect(consumePacketResumeLocalHandoff(NOW)).toBe(false);
+    expect(localStorage.getItem(PACKET_RESUME_LOCAL_KEY)).toBeNull();
+    expect(sessionStorage.getItem(PACKET_RESUME_CHECKOUT_KEY)).toBe("1");
+    expect(sessionStorage.getItem(PACKET_RESUME_SAMPLE_KEY)).toBe("1");
+    expect(sessionStorage.getItem(PACKET_RESUME_ANALYSIS_KEY)).toBe(
+      JSON.stringify({ analysisId: "a", taxYear: 2026 }),
+    );
+  });
+
   it("does not consume localStorage when the session marker is already set", () => {
     sessionStorage.setItem(PACKET_RESUME_CHECKOUT_KEY, "1");
-    writeRaw({ v: 1, sample: true, exp: NOW + 1000 });
+    writeRaw({ v: 2, sample: true, exp: NOW + 1000, analysisId: "a", taxYear: 2026 });
     expect(consumePacketResumeLocalHandoff(NOW)).toBe(false);
     expect(localStorage.getItem(PACKET_RESUME_LOCAL_KEY)).not.toBeNull();
+    expect(sessionStorage.getItem(PACKET_RESUME_SAMPLE_KEY)).toBeNull();
+  });
+
+  it("clears a stale sample session flag when restoring a non-sample handoff", () => {
+    sessionStorage.setItem(PACKET_RESUME_SAMPLE_KEY, "1");
+    writeRaw({
+      v: 2,
+      sample: false,
+      exp: NOW + 1000,
+      analysisId: "uploaded-1",
+      taxYear: 2025,
+    });
+    expect(consumePacketResumeLocalHandoff(NOW)).toBe(false);
+    expect(sessionStorage.getItem(PACKET_RESUME_SAMPLE_KEY)).toBeNull();
+    expect(sessionStorage.getItem(PACKET_RESUME_CHECKOUT_KEY)).toBe("1");
+    expect(sessionStorage.getItem(PACKET_RESUME_ANALYSIS_KEY)).toBe(
+      JSON.stringify({ analysisId: "uploaded-1", taxYear: 2025 }),
+    );
+    expect(localStorage.getItem(PACKET_RESUME_LOCAL_KEY)).toBeNull();
+  });
+
+  it("clears a stale sample session flag when the checkout marker is already set and the handoff is not a sample", () => {
+    sessionStorage.setItem(PACKET_RESUME_CHECKOUT_KEY, "1");
+    sessionStorage.setItem(PACKET_RESUME_SAMPLE_KEY, "1");
+    writeRaw({
+      v: 2,
+      sample: false,
+      exp: NOW + 1000,
+      analysisId: "uploaded-1",
+      taxYear: 2025,
+    });
+    expect(consumePacketResumeLocalHandoff(NOW)).toBe(false);
+    expect(localStorage.getItem(PACKET_RESUME_LOCAL_KEY)).not.toBeNull();
+    expect(sessionStorage.getItem(PACKET_RESUME_CHECKOUT_KEY)).toBe("1");
     expect(sessionStorage.getItem(PACKET_RESUME_SAMPLE_KEY)).toBeNull();
   });
 
@@ -128,8 +294,53 @@ describe("packetResumeLocal", () => {
     expect(sessionStorage.getItem(PACKET_RESUME_CHECKOUT_KEY)).toBeNull();
   });
 
+  it("writes only an epoch timestamp and treats a value inside five minutes as started", () => {
+    const claim = rememberPacketCheckoutStarted(NOW);
+    expect(claim).toBe(String(NOW));
+    expect(localStorage.getItem(PACKET_CHECKOUT_STARTED_KEY)).toBe(String(NOW));
+    expect(packetCheckoutStartedRecently(NOW)).toBe(true);
+    expect(packetCheckoutStartedRecently(NOW + PACKET_CHECKOUT_STARTED_TTL_MS - 1)).toBe(true);
+    expect(readPacketCheckoutStarted()).toBe(String(NOW));
+    expect(localStorage.getItem(PACKET_RESUME_LOCAL_KEY)).toBeNull();
+  });
+
+  it("treats a missing, stale, non-numeric, or far-future timestamp as not started", () => {
+    expect(packetCheckoutStartedRecently(NOW)).toBe(false);
+
+    localStorage.setItem(PACKET_CHECKOUT_STARTED_KEY, "nope");
+    expect(packetCheckoutStartedRecently(NOW)).toBe(false);
+    expect(localStorage.getItem(PACKET_CHECKOUT_STARTED_KEY)).toBe("nope");
+
+    localStorage.setItem(PACKET_CHECKOUT_STARTED_KEY, String(NOW - PACKET_CHECKOUT_STARTED_TTL_MS));
+    expect(packetCheckoutStartedRecently(NOW)).toBe(false);
+    expect(localStorage.getItem(PACKET_CHECKOUT_STARTED_KEY)).toBe(
+      String(NOW - PACKET_CHECKOUT_STARTED_TTL_MS),
+    );
+
+    localStorage.setItem(PACKET_CHECKOUT_STARTED_KEY, String(NOW + 120_000));
+    expect(packetCheckoutStartedRecently(NOW)).toBe(false);
+    expect(localStorage.getItem(PACKET_CHECKOUT_STARTED_KEY)).toBe(String(NOW + 120_000));
+
+    localStorage.setItem(PACKET_CHECKOUT_STARTED_KEY, String(NOW + 30_000));
+    expect(packetCheckoutStartedRecently(NOW)).toBe(true);
+  });
+
+  it("clearPacketCheckoutStarted removes only the timestamp", () => {
+    localStorage.setItem(PACKET_RESUME_LOCAL_KEY, "{\"v\":2}");
+    localStorage.setItem(PACKET_CHECKOUT_STARTED_KEY, String(NOW));
+    clearPacketCheckoutStarted();
+    expect(localStorage.getItem(PACKET_CHECKOUT_STARTED_KEY)).toBeNull();
+    expect(localStorage.getItem(PACKET_RESUME_LOCAL_KEY)).toBe("{\"v\":2}");
+
+    rememberPacketCheckoutStarted(NOW);
+    clearPacketCheckoutStartedIfClaim("other");
+    expect(localStorage.getItem(PACKET_CHECKOUT_STARTED_KEY)).toBe(String(NOW));
+    clearPacketCheckoutStartedIfClaim(String(NOW));
+    expect(localStorage.getItem(PACKET_CHECKOUT_STARTED_KEY)).toBeNull();
+  });
+
   it("keeps the key when storage reads or writes throw", () => {
-    writeRaw({ v: 1, sample: true, exp: NOW + 1000 });
+    writeRaw({ v: 2, sample: true, exp: NOW + 1000, analysisId: "a", taxYear: 2026 });
     const getItem = jest.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
       throw new Error("blocked");
     });
@@ -140,7 +351,9 @@ describe("packetResumeLocal", () => {
     const setItem = jest.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
       throw new Error("blocked");
     });
-    expect(() => rememberPacketResumeLocal(true, NOW)).not.toThrow();
+    expect(() =>
+      rememberPacketResumeLocal({ sample: true, analysisId: "a", taxYear: 2026, now: NOW }),
+    ).not.toThrow();
     expect(consumePacketResumeLocalHandoff(NOW)).toBe(false);
     setItem.mockRestore();
     expect(sessionStorage.getItem(PACKET_RESUME_CHECKOUT_KEY)).toBeNull();
@@ -151,6 +364,7 @@ describe("packetResumeLocal", () => {
         throw new Error("blocked");
       });
     expect(() => clearPacketResumeLocal()).not.toThrow();
+    expect(() => clearPacketCheckoutStarted()).not.toThrow();
     sessionStorage.clear();
     writeRaw({ v: 1, sample: false, exp: NOW + 1000 });
     expect(consumePacketResumeLocalHandoff(NOW)).toBe(true);
@@ -158,7 +372,7 @@ describe("packetResumeLocal", () => {
   });
 
   it("keeps the key when localStorage cannot be read", () => {
-    writeRaw({ v: 1, sample: true, exp: NOW + 1000 });
+    writeRaw({ v: 2, sample: true, exp: NOW + 1000, analysisId: "a", taxYear: 2026 });
     const original = Storage.prototype.getItem;
     const getItem = jest
       .spyOn(Storage.prototype, "getItem")

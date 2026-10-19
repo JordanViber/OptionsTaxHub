@@ -26,7 +26,12 @@ import { useAuth } from "@/app/context/auth";
 import InstallPrompt from "./InstallPrompt";
 import TipJar from "./TipJar";
 import Wordmark from "./Wordmark";
-import { clearPacketResumeLocal } from "@/lib/packetResumeLocal";
+import {
+  clearPacketCheckoutStarted,
+  clearPacketResumeLocal,
+  clearPacketResumeSessionMarkers,
+  clearYearClosePacketClientState,
+} from "@/lib/packetResumeLocal";
 import {
   OPTIONS_PATH,
   TAX_PATH,
@@ -172,10 +177,17 @@ export default function AppShell({
     } catch {
       // ignore
     }
+    clearPacketResumeSessionMarkers();
     clearPacketResumeLocal();
-    // Drop this account's cached runs and tax profile before the next sign-in.
+    clearPacketCheckoutStarted();
+    clearYearClosePacketClientState();
+    // Drop this account's cached runs, tax profile, and packet entitlement
+    // before the next sign-in. Prefix matches cover every user id.
     queryClient.removeQueries({ queryKey: ["portfolio-history", userId] });
     queryClient.removeQueries({ queryKey: ["tax-profile", userId] });
+    queryClient.removeQueries({ queryKey: ["portfolio-history"] });
+    queryClient.removeQueries({ queryKey: ["tax-profile"] });
+    queryClient.removeQueries({ queryKey: ["year-close-packet-entitlement"] });
     try {
       if (typeof caches !== "undefined") {
         const keys = await caches.keys();
