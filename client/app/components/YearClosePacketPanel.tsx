@@ -745,7 +745,15 @@ function YearClosePacketPanelForAnalysis({
     }
     let cancelled = false;
     setEntitlementGate("unknown");
-    const promotePaidAnalysis = async (): Promise<boolean> => {
+    const showPromotionClientError = (detail: string) => {
+      setPaidYearUnconfirmed(false);
+      setBusy(null);
+      setError(detail);
+      // Leave the resume effect off "unpaid" so it does not post again.
+      // Pay stays usable because paidYearUnconfirmed is clear.
+      setEntitlementGate("unconfirmed");
+    };
+    const promotePaidAnalysis = async (): Promise<"paid" | "hold" | "client"> => {
       const headers = await authHeaders();
       const response = await fetch(`${API_URL}/api/year-close-packet/checkout`, {
         method: "POST",
@@ -755,12 +763,25 @@ function YearClosePacketPanelForAnalysis({
           analysis: compactAnalysis(analysisRef.current),
         }),
       });
-      if (cancelled || !response.ok) {
-        return false;
+      if (cancelled) {
+        return "hold";
+      }
+      if (!response.ok) {
+        if (response.status >= 400 && response.status < 500) {
+          const errData = await response.json().catch(() => null);
+          const detail = String(
+            errData && typeof errData === "object" ? errData.detail || "" : "",
+          );
+          if (!cancelled) {
+            showPromotionClientError(detail || "Failed to start checkout.");
+          }
+          return "client";
+        }
+        return "hold";
       }
       const payload = await response.json();
       if (cancelled) {
-        return false;
+        return "hold";
       }
       if (payload?.already_paid === true && typeof payload.session_id === "string") {
         const paidAnalysisId =
@@ -768,10 +789,10 @@ function YearClosePacketPanelForAnalysis({
             ? payload.analysis_id
             : canonicalAnalysisId;
         applyAlreadyPaidRef.current(payload.session_id, paidAnalysisId);
-        return true;
+        return "paid";
       }
       // checkout_url is a new charge. Do not assign location.href.
-      return false;
+      return "hold";
     };
     const loadEntitlement = async (
       accessToken: string,
@@ -824,10 +845,10 @@ function YearClosePacketPanelForAnalysis({
           };
           try {
             const promoted = await promotePaidAnalysis();
-            if (cancelled) {
+            if (cancelled || promoted === "client") {
               return "unpaid";
             }
-            if (!promoted) {
+            if (promoted !== "paid") {
               holdUnconfirmedPromotion();
               return "unpaid";
             }
@@ -894,6 +915,7 @@ function YearClosePacketPanelForAnalysis({
     })();
     return () => {
       cancelled = true;
+      setBusy((current) => (current === "pay" ? null : current));
     };
   }, [
     guest,
@@ -1314,7 +1336,7 @@ function YearClosePacketPanelForAnalysis({
             {PACKET_CHECKOUT_CANCELED_COPY}
           </Alert>
         )}
-        {entitlementGate === "unconfirmed" && !paid && (
+        {entitlementGate === "unconfirmed" && !paid && !error && (
           <Alert
             severity="info"
             role="status"

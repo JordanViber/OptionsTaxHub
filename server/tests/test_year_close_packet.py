@@ -1265,6 +1265,45 @@ def test_entitlement_endpoint_reports_unpaid_without_creating_a_session(monkeypa
     assert created == []
 
 
+def test_entitlement_get_ignores_memory_when_grant_and_row_are_empty(monkeypatch):
+    """Process memory is not payment when the durable grant and row are empty.
+
+    Checkout uses that same pair. A memory cs_ must not make GET paid or
+    make POST return already_paid.
+    """
+    _test_stripe_env(monkeypatch)
+    analysis_id = "analysis-sample-1"
+    remember_analysis(analysis_id, "test-user-123", SAMPLE_ANALYSIS)
+    assert mark_paid(analysis_id, "cs_test_memory_only", user_id="test-user-123") is True
+    assert paid_session_for_user_year("test-user-123", 2025) == "cs_test_memory_only"
+    assert _FAKE_PACKET_ENTITLEMENTS == {}
+    created = []
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "create",
+        lambda **kwargs: created.append(kwargs) or FakeCheckoutSession(**kwargs),
+    )
+
+    entitlement = client.get(
+        "/api/year-close-packet/entitlement",
+        params={"tax_year": 2025},
+    )
+    assert entitlement.status_code == 200, entitlement.text
+    assert entitlement.json() == {"paid": False, "tax_year": 2025}
+
+    checkout = client.post(
+        "/api/year-close-packet/checkout",
+        json={"analysis_id": analysis_id, "analysis": SAMPLE_ANALYSIS},
+    )
+    assert checkout.status_code == 200, checkout.text
+    body = checkout.json()
+    assert body.get("already_paid") is not True
+    assert body["session_id"] == "cs_test_packet_abc"
+    assert body["checkout_url"].startswith("https://checkout.stripe.com/")
+    assert created[0]["metadata"]["analysis_id"] == analysis_id
+    assert len(created) == 1
+
+
 def test_entitlement_endpoint_is_503_when_lookup_fails_and_does_not_call_stripe(monkeypatch):
     created = []
     monkeypatch.setattr(

@@ -4235,10 +4235,10 @@ async def get_year_close_packet_entitlement(
 ):
     """Whether this signed-in user already paid for the tax year.
 
-    Reads the durable grant, then the entitlement row, then process memory.
-    Never calls Stripe, so a paid year cannot create a Checkout Session here.
-    When a receipt row names an analysis, that id is included so a later run
-    in the same year can be promoted without a second charge.
+    Reads the durable grant, then the entitlement row. Never calls Stripe,
+    so a paid year cannot create a Checkout Session here. When a receipt
+    row names an analysis, that id is included so a later run in the same
+    year can be promoted without a second charge.
     """
     session_id, grant_ok = lookup_packet_grant_for_tax_year(user_id, tax_year)
     if not grant_ok:
@@ -4270,10 +4270,6 @@ async def get_year_close_packet_entitlement(
         if isinstance(entitlement, dict):
             session_id = _checkout_session_id(entitlement.get("packet_session_id"))
             entitled_analysis_id = _paid_entitlement_analysis_id(entitlement)
-    if not session_id:
-        session_id = _checkout_session_id(
-            paid_session_for_user_year(user_id, tax_year)
-        )
     if session_id:
         return _paid_year_entitlement_body(
             int(tax_year),
