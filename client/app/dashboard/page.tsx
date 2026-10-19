@@ -1607,6 +1607,8 @@ export default function DashboardPage() {
         },
         onError: () => {
           setSampleLoading(false);
+          // A failed analyze must not leave the sample handoff spinning.
+          clearPacketResumeSessionMarkers();
         },
         onSettled: () => {
           setSampleLoading(false);
@@ -1633,6 +1635,7 @@ export default function DashboardPage() {
         runPortfolioAnalysis(csvFile, form1099File);
       } catch (err) {
         setSampleLoading(false);
+        clearPacketResumeSessionMarkers();
         setSampleLoadError(
           err instanceof Error && err.message.trim()
             ? err.message
@@ -1691,6 +1694,7 @@ export default function DashboardPage() {
         sampleAnalyzeStartedRef.current = false;
         setSampleLoading(false);
         if (!cancelled) {
+          clearPacketResumeSessionMarkers();
           setSampleLoadError(
             err instanceof Error && err.message.trim()
               ? err.message
@@ -1965,6 +1969,10 @@ export default function DashboardPage() {
       if (cancelled || resumeOriginHandled.current) {
         return;
       }
+      // Newest-run autoload depends on the mounted analysis. Clearing a
+      // mismatched run would otherwise load a different tax year with Pay on.
+      // Stay blocked until the user uploads, loads the sample, or picks a run.
+      blockHistoryAutoload.current = true;
       // Read the expected id before the markers are cleared. A different run
       // must leave the screen, or Pay turns back on for the wrong tax year.
       // Storage counts too: the restore effect may have queued the wrong run
@@ -2135,7 +2143,12 @@ export default function DashboardPage() {
     if (authLoading || !confirmedUserId || !historyFetched || historyError) {
       return;
     }
-    if (forceEmpty || blockHistoryAutoload.current || resumeReuploadArmed.current) {
+    if (
+      forceEmpty ||
+      blockHistoryAutoload.current ||
+      resumeReuploadArmed.current ||
+      resumeReuploadNotice
+    ) {
       return;
     }
     if (loadedAnalysis || analysis) {
@@ -2202,6 +2215,7 @@ export default function DashboardPage() {
     forceEmpty,
     loadedAnalysis,
     analysis,
+    resumeReuploadNotice,
   ]);
 
   const handleSampleRerunForCheckout = (): boolean => {
@@ -2289,8 +2303,11 @@ export default function DashboardPage() {
         expected != null &&
         !historyError &&
         (resumeOriginLoading || !historyFetched);
-      resumeHandoffPending =
-        (checkoutMarker && sampleMarker) || uploadedResumeLoading;
+      // Sample spinner only while a sample loader is actually running.
+      // Marker flags alone never end if the CSV fetch or analyze fails.
+      const sampleResumeLoading =
+        checkoutMarker && sampleMarker && (sampleLoading || isPending);
+      resumeHandoffPending = sampleResumeLoading || uploadedResumeLoading;
     } catch {
       resumeHandoffPending = false;
     }

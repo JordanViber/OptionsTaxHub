@@ -4197,6 +4197,32 @@ def _checkout_session_id(value: object) -> str | None:
     return None
 
 
+def _paid_entitlement_analysis_id(entitlement: object) -> str | None:
+    """Analysis id on a real receipt. Missing and conflict rows stay unnamed."""
+    if not isinstance(entitlement, dict) or _is_conflict_analysis_id(
+        entitlement.get("analysis_id")
+    ):
+        return None
+    raw = entitlement.get("analysis_id")
+    if not isinstance(raw, str):
+        return None
+    cleaned = raw.strip()
+    return cleaned or None
+
+
+def _paid_year_entitlement_body(
+    tax_year: int,
+    session_id: str,
+    analysis_id: str | None,
+) -> dict:
+    body = {"paid": True, "tax_year": int(tax_year), "session_id": session_id}
+    # Omit the id when no receipt row names one. Grant-only callers compare
+    # the body exactly and must not see an empty field.
+    if analysis_id:
+        body["analysis_id"] = analysis_id
+    return body
+
+
 @app.get(
     "/api/year-close-packet/entitlement",
     responses={
@@ -4211,6 +4237,8 @@ async def get_year_close_packet_entitlement(
 
     Reads the durable grant, then the entitlement row, then process memory.
     Never calls Stripe, so a paid year cannot create a Checkout Session here.
+    When a receipt row names an analysis, that id is included so a later run
+    in the same year can be promoted without a second charge.
     """
     session_id, grant_ok = lookup_packet_grant_for_tax_year(user_id, tax_year)
     if not grant_ok:
@@ -4219,7 +4247,17 @@ async def get_year_close_packet_entitlement(
             detail="Could not verify existing packet access. Please retry.",
         )
     session_id = _checkout_session_id(session_id)
-    if not session_id:
+    entitled_analysis_id = None
+    if session_id:
+        # The grant already proved payment. Naming the receipt's analysis is
+        # optional. A lookup failure must not turn this response into 503.
+        entitlement, entitlement_ok = lookup_packet_entitlement_for_tax_year(
+            user_id,
+            tax_year,
+        )
+        if entitlement_ok:
+            entitled_analysis_id = _paid_entitlement_analysis_id(entitlement)
+    else:
         entitlement, entitlement_ok = lookup_packet_entitlement_for_tax_year(
             user_id,
             tax_year,
@@ -4231,12 +4269,17 @@ async def get_year_close_packet_entitlement(
             )
         if isinstance(entitlement, dict):
             session_id = _checkout_session_id(entitlement.get("packet_session_id"))
+            entitled_analysis_id = _paid_entitlement_analysis_id(entitlement)
     if not session_id:
         session_id = _checkout_session_id(
             paid_session_for_user_year(user_id, tax_year)
         )
     if session_id:
-        return {"paid": True, "tax_year": int(tax_year), "session_id": session_id}
+        return _paid_year_entitlement_body(
+            int(tax_year),
+            session_id,
+            entitled_analysis_id,
+        )
     return {"paid": False, "tax_year": int(tax_year)}
 
 

@@ -1671,6 +1671,111 @@ describe("YearClosePacketPanel", () => {
     );
   });
 
+  it("promotes a paid year recorded on a different analysis and downloads without opening Stripe", async () => {
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    store[PACKET_RESUME_ANALYSIS_KEY] = JSON.stringify({
+      analysisId: "analysis-1",
+      taxYear: 2025,
+    });
+    localStorage.setItem(
+      PACKET_RESUME_LOCAL_KEY,
+      JSON.stringify({
+        v: 2,
+        sample: false,
+        exp: Date.now() + 60_000,
+        analysisId: "analysis-1",
+        taxYear: 2025,
+      }),
+    );
+    localStorage.setItem(
+      PACKET_CHECKOUT_STARTED_KEY,
+      String(Date.now() - 6 * 60 * 1000),
+    );
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    const consoleError = jest.spyOn(console, "error").mockImplementation(() => {});
+    mockFetch.mockImplementation(async (url: RequestInfo | URL) => {
+      const target = String(url);
+      if (target.includes("/api/year-close-packet/entitlement")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            paid: true,
+            tax_year: 2025,
+            session_id: "cs_test_other_analysis",
+            analysis_id: "analysis-paid-other",
+          }),
+        };
+      }
+      if (target.includes("/api/year-close-packet/checkout")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            already_paid: true,
+            session_id: "cs_test_other_analysis",
+            analysis_id: "analysis-1",
+          }),
+        };
+      }
+      if (target.includes("/api/year-close-packet/download")) {
+        return {
+          ok: true,
+          status: 200,
+          blob: async () => new Blob(["%PDF-1.4"], { type: "application/pdf" }),
+        };
+      }
+      return checkoutOk();
+    });
+
+    try {
+      render(<YearClosePacketPanel analysis={analysis} />);
+      await waitFor(() => {
+        expect(screen.getByText(/Payment confirmed for tax year 2025/i)).toBeInTheDocument();
+      });
+      expect(checkoutPosts()).toHaveLength(1);
+      expect(JSON.parse(String(checkoutPosts()[0][1].body)).analysis_id).toBe(
+        "analysis-1",
+      );
+      expect(window.location.href).not.toContain("checkout.stripe.com");
+      expect(
+        consoleError.mock.calls.some((call) =>
+          call.some((arg) =>
+            String(arg?.message || arg).includes("Not implemented: navigation"),
+          ),
+        ),
+      ).toBe(false);
+      expect(screen.queryByRole("button", { name: /Pay \$49/i })).not.toBeInTheDocument();
+      expect(store["optionstaxhub-packet-paid:analysis-1"]).toBe(
+        "cs_test_other_analysis",
+      );
+      expect(localStorage.getItem(PACKET_CHECKOUT_STARTED_KEY)).toBeNull();
+      expect(localStorage.getItem(PACKET_RESUME_LOCAL_KEY)).toBeNull();
+      expect(store[PACKET_RESUME_CHECKOUT_KEY]).toBeUndefined();
+      expect(store[PACKET_RESUME_ANALYSIS_KEY]).toBeUndefined();
+
+      const download = screen.getByRole("button", { name: /Download/i });
+      expect(download).toBeEnabled();
+      fireEvent.click(download);
+      await waitFor(() => {
+        expect(
+          mockFetch.mock.calls.some((call) =>
+            String(call[0]).includes("/api/year-close-packet/download"),
+          ),
+        ).toBe(true);
+      });
+      const downloadCall = mockFetch.mock.calls.find((call) =>
+        String(call[0]).includes("/api/year-close-packet/download"),
+      );
+      expect(String(downloadCall?.[0])).toContain("analysis_id=analysis-1");
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(window.location.href).not.toContain("checkout.stripe.com");
+      expect(checkoutPosts()).toHaveLength(1);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
   it("treats Stripe cancel_url as a closed checkout, not a hang", async () => {
     window.history.replaceState(null, "", "/dashboard?packet_canceled=1");
     render(<YearClosePacketPanel analysis={analysis} />);

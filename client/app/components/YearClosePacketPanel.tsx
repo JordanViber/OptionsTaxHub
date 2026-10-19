@@ -470,6 +470,27 @@ function YearClosePacketPanelForAnalysis({
     }
   };
 
+  const applyAlreadyPaidRef = useRef<
+    (session: string, paidAnalysisId: string, claim?: string) => void
+  >(() => {});
+  applyAlreadyPaidRef.current = (session, paidAnalysisId, claim) => {
+    releaseCheckoutClaim(claim);
+    clearSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY);
+    setCanonicalAnalysisId(paidAnalysisId);
+    setSessionId(session);
+    persistConfirmFlag(false);
+    persistResumeFlag(false);
+    setCheckoutUrl(null);
+    setPaid(true);
+    setEntitlementGate("paid");
+    clearSessionItem(pendingSessionStorageKey(analysisStorageId));
+    clearSessionItem(pendingCheckoutUrlStorageKey(analysisStorageId));
+    writeSessionItem(canonicalStorageKey(analysisStorageId), paidAnalysisId);
+    writeSessionItem(paidStorageKey(paidAnalysisId), session);
+    onPaidChangeRef.current?.(true);
+    setBusy(null);
+  };
+
   const confirmPacketSession = async (sid: string, confirmedAnalysisId: string) => {
     const attempt = ++confirmAttempt.current;
     if (sid.startsWith("cs_")) {
@@ -717,6 +738,34 @@ function YearClosePacketPanelForAnalysis({
     }
     let cancelled = false;
     setEntitlementGate("unknown");
+    const promotePaidAnalysis = async (): Promise<boolean> => {
+      const headers = await authHeaders();
+      const response = await fetch(`${API_URL}/api/year-close-packet/checkout`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          analysis_id: canonicalAnalysisId,
+          analysis: compactAnalysis(analysisRef.current),
+        }),
+      });
+      if (cancelled || !response.ok) {
+        return false;
+      }
+      const payload = await response.json();
+      if (cancelled) {
+        return false;
+      }
+      if (payload?.already_paid === true && typeof payload.session_id === "string") {
+        const paidAnalysisId =
+          typeof payload.analysis_id === "string" && payload.analysis_id.length > 0
+            ? payload.analysis_id
+            : canonicalAnalysisId;
+        applyAlreadyPaidRef.current(payload.session_id, paidAnalysisId);
+        return true;
+      }
+      // checkout_url is a new charge. Do not assign location.href.
+      return false;
+    };
     const loadEntitlement = async (
       accessToken: string,
     ): Promise<"paid" | "unpaid"> => {
@@ -742,6 +791,38 @@ function YearClosePacketPanelForAnalysis({
           typeof data.session_id === "string" && data.session_id.startsWith("cs_")
             ? data.session_id
             : null;
+        const entitledAnalysisId =
+          typeof data.analysis_id === "string" ? data.analysis_id.trim() : "";
+        const currentAnalysisId = (analysisRef.current.analysis_id || "").trim();
+        const paidOnDifferentAnalysis =
+          analysisRef.current.packet_unlocked !== true &&
+          entitledAnalysisId.length > 0 &&
+          currentAnalysisId.length > 0 &&
+          entitledAnalysisId.toLowerCase() !== currentAnalysisId.toLowerCase();
+        if (paidOnDifferentAnalysis) {
+          // The year is paid on another analysis. Promote this snapshot
+          // through already_paid checkout before Download is offered.
+          // Stay on "unknown" so auto-resume does not open a second Checkout.
+          if (!sid) {
+            throw new Error("entitlement unavailable");
+          }
+          setBusy("pay");
+          try {
+            const promoted = await promotePaidAnalysis();
+            if (cancelled) {
+              return "unpaid";
+            }
+            if (!promoted) {
+              throw new Error("entitlement unavailable");
+            }
+            return "paid";
+          } catch (promotionError) {
+            if (!cancelled) {
+              setBusy(null);
+            }
+            throw promotionError;
+          }
+        }
         if (sid) {
           writeSessionItem(paidStorageKey(canonicalAnalysisId), sid);
           setSessionId(sid);
@@ -938,22 +1019,9 @@ function YearClosePacketPanelForAnalysis({
       }
       const data = await response.json();
       if (data?.already_paid === true && typeof data?.session_id === "string") {
-        releaseCheckoutClaim(options?.claim);
-        clearSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY);
         const paidAnalysisId =
           typeof data.analysis_id === "string" ? data.analysis_id : canonicalAnalysisId;
-        setCanonicalAnalysisId(paidAnalysisId);
-        setSessionId(data.session_id);
-        persistConfirmFlag(false);
-        persistResumeFlag(false);
-        setCheckoutUrl(null);
-        setPaid(true);
-        clearSessionItem(pendingSessionStorageKey(analysisStorageId));
-        clearSessionItem(pendingCheckoutUrlStorageKey(analysisStorageId));
-        writeSessionItem(canonicalStorageKey(analysisStorageId), paidAnalysisId);
-        writeSessionItem(paidStorageKey(paidAnalysisId), data.session_id);
-        onPaidChange?.(true);
-        setBusy(null);
+        applyAlreadyPaidRef.current(data.session_id, paidAnalysisId, options?.claim);
         return;
       }
       if (typeof data?.checkout_url !== "string" || data.checkout_url.length === 0) {

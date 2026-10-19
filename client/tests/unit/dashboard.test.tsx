@@ -2038,6 +2038,59 @@ describe("DashboardPage", () => {
     }
   });
 
+  it("shows the upload card and the error when a sample handoff fetch fails", async () => {
+    resetAutomaticSampleRerunForTests();
+    resetPacketResumeCheckoutLock();
+    const store = installSessionStore();
+    localStorage.setItem(
+      PACKET_RESUME_LOCAL_KEY,
+      JSON.stringify({
+        v: 2,
+        sample: true,
+        exp: Date.now() + 60_000,
+        analysisId: "original-sample",
+        taxYear: 2025,
+      }),
+    );
+    window.history.replaceState(null, "", "/dashboard");
+    mockAnalyzeData = null;
+    const checkoutCalls: string[] = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/year-close-packet/checkout")) {
+        checkoutCalls.push(url);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            checkout_url: "https://checkout.stripe.com/c/pay/cs_test_resume",
+            session_id: "cs_test_resume",
+          }),
+        };
+      }
+      if (url.includes("sample-robinhood")) {
+        throw new Error("Could not load the sample CSV.");
+      }
+      return { ok: true, json: async () => ({}) };
+    }) as unknown as typeof fetch;
+
+    try {
+      render(<DashboardPage />, { wrapper: createWrapper() });
+      expect(await screen.findByText(/Could not load the sample CSV/i)).toBeInTheDocument();
+      expect(screen.getByText(/Analysis Failed/i)).toBeInTheDocument();
+      expect(screen.getByTestId("csv-dropzone")).toBeInTheDocument();
+      expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+      expect(checkoutCalls).toHaveLength(0);
+      expect(store.get(PACKET_RESUME_CHECKOUT_KEY)).toBeUndefined();
+      expect(store.get(PACKET_RESUME_SAMPLE_KEY)).toBeUndefined();
+      expect(mockAnalyzeMutate).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = originalFetch;
+      window.history.replaceState(null, "", "/dashboard");
+    }
+  });
+
   it("ignores an expired local resume key without a sample re-run or checkout", async () => {
     resetAutomaticSampleRerunForTests();
     resetPacketResumeCheckoutLock();
@@ -2636,6 +2689,73 @@ describe("DashboardPage", () => {
       expect(JSON.stringify(checkoutCalls)).not.toContain("origin-id");
       expect(store.get("optionstaxhub-analysis") ?? "").not.toContain("wrong-on-screen");
       expect(mockFetchAnalysisById).not.toHaveBeenCalled();
+      expect(mockAnalyzeMutate).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = originalFetch;
+      jest.useRealTimers();
+      window.history.replaceState(null, "", "/dashboard");
+    }
+  });
+
+  it("does not mount a different tax year when a plain dashboard handoff gives up", async () => {
+    jest.useFakeTimers();
+    const store = installSessionStore();
+    const year2024Id = "history-2024";
+    store.set(
+      "optionstaxhub-analysis",
+      JSON.stringify({
+        ...baseAnalysis,
+        analysis_id: year2024Id,
+        sample_run: false,
+        packet_unlocked: false,
+        tax_profile: { ...baseAnalysis.tax_profile, tax_year: 2024 },
+      }),
+    );
+    localStorage.setItem(
+      PACKET_RESUME_LOCAL_KEY,
+      JSON.stringify({
+        v: 2,
+        sample: false,
+        exp: Date.now() + 60_000,
+        analysisId: "origin-2025",
+        taxYear: 2025,
+      }),
+    );
+    mockHistoryData = [historyRow(year2024Id, "year-2024.csv", "2024-12-01T00:00:00Z")];
+    mockFetchAnalysisById.mockResolvedValue({
+      id: year2024Id,
+      filename: "year-2024.csv",
+      result: {
+        ...baseAnalysis,
+        analysis_id: year2024Id,
+        sample_run: false,
+        packet_unlocked: false,
+        tax_profile: { ...baseAnalysis.tax_profile, tax_year: 2024 },
+      },
+    });
+    window.history.replaceState(null, "", "/dashboard");
+    const checkoutCalls: Array<{ url: string; authorization: string; body: string }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = handoffFetch(checkoutCalls);
+
+    try {
+      render(<DashboardPage />, { wrapper: createWrapper() });
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(12_000);
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(screen.getByTestId("packet-resume-reupload")).toHaveTextContent(
+        "Re-upload your CSV to continue to checkout.",
+      );
+      expect(screen.getByTestId("csv-dropzone")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /Pay \$49/i })).not.toBeInTheDocument();
+      expect(screen.queryByText("Saved analysis")).not.toBeInTheDocument();
+      expect(store.get("optionstaxhub-analysis") ?? "").not.toContain(year2024Id);
+      expect(checkoutCalls).toHaveLength(0);
+      expect(mockFetchAnalysisById).not.toHaveBeenCalledWith(year2024Id);
       expect(mockAnalyzeMutate).not.toHaveBeenCalled();
     } finally {
       globalThis.fetch = originalFetch;

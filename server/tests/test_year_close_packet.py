@@ -1316,6 +1316,79 @@ def test_checkout_reuses_durable_same_year_entitlement_without_charging_again(mo
     assert _FAKE_PACKET_SNAPSHOTS[("test-user-123", analysis_id)]["paid_at"]
 
 
+def test_paid_year_checkout_promotes_a_new_analysis_without_a_new_entitlement(monkeypatch):
+    """A later analysis in a paid year is promoted and downloadable.
+
+    Session.create is not called, and the original receipt row is not rewritten
+    or joined by a second entitlement.
+    """
+    _test_stripe_env(monkeypatch)
+    user_id = "test-user-123"
+    original_id = "analysis-paid-original"
+    new_id = "analysis-paid-later"
+    session_id = "cs_test_paid_year"
+    original_row = {
+        "analysis_id": original_id,
+        "user_id": user_id,
+        "tax_year": 2025,
+        "packet_session_id": session_id,
+    }
+    _FAKE_PACKET_ENTITLEMENTS[(user_id, 2025, session_id)] = dict(original_row)
+    inserts = []
+
+    def save_entitlement(analysis_id, user_id, tax_year, packet_session_id, client=None, **_kwargs):
+        key = (user_id, int(tax_year), packet_session_id)
+        existing = _FAKE_PACKET_ENTITLEMENTS.get(key)
+        if isinstance(existing, dict):
+            return dict(existing)
+        inserts.append(analysis_id)
+        row = {
+            "analysis_id": analysis_id,
+            "user_id": user_id,
+            "tax_year": int(tax_year),
+            "packet_session_id": packet_session_id,
+        }
+        _FAKE_PACKET_ENTITLEMENTS[key] = row
+        return row
+
+    monkeypatch.setattr(main, "save_packet_entitlement", save_entitlement)
+    monkeypatch.setattr(
+        main,
+        "lookup_packet_grant_for_tax_year",
+        lambda *_args: (session_id, True),
+    )
+    created = []
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "create",
+        lambda **kwargs: created.append(kwargs) or FakeCheckoutSession(**kwargs),
+    )
+    analysis = {**SAMPLE_ANALYSIS, "analysis_id": new_id}
+    remember_analysis(new_id, user_id, analysis)
+
+    response = client.post(
+        "/api/year-close-packet/checkout",
+        json={"analysis_id": new_id, "analysis": analysis},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["already_paid"] is True
+    assert body["session_id"] == session_id
+    assert body["analysis_id"] == new_id
+    assert created == []
+    assert inserts == []
+    assert list(_FAKE_PACKET_ENTITLEMENTS) == [(user_id, 2025, session_id)]
+    assert _FAKE_PACKET_ENTITLEMENTS[(user_id, 2025, session_id)]["analysis_id"] == original_id
+    snapshot = _FAKE_PACKET_SNAPSHOTS[(user_id, new_id)]
+    assert snapshot["paid_at"]
+    assert snapshot["packet_session_id"] == session_id
+
+    downloaded = client.get(f"/api/year-close-packet/download?analysis_id={new_id}")
+    assert downloaded.status_code == 200, downloaded.text
+    assert downloaded.headers["content-type"].startswith("application/pdf")
+
+
 def test_checkout_restores_private_snapshot_after_worker_restart(monkeypatch):
     _test_stripe_env(monkeypatch)
     analysis_id = "analysis-cold-checkout"
