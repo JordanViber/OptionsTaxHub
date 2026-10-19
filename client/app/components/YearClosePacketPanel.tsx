@@ -16,6 +16,7 @@ import {
 } from "@mui/icons-material";
 import { getSession } from "@/lib/supabase";
 import {
+  clearPacketCheckoutStarted,
   clearPacketCheckoutStartedIfClaim,
   clearPacketResumeLocal,
   clearPacketResumeSessionMarkers,
@@ -213,6 +214,41 @@ function payHeldForDifferentResume(analysis: PortfolioAnalysis): boolean {
   return resumeCheckoutArmed();
 }
 
+type EntitlementGate = "unknown" | "paid" | "unpaid";
+
+/**
+ * True only for a signed-in resume of this exact run, before we know whether
+ * the year is already paid. Other-tab claims, cancels, and mismatches stay off
+ * this path so Pay is not held and no entitlement request is sent.
+ */
+function resumeEntitlementPending(analysis: PortfolioAnalysis): boolean {
+  if (analysis.packet_unlocked === true || isYearClosePacketPaid(
+    yearClosePacketStorageId(analysis),
+  )) {
+    return false;
+  }
+  if (!resumeCheckoutArmed() || packetCheckoutStartedRecently()) {
+    return false;
+  }
+  let params: URLSearchParams;
+  try {
+    params = new URLSearchParams(window.location.search);
+  } catch {
+    return false;
+  }
+  if (params.get("packet_session") || params.get("packet_canceled") === "1") {
+    return false;
+  }
+  if (!analysis.analysis_id || analysis.analysis_id === "local-analysis") {
+    return false;
+  }
+  const year = analysis.tax_profile?.tax_year;
+  if (typeof year !== "number" || !Number.isFinite(year)) {
+    return false;
+  }
+  return resumeAnalysisMatches(analysis);
+}
+
 function isGuestSnapshotRerunDetail(detail: string): boolean {
   return (
     /guest snapshot must be restored/i.test(detail) ||
@@ -323,6 +359,7 @@ function triggerPdfDownload(blob: Blob): void {
 
 export default function YearClosePacketPanel(props: Readonly<{
   analysis: PortfolioAnalysis;
+  guest?: boolean;
   onPaidChange?: (paid: boolean) => void;
   onSampleRerunForCheckout?: () => boolean;
 }>) {
@@ -332,6 +369,7 @@ export default function YearClosePacketPanel(props: Readonly<{
       key={identity}
       analysis={props.analysis}
       analysisStorageId={identity}
+      guest={props.guest === true}
       onPaidChange={props.onPaidChange}
       onSampleRerunForCheckout={props.onSampleRerunForCheckout}
     />
@@ -341,27 +379,49 @@ export default function YearClosePacketPanel(props: Readonly<{
 function YearClosePacketPanelForAnalysis({
   analysis,
   analysisStorageId,
+  guest,
   onPaidChange,
   onSampleRerunForCheckout,
 }: Readonly<{
   analysis: PortfolioAnalysis;
   analysisStorageId: string;
+  guest: boolean;
   onPaidChange?: (paid: boolean) => void;
   onSampleRerunForCheckout?: () => boolean;
 }>) {
   const router = useRouter();
   const analysisId = analysis.analysis_id || "local-analysis";
+  const onPaidChangeRef = useRef(onPaidChange);
+  onPaidChangeRef.current = onPaidChange;
+  const analysisRef = useRef(analysis);
+  analysisRef.current = analysis;
   const [canonicalAnalysisId, setCanonicalAnalysisId] = useState(
     () => readSessionItem(canonicalStorageKey(analysisStorageId)) || analysisId,
   );
   const [busy, setBusy] = useState<"pay" | "download" | "confirm" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [canceledNotice, setCanceledNotice] = useState(false);
-  const [paid, setPaid] = useState(
-    () =>
+  const [paid, setPaid] = useState(() => {
+    if (guest) {
+      return false;
+    }
+    return (
       analysis.packet_unlocked === true ||
-      isYearClosePacketPaid(analysisStorageId),
-  );
+      isYearClosePacketPaid(analysisStorageId)
+    );
+  });
+  const [entitlementGate, setEntitlementGate] = useState<EntitlementGate>(() => {
+    if (guest) {
+      return "unpaid";
+    }
+    if (
+      analysis.packet_unlocked === true ||
+      isYearClosePacketPaid(analysisStorageId)
+    ) {
+      return "paid";
+    }
+    return resumeEntitlementPending(analysis) ? "unknown" : "unpaid";
+  });
   const [otherTabNotice, setOtherTabNotice] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [checkoutUrl, setCheckoutUrl] = useState<string | null>(null);
@@ -552,23 +612,27 @@ function YearClosePacketPanelForAnalysis({
         readSessionItem(pendingOpenStorageKey(analysisStorageId)) === "1",
       );
     }
-    if (analysis.packet_unlocked) {
+    if (guest) {
+      // A stored cs_ or packet_unlocked flag belongs to whoever last signed in.
+      setPaid(false);
+    } else if (analysis.packet_unlocked) {
       setPaid(true);
       if (analysis.packet_session_id?.startsWith("cs_")) {
         setSessionId(analysis.packet_session_id);
         writeSessionItem(paidStorageKey(savedCanonicalId), analysis.packet_session_id);
       }
       onPaidChange?.(true);
-    }
-    const stored =
-      readSessionItem(paidStorageKey(savedCanonicalId)) ||
-      (!savedCanonical
-        ? readSessionItem(paidStorageKey(analysisStorageId))
-        : null);
-    if (stored && stored.startsWith("cs_")) {
-      setPaid(true);
-      setSessionId(stored);
-      onPaidChange?.(true);
+    } else {
+      const stored =
+        readSessionItem(paidStorageKey(savedCanonicalId)) ||
+        (!savedCanonical
+          ? readSessionItem(paidStorageKey(analysisStorageId))
+          : null);
+      if (stored && stored.startsWith("cs_")) {
+        setPaid(true);
+        setSessionId(stored);
+        onPaidChange?.(true);
+      }
     }
 
     const params = new URLSearchParams(window.location.search);
@@ -611,7 +675,119 @@ function YearClosePacketPanelForAnalysis({
       stripPacketQueryParams();
       stripResumeCheckoutParam();
     }
-  }, [analysis, analysisId, analysisStorageId]);
+  }, [analysis, analysisId, analysisStorageId, guest]);
+
+  // A paid year must not sit next to "closed without payment", and the
+  // resume handoff must not auto-start checkout for that year again.
+  useEffect(() => {
+    if (!paid) {
+      return;
+    }
+    setCanceledNotice(false);
+    clearPacketResumeSessionMarkers();
+    clearPacketResumeLocal();
+    clearPacketCheckoutStarted();
+  }, [paid]);
+
+  useEffect(() => {
+    const current = analysisRef.current;
+    if (guest) {
+      setPaid(false);
+      setEntitlementGate("unpaid");
+      return;
+    }
+    if (
+      paid ||
+      current.packet_unlocked === true ||
+      isYearClosePacketPaid(analysisStorageId)
+    ) {
+      setEntitlementGate("paid");
+      return;
+    }
+    if (!resumeEntitlementPending(current)) {
+      setEntitlementGate("unpaid");
+      return;
+    }
+    const year = current.tax_profile?.tax_year;
+    if (typeof year !== "number" || !Number.isFinite(year)) {
+      setEntitlementGate("unpaid");
+      return;
+    }
+    let cancelled = false;
+    setEntitlementGate("unknown");
+    void (async () => {
+      let accessToken = "";
+      try {
+        const session = await getSession();
+        accessToken = session?.access_token || "";
+      } catch {
+        accessToken = "";
+      }
+      if (cancelled) {
+        return;
+      }
+      const latest = analysisRef.current;
+      if (
+        !accessToken ||
+        packetCheckoutStartedRecently() ||
+        !resumeEntitlementPending(latest)
+      ) {
+        setEntitlementGate("unpaid");
+        return;
+      }
+      try {
+        const response = await fetch(
+          `${API_URL}/api/year-close-packet/entitlement?tax_year=${encodeURIComponent(String(year))}`,
+          {
+            method: "GET",
+            headers: { Authorization: `Bearer ${accessToken}` },
+          },
+        );
+        if (cancelled) {
+          return;
+        }
+        if (!response.ok) {
+          setEntitlementGate("unknown");
+          return;
+        }
+        const data = await response.json();
+        if (cancelled) {
+          return;
+        }
+        if (data?.paid === true) {
+          const sid =
+            typeof data.session_id === "string" && data.session_id.startsWith("cs_")
+              ? data.session_id
+              : null;
+          if (sid) {
+            writeSessionItem(paidStorageKey(canonicalAnalysisId), sid);
+            setSessionId(sid);
+          }
+          setPaid(true);
+          setEntitlementGate("paid");
+          onPaidChangeRef.current?.(true);
+          return;
+        }
+        setEntitlementGate("unpaid");
+      } catch {
+        if (!cancelled) {
+          setEntitlementGate("unknown");
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    guest,
+    paid,
+    analysis.analysis_id,
+    analysis.packet_unlocked,
+    analysis.sample_run,
+    analysis.tax_profile?.tax_year,
+    analysisStorageId,
+    canonicalAnalysisId,
+  ]);
 
   const handlePay = async (options?: {
     guestRedirect?: boolean;
@@ -621,7 +797,7 @@ function YearClosePacketPanelForAnalysis({
       return;
     }
     const guestRedirect = options?.guestRedirect !== false;
-    if (paid || analysis.packet_unlocked === true) {
+    if (paid || (!guest && analysis.packet_unlocked === true)) {
       return;
     }
     if (existingPacketDownload || extraChargeRefund) {
@@ -804,12 +980,13 @@ function YearClosePacketPanelForAnalysis({
   // A different analysis id, a missing id, or a checkout another tab already
   // claimed does not auto-post.
   useEffect(() => {
-    if (packetResumeCheckoutLocked) {
+    if (guest || packetResumeCheckoutLocked) {
       return;
     }
     if (
       paid ||
       analysis.packet_unlocked ||
+      entitlementGate !== "unpaid" ||
       missingAnalysisId ||
       existingPacketDownload ||
       extraChargeRefund
@@ -886,7 +1063,9 @@ function YearClosePacketPanelForAnalysis({
       cancelled = true;
     };
   }, [
+    guest,
     paid,
+    entitlementGate,
     analysis.packet_unlocked,
     missingAnalysisId,
     existingPacketDownload,
@@ -989,6 +1168,7 @@ function YearClosePacketPanelForAnalysis({
                 missingAnalysisId ||
                 existingPacketDownload ||
                 extraChargeRefund ||
+                entitlementGate === "unknown" ||
                 payHeldForDifferentResume(analysis)
               }
             >
@@ -1018,7 +1198,7 @@ function YearClosePacketPanelForAnalysis({
             Re-run this analysis to access its packet.
           </Typography>
         )}
-        {canceledNotice && !error && (
+        {canceledNotice && !paid && !error && (
           <Alert
             severity="info"
             role="status"

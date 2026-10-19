@@ -227,12 +227,24 @@ describe("packetResumeLocal", () => {
     expect(localStorage.getItem(PACKET_RESUME_LOCAL_KEY)).toBeNull();
   });
 
-  it("leaves a valid key alone when the page is not resuming checkout", () => {
-    window.history.replaceState(null, "", "/dashboard");
+  it("leaves a valid key alone off the dashboard", () => {
+    window.history.replaceState(null, "", "/auth/signin");
     writeRaw({ v: 2, sample: true, exp: NOW + 1000, analysisId: "a", taxYear: 2026 });
     expect(consumePacketResumeLocalHandoff(NOW)).toBe(false);
     expect(localStorage.getItem(PACKET_RESUME_LOCAL_KEY)).not.toBeNull();
     expect(sessionStorage.getItem(PACKET_RESUME_CHECKOUT_KEY)).toBeNull();
+  });
+
+  it("adopts a valid handoff on a plain dashboard", () => {
+    window.history.replaceState(null, "", "/dashboard");
+    writeRaw({ v: 2, sample: true, exp: NOW + 1000, analysisId: "a", taxYear: 2026 });
+    expect(consumePacketResumeLocalHandoff(NOW)).toBe(false);
+    expect(localStorage.getItem(PACKET_RESUME_LOCAL_KEY)).toBeNull();
+    expect(sessionStorage.getItem(PACKET_RESUME_CHECKOUT_KEY)).toBe("1");
+    expect(sessionStorage.getItem(PACKET_RESUME_SAMPLE_KEY)).toBe("1");
+    expect(sessionStorage.getItem(PACKET_RESUME_ANALYSIS_KEY)).toBe(
+      JSON.stringify({ analysisId: "a", taxYear: 2026 }),
+    );
   });
 
   it("does not consume localStorage when the session marker is already set", () => {

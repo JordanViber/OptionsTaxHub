@@ -4191,6 +4191,55 @@ def _payload_for_download(
     return payload
 
 
+def _checkout_session_id(value: object) -> str | None:
+    if isinstance(value, str) and value.startswith("cs_"):
+        return value
+    return None
+
+
+@app.get(
+    "/api/year-close-packet/entitlement",
+    responses={
+        503: {"description": "Could not verify existing packet access"},
+    },
+)
+async def get_year_close_packet_entitlement(
+    tax_year: Annotated[int, Query(ge=2000, le=2100)],
+    user_id: Annotated[str, Depends(get_current_user)],
+):
+    """Whether this signed-in user already paid for the tax year.
+
+    Reads the durable grant, then the entitlement row, then process memory.
+    Never calls Stripe, so a paid year cannot create a Checkout Session here.
+    """
+    session_id, grant_ok = lookup_packet_grant_for_tax_year(user_id, tax_year)
+    if not grant_ok:
+        raise HTTPException(
+            status_code=503,
+            detail="Could not verify existing packet access. Please retry.",
+        )
+    session_id = _checkout_session_id(session_id)
+    if not session_id:
+        entitlement, entitlement_ok = lookup_packet_entitlement_for_tax_year(
+            user_id,
+            tax_year,
+        )
+        if not entitlement_ok:
+            raise HTTPException(
+                status_code=503,
+                detail="Could not verify existing packet access. Please retry.",
+            )
+        if isinstance(entitlement, dict):
+            session_id = _checkout_session_id(entitlement.get("packet_session_id"))
+    if not session_id:
+        session_id = _checkout_session_id(
+            paid_session_for_user_year(user_id, tax_year)
+        )
+    if session_id:
+        return {"paid": True, "tax_year": int(tax_year), "session_id": session_id}
+    return {"paid": False, "tax_year": int(tax_year)}
+
+
 @app.post(
     "/api/year-close-packet/checkout",
     responses={

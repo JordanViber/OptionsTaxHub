@@ -7,7 +7,6 @@ import {
   PACKET_RESUME_LOCAL_TTL_MS,
   PACKET_RESUME_LOCAL_VERSION,
   PACKET_RESUME_SAMPLE_KEY,
-  RESUME_CHECKOUT_PARAM,
   TAX_PATH,
 } from "@/lib/safeNextPath";
 
@@ -50,6 +49,51 @@ export function clearPacketCheckoutStarted(): void {
     localStorage.removeItem(PACKET_CHECKOUT_STARTED_KEY);
   } catch {
     // ignore quota / private-mode failures
+  }
+}
+
+const PACKET_PAID_STATE_PREFIXES = [
+  "optionstaxhub-packet-paid:",
+  "optionstaxhub-packet-canonical:",
+  "optionstaxhub-packet-pending",
+];
+const PACKET_CHECKOUT_INFLIGHT_STORAGE_KEY =
+  "optionstaxhub-packet-checkout-inflight";
+
+/**
+ * Drop paid flags, canonical ids, and pending checkout sessions.
+ * Does not touch the cross-tab resume handoff or the checkout-started claim.
+ */
+export function clearYearClosePacketClientState(): void {
+  const scrub = (storage: Storage) => {
+    const length = storage.length;
+    const readKey = storage.key?.bind(storage);
+    if (typeof length === "number" && typeof readKey === "function") {
+      const doomed: string[] = [];
+      for (let index = 0; index < length; index += 1) {
+        const key = readKey(index);
+        if (
+          key &&
+          PACKET_PAID_STATE_PREFIXES.some((prefix) => key.startsWith(prefix))
+        ) {
+          doomed.push(key);
+        }
+      }
+      for (const key of doomed) {
+        storage.removeItem(key);
+      }
+    }
+    storage.removeItem(PACKET_CHECKOUT_INFLIGHT_STORAGE_KEY);
+  };
+  try {
+    scrub(sessionStorage);
+  } catch {
+    // ignore
+  }
+  try {
+    scrub(localStorage);
+  } catch {
+    // ignore
   }
 }
 
@@ -205,16 +249,12 @@ export function resumeAnalysisMatches(analysis: {
   }
 }
 
-function isResumeCheckoutPage(): boolean {
+function isDashboardPath(): boolean {
   if (typeof window === "undefined") {
     return false;
   }
   try {
-    const url = new URL(window.location.href);
-    return (
-      url.pathname === TAX_PATH &&
-      url.searchParams.get(RESUME_CHECKOUT_PARAM) === "1"
-    );
+    return new URL(window.location.href).pathname === TAX_PATH;
   } catch {
     return false;
   }
@@ -365,7 +405,9 @@ function hasStoredAnalysis(): boolean {
  * load that saved run instead of checking out whatever is already on screen.
  */
 export function consumePacketResumeLocalHandoff(now = Date.now()): boolean {
-  if (!isResumeCheckoutPage()) {
+  // Any dashboard tab may hold the handoff. Requiring ?resume_checkout=1
+  // left a second tab on the empty upload state.
+  if (!isDashboardPath()) {
     return false;
   }
   if (uploadedResumeNeedsCsv) {

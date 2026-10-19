@@ -1177,6 +1177,116 @@ def test_checkout_rejects_guest_snapshot_claimed_with_only_an_id(monkeypatch):
     assert ("test-user-123", analysis_id) not in _FAKE_PACKET_SNAPSHOTS
 
 
+def test_entitlement_endpoint_reports_paid_year_without_creating_a_session(monkeypatch):
+    created = []
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "create",
+        lambda **kwargs: created.append(kwargs),
+    )
+    monkeypatch.setattr(
+        main,
+        "lookup_packet_grant_for_tax_year",
+        lambda *_args: ("cs_test_paid_year", True),
+    )
+
+    response = client.get(
+        "/api/year-close-packet/entitlement",
+        params={"tax_year": 2026},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "paid": True,
+        "tax_year": 2026,
+        "session_id": "cs_test_paid_year",
+    }
+    assert created == []
+
+
+def test_entitlement_endpoint_uses_durable_row_without_creating_a_session(monkeypatch):
+    created = []
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "create",
+        lambda **kwargs: created.append(kwargs),
+    )
+    monkeypatch.setattr(
+        main,
+        "lookup_packet_grant_for_tax_year",
+        lambda *_args: (None, True),
+    )
+    monkeypatch.setattr(
+        main,
+        "lookup_packet_entitlement_for_tax_year",
+        lambda *_args: (
+            {"packet_session_id": "cs_test_deleted_source", "analysis_id": "gone"},
+            True,
+        ),
+    )
+
+    response = client.get(
+        "/api/year-close-packet/entitlement",
+        params={"tax_year": 2026},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["paid"] is True
+    assert response.json()["session_id"] == "cs_test_deleted_source"
+    assert created == []
+
+
+def test_entitlement_endpoint_reports_unpaid_without_creating_a_session(monkeypatch):
+    created = []
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "create",
+        lambda **kwargs: created.append(kwargs),
+    )
+    monkeypatch.setattr(
+        main,
+        "lookup_packet_grant_for_tax_year",
+        lambda *_args: (None, True),
+    )
+    monkeypatch.setattr(
+        main,
+        "lookup_packet_entitlement_for_tax_year",
+        lambda *_args: (None, True),
+    )
+    monkeypatch.setattr(main, "paid_session_for_user_year", lambda *_args: None)
+
+    response = client.get(
+        "/api/year-close-packet/entitlement",
+        params={"tax_year": 2026},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"paid": False, "tax_year": 2026}
+    assert created == []
+
+
+def test_entitlement_endpoint_is_503_when_lookup_fails_and_does_not_call_stripe(monkeypatch):
+    created = []
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "create",
+        lambda **kwargs: created.append(kwargs),
+    )
+    monkeypatch.setattr(
+        main,
+        "lookup_packet_grant_for_tax_year",
+        lambda *_args: (None, False),
+    )
+
+    response = client.get(
+        "/api/year-close-packet/entitlement",
+        params={"tax_year": 2026},
+    )
+
+    assert response.status_code == 503
+    assert created == []
+
+
 def test_checkout_reuses_durable_same_year_entitlement_without_charging_again(monkeypatch):
     _test_stripe_env(monkeypatch)
     analysis_id = "analysis-second-upload"

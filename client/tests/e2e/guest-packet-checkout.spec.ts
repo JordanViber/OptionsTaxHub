@@ -492,6 +492,67 @@ test.describe("Guest packet checkout", () => {
     await expect.poll(() => page1Bodies.length).toBe(1);
     expect(page2Bodies).toHaveLength(0);
   });
+
+  test("a second dashboard tab shows the handoff and then the saved run", async ({
+    page,
+    browserName,
+  }) => {
+    test.skip(browserName === "webkit", "WebKit auth mocking limitation");
+    test.setTimeout(90_000);
+
+    const sample = guestSample();
+    await armGuestLanding(page, sample);
+    await page.goto("/");
+    await page.getByTestId("landing-try-sample").click();
+    await expect(page).toHaveURL(/\/dashboard/, { timeout: 30000 });
+    const pay = page.getByRole("button", { name: "Pay $49" });
+    await expect(pay).toBeEnabled({ timeout: 20000 });
+    await pay.click();
+    await expect(page).toHaveURL(/\/auth\/signin/, { timeout: 15000 });
+    const handoff = await page.evaluate(() =>
+      localStorage.getItem("optionstaxhub-packet-resume"),
+    );
+    expect(handoff).toContain(ANALYSIS_ID);
+
+    const tab2 = await page.context().newPage();
+    await armGuestLanding(tab2, sample);
+    await tab2.goto("/dashboard");
+    await expect(
+      tab2.getByText(/Get started with your first analysis/i),
+    ).toHaveCount(0);
+    await expect(
+      tab2
+        .getByText("AAPL")
+        .or(tab2.getByRole("button", { name: "Pay $49" }))
+        .or(tab2.getByText("Checkout opened in your other tab"))
+        .or(tab2.getByTestId("packet-resume-reupload"))
+        .first(),
+    ).toBeVisible({ timeout: 20000 });
+
+    const saved = savedRunAnalysis();
+    await injectMockSession(tab2);
+    await setupMockAuth(tab2);
+    await tab2.route("**/api/portfolio/history*", fulfillJson(saved.history));
+    await tab2.route(
+      "**/api/portfolio/analysis/**",
+      fulfillJson({
+        ...saved.history[0],
+        result: saved.analysis,
+      }),
+    );
+    await tab2.evaluate(() => {
+      sessionStorage.clear();
+    });
+    await tab2.goto("/dashboard");
+    await expect(tab2.getByText("ZZSAVED").first()).toBeVisible({
+      timeout: 20000,
+    });
+    await expect(tab2.getByText(/First upload/i)).not.toBeVisible();
+    await expect(
+      tab2.getByText(/Get started with your first analysis/i),
+    ).toHaveCount(0);
+    await tab2.close();
+  });
 });
 
 async function armFreshResumePage(

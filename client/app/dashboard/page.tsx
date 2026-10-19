@@ -107,6 +107,7 @@ import type {
 import { consumeAutomaticSampleRerun } from "@/lib/automaticSampleRerun";
 import {
   clearPacketResumeSessionMarkers,
+  clearYearClosePacketClientState,
   consumePacketResumeLocalHandoff,
   PACKET_RESUME_REUPLOAD_COPY,
   readPacketResumeExpected,
@@ -1324,6 +1325,7 @@ export default function DashboardPage() {
   const resumeReuploadArmed = useRef(false);
   const resumeOriginHandled = useRef(false);
   const resumeBareLoadStarted = useRef(false);
+  const blockHistoryAutoload = useRef(false);
   const [resumeReuploadNotice, setResumeReuploadNotice] = useState(false);
   const queryClient = useQueryClient();
 
@@ -1370,6 +1372,9 @@ export default function DashboardPage() {
       wantsSample = false;
     }
 
+    if (wantsUpload || wantsSample) {
+      blockHistoryAutoload.current = true;
+    }
     const saved = restoreAnalysisFromStorage();
     if (wantsSample) {
       if (saved?.sample_run) {
@@ -1402,7 +1407,21 @@ export default function DashboardPage() {
     getSkippedSuggestionSymbolsForAnalysis(displayedAnalysis);
 
   useEffect(() => {
-    if (!displayedAnalysis) {
+    if (authLoading || user) {
+      return;
+    }
+    // A signed-out dashboard must not keep the previous account's paid flags.
+    clearYearClosePacketClientState();
+  }, [authLoading, user]);
+
+  useEffect(() => {
+    if (!displayedAnalysis || authLoading) {
+      if (!displayedAnalysis) {
+        setPacketPaid(false);
+      }
+      return;
+    }
+    if (!user) {
       setPacketPaid(false);
       return;
     }
@@ -1418,7 +1437,7 @@ export default function DashboardPage() {
       return;
     }
     setPacketPaid(isYearClosePacketPaid(analysisId));
-  }, [displayedAnalysis?.analysis_id, displayedAnalysis]);
+  }, [displayedAnalysis?.analysis_id, displayedAnalysis, authLoading, user]);
 
   // Unpaid analyze strips chains. After the packet is paid, load them once
   // for this analysis id. packetPaid stays a dependency so checkout can start
@@ -1475,10 +1494,16 @@ export default function DashboardPage() {
   }, [packetPaid, washChainAnalysisId, washChainIsSample, washChainCount]);
 
   useEffect(() => {
-    if (displayedAnalysis) {
-      saveAnalysisToStorage(displayedAnalysis);
+    if (!displayedAnalysis || authLoading) {
+      return;
     }
-  }, [displayedAnalysis]);
+    if (!user) {
+      const { packet_session_id: _ignored, ...rest } = displayedAnalysis;
+      saveAnalysisToStorage({ ...rest, packet_unlocked: false });
+      return;
+    }
+    saveAnalysisToStorage(displayedAnalysis);
+  }, [displayedAnalysis, authLoading, user]);
 
   useEffect(() => {
     if (analysis && !loadedAnalysis) {
@@ -2086,6 +2111,82 @@ export default function DashboardPage() {
     historyError,
   ]);
 
+  // A signed-in dashboard with saved runs and nothing on screen should open
+  // the newest run. A failed fetch stays on the upload card and does not
+  // start the sample. Resume-owned flows keep their own loaders.
+  useEffect(() => {
+    if (authLoading || !confirmedUserId || !historyFetched || historyError) {
+      return;
+    }
+    if (forceEmpty || blockHistoryAutoload.current || resumeReuploadArmed.current) {
+      return;
+    }
+    if (loadedAnalysis || analysis) {
+      return;
+    }
+    let blocked = false;
+    try {
+      blocked =
+        Boolean(sessionStorage.getItem("optionstaxhub-analysis")) ||
+        sessionStorage.getItem(PACKET_RESUME_CHECKOUT_KEY) === "1" ||
+        sessionStorage.getItem(PACKET_RESUME_SAMPLE_KEY) === "1" ||
+        sessionStorage.getItem(UPLOAD_INTENT_KEY) === "1" ||
+        sessionStorage.getItem(LOAD_SAMPLE_KEY) === "1" ||
+        new URLSearchParams(window.location.search).get(RESUME_CHECKOUT_PARAM) ===
+          "1";
+    } catch {
+      return;
+    }
+    if (blocked) {
+      return;
+    }
+    const newest = newestHistoryItem(history ?? []);
+    if (!newest) {
+      return;
+    }
+    let cancelled = false;
+    void Promise.resolve()
+      .then(() => fetchAnalysisById(newest.id))
+      .then((record) => {
+        if (cancelled || !record?.result) {
+          return;
+        }
+        try {
+          if (
+            sessionStorage.getItem("optionstaxhub-analysis") ||
+            sessionStorage.getItem(PACKET_RESUME_CHECKOUT_KEY) === "1" ||
+            new URLSearchParams(window.location.search).get(
+              RESUME_CHECKOUT_PARAM,
+            ) === "1"
+          ) {
+            return;
+          }
+        } catch {
+          return;
+        }
+        setLoadedAnalysis((current) =>
+          current ? current : normalizeAnalysis(record.result),
+        );
+        setAnalysisSource((current) => current ?? "saved-history");
+        setForceEmpty(false);
+      })
+      .catch(() => {
+        // Leave the upload card. Do not fall back to the sample.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    authLoading,
+    confirmedUserId,
+    historyFetched,
+    historyError,
+    history,
+    forceEmpty,
+    loadedAnalysis,
+    analysis,
+  ]);
+
   const handleSampleRerunForCheckout = (): boolean => {
     if (!consumeAutomaticSampleRerun()) {
       return false;
@@ -2155,6 +2256,19 @@ export default function DashboardPage() {
   // displayedAnalysis is computed above (near sessionStorage effects)
   const analyzing = isPending || sampleLoading;
   const hasResults = !!displayedAnalysis && !forceEmpty;
+  let resumeHandoffPending = false;
+  if (!hasResults && !resumeReuploadNotice) {
+    try {
+      const checkoutMarker =
+        sessionStorage.getItem(PACKET_RESUME_CHECKOUT_KEY) === "1";
+      resumeHandoffPending =
+        checkoutMarker &&
+        (sessionStorage.getItem(PACKET_RESUME_SAMPLE_KEY) === "1" ||
+          readPacketResumeExpected() != null);
+    } catch {
+      resumeHandoffPending = false;
+    }
+  }
   const confidenceSummary = displayedAnalysis
     ? getConfidenceSummary(displayedAnalysis)
     : null;
@@ -2454,7 +2568,12 @@ export default function DashboardPage() {
       {/* Main Content */}
       <Container maxWidth="lg" sx={{ py: 3 }}>
         <Stack spacing={3}>
-          {!hasResults && uploadSection}
+          {!hasResults && !resumeHandoffPending && uploadSection}
+          {!hasResults && resumeHandoffPending && !analyzing && (
+            <Box sx={{ display: "flex", justifyContent: "center", py: 6 }}>
+              <CircularProgress />
+            </Box>
+          )}
 
           {/* Backend health banner — shown when the API server is unreachable */}
           {backendChecked && backendDown && (
@@ -2501,6 +2620,7 @@ export default function DashboardPage() {
           {/* First-run guidance only when nothing is held on this device */}
           {!hasResults &&
             !analyzing &&
+            !resumeHandoffPending &&
             !error &&
             !sampleLoadError &&
             !(forceEmpty && heldAnalysis) && (
@@ -2578,7 +2698,16 @@ export default function DashboardPage() {
           {hasResults && displayedAnalysis && (
             <Box data-testid="tax-section-packet">
               <YearClosePacketPanel
-                analysis={displayedAnalysis}
+                analysis={
+                  user
+                    ? displayedAnalysis
+                    : {
+                        ...displayedAnalysis,
+                        packet_unlocked: false,
+                        packet_session_id: undefined,
+                      }
+                }
+                guest={!user}
                 onPaidChange={setPacketPaid}
                 onSampleRerunForCheckout={handleSampleRerunForCheckout}
               />

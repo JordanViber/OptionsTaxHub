@@ -1949,6 +1949,10 @@ describe("DashboardPage", () => {
         clear: jest.fn(() => {
           store.clear();
         }),
+        key: jest.fn((index: number) => Array.from(store.keys())[index] ?? null),
+        get length() {
+          return store.size;
+        },
       },
     });
     return store;
@@ -2305,11 +2309,38 @@ describe("DashboardPage", () => {
     }
   });
 
-  it("does not load history or the sample on a normal dashboard", async () => {
+  it("loads the newest saved run on a normal signed-in dashboard", async () => {
+    installSessionStore();
+    mockHistoryData = [
+      historyRow("older-run", "older.csv", "2025-01-01T00:00:00Z"),
+      historyRow("newer-run", "newer.csv", "2026-01-02T00:00:00Z"),
+    ];
+    mockFetchAnalysisById.mockResolvedValue({
+      id: "newer-run",
+      filename: "newer.csv",
+      result: {
+        ...baseAnalysis,
+        analysis_id: "newer-run",
+        sample_run: false,
+        packet_unlocked: false,
+      },
+    });
+    window.history.replaceState(null, "", "/dashboard");
+    render(<DashboardPage />, { wrapper: createWrapper() });
+    expect(await screen.findByText("Saved analysis")).toBeInTheDocument();
+    expect(screen.getByTestId("year-close-packet-panel")).toBeInTheDocument();
+    expect(mockFetchAnalysisById).toHaveBeenCalledTimes(1);
+    expect(mockFetchAnalysisById).toHaveBeenCalledWith("newer-run");
+    expect(mockAnalyzeMutate).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Get started with your first analysis/i)).not.toBeInTheDocument();
+  });
+
+  it("does not load the sample when the newest saved run cannot be fetched", async () => {
     installSessionStore();
     mockHistoryData = [
       historyRow("newer-run", "newer.csv", "2026-01-02T00:00:00Z"),
     ];
+    mockFetchAnalysisById.mockRejectedValue(new Error("history down"));
     window.history.replaceState(null, "", "/dashboard");
     render(<DashboardPage />, { wrapper: createWrapper() });
     await screen.findByText(/Get started with your first analysis/i);
@@ -2318,8 +2349,44 @@ describe("DashboardPage", () => {
         setTimeout(resolve, 30);
       });
     });
-    expect(mockFetchAnalysisById).not.toHaveBeenCalled();
+    expect(mockFetchAnalysisById).toHaveBeenCalledWith("newer-run");
     expect(mockAnalyzeMutate).not.toHaveBeenCalled();
+    expect(screen.queryByText("Saved analysis")).not.toBeInTheDocument();
+  });
+
+  it("does not show another account's paid status on a guest sample", async () => {
+    const previousUser = mockAuthState.user;
+    mockAuthState.user = null;
+    const store = installSessionStore();
+    store.set(
+      "optionstaxhub-analysis",
+      JSON.stringify({
+        ...baseAnalysis,
+        sample_run: true,
+        packet_unlocked: true,
+        packet_session_id: "cs_test_other_account",
+      }),
+    );
+    store.set("optionstaxhub-packet-paid:analysis-test-1", "cs_test_other_account");
+    store.set("optionstaxhub-packet-canonical:analysis-test-1", "analysis-test-1");
+    store.set("optionstaxhub-packet-pending:analysis-test-1", "cs_test_open");
+    try {
+      render(<DashboardPage />, { wrapper: createWrapper() });
+      const pay = await screen.findByRole("button", { name: /Pay \$49/i });
+      expect(pay).toBeEnabled();
+      expect(screen.queryByText(/Paid for this tax year/i)).not.toBeInTheDocument();
+      expect(
+        screen.queryByText(/Payment confirmed for tax year/i),
+      ).not.toBeInTheDocument();
+      expect(store.get("optionstaxhub-packet-paid:analysis-test-1")).toBeUndefined();
+      expect(store.get("optionstaxhub-packet-canonical:analysis-test-1")).toBeUndefined();
+      expect(store.get("optionstaxhub-packet-pending:analysis-test-1")).toBeUndefined();
+      const saved = store.get("optionstaxhub-analysis") || "";
+      expect(saved).not.toContain("packet_unlocked\":true");
+      expect(saved).not.toContain("cs_test_other_account");
+    } finally {
+      mockAuthState.user = previousUser;
+    }
   });
 
   it("keeps the re-upload alert instead of history when an uploaded handoff has no stored analysis", async () => {
