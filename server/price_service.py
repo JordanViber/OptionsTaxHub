@@ -483,7 +483,7 @@ def _group_parsed_option_contracts(
     for label in labels_to_fetch:
         parsed = _parse_option_contract_label(label)
         if parsed is None:
-            warnings.append(f"Could not parse option contract label for live pricing: {label}")
+            warnings.append(f"Could not parse option contract label: {label}")
             continue
 
         key = (str(parsed["symbol"]), str(parsed["expiration"]))
