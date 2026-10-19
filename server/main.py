@@ -1234,13 +1234,32 @@ def _apply_live_prices_to_tax_lots(
             )
 
     quote_by_symbol = {quote.symbol: quote for quote in quotes}
+    # Purchase fills captured before any quote overwrites them. A symbol-level
+    # fallback is one of these numbers, not a market price.
+    fill_prices: dict[str, set[float]] = {}
+    for lot in tax_lots:
+        if getattr(lot, "price_kind", None) != "fill" or lot.current_price is None:
+            continue
+        key = (
+            lot.symbol.upper()
+            if lot.asset_type == AssetType.STOCK
+            else (lot.contract_label or lot.symbol.upper())
+        )
+        fill_prices.setdefault(key, set()).add(round(float(lot.current_price), 2))
+
+    def _is_purchase_fill_price(quote_key: str, price: float) -> bool:
+        return any(
+            abs(round(float(price), 2) - known) < 0.009
+            for known in fill_prices.get(quote_key, ())
+        )
 
     def _resolved_lot_price(lot, new_price: float, quote_key: str) -> float:
         """Pick the price to store and the price_kind that goes with it.
 
         ``stated`` is set only when the CSV itself has a current-price column.
         A symbol-level fill fallback is one lot's purchase price, so every
-        other lot of that symbol keeps its own fill and stays ``fill``.
+        lot of that symbol keeps its own fill. Any other CSV-sourced number
+        replaces the seed and is no longer a fill.
         """
         if lot.symbol.upper() in fixture_symbols and lot.asset_type == AssetType.STOCK:
             lot.price_kind = "fixture"
@@ -1250,9 +1269,12 @@ def _apply_live_prices_to_tax_lots(
             lot.price_kind = None
             return new_price
         if getattr(lot, "price_kind", None) == "fill":
-            if lot.current_price is None:
-                return new_price
-            return float(lot.current_price)
+            if _is_purchase_fill_price(quote_key, new_price):
+                if lot.current_price is None:
+                    return new_price
+                return float(lot.current_price)
+            lot.price_kind = None
+            return new_price
         return new_price
 
     for lot in tax_lots:
