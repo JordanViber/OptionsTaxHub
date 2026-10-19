@@ -2442,6 +2442,77 @@ describe("DashboardPage", () => {
     }
   });
 
+  it("holds Pay on a mismatched run until the expected origin id loads", async () => {
+    const store = installSessionStore();
+    store.set(
+      "optionstaxhub-analysis",
+      JSON.stringify({
+        ...baseAnalysis,
+        analysis_id: "wrong-on-screen",
+        sample_run: false,
+        packet_unlocked: false,
+      }),
+    );
+    localStorage.setItem(
+      PACKET_RESUME_LOCAL_KEY,
+      JSON.stringify({
+        v: 2,
+        sample: false,
+        exp: Date.now() + 60_000,
+        analysisId: "origin-id",
+        taxYear: 2025,
+      }),
+    );
+    localStorage.setItem(PACKET_CHECKOUT_STARTED_KEY, String(Date.now()));
+    mockHistoryData = [
+      historyRow("origin-id", "origin.csv", "2026-02-01T00:00:00Z"),
+    ];
+    let releaseOrigin: (value: unknown) => void = () => {};
+    mockFetchAnalysisById.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releaseOrigin = resolve;
+        }),
+    );
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    const checkoutCalls: Array<{ url: string; authorization: string; body: string }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = handoffFetch(checkoutCalls);
+
+    try {
+      render(<DashboardPage />, { wrapper: createWrapper() });
+      const pay = await screen.findByRole("button", { name: /Pay \$49/i });
+      expect(pay).toBeDisabled();
+      expect(store.get(PACKET_RESUME_ANALYSIS_KEY)).toContain("origin-id");
+      expect(store.get(PACKET_RESUME_CHECKOUT_KEY)).toBe("1");
+      expect(mockFetchAnalysisById).toHaveBeenCalledWith("origin-id");
+      fireEvent.click(pay);
+      expect(checkoutCalls).toHaveLength(0);
+      expect(JSON.stringify(checkoutCalls)).not.toContain("wrong-on-screen");
+
+      await act(async () => {
+        releaseOrigin({
+          id: "origin-id",
+          filename: "origin.csv",
+          result: {
+            ...baseAnalysis,
+            analysis_id: "origin-id",
+            sample_run: false,
+            packet_unlocked: false,
+          },
+        });
+      });
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
+      });
+      expect(checkoutCalls).toHaveLength(0);
+      expect(JSON.stringify(checkoutCalls)).not.toContain("wrong-on-screen");
+    } finally {
+      globalThis.fetch = originalFetch;
+      window.history.replaceState(null, "", "/dashboard");
+    }
+  });
+
   it("asks for a re-upload when the origin run never appears in history", async () => {
     jest.useFakeTimers();
     installSessionStore();

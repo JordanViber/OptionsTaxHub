@@ -617,6 +617,68 @@ describe("YearClosePacketPanel", () => {
     expect(window.location.search).not.toContain("resume_checkout");
   });
 
+  it("shows the other-tab note when the mounted analysis matches a recent claim", async () => {
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    store[PACKET_RESUME_ANALYSIS_KEY] = JSON.stringify({
+      analysisId: "analysis-1",
+      taxYear: 2025,
+    });
+    const started = String(Date.now());
+    localStorage.setItem(PACKET_CHECKOUT_STARTED_KEY, started);
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    render(<YearClosePacketPanel analysis={analysis} />);
+    expect(await screen.findByTestId("packet-checkout-other-tab")).toHaveTextContent(
+      PACKET_CHECKOUT_OTHER_TAB_COPY,
+    );
+    expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(localStorage.getItem(PACKET_CHECKOUT_STARTED_KEY)).toBe(started);
+    expect(store[PACKET_RESUME_ANALYSIS_KEY]).toBeUndefined();
+  });
+
+  it("keeps the expected run and ignores Pay when a recent claim is for a different analysis", async () => {
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    store[PACKET_RESUME_SAMPLE_KEY] = "1";
+    store[PACKET_RESUME_ANALYSIS_KEY] = JSON.stringify({
+      analysisId: "origin-id",
+      taxYear: 2025,
+    });
+    const started = String(Date.now());
+    localStorage.setItem(PACKET_CHECKOUT_STARTED_KEY, started);
+    localStorage.setItem(
+      PACKET_RESUME_LOCAL_KEY,
+      JSON.stringify({
+        v: 2,
+        sample: false,
+        exp: Date.now() + 60_000,
+        analysisId: "origin-id",
+        taxYear: 2025,
+      }),
+    );
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    const view = render(<YearClosePacketPanel analysis={analysis} />);
+    const pay = screen.getByRole("button", { name: /Pay \$49/i });
+    expect(pay).toBeDisabled();
+    fireEvent.click(pay);
+    await new Promise((resolve) => {
+      setTimeout(resolve, 30);
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("packet-checkout-other-tab")).not.toBeInTheDocument();
+    expect(store[PACKET_RESUME_ANALYSIS_KEY]).toContain("origin-id");
+    expect(store[PACKET_RESUME_CHECKOUT_KEY]).toBe("1");
+    expect(store[PACKET_RESUME_SAMPLE_KEY]).toBe("1");
+    expect(localStorage.getItem(PACKET_RESUME_LOCAL_KEY)).toContain("origin-id");
+    expect(localStorage.getItem(PACKET_CHECKOUT_STARTED_KEY)).toBe(started);
+    expect(window.location.search).toContain("resume_checkout=1");
+
+    delete store[PACKET_RESUME_CHECKOUT_KEY];
+    delete store[PACKET_RESUME_SAMPLE_KEY];
+    delete store[PACKET_RESUME_ANALYSIS_KEY];
+    view.rerender(<YearClosePacketPanel analysis={analysis} />);
+    expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
+  });
+
   it("writes checkout-started before the checkout POST and does not post when that timestamp is already recent", async () => {
     store[PACKET_RESUME_CHECKOUT_KEY] = "1";
     store[PACKET_RESUME_ANALYSIS_KEY] = JSON.stringify({
@@ -1362,6 +1424,32 @@ describe("YearClosePacketPanel", () => {
     );
   });
 
+  it("releases the checkout claim when resume checkout is already paid", async () => {
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    store[PACKET_RESUME_ANALYSIS_KEY] = JSON.stringify({
+      analysisId: "analysis-1",
+      taxYear: 2025,
+    });
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          already_paid: true,
+          session_id: "cs_test_existing_year",
+          analysis_id: "analysis-1",
+        }),
+    });
+
+    render(<YearClosePacketPanel analysis={analysis} />);
+
+    await waitFor(() =>
+      expect(screen.getByText(/Payment confirmed for tax year/i)).toBeInTheDocument(),
+    );
+    expect(localStorage.getItem(PACKET_CHECKOUT_STARTED_KEY)).toBeNull();
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
   it("treats Stripe cancel_url as a closed checkout, not a hang", async () => {
     window.history.replaceState(null, "", "/dashboard?packet_canceled=1");
     render(<YearClosePacketPanel analysis={analysis} />);
@@ -1371,6 +1459,19 @@ describe("YearClosePacketPanel", () => {
         PACKET_CHECKOUT_CANCELED_COPY,
       );
     });
+    expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
+  });
+
+  it("releases the checkout claim when Stripe sends the shopper back canceled", async () => {
+    const started = String(Date.now());
+    localStorage.setItem(PACKET_CHECKOUT_STARTED_KEY, started);
+    window.history.replaceState(null, "", "/dashboard?packet_canceled=1");
+    render(<YearClosePacketPanel analysis={analysis} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("packet-checkout-canceled")).toBeInTheDocument();
+    });
+    expect(localStorage.getItem(PACKET_CHECKOUT_STARTED_KEY)).toBeNull();
     expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
   });
 

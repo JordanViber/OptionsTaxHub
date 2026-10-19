@@ -21,6 +21,7 @@ import {
   clearPacketResumeSessionMarkers,
   packetCheckoutStartedRecently,
   readPacketCheckoutStarted,
+  readPacketResumeExpected,
   rememberPacketCheckoutStarted,
   rememberPacketResumeExpected,
   rememberPacketResumeLocal,
@@ -190,6 +191,26 @@ function releaseCheckoutClaim(claim: string | undefined): void {
     return;
   }
   clearPacketCheckoutStartedIfClaim(claim);
+}
+
+function resumeCheckoutArmed(): boolean {
+  let urlResume = false;
+  try {
+    urlResume =
+      new URLSearchParams(window.location.search).get(RESUME_CHECKOUT_PARAM) ===
+      "1";
+  } catch {
+    urlResume = false;
+  }
+  return urlResume || readSessionItem(PACKET_RESUME_CHECKOUT_KEY) === "1";
+}
+
+/** Hold Pay while this panel is not the run the resume handoff names. */
+function payHeldForDifferentResume(analysis: PortfolioAnalysis): boolean {
+  if (!readPacketResumeExpected() || resumeAnalysisMatches(analysis)) {
+    return false;
+  }
+  return resumeCheckoutArmed();
 }
 
 function isGuestSnapshotRerunDetail(detail: string): boolean {
@@ -574,6 +595,11 @@ function YearClosePacketPanelForAnalysis({
 
     if (canceled || (inflight && !pendingSessionId)) {
       clearSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY);
+      // Stripe sent the shopper back without paying. Drop only this claim so
+      // a later Pay is not treated as another tab's open checkout.
+      if (canceled) {
+        releaseCheckoutClaim(readPacketCheckoutStarted() ?? undefined);
+      }
       // This effect strips packet_canceled before the resume effect reads the
       // URL. Drop the guest-pay marker here so a closed checkout cannot reopen.
       clearPacketResumeSessionMarkers();
@@ -591,6 +617,9 @@ function YearClosePacketPanelForAnalysis({
     guestRedirect?: boolean;
     claim?: string;
   }) => {
+    if (payHeldForDifferentResume(analysis)) {
+      return;
+    }
     const guestRedirect = options?.guestRedirect !== false;
     if (paid || analysis.packet_unlocked === true) {
       return;
@@ -716,6 +745,7 @@ function YearClosePacketPanelForAnalysis({
       }
       const data = await response.json();
       if (data?.already_paid === true && typeof data?.session_id === "string") {
+        releaseCheckoutClaim(options?.claim);
         clearSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY);
         const paidAnalysisId =
           typeof data.analysis_id === "string" ? data.analysis_id : canonicalAnalysisId;
@@ -802,7 +832,12 @@ function YearClosePacketPanelForAnalysis({
     };
 
     if (packetCheckoutStartedRecently()) {
-      showOtherTab();
+      // Wipe the handoff only when this panel is the claimed run. A different
+      // expected id has to stay so the dashboard can load it after history
+      // arrives. With no expected id, the other-tab note is unchanged.
+      if (resumeAnalysisMatches(analysis) || !readPacketResumeExpected()) {
+        showOtherTab();
+      }
       return;
     }
     if (readSessionItem(PACKET_RESUME_CHECKOUT_KEY) !== "1") {
@@ -953,7 +988,8 @@ function YearClosePacketPanelForAnalysis({
                 busy !== null ||
                 missingAnalysisId ||
                 existingPacketDownload ||
-                extraChargeRefund
+                extraChargeRefund ||
+                payHeldForDifferentResume(analysis)
               }
             >
               Pay $49
