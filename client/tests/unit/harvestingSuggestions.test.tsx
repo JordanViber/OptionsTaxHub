@@ -50,6 +50,29 @@ describe("HarvestingSuggestions", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("keeps a purchase-fill note on unlocked harvest cards", () => {
+    const note = "Purchase price from your CSV, no live quote";
+    render(
+      <HarvestingSuggestions
+        suggestions={[{ ...baseSuggestion, price_note: note }]}
+      />,
+    );
+
+    expect(screen.getByTestId("harvest-price-note")).toHaveTextContent(note);
+  });
+
+  it("keeps a purchase-fill note on locked harvest teasers", () => {
+    const note = "Purchase price from your CSV, no live quote";
+    render(
+      <HarvestingSuggestions
+        suggestions={[{ ...baseSuggestion, price_note: note }]}
+        locked
+      />,
+    );
+
+    expect(screen.getByTestId("harvest-price-note")).toHaveTextContent(note);
+  });
+
   it("shows packet preview instead of sell recipes when locked", () => {
     render(
       <HarvestingSuggestions

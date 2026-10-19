@@ -144,10 +144,12 @@ for (const viewport of viewports) {
     await setupMockAnalysis(page, signedInAnalysis);
     await goToAuthenticatedHome(page);
     await uploadTestCsv(page);
-    await expectCsvLabels(page, PURCHASE_LABEL);
+    // The lot-ledger tab unmounts the harvest queue. Read the fill-price
+    // note while that queue is still the active tab.
     await expect(page.getByTestId("harvest-price-note").first()).toHaveText(
       PURCHASE_LABEL,
     );
+    await expectCsvLabels(page, PURCHASE_LABEL);
     if (viewport.width === 390) {
       const scrollWidth = await page.evaluate(
         () => document.documentElement.scrollWidth,
