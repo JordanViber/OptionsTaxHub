@@ -796,12 +796,41 @@ test.describe("Open 2026 sample", () => {
       await expect(page.getByText("Net Open Position Value")).toBeVisible();
       await expect(page.getByText("Analyzing portfolio...")).toHaveCount(0);
     });
+
+    test(`download is easy to tap on ${viewport.name}`, async ({ page }) => {
+      await page.setViewportSize({
+        width: viewport.width,
+        height: viewport.height,
+      });
+      await setupMockAnalysis(page, sampleAnalysis);
+      await mockGuestDesk(page);
+      await openSampleFromLanding(page);
+      const download = page.getByTestId("packet-download");
+      await expect(download).toBeVisible({ timeout: 20000 });
+      await download.scrollIntoViewIfNeeded();
+      const box = await download.boundingBox();
+      expect(box).not.toBeNull();
+      expect(box!.height).toBeGreaterThanOrEqual(44);
+      expect(box!.width).toBeGreaterThanOrEqual(44);
+      const size = page.viewportSize();
+      expect(size).not.toBeNull();
+      expect(box!.y).toBeGreaterThanOrEqual(0);
+      expect(box!.y + box!.height).toBeLessThanOrEqual(size!.height + 1);
+      if (viewport.width === 390) {
+        expect(box!.width).toBeGreaterThanOrEqual(240);
+        const payBox = await page
+          .getByRole("button", { name: "Pay $49" })
+          .boundingBox();
+        expect(payBox).not.toBeNull();
+        expect(box!.y).toBeGreaterThanOrEqual(payBox!.y + payBox!.height - 1);
+      }
+    });
   }
 
   test("a hung analyze does not leave Analyzing on a 390px desk", async ({
     page,
   }) => {
-    test.setTimeout(60_000);
+    test.setTimeout(90_000);
     await page.setViewportSize({ width: 390, height: 844 });
     await mockGuestDesk(page);
     await page.route("**/api/portfolio/analyze*", async () => {
@@ -814,8 +843,10 @@ test.describe("Open 2026 sample", () => {
       timeout: 15000,
     });
     await expect(
-      page.getByText("Analysis timed out. Please try again in a few minutes."),
-    ).toBeVisible({ timeout: 40000 });
+      page.getByText(
+        "The first upload can take up to a minute while the analysis service starts. Analysis timed out. Please try again in a few minutes.",
+      ),
+    ).toBeVisible({ timeout: 75000 });
     await expect(page.getByText("Analyzing portfolio...")).toHaveCount(0);
     await expect(page.getByText("Analysis Failed")).toBeVisible();
   });

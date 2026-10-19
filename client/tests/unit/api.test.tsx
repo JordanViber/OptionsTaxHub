@@ -41,6 +41,7 @@ import {
   getAnalysisErrorMessage,
   getBackendUnreachableMessage,
   ANALYZE_TIMEOUT_MESSAGE,
+  ANALYZE_TIMEOUT_MS,
   fetchLeapRank,
   useLeapRankMutation,
   fetchRhChain,
@@ -489,6 +490,8 @@ describe("api hooks", () => {
       expect(result.current.isPending).toBe(false);
       expect(result.current.error).toBeInstanceOf(Error);
       expect(result.current.error?.message).toBe(ANALYZE_TIMEOUT_MESSAGE);
+      expect(ANALYZE_TIMEOUT_MS).toBe(60_000);
+      expect(ANALYZE_TIMEOUT_MESSAGE).toMatch(/up to a minute/i);
       expect(globalThis.fetch).toHaveBeenCalledTimes(1);
     });
 

@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { getSession } from "@/lib/supabase";
 import YearClosePacketPanel, {
+  analysisIdsMatch,
   compactAnalysis,
   purchaseDateFromSuggestionId,
   PACKET_CHECKOUT_CANCELED_COPY,
@@ -2674,5 +2675,185 @@ describe("YearClosePacketPanel", () => {
       "cs_test_finalizing_checkout",
     );
     expect(window.location.href).not.toContain("checkout.stripe.com");
+  });
+
+  const restoredAnalysis = { ...analysis, packet_unlocked: false };
+
+  function paidYearEntitlement(analysisId: string) {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        paid: true,
+        tax_year: 2025,
+        session_id: "cs_test_restored_year",
+        analysis_id: analysisId,
+      }),
+    };
+  }
+
+  it("hides Pay on a restored run when the paid year names this analysis", async () => {
+    mockFetch.mockImplementation(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/api/year-close-packet/entitlement")) {
+        return paidYearEntitlement("analysis-1");
+      }
+      return checkoutOk();
+    });
+
+    render(<YearClosePacketPanel analysis={restoredAnalysis} restoredRun />);
+
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: /Pay \$49/i })).not.toBeInTheDocument();
+    });
+    expect(screen.getByText(/Paid for this tax year/i)).toBeInTheDocument();
+    expect(checkoutPosts()).toHaveLength(0);
+    expect(
+      mockFetch.mock.calls.some((call) =>
+        String(call[0]).includes("/api/year-close-packet/entitlement"),
+      ),
+    ).toBe(true);
+  });
+
+  it("holds Pay on a restored run when the paid year names a different analysis", async () => {
+    mockFetch.mockImplementation(async (url: RequestInfo | URL) => {
+      const target = String(url);
+      if (target.includes("/api/year-close-packet/entitlement")) {
+        return paidYearEntitlement("analysis-other");
+      }
+      if (target.includes("/api/year-close-packet/checkout")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            checkout_url: "https://checkout.stripe.com/c/pay/cs_test_second",
+            session_id: "cs_test_second",
+          }),
+        };
+      }
+      return checkoutOk();
+    });
+
+    render(<YearClosePacketPanel analysis={restoredAnalysis} restoredRun />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeDisabled();
+    });
+    expect(screen.queryByText(/Paid for this tax year/i)).not.toBeInTheDocument();
+    expect(checkoutPosts()).toHaveLength(1);
+    expect(window.location.href).not.toContain("checkout.stripe.com");
+  });
+
+  it("does not check entitlement for a fresh upload", async () => {
+    mockFetch.mockImplementation(async () => unpaidEntitlement());
+    render(<YearClosePacketPanel analysis={restoredAnalysis} />);
+    expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(
+      mockFetch.mock.calls.some((call) =>
+        String(call[0]).includes("/api/year-close-packet/entitlement"),
+      ),
+    ).toBe(false);
+  });
+
+  it("checks entitlement after a restored guest run signs in", async () => {
+    mockFetch.mockImplementation(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/api/year-close-packet/entitlement")) {
+        return paidYearEntitlement("analysis-1");
+      }
+      return checkoutOk();
+    });
+    const view = render(
+      <YearClosePacketPanel analysis={restoredAnalysis} guest restoredRun />,
+    );
+    expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
+    expect(
+      mockFetch.mock.calls.some((call) =>
+        String(call[0]).includes("/api/year-close-packet/entitlement"),
+      ),
+    ).toBe(false);
+
+    view.rerender(<YearClosePacketPanel analysis={restoredAnalysis} restoredRun />);
+
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: /Pay \$49/i })).not.toBeInTheDocument();
+    });
+    expect(checkoutPosts()).toHaveLength(0);
+  });
+
+  it("still checks a restored run when checkout started in the last five minutes", async () => {
+    localStorage.setItem(PACKET_CHECKOUT_STARTED_KEY, String(Date.now()));
+    mockFetch.mockImplementation(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/api/year-close-packet/entitlement")) {
+        return paidYearEntitlement("analysis-1");
+      }
+      return checkoutOk();
+    });
+
+    render(<YearClosePacketPanel analysis={restoredAnalysis} restoredRun />);
+
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: /Pay \$49/i })).not.toBeInTheDocument();
+    });
+    expect(checkoutPosts()).toHaveLength(0);
+  });
+
+  it("matches hyphenated UUID analysis ids in any case and keeps other ids exact", async () => {
+    const uuid = "11111111-1111-4111-8111-111111111111";
+    expect(analysisIdsMatch(uuid, uuid.toUpperCase())).toBe(true);
+    expect(analysisIdsMatch(`  ${uuid}  `, uuid.toUpperCase())).toBe(true);
+    expect(analysisIdsMatch("Not-A-Uuid", "not-a-uuid")).toBe(false);
+    expect(analysisIdsMatch(`{${uuid}}`, uuid)).toBe(false);
+    expect(analysisIdsMatch(`urn:uuid:${uuid}`, uuid)).toBe(false);
+    expect(analysisIdsMatch(uuid.replace(/-/g, ""), uuid)).toBe(false);
+
+    mockFetch.mockImplementation(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/api/year-close-packet/entitlement")) {
+        return paidYearEntitlement(uuid.toUpperCase());
+      }
+      return checkoutOk();
+    });
+    const matching = render(
+      <YearClosePacketPanel
+        analysis={{ ...restoredAnalysis, analysis_id: uuid }}
+        restoredRun
+      />,
+    );
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: /Pay \$49/i })).not.toBeInTheDocument();
+    });
+    expect(checkoutPosts()).toHaveLength(0);
+    matching.unmount();
+
+    mockFetch.mockReset();
+    mockFetch.mockImplementation(async (url: RequestInfo | URL) => {
+      const target = String(url);
+      if (target.includes("/api/year-close-packet/entitlement")) {
+        return paidYearEntitlement("not-a-uuid");
+      }
+      if (target.includes("/api/year-close-packet/checkout")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            checkout_url: "https://checkout.stripe.com/c/pay/cs_test_second",
+            session_id: "cs_test_second",
+          }),
+        };
+      }
+      return checkoutOk();
+    });
+    render(
+      <YearClosePacketPanel
+        analysis={{ ...restoredAnalysis, analysis_id: "Not-A-Uuid" }}
+        restoredRun
+      />,
+    );
+    await waitFor(() => {
+      expect(checkoutPosts()).toHaveLength(1);
+    });
+    expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeDisabled();
+    expect(screen.queryByText(/Paid for this tax year/i)).not.toBeInTheDocument();
   });
 });

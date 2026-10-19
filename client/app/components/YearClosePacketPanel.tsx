@@ -147,6 +147,29 @@ function localAnalysisIdentity(analysis: PortfolioAnalysis): string {
   return `local-${(first >>> 0).toString(16)}${(second >>> 0).toString(16)}`;
 }
 
+const HYPHENATED_ANALYSIS_UUID =
+  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+/**
+ * Same rule as the server `_analysis_ids_match`: exact text, except a
+ * 36-character hyphenated UUID also matches in any letter case. Braces,
+ * `urn:uuid:`, and 32-hex text stay distinct.
+ */
+export function analysisIdsMatch(left: string, right: string): boolean {
+  const normalizedLeft = left.trim();
+  const normalizedRight = right.trim();
+  if (normalizedLeft === normalizedRight) {
+    return true;
+  }
+  if (
+    HYPHENATED_ANALYSIS_UUID.test(normalizedLeft) &&
+    HYPHENATED_ANALYSIS_UUID.test(normalizedRight)
+  ) {
+    return normalizedLeft.toLowerCase() === normalizedRight.toLowerCase();
+  }
+  return false;
+}
+
 export function yearClosePacketStorageId(analysis: PortfolioAnalysis): string {
   return analysis.analysis_id || localAnalysisIdentity(analysis);
 }
@@ -251,6 +274,28 @@ function resumeEntitlementPending(analysis: PortfolioAnalysis): boolean {
     return false;
   }
   return resumeAnalysisMatches(analysis);
+}
+
+/**
+ * A restored guest or local run has no resume markers, but the year may
+ * already be paid. Check entitlement before Pay $49 can be pressed.
+ * The recent-checkout claim stays on the resume path only.
+ */
+function restoredEntitlementPending(
+  analysis: PortfolioAnalysis,
+  restoredRun: boolean,
+): boolean {
+  if (!restoredRun) {
+    return false;
+  }
+  if (
+    analysis.packet_unlocked === true ||
+    isYearClosePacketPaid(yearClosePacketStorageId(analysis))
+  ) {
+    return false;
+  }
+  const year = analysis.tax_profile?.tax_year;
+  return typeof year === "number" && Number.isFinite(year);
 }
 
 function isGuestSnapshotRerunDetail(detail: string): boolean {
@@ -364,6 +409,7 @@ function triggerPdfDownload(blob: Blob): void {
 export default function YearClosePacketPanel(props: Readonly<{
   analysis: PortfolioAnalysis;
   guest?: boolean;
+  restoredRun?: boolean;
   onPaidChange?: (paid: boolean) => void;
   onSampleRerunForCheckout?: () => boolean;
 }>) {
@@ -374,6 +420,7 @@ export default function YearClosePacketPanel(props: Readonly<{
       analysis={props.analysis}
       analysisStorageId={identity}
       guest={props.guest === true}
+      restoredRun={props.restoredRun === true}
       onPaidChange={props.onPaidChange}
       onSampleRerunForCheckout={props.onSampleRerunForCheckout}
     />
@@ -384,12 +431,14 @@ function YearClosePacketPanelForAnalysis({
   analysis,
   analysisStorageId,
   guest,
+  restoredRun,
   onPaidChange,
   onSampleRerunForCheckout,
 }: Readonly<{
   analysis: PortfolioAnalysis;
   analysisStorageId: string;
   guest: boolean;
+  restoredRun: boolean;
   onPaidChange?: (paid: boolean) => void;
   onSampleRerunForCheckout?: () => boolean;
 }>) {
@@ -424,7 +473,10 @@ function YearClosePacketPanelForAnalysis({
     ) {
       return "paid";
     }
-    return resumeEntitlementPending(analysis) ? "unknown" : "unpaid";
+    return resumeEntitlementPending(analysis) ||
+      restoredEntitlementPending(analysis, restoredRun)
+      ? "unknown"
+      : "unpaid";
   });
   // Paid year whose receipt did not name this run, and promotion did not
   // confirm it. Pay stays held so refresh cannot open a second Checkout.
@@ -734,7 +786,10 @@ function YearClosePacketPanelForAnalysis({
       setEntitlementGate("paid");
       return;
     }
-    if (!resumeEntitlementPending(current)) {
+    const checkEntitlement =
+      resumeEntitlementPending(current) ||
+      restoredEntitlementPending(current, restoredRun);
+    if (!checkEntitlement) {
       setEntitlementGate("unpaid");
       return;
     }
@@ -825,7 +880,7 @@ function YearClosePacketPanelForAnalysis({
         const idsMatch =
           entitledAnalysisId.length > 0 &&
           currentAnalysisId.length > 0 &&
-          entitledAnalysisId.toLowerCase() === currentAnalysisId.toLowerCase();
+          analysisIdsMatch(entitledAnalysisId, currentAnalysisId);
         // A missing, blank, or different id is not this snapshot. Promote
         // before Download is offered. Stay off "unpaid" so auto-resume
         // cannot open a second Checkout.
@@ -887,11 +942,15 @@ function YearClosePacketPanelForAnalysis({
         return;
       }
       const latest = analysisRef.current;
-      if (
-        !accessToken ||
-        packetCheckoutStartedRecently() ||
-        !resumeEntitlementPending(latest)
-      ) {
+      const resumePending = resumeEntitlementPending(latest);
+      const restoredPending = restoredEntitlementPending(latest, restoredRun);
+      if (!accessToken || (!resumePending && !restoredPending)) {
+        setEntitlementGate("unpaid");
+        return;
+      }
+      // A checkout claim in the last five minutes skips only the resume
+      // check. A restored run still has to learn whether the year is paid.
+      if (!restoredPending && packetCheckoutStartedRecently()) {
         setEntitlementGate("unpaid");
         return;
       }
@@ -919,6 +978,7 @@ function YearClosePacketPanelForAnalysis({
     };
   }, [
     guest,
+    restoredRun,
     paid,
     analysis.analysis_id,
     analysis.packet_unlocked,
@@ -1277,7 +1337,11 @@ function YearClosePacketPanelForAnalysis({
               : "One-time payment, not a subscription."}
           </Typography>
         </Box>
-        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+        <Stack
+          direction={{ xs: "column", sm: "row" }}
+          spacing={1}
+          useFlexGap
+        >
           {!paid && (
             <Button
               variant="contained"
@@ -1300,14 +1364,17 @@ function YearClosePacketPanelForAnalysis({
                 holdUnconfirmedPay ||
                 payHeldForDifferentResume(analysis)
               }
+              sx={{ minHeight: 44, width: { xs: "100%", sm: "auto" } }}
             >
               Pay $49
             </Button>
           )}
           {!extraChargeRefund && !holdUnconfirmedPay && (
             <Button
+              data-testid="packet-download"
               variant={paid || existingPacketDownload ? "contained" : "outlined"}
               color={paid || existingPacketDownload ? "success" : "primary"}
+              sx={{ minHeight: 44, width: { xs: "100%", sm: "auto" } }}
               startIcon={
                 busy === "download" ? (
                   <CircularProgress size={16} color="inherit" />

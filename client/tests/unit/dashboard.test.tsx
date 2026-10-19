@@ -168,7 +168,11 @@ jest.mock("../../app/components/TipJar", () => ({
   default: () => <div data-testid="tip-jar-dialog" />,
 }));
 
-import DashboardPage from "../../app/dashboard/page";
+import DashboardPage, {
+  rememberFreshUploadOrigin,
+  resetAnalysisOriginForTests,
+  SIGNED_OUT_RESUME_TIMEOUT_MS,
+} from "../../app/dashboard/page";
 import { resetAutomaticSampleRerunForTests } from "../../lib/automaticSampleRerun";
 import { resetPacketResumeCheckoutLock } from "../../app/components/YearClosePacketPanel";
 import { resetPacketResumeLocalForTests } from "../../lib/packetResumeLocal";
@@ -290,6 +294,7 @@ describe("DashboardPage", () => {
     resetPacketResumeLocalForTests();
     resetPacketResumeCheckoutLock();
     resetAutomaticSampleRerunForTests();
+    resetAnalysisOriginForTests();
     localStorage.removeItem(PACKET_RESUME_LOCAL_KEY);
     localStorage.removeItem(PACKET_CHECKOUT_STARTED_KEY);
     window.history.replaceState(null, "", "/dashboard");
@@ -381,6 +386,9 @@ describe("DashboardPage", () => {
           /Some sells could not be matched to complete tax lots/i,
         ),
       ).toBeInTheDocument();
+      expect(
+        screen.queryByText(/This result was restored from browser storage/i),
+      ).not.toBeInTheDocument();
     });
   });
 
@@ -3143,6 +3151,171 @@ describe("DashboardPage", () => {
     });
     expect(mockAnalyzeMutate).not.toHaveBeenCalled();
     expect(mockFetchAnalysisById).not.toHaveBeenCalled();
+  });
+
+  it("does not label a fresh upload as restored when the page remounts", async () => {
+    rememberFreshUploadOrigin(baseAnalysis.analysis_id);
+    const store = installSessionStore();
+    store.set("optionstaxhub-analysis", JSON.stringify(baseAnalysis));
+
+    const first = render(<DashboardPage />, { wrapper: createWrapper() });
+    await waitFor(() => {
+      expect(screen.getByText("Fresh upload")).toBeInTheDocument();
+    });
+    expect(
+      screen.queryByText(/This result was restored from browser storage/i),
+    ).not.toBeInTheDocument();
+    first.unmount();
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+    await waitFor(() => {
+      expect(screen.getByText("Fresh upload")).toBeInTheDocument();
+    });
+    expect(
+      screen.queryByText(/This result was restored from browser storage/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("hides Pay when a restored run is already paid for the year", async () => {
+    const store = installSessionStore();
+    store.set(
+      "optionstaxhub-analysis",
+      JSON.stringify({ ...baseAnalysis, packet_unlocked: false }),
+    );
+    const originalFetch = globalThis.fetch;
+    const calls: string[] = [];
+    globalThis.fetch = jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.includes("/api/year-close-packet/entitlement")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            paid: true,
+            tax_year: 2025,
+            session_id: "cs_test_restored_year",
+            analysis_id: "analysis-test-1",
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    }) as unknown as typeof fetch;
+
+    try {
+      render(<DashboardPage />, { wrapper: createWrapper() });
+      await waitFor(() => {
+        expect(calls.some((url) => url.includes("/api/year-close-packet/entitlement"))).toBe(
+          true,
+        );
+      });
+      expect(screen.queryByRole("button", { name: /Pay \$49/i })).not.toBeInTheDocument();
+      expect(screen.getByText(/Paid for this tax year/i)).toBeInTheDocument();
+      expect(
+        screen.getByText(/This result was restored from browser storage/i),
+      ).toBeInTheDocument();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("times out a signed-out second tab to the re-upload prompt", async () => {
+    jest.useFakeTimers();
+    const previousUser = mockAuthState.user;
+    mockAuthState.user = null;
+    const store = installSessionStore();
+    store.set(PACKET_RESUME_CHECKOUT_KEY, "1");
+    store.set(PACKET_RESUME_SAMPLE_KEY, "1");
+    store.set(
+      PACKET_RESUME_ANALYSIS_KEY,
+      JSON.stringify({ analysisId: "analysis-test-1", taxYear: 2025 }),
+    );
+    window.history.replaceState(null, "", "/dashboard");
+
+    try {
+      render(<DashboardPage />, { wrapper: createWrapper() });
+      expect(
+        screen.queryByText(/Get started with your first analysis/i),
+      ).not.toBeInTheDocument();
+      expect(screen.queryByTestId("packet-resume-reupload")).not.toBeInTheDocument();
+      expect(screen.getByRole("progressbar")).toBeInTheDocument();
+      expect(mockAnalyzeMutate).not.toHaveBeenCalled();
+
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(SIGNED_OUT_RESUME_TIMEOUT_MS);
+      });
+
+      expect(screen.getByTestId("packet-resume-reupload")).toHaveTextContent(
+        "Re-upload your CSV to continue to checkout.",
+      );
+      expect(mockAnalyzeMutate).not.toHaveBeenCalled();
+      expect(store.get(PACKET_RESUME_CHECKOUT_KEY)).toBeUndefined();
+    } finally {
+      mockAuthState.user = previousUser;
+      jest.useRealTimers();
+      window.history.replaceState(null, "", "/dashboard");
+    }
+  });
+
+  it("shows the other-tab note when a signed-out resume tab already has a checkout claim", async () => {
+    jest.useFakeTimers();
+    const previousUser = mockAuthState.user;
+    mockAuthState.user = null;
+    localStorage.setItem(PACKET_CHECKOUT_STARTED_KEY, String(Date.now()));
+    const store = installSessionStore();
+    store.set(PACKET_RESUME_CHECKOUT_KEY, "1");
+    store.set(PACKET_RESUME_SAMPLE_KEY, "1");
+    window.history.replaceState(null, "", "/dashboard");
+
+    try {
+      render(<DashboardPage />, { wrapper: createWrapper() });
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(SIGNED_OUT_RESUME_TIMEOUT_MS);
+      });
+      expect(screen.getByTestId("packet-checkout-other-tab")).toHaveTextContent(
+        "Checkout opened in your other tab",
+      );
+      expect(screen.queryByTestId("packet-resume-reupload")).not.toBeInTheDocument();
+      expect(mockAnalyzeMutate).not.toHaveBeenCalled();
+    } finally {
+      mockAuthState.user = previousUser;
+      localStorage.removeItem(PACKET_CHECKOUT_STARTED_KEY);
+      jest.useRealTimers();
+      window.history.replaceState(null, "", "/dashboard");
+    }
+  });
+
+  it("keeps resume markers when sign-in finishes before the signed-out timeout", async () => {
+    jest.useFakeTimers();
+    const previousUser = mockAuthState.user;
+    mockAuthState.user = null;
+    const store = installSessionStore();
+    store.set(PACKET_RESUME_CHECKOUT_KEY, "1");
+    store.set(
+      PACKET_RESUME_ANALYSIS_KEY,
+      JSON.stringify({ analysisId: "origin-id", taxYear: 2025 }),
+    );
+    window.history.replaceState(null, "", "/dashboard");
+
+    try {
+      const view = render(<DashboardPage />, { wrapper: createWrapper() });
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(3_000);
+      });
+      expect(store.get(PACKET_RESUME_CHECKOUT_KEY)).toBe("1");
+      mockAuthState.user = previousUser;
+      view.rerender(<DashboardPage />);
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(SIGNED_OUT_RESUME_TIMEOUT_MS);
+      });
+      expect(store.get(PACKET_RESUME_CHECKOUT_KEY)).toBe("1");
+      expect(screen.queryByTestId("packet-resume-reupload")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("packet-checkout-other-tab")).not.toBeInTheDocument();
+    } finally {
+      mockAuthState.user = previousUser;
+      jest.useRealTimers();
+      window.history.replaceState(null, "", "/dashboard");
+    }
   });
 
 });
