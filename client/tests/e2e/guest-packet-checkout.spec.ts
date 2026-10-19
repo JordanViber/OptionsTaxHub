@@ -425,7 +425,16 @@ test.describe("Guest packet checkout", () => {
       .toMatch(/^\d+$/);
 
     await armSavedRunResume(otherTab, saved, checkoutBodies);
-    await otherTab.goto(RESUME_PATH);
+    // The sign-in page replaces to /dashboard once the shared session
+    // arrives. Firefox aborts a goto that overlaps that replacement.
+    try {
+      await otherTab.goto(RESUME_PATH);
+    } catch (error) {
+      if (!/NS_BINDING_ABORTED|frame was detached/i.test(String(error))) {
+        throw error;
+      }
+      await otherTab.goto(RESUME_PATH);
+    }
     await expect(otherTab.getByText("ZZSAVED")).toBeVisible({ timeout: 20000 });
     await expect(otherTab.getByTestId("packet-checkout-other-tab")).toHaveText(
       "Checkout opened in your other tab",
