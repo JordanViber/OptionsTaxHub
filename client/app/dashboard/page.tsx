@@ -148,6 +148,8 @@ const SAMPLE_CSV_FILENAME = "sample-robinhood-transactions.csv";
 const SAMPLE_1099_URL = "/sample-robinhood-1099-2026.pdf";
 const SAMPLE_1099_FILENAME = "sample-robinhood-1099-2026.pdf";
 const SAMPLE_FETCH_TIMEOUT_MESSAGE = "Could not load the 2026 sample.";
+const ORIGIN_RESUME_WAIT_MS = 12_000;
+const ORIGIN_RESUME_RETRY_MS = 3_000;
 
 function isAbortError(error: unknown): boolean {
   return (
@@ -1340,7 +1342,10 @@ export default function DashboardPage() {
     data: history,
     error: historyError,
     isFetched: historyFetched,
+    refetch: refetchHistory,
   } = usePortfolioHistory(confirmedUserId);
+  const historyRef = useRef(history);
+  historyRef.current = history;
 
   // Full portfolio analysis mutation
   const {
@@ -1919,33 +1924,91 @@ export default function DashboardPage() {
     ) {
       return;
     }
-    resumeOriginHandled.current = true;
-    // Mismatch: show the origin run with Pay, and do not auto-checkout it.
-    clearPacketResumeSessionMarkers();
-    const row = (history ?? []).find((item) => item.id === expected.analysisId);
-    if (!row) {
+
+    // The original tab may still be saving this guest run. Keep the resume
+    // markers and leave resumeOriginHandled unset until the id shows up.
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const startedAt = Date.now();
+
+    const giveUp = () => {
+      if (cancelled || resumeOriginHandled.current) {
+        return;
+      }
+      resumeOriginHandled.current = true;
+      clearPacketResumeSessionMarkers();
       setResumeReuploadNotice(true);
-      return;
-    }
-    void fetchAnalysisById(expected.analysisId)
-      .then((record) => {
-        if (record?.result) {
-          setLoadedAnalysis(normalizeAnalysis(record.result));
-          setAnalysisSource("saved-history");
-          setForceEmpty(false);
+    };
+
+    const schedule = () => {
+      if (cancelled || resumeOriginHandled.current) {
+        return;
+      }
+      const elapsed = Date.now() - startedAt;
+      if (elapsed >= ORIGIN_RESUME_WAIT_MS) {
+        giveUp();
+        return;
+      }
+      timer = setTimeout(() => {
+        void attempt();
+      }, Math.min(ORIGIN_RESUME_RETRY_MS, ORIGIN_RESUME_WAIT_MS - elapsed));
+    };
+
+    const attempt = async () => {
+      if (cancelled || resumeOriginHandled.current) {
+        return;
+      }
+      let items = historyRef.current ?? [];
+      try {
+        const refreshed = await refetchHistory();
+        if (cancelled || resumeOriginHandled.current) {
           return;
         }
-        setResumeReuploadNotice(true);
-      })
-      .catch(() => {
-        setResumeReuploadNotice(true);
-      });
+        if (Array.isArray(refreshed?.data)) {
+          items = refreshed.data;
+        }
+      } catch {
+        if (cancelled || resumeOriginHandled.current) {
+          return;
+        }
+      }
+      const row = items.find((item) => item.id === expected.analysisId);
+      if (row) {
+        try {
+          const record = await fetchAnalysisById(expected.analysisId);
+          if (cancelled || resumeOriginHandled.current) {
+            return;
+          }
+          if (record?.result) {
+            resumeOriginHandled.current = true;
+            clearPacketResumeSessionMarkers();
+            setLoadedAnalysis(normalizeAnalysis(record.result));
+            setAnalysisSource("saved-history");
+            setForceEmpty(false);
+            return;
+          }
+        } catch {
+          if (cancelled || resumeOriginHandled.current) {
+            return;
+          }
+        }
+      }
+      schedule();
+    };
+
+    void attempt();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
+    };
   }, [
     authLoading,
     confirmedUserId,
     historyFetched,
-    history,
     historyError,
+    refetchHistory,
   ]);
 
   useEffect(() => {

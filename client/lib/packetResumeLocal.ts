@@ -106,14 +106,6 @@ export function readPacketResumeExpected(): PacketResumeExpected | null {
   return { analysisId: record.analysisId, taxYear: record.taxYear };
 }
 
-export function clearPacketResumeExpected(): void {
-  try {
-    sessionStorage.removeItem(PACKET_RESUME_ANALYSIS_KEY);
-  } catch {
-    // ignore
-  }
-}
-
 /** Guest Pay handoff. Id string and tax year only — never a run or tax data. */
 export function rememberPacketResumeLocal(input: {
   sample: boolean;

@@ -67,6 +67,7 @@ let mockHistoryData: Array<{
 }> = [];
 const mockAnalyzeMutate = jest.fn();
 const mockFetchAnalysisById = jest.fn();
+const mockRefetchHistory = jest.fn(async () => ({ data: mockHistoryData }));
 let mockHistoryFetched = true;
 let mockHistoryError: Error | null = null;
 const mockFetchWashSaleChains = jest.fn(() =>
@@ -92,6 +93,7 @@ jest.mock("../../lib/api", () => ({
     error: mockHistoryError,
     isPending: false,
     isFetched: mockHistoryFetched,
+    refetch: mockRefetchHistory,
   }),
   useBackendHealth: () => ({
     isError: false,
@@ -268,6 +270,8 @@ describe("DashboardPage", () => {
     mockHistoryData = [];
     mockHistoryFetched = true;
     mockHistoryError = null;
+    mockRefetchHistory.mockReset();
+    mockRefetchHistory.mockImplementation(async () => ({ data: mockHistoryData }));
     mockAnalyzeMutate.mockReset();
     mockFetchAnalysisById.mockReset();
     mockFetchWashSaleChains.mockReset();
@@ -2438,7 +2442,8 @@ describe("DashboardPage", () => {
     }
   });
 
-  it("asks for a re-upload when the origin run is not in history", async () => {
+  it("asks for a re-upload when the origin run never appears in history", async () => {
+    jest.useFakeTimers();
     installSessionStore();
     localStorage.setItem(
       PACKET_RESUME_LOCAL_KEY,
@@ -2458,7 +2463,14 @@ describe("DashboardPage", () => {
 
     try {
       render(<DashboardPage />, { wrapper: createWrapper() });
-      expect(await screen.findByTestId("packet-resume-reupload")).toHaveTextContent(
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(9_000);
+      });
+      expect(screen.queryByTestId("packet-resume-reupload")).not.toBeInTheDocument();
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(3_000);
+      });
+      expect(screen.getByTestId("packet-resume-reupload")).toHaveTextContent(
         "Re-upload your CSV to continue to checkout.",
       );
       expect(mockFetchAnalysisById).not.toHaveBeenCalled();
@@ -2466,6 +2478,74 @@ describe("DashboardPage", () => {
       expect(checkoutCalls).toHaveLength(0);
     } finally {
       globalThis.fetch = originalFetch;
+      jest.useRealTimers();
+      window.history.replaceState(null, "", "/dashboard");
+    }
+  });
+
+  it("loads the origin run when a later history refetch includes it", async () => {
+    jest.useFakeTimers();
+    installSessionStore();
+    localStorage.setItem(
+      PACKET_RESUME_LOCAL_KEY,
+      JSON.stringify({
+        v: 2,
+        sample: false,
+        exp: Date.now() + 60_000,
+        analysisId: "origin-run",
+        taxYear: 2025,
+      }),
+    );
+    localStorage.setItem(PACKET_CHECKOUT_STARTED_KEY, String(Date.now()));
+    mockHistoryData = [historyRow("other-run", "other.csv", "2026-01-01T00:00:00Z")];
+    let historyReads = 0;
+    mockRefetchHistory.mockImplementation(async () => {
+      historyReads += 1;
+      if (historyReads >= 2) {
+        mockHistoryData = [
+          historyRow("origin-run", "origin.csv", "2026-02-01T00:00:00Z"),
+          historyRow("other-run", "other.csv", "2026-01-01T00:00:00Z"),
+        ];
+      }
+      return { data: mockHistoryData };
+    });
+    mockFetchAnalysisById.mockResolvedValue({
+      id: "origin-run",
+      filename: "origin.csv",
+      result: {
+        ...baseAnalysis,
+        analysis_id: "origin-run",
+        sample_run: false,
+        packet_unlocked: false,
+      },
+    });
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    const checkoutCalls: Array<{ url: string; authorization: string; body: string }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = handoffFetch(checkoutCalls);
+
+    try {
+      render(<DashboardPage />, { wrapper: createWrapper() });
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(0);
+      });
+      expect(screen.queryByTestId("packet-resume-reupload")).not.toBeInTheDocument();
+      expect(screen.queryByText("Saved analysis")).not.toBeInTheDocument();
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(3_000);
+      });
+      expect(screen.queryByTestId("packet-resume-reupload")).not.toBeInTheDocument();
+      expect(screen.getByText("Saved analysis")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
+      expect(screen.getByTestId("packet-checkout-other-tab")).toHaveTextContent(
+        "Checkout opened in your other tab",
+      );
+      expect(mockFetchAnalysisById).toHaveBeenCalledWith("origin-run");
+      expect(checkoutCalls).toHaveLength(0);
+      expect(mockAnalyzeMutate).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = originalFetch;
+      jest.useRealTimers();
       window.history.replaceState(null, "", "/dashboard");
     }
   });

@@ -362,6 +362,136 @@ test.describe("Guest packet checkout", () => {
     await expect(otherTab.getByRole("button", { name: "Pay $49" })).toBeVisible();
     await expect.poll(() => checkoutBodies.length).toBe(1);
   });
+
+  test("confirm tab waits for a late history row instead of asking for a re-upload", async ({
+    page,
+    browserName,
+  }) => {
+    test.skip(browserName === "webkit", "WebKit auth mocking limitation");
+    test.setTimeout(60_000);
+
+    const originId = "33333333-3333-4333-8333-333333333333";
+    const origin = {
+      ...MOCK_ANALYSIS,
+      analysis_id: originId,
+      sample_run: false,
+      packet_unlocked: false,
+      suggestions: MOCK_ANALYSIS.suggestions.map((item) => ({
+        ...item,
+        symbol: "ORIGINLATE",
+      })),
+      tax_profile: {
+        ...MOCK_ANALYSIS.tax_profile,
+        tax_year: 2025,
+      },
+    };
+    const originHistory = [
+      {
+        id: originId,
+        user_id: "test-user-123",
+        filename: "origin-late.csv",
+        uploaded_at: "2026-03-01T00:00:00Z",
+        summary: MOCK_ANALYSIS.summary,
+        positions_count: 1,
+        total_market_value: 8500,
+      },
+    ];
+    const page1Bodies: string[] = [];
+    const page2Bodies: string[] = [];
+    let releaseOrigin = false;
+
+    await armGuestLanding(page, origin);
+    await page.goto("/");
+    await page.getByTestId("landing-try-sample").click();
+    await expect(page).toHaveURL(/\/dashboard/, { timeout: 30000 });
+    const pay = page.getByRole("button", { name: "Pay $49" });
+    await expect(pay).toBeEnabled({ timeout: 20000 });
+    await pay.click();
+    await expect(page).toHaveURL(/\/auth\/signin\?next=/, { timeout: 15000 });
+    const handoff = JSON.parse(
+      (await page.evaluate(() => localStorage.getItem("optionstaxhub-packet-resume"))) ||
+        "{}",
+    ) as Record<string, unknown>;
+    expect(handoff).toMatchObject({
+      v: 2,
+      sample: false,
+      analysisId: originId,
+      taxYear: 2025,
+    });
+
+    await armOriginalTabCheckout(page, page1Bodies);
+
+    const otherTab = await page.context().newPage();
+    await otherTab.addInitScript(() => {
+      const raw = localStorage.getItem("optionstaxhub-packet-resume");
+      if (!raw) {
+        return;
+      }
+      try {
+        const parsed = JSON.parse(raw) as {
+          sample?: boolean;
+          analysisId?: string;
+          taxYear?: number;
+        };
+        sessionStorage.setItem("optionstaxhub-packet-resume-checkout", "1");
+        if (parsed.sample) {
+          sessionStorage.setItem("optionstaxhub-packet-resume-sample", "1");
+        } else {
+          sessionStorage.removeItem("optionstaxhub-packet-resume-sample");
+        }
+        if (parsed.analysisId && typeof parsed.taxYear === "number") {
+          sessionStorage.setItem(
+            "optionstaxhub-packet-resume-analysis",
+            JSON.stringify({
+              analysisId: parsed.analysisId,
+              taxYear: parsed.taxYear,
+            }),
+          );
+        }
+      } catch {
+        // The page consume path still reads the handoff.
+      }
+    });
+    await otherTab.route("**/health", fulfillJson({ status: "ok" }));
+    await otherTab.route("**/auth/v1/**", fulfillJson({}));
+    await otherTab.route("**/api/**", fulfillJson([]));
+    await injectMockSession(otherTab);
+    await setupMockAuth(otherTab);
+    await otherTab.route("**/api/portfolio/history*", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(releaseOrigin ? originHistory : []),
+      });
+    });
+    await otherTab.route(
+      "**/api/portfolio/analysis/**",
+      fulfillJson({
+        ...originHistory[0],
+        result: origin,
+      }),
+    );
+    await otherTab.route("**/api/year-close-packet/checkout", (route) =>
+      countCheckout(route, page2Bodies),
+    );
+
+    await otherTab.goto(RESUME_PATH);
+    await expect.poll(() => page1Bodies.length, { timeout: 20000 }).toBe(1);
+    expect(JSON.parse(page1Bodies[0]).analysis_id).toBe(originId);
+    releaseOrigin = true;
+
+    await expect(otherTab.getByText("ORIGINLATE")).toBeVisible({ timeout: 20000 });
+    // A saved run's confidence note says "Re-upload the CSV if…". That is
+    // not the resume notice. The notice is only packet-resume-reupload.
+    await expect(otherTab.getByTestId("packet-resume-reupload")).toHaveCount(0);
+    await expect(otherTab.getByTestId("packet-checkout-other-tab")).toHaveText(
+      "Checkout opened in your other tab",
+    );
+    await expect(otherTab.getByRole("button", { name: "Pay $49" })).toBeVisible();
+    expect(page2Bodies).toHaveLength(0);
+    await expect.poll(() => page1Bodies.length).toBe(1);
+    expect(page2Bodies).toHaveLength(0);
+  });
 });
 
 async function armFreshResumePage(

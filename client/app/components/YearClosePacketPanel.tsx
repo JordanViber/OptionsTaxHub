@@ -16,6 +16,7 @@ import {
 } from "@mui/icons-material";
 import { getSession } from "@/lib/supabase";
 import {
+  clearPacketCheckoutStartedIfClaim,
   clearPacketResumeLocal,
   clearPacketResumeSessionMarkers,
   packetCheckoutStartedRecently,
@@ -182,6 +183,13 @@ function clearSessionItem(key: string): void {
   } catch {
     // ignore
   }
+}
+
+function releaseCheckoutClaim(claim: string | undefined): void {
+  if (!claim) {
+    return;
+  }
+  clearPacketCheckoutStartedIfClaim(claim);
 }
 
 function isGuestSnapshotRerunDetail(detail: string): boolean {
@@ -620,6 +628,7 @@ function YearClosePacketPanelForAnalysis({
     try {
       const session = await getSession();
       if (!session?.access_token) {
+        releaseCheckoutClaim(options?.claim);
         if (!guestRedirect) {
           setError("Authentication required. Please sign in.");
           setBusy(null);
@@ -690,14 +699,19 @@ function YearClosePacketPanelForAnalysis({
         if (
           response.status === 409 &&
           analysis.sample_run &&
-          isGuestSnapshotRerunDetail(detail) &&
-          onSampleRerunForCheckout?.()
+          isGuestSnapshotRerunDetail(detail)
         ) {
-          packetResumeCheckoutLocked = false;
-          clearSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY);
-          setBusy(null);
-          return;
+          // Drop this tab's claim before the re-run so that checkout can
+          // start once more instead of looking like another tab's session.
+          releaseCheckoutClaim(options?.claim);
+          if (onSampleRerunForCheckout?.()) {
+            packetResumeCheckoutLocked = false;
+            clearSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY);
+            setBusy(null);
+            return;
+          }
         }
+        releaseCheckoutClaim(options?.claim);
         throw new Error(detail || "Failed to start checkout.");
       }
       const data = await response.json();
@@ -745,6 +759,7 @@ function YearClosePacketPanelForAnalysis({
         // page instead; busy stays "pay" until pageshow / remount.
       }
     } catch (err) {
+      releaseCheckoutClaim(options?.claim);
       clearSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY);
       setError(err instanceof Error ? err.message : "Failed to start checkout.");
       setBusy(null);
@@ -819,7 +834,14 @@ function YearClosePacketPanelForAnalysis({
         return;
       }
       packetResumeCheckoutLocked = true;
-      clearPacketResumeSessionMarkers();
+      // Leave the expected analysis id. A guest-snapshot 409 re-runs the
+      // sample under a new id and still has to match this tax year.
+      try {
+        sessionStorage.removeItem(PACKET_RESUME_CHECKOUT_KEY);
+        sessionStorage.removeItem(PACKET_RESUME_SAMPLE_KEY);
+      } catch {
+        // ignore
+      }
       clearPacketResumeLocal();
       stripResumeCheckoutParam();
       await handlePayRef.current({ guestRedirect: false, claim });
