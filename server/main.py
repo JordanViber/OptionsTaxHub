@@ -3712,11 +3712,11 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
     def _paid_same_year_other_session():
         """A different ``cs_`` already holds this user's tax year.
 
-        ``mark_packet_snapshot_paid`` loads only this run's snapshot rows, so
-        a paid grant on another analysis is invisible there. Look the year up
-        before that stamp. False means this session may mark the run. None is
-        a lookup or receipt outage. Any other value is the duplicate helper's
-        result and must not grant.
+        ``mark_packet_snapshot_paid`` loads only this run's snapshot rows.
+        A paid snapshot on another analysis, or a non-conflict receipt with
+        no snapshot, is invisible there. False means this session may mark
+        the run. None is a lookup or receipt outage. Any other value is the
+        duplicate helper's result and must not grant.
         """
         holder, holder_ok = lookup_packet_grant_for_tax_year(
             session_user_id,
@@ -3724,11 +3724,22 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
         )
         if not holder_ok:
             return None
-        if (
-            isinstance(holder, str)
-            and holder.startswith("cs_")
-            and holder != session_id
+        entitlement, entitlement_ok = lookup_packet_entitlement_for_tax_year(
+            session_user_id,
+            tax_year,
+        )
+        if not entitlement_ok:
+            return None
+        holders = []
+        if isinstance(holder, str) and holder.startswith("cs_"):
+            holders.append(holder)
+        if isinstance(entitlement, dict) and not _is_conflict_analysis_id(
+            entitlement.get("analysis_id")
         ):
+            receipt_session = entitlement.get("packet_session_id")
+            if isinstance(receipt_session, str) and receipt_session.startswith("cs_"):
+                holders.append(receipt_session)
+        if any(held != session_id for held in holders):
             return _same_year_duplicate_grant(
                 session_analysis_id,
                 session_user_id,
@@ -3748,6 +3759,11 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
             return None
         if paid_other_year:
             return paid_other_year
+        same_year_other_session = _paid_same_year_other_session()
+        if same_year_other_session is None:
+            return None
+        if same_year_other_session:
+            return same_year_other_session
         saved_entitlement = save_packet_entitlement(
             session_analysis_id,
             session_user_id,
@@ -3798,6 +3814,11 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
             return None
         if paid_other_year:
             return paid_other_year
+        same_year_other_session = _paid_same_year_other_session()
+        if same_year_other_session is None:
+            return None
+        if same_year_other_session:
+            return same_year_other_session
         saved_entitlement = save_packet_entitlement(
             session_analysis_id,
             session_user_id,
