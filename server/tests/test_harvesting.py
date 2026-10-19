@@ -517,6 +517,38 @@ class TestGenerateSuggestions:
         assert "MSFT" in by_symbol
         assert by_symbol["MSFT"].price_note == ""
 
+    def test_same_symbol_fill_mismatch_is_not_a_real_loss(self):
+        """Another lot's fill must not become a harvestable loss."""
+        lots = [
+            _lot(symbol="AAPL", cost_basis=185.50, current_price=172.20, quantity=10),
+            _lot(symbol="AAPL", cost_basis=172.20, current_price=172.20, quantity=5),
+            _lot(symbol="MSFT", cost_basis=300.0, current_price=250.0, quantity=2),
+        ]
+        lots[0].price_kind = "fill"
+        lots[1].price_kind = "fill"
+        lots = compute_lot_metrics(lots, reference_date=date(2025, 6, 1))
+        suggestions = generate_suggestions(
+            tax_lots=lots,
+            transactions=[],
+            tax_profile=_profile(),
+        )
+        aapl = [row for row in suggestions if row.symbol == "AAPL"]
+        assert len(aapl) == 2
+        assert all(row.estimated_loss == pytest.approx(0.0) for row in aapl)
+        assert all(
+            row.price_note == "Purchase price from your CSV, no live quote"
+            for row in aapl
+        )
+        msft = next(row for row in suggestions if row.symbol == "MSFT")
+        assert msft.estimated_loss == pytest.approx(100.0)
+        assert msft.price_note == ""
+        summary = build_portfolio_summary(
+            aggregate_positions(lots),
+            suggestions,
+            [],
+        )
+        assert summary.lots_with_losses == 1
+
     def test_no_losses_no_suggestions(self):
         lots = [_lot(cost_basis=100.0, current_price=120.0)]
         lots = compute_lot_metrics(lots, reference_date=date(2025, 6, 1))

@@ -94,6 +94,7 @@ import {
   buildHarvestTeasers,
   formatUsd,
   harvestTeaserTotals,
+  purchaseFillUnknownCopy,
 } from "@/lib/harvestPreview";
 import { useAuth } from "@/app/context/auth";
 import { isEmailConfirmed } from "@/lib/supabase";
@@ -475,21 +476,31 @@ function getRecommendedNextSteps(
           totals.totalLoss,
         )} in unrealized losses. The $49 PDF adds sell instructions, replacements, wash chains, and harvest notes.`,
       );
-    } else {
+    } else if (totals.unknownLossCount === 0) {
       steps.push(
         "This page shows the free compare. The $49 PDF adds harvest notes, wash chains, and lot-level 1099 reconciliation.",
       );
     }
+    if (totals.unknownLossCount > 0) {
+      steps.push(purchaseFillUnknownCopy(totals.unknownLossCount));
+    }
     return steps;
   }
-  if (analysis.suggestions.length > 0) {
+  const lossSuggestions = analysis.suggestions.filter(
+    (suggestion) => !suggestion.price_note,
+  );
+  const unknownLossCount = analysis.suggestions.length - lossSuggestions.length;
+  if (lossSuggestions.length > 0) {
     steps.push(
-      `Start with the ${analysis.suggestions.length} ${analysis.suggestions.length === 1 ? "lot" : "lots"} in the harvest queue.`,
+      `Start with the ${lossSuggestions.length} ${lossSuggestions.length === 1 ? "lot" : "lots"} in the harvest queue.`,
     );
-  } else {
+  } else if (unknownLossCount === 0) {
     steps.push(
       "The harvest queue is empty, so review the lot ledger and realized gains for this tax year first.",
     );
+  }
+  if (unknownLossCount > 0) {
+    steps.push(purchaseFillUnknownCopy(unknownLossCount));
   }
 
   if (analysis.wash_sale_flags.length > 0) {
@@ -907,6 +918,7 @@ function ResultsSection({
                   candidateCount: harvestTotals.count,
                   openLossTotal: harvestTotals.totalLoss,
                   potentialTaxSavings: harvestTotals.totalSavings,
+                  unknownLossCount: harvestTotals.unknownLossCount,
                 }
           }
         />

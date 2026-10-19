@@ -116,6 +116,36 @@ describe("PortfolioSummaryCards", () => {
     expect(screen.queryByText("Est. Tax Savings")).not.toBeInTheDocument();
   });
 
+  it("does not count purchase-fill lots as unrealized losses", () => {
+    render(
+      <PortfolioSummaryCards
+        summary={{
+          ...baseSummary,
+          estimated_tax_savings: 0,
+          total_harvestable_losses: 0,
+          lots_with_losses: 1,
+        }}
+        preview={{
+          locked: true,
+          candidateCount: 1,
+          openLossTotal: 400,
+          potentialTaxSavings: 0,
+          unknownLossCount: 7,
+        }}
+      />,
+    );
+
+    expect(
+      screen.getByText(
+        /1 lots with unrealized losses\. Unlock the \$49 plan/,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("summary-unknown-loss-count")).toHaveTextContent(
+      "7 lots use your CSV purchase price, no live quote, loss unknown.",
+    );
+    expect(screen.queryByText(/8 lots with unrealized losses/)).not.toBeInTheDocument();
+  });
+
   it("labels prices and unrealized P&L with the CSV date", () => {
     render(
       <PortfolioSummaryCards

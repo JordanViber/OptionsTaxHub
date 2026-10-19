@@ -3379,6 +3379,122 @@ def test_analyze_survives_yahoo_no_quote(monkeypatch):
     clear_cache()
 
 
+def test_two_fills_of_one_symbol_stay_fill_when_yahoo_fails(monkeypatch):
+    """One lot's purchase price must not price the other lot as a stated loss."""
+    from price_service import clear_cache
+
+    clear_cache()
+    monkeypatch.setattr(
+        "price_service._download_yfinance_prices",
+        lambda symbols, timeout_seconds=5.0: (
+            {},
+            ["yfinance returned no data. Using CSV-provided prices as fallback."],
+        ),
+    )
+    monkeypatch.setattr("main.prepare_positions_for_ai", lambda lots: [])
+    monkeypatch.setattr("main._save_history_best_effort", lambda *args, **kwargs: True)
+    monkeypatch.setattr("main._try_get_ai_suggestions", lambda *args, **kwargs: None)
+
+    response = client.post(
+        "/api/portfolio/analyze?tax_year=2024",
+        files=_make_csv(
+            "Activity Date,Process Date,Settle Date,Instrument,Description,Trans Code,Quantity,Price,Amount\n"
+            "01/15/2024,01/15/2024,01/17/2024,AAPL,Apple,Buy,10,185.50,-1855.00\n"
+            "02/15/2024,02/15/2024,02/17/2024,AAPL,Apple,Buy,5,172.20,-861.00\n"
+        ),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    lots = body["positions"][0]["tax_lots"]
+    by_cost = {round(lot["cost_basis_per_share"], 2): lot for lot in lots}
+    assert set(by_cost) == {185.50, 172.20}
+    for lot in lots:
+        assert lot["price_kind"] == "fill"
+        assert lot["current_price"] == pytest.approx(lot["cost_basis_per_share"])
+        assert lot["unrealized_pnl"] == pytest.approx(0.0)
+    aapl = [row for row in body["suggestions"] if row["symbol"] == "AAPL"]
+    assert len(aapl) == 2
+    assert all(row["estimated_loss"] == pytest.approx(0.0) for row in aapl)
+    assert all(
+        row["price_note"] == "Purchase price from your CSV, no live quote"
+        for row in aapl
+    )
+    assert body["summary"]["lots_with_losses"] == 0
+    clear_cache()
+
+
+def test_stated_csv_current_price_still_counts_as_a_loss(monkeypatch):
+    """A real current_price column stays stated and can be a harvest loss."""
+    from price_service import clear_cache
+
+    clear_cache()
+    monkeypatch.setattr(
+        "price_service._download_yfinance_prices",
+        lambda symbols, timeout_seconds=5.0: (
+            {},
+            ["yfinance returned no data. Using CSV-provided prices as fallback."],
+        ),
+    )
+    monkeypatch.setattr("main.prepare_positions_for_ai", lambda lots: [])
+    monkeypatch.setattr("main._save_history_best_effort", lambda *args, **kwargs: True)
+    monkeypatch.setattr("main._try_get_ai_suggestions", lambda *args, **kwargs: None)
+
+    response = client.post(
+        "/api/portfolio/analyze?tax_year=2024",
+        files=_make_csv(
+            "symbol,quantity,purchase_price,current_price,purchase_date\n"
+            "AAPL,10,185.50,172.20,01/15/2024\n"
+        ),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    lot = body["positions"][0]["tax_lots"][0]
+    assert lot["price_kind"] == "stated"
+    assert lot["current_price"] == pytest.approx(172.20)
+    assert lot["unrealized_pnl"] == pytest.approx(-133.0)
+    suggestion = body["suggestions"][0]
+    assert suggestion["estimated_loss"] == pytest.approx(133.0)
+    assert suggestion["price_note"] == ""
+    assert body["summary"]["lots_with_losses"] == 1
+    # The purchase date is not a quote timestamp.
+    assert body["price_basis"]["label"] == "Prices as of your CSV"
+    assert "2024-01-15" not in body["price_basis"]["label"]
+    clear_cache()
+
+
+def test_simple_csv_without_dates_does_not_invent_a_quote_date(monkeypatch):
+    from datetime import date
+
+    from price_service import clear_cache
+
+    clear_cache()
+    monkeypatch.setattr(
+        "price_service._download_yfinance_prices",
+        lambda symbols, timeout_seconds=5.0: (
+            {},
+            ["yfinance returned no data. Using CSV-provided prices as fallback."],
+        ),
+    )
+    monkeypatch.setattr("main.prepare_positions_for_ai", lambda lots: [])
+    monkeypatch.setattr("main._save_history_best_effort", lambda *args, **kwargs: True)
+    monkeypatch.setattr("main._try_get_ai_suggestions", lambda *args, **kwargs: None)
+
+    response = client.post(
+        "/api/portfolio/analyze?tax_year=2024",
+        files=_make_csv(
+            "symbol,quantity,purchase_price,current_price\n"
+            "AAPL,10,185.50,172.20\n"
+        ),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    label = body["price_basis"]["label"]
+    assert label == "Prices as of your CSV"
+    assert date.today().isoformat() not in label
+    assert body["price_basis"]["csv_as_of"] is None
+    clear_cache()
+
+
 def test_trusted_sample_fixture_prices_win_over_cache_and_lot_fills():
     from datetime import date
 

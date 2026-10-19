@@ -54,23 +54,43 @@ describe("HarvestingSuggestions", () => {
     const note = "Purchase price from your CSV, no live quote";
     render(
       <HarvestingSuggestions
-        suggestions={[{ ...baseSuggestion, price_note: note }]}
+        suggestions={[
+          baseSuggestion,
+          { ...baseSuggestion, suggestion_id: "AAPL-fill", price_note: note, estimated_loss: 0 },
+        ]}
       />,
     );
 
     expect(screen.getByTestId("harvest-price-note")).toHaveTextContent(note);
+    expect(screen.getByTestId("harvest-unknown-loss-count")).toHaveTextContent(
+      "1 lot uses your CSV purchase price, no live quote, loss unknown.",
+    );
+    expect(screen.getAllByText("Sell to harvest")).toHaveLength(1);
+    expect(
+      screen.queryByText("Sell 10 AAPL to harvest this short-term loss"),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText("Unknown").length).toBeGreaterThan(0);
   });
 
   it("keeps a purchase-fill note on locked harvest teasers", () => {
     const note = "Purchase price from your CSV, no live quote";
     render(
       <HarvestingSuggestions
-        suggestions={[{ ...baseSuggestion, price_note: note }]}
+        suggestions={[
+          baseSuggestion,
+          { ...baseSuggestion, suggestion_id: "AAPL-fill", price_note: note, estimated_loss: 133 },
+        ]}
         locked
       />,
     );
 
     expect(screen.getByTestId("harvest-price-note")).toHaveTextContent(note);
+    expect(screen.getByText(/1\s*lot\s*with unrealized losses/)).toBeInTheDocument();
+    expect(screen.getByTestId("harvest-unknown-loss-count")).toHaveTextContent(
+      "1 lot uses your CSV purchase price, no live quote, loss unknown.",
+    );
+    expect(screen.queryByText(/2 lots with unrealized losses/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Sell to harvest")).not.toBeInTheDocument();
   });
 
   it("shows packet preview instead of sell recipes when locked", () => {

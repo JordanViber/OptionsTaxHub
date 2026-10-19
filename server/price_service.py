@@ -107,9 +107,13 @@ PURCHASE_PRICE_LABEL = "Purchase price from your CSV, no live quote"
 
 
 def csv_price_label(csv_as_of: str | None) -> str:
-    """Desk copy when a CSV states its own price and date."""
+    """Desk copy when a CSV states its own price.
+
+    The date is included only when the file has an activity timestamp.
+    A blank date must not hide the numbers or invent one.
+    """
     if not csv_as_of:
-        return ""
+        return "Prices as of your CSV"
     return f"Prices as of your CSV ({csv_as_of})"
 
 

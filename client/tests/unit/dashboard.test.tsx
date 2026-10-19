@@ -786,6 +786,49 @@ describe("DashboardPage", () => {
     });
   });
 
+  it("does not count purchase-fill lots in the harvest next step", async () => {
+    const note = "Purchase price from your CSV, no live quote";
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      sample_run: false,
+      packet_unlocked: false,
+      suggestions: [
+        ...baseAnalysis.suggestions,
+        {
+          ...baseAnalysis.suggestions[0],
+          suggestion_id: "AAPL-fill-1",
+          symbol: "AAPL",
+          display_label: "AAPL",
+          estimated_loss: 0,
+          tax_savings_estimate: 0,
+          price_note: note,
+        },
+        {
+          ...baseAnalysis.suggestions[0],
+          suggestion_id: "MSFT-fill-1",
+          symbol: "MSFT",
+          display_label: "MSFT",
+          estimated_loss: 133,
+          tax_savings_estimate: 0,
+          price_note: note,
+        },
+      ],
+    };
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          "2 lots use your CSV purchase price, no live quote, loss unknown.",
+        ),
+      ).toBeInTheDocument();
+    });
+    expect(
+      screen.queryByText(/3 lots/i),
+    ).not.toBeInTheDocument();
+  });
+
   it("explains when automated suggestions were skipped for split-affected symbols", async () => {
     mockAnalyzeData = {
       ...baseAnalysis,

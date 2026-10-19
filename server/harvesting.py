@@ -512,7 +512,9 @@ def generate_suggestions(
 
     def _append_lot(lot: TaxLot, *, fill: bool) -> None:
         pnl = lot.unrealized_pnl or 0.0
-        loss_amount = abs(pnl) if pnl < 0 else 0.0
+        # A purchase fill is not a market price, so a negative number here
+        # is another lot's fill, not a loss to harvest.
+        loss_amount = 0.0 if fill else (abs(pnl) if pnl < 0 else 0.0)
         is_lt = lot.is_long_term or False
 
         tax_savings = calculate_tax_savings(
@@ -669,6 +671,8 @@ def build_portfolio_summary(
     lots_with_gains = 0
     for p in positions:
         for lot in p.tax_lots:
+            if getattr(lot, "price_kind", None) == "fill":
+                continue
             if lot.unrealized_pnl is not None:
                 if lot.unrealized_pnl < 0:
                     lots_with_losses += 1

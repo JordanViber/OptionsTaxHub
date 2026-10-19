@@ -18,6 +18,7 @@ import {
   Receipt as RealizedIcon,
 } from "@mui/icons-material";
 import type { PortfolioSummary, PriceBasis, RealizedSummary } from "@/lib/types";
+import { purchaseFillUnknownCopy } from "@/lib/harvestPreview";
 import { pricedNumbersVisible } from "@/lib/priceBasis";
 import PriceAsOfNote from "./PriceAsOfNote";
 
@@ -29,6 +30,7 @@ interface PortfolioSummaryCardsProps {
     candidateCount: number;
     openLossTotal: number;
     potentialTaxSavings: number;
+    unknownLossCount?: number;
   };
 }
 
@@ -208,6 +210,7 @@ export default function PortfolioSummaryCards({
   const hasRealized = !!summary.realized_summary;
   const savingsColor =
     summary.wash_sale_flags_count > 0 ? "#c4a36a" : "#7a9e84";
+  const unknownLossCount = preview?.unknownLossCount ?? 0;
   const showLossPreview =
     Boolean(preview?.locked) &&
     (preview?.candidateCount ?? 0) > 0 &&
@@ -262,12 +265,24 @@ export default function PortfolioSummaryCards({
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1.5 }}>
             {showLossPreview
               ? `${preview?.candidateCount ?? 0} lots with unrealized losses. Unlock the $49 plan for sell instructions and what to wait on.`
-              : showPrices
-                ? `Federal harvest still available from ${formatCurrency(
-                    harvestableValue,
-                  )} of losing lots.`
-                : "Federal harvest still available from the losing lots on this page."}
+              : unknownLossCount > 0
+                ? purchaseFillUnknownCopy(unknownLossCount)
+                : showPrices
+                  ? `Federal harvest still available from ${formatCurrency(
+                      harvestableValue,
+                    )} of losing lots.`
+                  : "Federal harvest still available from the losing lots on this page."}
           </Typography>
+          {showLossPreview && unknownLossCount > 0 ? (
+            <Typography
+              variant="body2"
+              color="text.secondary"
+              data-testid="summary-unknown-loss-count"
+              sx={{ mt: 0.75 }}
+            >
+              {purchaseFillUnknownCopy(unknownLossCount)}
+            </Typography>
+          ) : null}
           <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
             {summary.wash_sale_flags_count > 0
               ? `${summary.wash_sale_flags_count} wash-sale warning(s)`

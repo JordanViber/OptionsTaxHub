@@ -1075,18 +1075,19 @@ def _drop_sample_fixture_price_warnings(warnings: list[str]) -> list[str]:
     ]
 
 
-def _csv_price_as_of(transactions: list, tax_lots: list) -> str | None:
-    """Latest activity date in the file, else the latest lot purchase date."""
+def _csv_price_as_of(transactions: list, _tax_lots: list) -> str | None:
+    """Latest brokerage activity date in the file.
+
+    A lot purchase date is when the shares were acquired, not when a
+    current price was observed. Simple holdings files have no activity
+    dates, and a missing purchase_date is filled with today, so those
+    dates are not used as a quote timestamp.
+    """
     dates: list[date] = []
     for txn in transactions or []:
         activity = getattr(txn, "activity_date", None)
         if isinstance(activity, date):
             dates.append(activity)
-    if not dates:
-        for lot in tax_lots or []:
-            purchased = getattr(lot, "purchase_date", None)
-            if isinstance(purchased, date):
-                dates.append(purchased)
     if not dates:
         return None
     return max(dates).isoformat()
@@ -1234,30 +1235,36 @@ def _apply_live_prices_to_tax_lots(
 
     quote_by_symbol = {quote.symbol: quote for quote in quotes}
 
-    def _keep_price_kind(lot, new_price: float, quote_key: str) -> None:
+    def _resolved_lot_price(lot, new_price: float, quote_key: str) -> float:
+        """Pick the price to store and the price_kind that goes with it.
+
+        ``stated`` is set only when the CSV itself has a current-price column.
+        A symbol-level fill fallback is one lot's purchase price, so every
+        other lot of that symbol keeps its own fill and stays ``fill``.
+        """
         if lot.symbol.upper() in fixture_symbols and lot.asset_type == AssetType.STOCK:
             lot.price_kind = "fixture"
-            return
+            return new_price
         quote = quote_by_symbol.get(quote_key)
         if quote is not None and quote.source == "live":
             lot.price_kind = None
-            return
-        if getattr(lot, "price_kind", None) != "fill":
-            return
-        seeded = lot.cost_basis_per_share
-        if seeded is not None and abs(float(new_price) - float(seeded)) > 0.009:
-            lot.price_kind = "stated"
+            return new_price
+        if getattr(lot, "price_kind", None) == "fill":
+            if lot.current_price is None:
+                return new_price
+            return float(lot.current_price)
+        return new_price
 
     for lot in tax_lots:
         if lot.asset_type == AssetType.STOCK and lot.symbol in live_prices:
-            new_price = live_prices[lot.symbol]
-            _keep_price_kind(lot, new_price, lot.symbol.upper())
-            lot.current_price = new_price
+            lot.current_price = _resolved_lot_price(
+                lot, live_prices[lot.symbol], lot.symbol.upper()
+            )
             continue
         if lot.asset_type == AssetType.OPTION and lot.contract_label in option_prices:
-            new_price = option_prices[lot.contract_label]
-            _keep_price_kind(lot, new_price, lot.contract_label)
-            lot.current_price = new_price
+            lot.current_price = _resolved_lot_price(
+                lot, option_prices[lot.contract_label], lot.contract_label
+            )
 
     if price_quotes is not None:
         price_quotes.extend(quotes)
