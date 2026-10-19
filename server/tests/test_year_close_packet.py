@@ -1389,6 +1389,84 @@ def test_paid_year_checkout_promotes_a_new_analysis_without_a_new_entitlement(mo
     assert downloaded.headers["content-type"].startswith("application/pdf")
 
 
+def test_checkout_promotes_a2_when_grant_names_a1_and_receipt_lookup_fails(monkeypatch):
+    """Grant on A1 still promotes A2 when the receipt lookup fails.
+
+    That failure is why the entitlement body omits analysis_id. Checkout must
+    return already_paid without Session.create. A2's download stays 403 until
+    the promotion writes A2's paid snapshot.
+    """
+    _test_stripe_env(monkeypatch)
+    user_id = "test-user-123"
+    analysis_a1 = "analysis-grant-a1"
+    analysis_a2 = "analysis-grant-a2"
+    session_id = "cs_test_grant_a1"
+    _FAKE_PACKET_SNAPSHOTS[(user_id, analysis_a1)] = {
+        "analysis_id": analysis_a1,
+        "user_id": user_id,
+        "tax_year": 2025,
+        "packet_session_id": session_id,
+        "paid_at": "now",
+        "packet_payload": {"analysis_id": analysis_a1, "marker": "grant-a1"},
+    }
+
+    def failing_receipt(*_args, **_kwargs):
+        return None, False
+
+    def grant_naming_a1(owner, tax_year):
+        for (stored_owner, stored_id), row in _FAKE_PACKET_SNAPSHOTS.items():
+            if stored_owner != owner or int(row.get("tax_year")) != int(tax_year):
+                continue
+            if (
+                row.get("paid_at")
+                and isinstance(row.get("packet_session_id"), str)
+                and row["packet_session_id"].startswith("cs_")
+            ):
+                assert stored_id == analysis_a1
+                return row["packet_session_id"], True
+        return None, True
+
+    monkeypatch.setattr(main, "lookup_packet_entitlement_for_tax_year", failing_receipt)
+    monkeypatch.setattr(main, "lookup_packet_grant_for_tax_year", grant_naming_a1)
+    created = []
+
+    def fail_create(**kwargs):
+        created.append(kwargs)
+        raise AssertionError("stripe.checkout.Session.create must not run")
+
+    monkeypatch.setattr(main.stripe.checkout.Session, "create", fail_create)
+    analysis = {**SAMPLE_ANALYSIS, "analysis_id": analysis_a2}
+    remember_analysis(analysis_a2, user_id, analysis)
+
+    before = client.get(f"/api/year-close-packet/download?analysis_id={analysis_a2}")
+    assert before.status_code == 403, before.text
+
+    entitlement = client.get(
+        "/api/year-close-packet/entitlement",
+        params={"tax_year": 2025},
+    )
+    assert entitlement.status_code == 200, entitlement.text
+    assert entitlement.json()["paid"] is True
+    assert entitlement.json()["session_id"] == session_id
+    assert "analysis_id" not in entitlement.json()
+
+    response = client.post(
+        "/api/year-close-packet/checkout",
+        json={"analysis_id": analysis_a2, "analysis": analysis},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["already_paid"] is True
+    assert body["session_id"] == session_id
+    assert body["analysis_id"] == analysis_a2
+    assert created == []
+    assert _FAKE_PACKET_SNAPSHOTS[(user_id, analysis_a1)]["analysis_id"] == analysis_a1
+
+    after = client.get(f"/api/year-close-packet/download?analysis_id={analysis_a2}")
+    assert after.status_code == 200, after.text
+    assert after.headers["content-type"].startswith("application/pdf")
+
+
 def test_checkout_restores_private_snapshot_after_worker_restart(monkeypatch):
     _test_stripe_env(monkeypatch)
     analysis_id = "analysis-cold-checkout"
