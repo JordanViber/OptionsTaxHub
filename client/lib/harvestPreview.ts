@@ -11,6 +11,7 @@ export interface HarvestTeaser {
   taxSavings: number | null;
   washSaleRisk: boolean;
   isLongTerm: boolean;
+  priceNote?: string;
 }
 
 export interface HarvestTeaserTotals {
@@ -35,6 +36,7 @@ function teaserFromSuggestion(suggestion: HarvestingSuggestion): HarvestTeaser {
     taxSavings: suggestion.tax_savings_estimate,
     washSaleRisk: suggestion.wash_sale_risk,
     isLongTerm: suggestion.is_long_term,
+    priceNote: suggestion.price_note || undefined,
   };
 }
 

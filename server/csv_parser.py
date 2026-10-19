@@ -349,6 +349,7 @@ def parse_simple_csv(df: pd.DataFrame) -> tuple[list[TaxLot], list[str]]:
                     total_cost_basis=purchase_price * quantity,
                     purchase_date=purchase_date,
                     current_price=current_price,
+                    price_kind="stated",
                 )
             )
 
@@ -402,6 +403,7 @@ def _add_lot(
         # Seed current_price with the fill so market_value is non-None until a
         # live quote arrives (options: last premium; stock: purchase price).
         current_price=txn.price,
+        price_kind="fill",
     )
     if symbol not in open_lots:
         open_lots[symbol] = []

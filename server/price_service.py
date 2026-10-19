@@ -15,6 +15,8 @@ import math
 import os
 import re
 import time
+
+import pandas as pd
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass
@@ -100,8 +102,12 @@ class PriceFetchResult:
         yield self.warnings
 
 
+# The Robinhood fallback number is the purchase fill, not a market price.
+PURCHASE_PRICE_LABEL = "Purchase price from your CSV, no live quote"
+
+
 def csv_price_label(csv_as_of: str | None) -> str:
-    """Exact desk copy when a price is not a live quote."""
+    """Desk copy when a CSV states its own price and date."""
     if not csv_as_of:
         return ""
     return f"Prices as of your CSV ({csv_as_of})"
@@ -110,6 +116,7 @@ def csv_price_label(csv_as_of: str | None) -> str:
 def price_basis_from_quotes(
     quotes: list[Quote],
     csv_as_of: str | None,
+    fill_fallback: bool = False,
 ) -> dict[str, Any]:
     """Portfolio provenance. ``live`` is true only when every quote succeeded."""
     live = bool(quotes) and all(
@@ -122,6 +129,9 @@ def price_basis_from_quotes(
         providers = {quote.provider for quote in quotes}
         provider = next(iter(providers)) if len(providers) == 1 else None
         as_of = max(quote.as_of for quote in quotes)
+    elif fill_fallback:
+        label = PURCHASE_PRICE_LABEL
+        as_of = None
     else:
         label = csv_price_label(csv_as_of)
         as_of = csv_as_of
@@ -608,6 +618,7 @@ def fetch_option_prices(
         unique_labels = list(dict.fromkeys(contract_labels))
         prices, labels_to_fetch = _resolve_cached_option_prices(unique_labels)
         quotes: list[Quote] = []
+        cached_symbols = set(prices)
         for label in prices:
             cached = _cached_option_quote(label)
             if cached is not None:
@@ -632,11 +643,21 @@ def fetch_option_prices(
                     else Quote(label, price, "live", "yahoo", as_of)
                 )
             warnings.extend(fetch_warnings)
+        live_symbols = {
+            quote.symbol for quote in quotes if quote.symbol not in cached_symbols
+        }
         quoted = {quote.symbol for quote in quotes}
         warnings.extend(
             _apply_option_fallback_prices(unique_labels, prices, fallback_prices)
         )
         quotes.extend(_csv_quotes_for_prices(prices, csv_as_of, quoted))
+        _log_quote_outcome(
+            "option",
+            unique_labels,
+            prices,
+            live_symbols=live_symbols,
+            cached_symbols=cached_symbols,
+        )
         return PriceFetchResult(prices, warnings, quotes, [])
     except Exception as exc:
         logger.error("option quote fetch failed: %s", exc)
@@ -645,10 +666,18 @@ def fetch_option_prices(
             for label in contract_labels:
                 if label in fallback_prices:
                     prices[label] = fallback_prices[label]
+        quotes = _csv_quotes_for_prices(prices, csv_as_of, set())
+        _log_quote_outcome(
+            "option",
+            list(dict.fromkeys(contract_labels)),
+            prices,
+            live_symbols=set(),
+            cached_symbols=set(),
+        )
         return PriceFetchResult(
             prices,
             ["Quote fetch failed. Using CSV-provided prices as fallback."],
-            _csv_quotes_for_prices(prices, csv_as_of, set()),
+            quotes,
             [ProviderStatus("yahoo", "error")],
         )
 
@@ -668,14 +697,77 @@ def _resolve_cached_prices(
     return prices, to_fetch
 
 
-def _extract_single_ticker_price(data, _symbol: str) -> Optional[float]:
-    """Extract closing price from yfinance data for a single-ticker download."""
-    if "Close" not in data.columns:
+def _close_column_present(data) -> bool:
+    columns = getattr(data, "columns", None)
+    if columns is None:
+        return False
+    if isinstance(columns, pd.MultiIndex):
+        return "Close" in columns.get_level_values(0)
+    return "Close" in columns
+
+
+def _extract_single_ticker_price(data, symbol: str) -> Optional[float]:
+    """Extract the close for one ticker.
+
+    Current yfinance returns a MultiIndex even for a single symbol, so
+    ``data["Close"].iloc[-1]`` is a Series. Select that ticker instead of
+    calling float() on the row.
+    """
+    if not _close_column_present(data):
         return None
-    close_series = data["Close"]
-    if close_series.empty:
+    close = data["Close"]
+    if isinstance(close, pd.DataFrame):
+        if symbol in close.columns:
+            series = close[symbol]
+        elif close.shape[1] == 1:
+            series = close.iloc[:, 0]
+        else:
+            return None
+    else:
+        series = close
+    if isinstance(series, pd.DataFrame):
+        series = series.squeeze(axis=1)
+    series = series.dropna()
+    if getattr(series, "empty", True):
         return None
-    return round(float(close_series.iloc[-1]), 2)
+    value = series.iloc[-1]
+    if isinstance(value, pd.Series):
+        if symbol in value.index:
+            value = value[symbol]
+        elif len(value) == 1:
+            value = value.iloc[0]
+        else:
+            return None
+    try:
+        return round(float(value), 2)
+    except (TypeError, ValueError):
+        return None
+
+
+def _log_quote_outcome(
+    request: str,
+    symbols: list[str],
+    prices: dict[str, float],
+    *,
+    live_symbols: set[str],
+    cached_symbols: set[str],
+) -> None:
+    """One line per quote request: live, cached, fallback, and empty counts."""
+    priced = {str(symbol).upper() for symbol in prices}
+    live = {symbol.upper() for symbol in live_symbols} & priced
+    cached = {symbol.upper() for symbol in cached_symbols} & priced
+    fallback = priced - live - cached
+    requested = {str(symbol).upper() for symbol in symbols if symbol}
+    empty = requested - priced
+    logger.info(
+        "quote outcome request=%s symbols=%d live=%d cached=%d fallback=%d empty=%d",
+        request,
+        len(requested),
+        len(live),
+        len(cached),
+        len(fallback),
+        len(empty),
+    )
 
 
 def _extract_multi_ticker_prices(
@@ -821,12 +913,15 @@ def _fetch_current_prices_impl(
     warnings: list[str] = []
     statuses: list[ProviderStatus] = []
 
+    cached_symbols: set[str] = set()
+    live_symbols: set[str] = set()
     for symbol in unique:
         cached = _cached_price_quote(symbol)
         if cached is None:
             continue
         prices[symbol] = cached.price
         quotes.append(cached)
+        cached_symbols.add(symbol)
 
     to_fetch = [symbol for symbol in unique if symbol not in prices]
     if allow_network and to_fetch:
@@ -860,6 +955,7 @@ def _fetch_current_prices_impl(
                 prices[upper] = price
                 _set_cached_price(upper, price, provider=provider.name, as_of=as_of)
                 quotes.append(Quote(upper, price, "live", provider.name, as_of))
+                live_symbols.add(upper)
             statuses.append(ProviderStatus(provider.name, reason))
             to_fetch = [symbol for symbol in to_fetch if symbol not in prices]
             if reason == "timeout":
@@ -870,6 +966,13 @@ def _fetch_current_prices_impl(
         _apply_fallback_prices(unique, prices, fallback_prices, csv_as_of=csv_as_of)
     )
     quotes.extend(_csv_quotes_for_prices(prices, csv_as_of, quoted))
+    _log_quote_outcome(
+        "stock",
+        unique,
+        prices,
+        live_symbols=live_symbols,
+        cached_symbols=cached_symbols,
+    )
     return PriceFetchResult(prices, warnings, quotes, statuses)
 
 
@@ -927,6 +1030,13 @@ def fetch_current_prices(
         missing = [symbol.upper() for symbol in symbols if symbol.upper() not in prices]
         if missing:
             warnings.append(f"No prices available for: {', '.join(missing)}")
+        _log_quote_outcome(
+            "stock",
+            list(symbols),
+            prices,
+            live_symbols=set(),
+            cached_symbols=set(),
+        )
         return PriceFetchResult(
             prices,
             warnings,

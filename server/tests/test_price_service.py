@@ -112,6 +112,20 @@ class TestExtractSingleTickerPrice:
         df = pd.DataFrame({"Close": pd.Series([], dtype=float)})
         assert _extract_single_ticker_price(df, "AAPL") is None
 
+    def test_multiindex_single_ticker_selects_the_ticker_level(self):
+        """Current yfinance keeps a ticker level even for one symbol.
+
+        ``data["Close"].iloc[-1]`` is then a Series, and float() raises.
+        """
+        columns = pd.MultiIndex.from_tuples(
+            [("Close", "AAPL"), ("Open", "AAPL")]
+        )
+        df = pd.DataFrame(
+            [[180.0, 179.0], [181.256, 180.5]],
+            columns=columns,
+        )
+        assert _extract_single_ticker_price(df, "AAPL") == pytest.approx(181.26)
+
 
 # --- _extract_multi_ticker_prices ---
 
@@ -338,7 +352,8 @@ class TestFetchCurrentPrices:
             assert prices["AAPL"] == pytest.approx(150.0)
             assert prices["MSFT"] == pytest.approx(310.0)
 
-    def test_yahoo_no_quote_falls_back_to_csv_with_provenance(self, monkeypatch):
+    def test_yahoo_no_quote_falls_back_to_csv_with_provenance(self, monkeypatch, caplog):
+        caplog.set_level("INFO", logger="price_service")
         monkeypatch.setattr(
             price_service,
             "_download_yfinance_prices",
@@ -361,6 +376,10 @@ class TestFetchCurrentPrices:
         assert any(
             status.provider == "yahoo" and status.reason == "no_quote"
             for status in fetched.provider_statuses
+        )
+        assert (
+            "quote outcome request=stock symbols=2 live=0 cached=0 fallback=2 empty=0"
+            in caplog.text
         )
 
     def test_timeout_falls_back_to_csv_inside_budget(self, monkeypatch):

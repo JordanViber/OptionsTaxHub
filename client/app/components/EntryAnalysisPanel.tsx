@@ -894,10 +894,16 @@ export default function EntryAnalysisPanel({
           </Typography>
         ) : null}
 
-        <Typography variant="caption" color="text.secondary">
-          Ranking is a live quote snapshot, not advice. Implied move to break
-          even is not a forecast. Simulation only. Not a filed Form 8949, and
-          not the year-close packet.
+        <Typography
+          variant="caption"
+          color="text.secondary"
+          data-testid="entry-quote-disclaimer"
+        >
+          {showRankList
+            ? "Ranking is a live quote snapshot, not advice. "
+            : "Ranking is not advice. "}
+          Implied move to break even is not a forecast. Simulation only. Not a
+          filed Form 8949, and not the year-close packet.
         </Typography>
       </Stack>
     </Box>

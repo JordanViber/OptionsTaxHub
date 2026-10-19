@@ -41,13 +41,19 @@ const csvAnalysis = {
   },
 };
 
+const PURCHASE_LABEL = "Purchase price from your CSV, no live quote";
+
 const signedInAnalysis = {
   ...MOCK_ANALYSIS,
   sample_run: false,
   packet_unlocked: true,
+  suggestions: MOCK_ANALYSIS.suggestions.map((suggestion) => ({
+    ...suggestion,
+    price_note: PURCHASE_LABEL,
+  })),
   price_basis: {
     ...csvBasis,
-    label: "Prices as of your CSV (2025-03-15)",
+    label: PURCHASE_LABEL,
     csv_as_of: "2025-03-15",
     quotes: csvBasis.quotes.map((quote) => ({
       ...quote,
@@ -138,7 +144,10 @@ for (const viewport of viewports) {
     await setupMockAnalysis(page, signedInAnalysis);
     await goToAuthenticatedHome(page);
     await uploadTestCsv(page);
-    await expectCsvLabels(page, "Prices as of your CSV (2025-03-15)");
+    await expectCsvLabels(page, PURCHASE_LABEL);
+    await expect(page.getByTestId("harvest-price-note").first()).toHaveText(
+      PURCHASE_LABEL,
+    );
     if (viewport.width === 390) {
       const scrollWidth = await page.evaluate(
         () => document.documentElement.scrollWidth,

@@ -181,6 +181,7 @@ export interface HarvestingSuggestion {
   ai_explanation: string;
   ai_generated: boolean;
   priority: number;
+  price_note?: string;
 }
 
 export interface Form1099BLot {

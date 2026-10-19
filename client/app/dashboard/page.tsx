@@ -433,13 +433,17 @@ function getConfidenceSummary(analysis: PortfolioAnalysis): {
 
   if (
     details.length === 1 &&
-    /prices as of your csv|prices came from your csv/i.test(details[0])
+    /prices as of your csv|prices came from your csv|purchase price from your csv/i.test(
+      details[0],
+    )
   ) {
+    const purchaseFill = /purchase price from your csv/i.test(details[0]);
     return {
       severity: "info",
       label: "Moderate confidence",
-      summary:
-        "This result is usable. The prices on this page are marked with your CSV date.",
+      summary: purchaseFill
+        ? "This result is usable. The prices on this page are purchase fills from your CSV."
+        : "This result is usable. The prices on this page are marked with your CSV date.",
       details,
     };
   }

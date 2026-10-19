@@ -330,6 +330,17 @@ function SuggestionCard({
               </Box>
             )}
 
+            {suggestion.price_note ? (
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                data-testid="harvest-price-note"
+                sx={{ display: "block", mt: 1 }}
+              >
+                {suggestion.price_note}
+              </Typography>
+            ) : null}
+
             <Stack direction="row" spacing={3} sx={{ mt: 1 }}>
               <Box>
                 <Typography variant="caption" color="text.secondary">
@@ -503,6 +514,16 @@ function HarvestTeaserCard({
             <Typography variant="subtitle1" sx={{ fontWeight: 700 }} noWrap>
               {teaser.label}
             </Typography>
+            {teaser.priceNote ? (
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                data-testid="harvest-price-note"
+                sx={{ display: "block" }}
+              >
+                {teaser.priceNote}
+              </Typography>
+            ) : null}
             <Stack
               direction="row"
               spacing={0.75}

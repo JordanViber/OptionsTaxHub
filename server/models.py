@@ -121,6 +121,9 @@ class TaxLot(BaseModel):
     price_source: Optional[Literal["live", "csv"]] = None
     price_provider: Optional[str] = None
     price_as_of: Optional[str] = None
+    # fill: seeded from the purchase. stated: a CSV current_price column.
+    # fixture: the pinned sample price. Cleared when a live quote replaces it.
+    price_kind: Optional[Literal["fill", "stated", "fixture"]] = None
 
 
 class Position(BaseModel):
@@ -362,6 +365,7 @@ class HarvestingSuggestion(BaseModel):
     price_source: Optional[Literal["live", "csv"]] = None
     price_provider: Optional[str] = None
     price_as_of: Optional[str] = None
+    price_note: str = ""
 
 
 class Form1099BLot(BaseModel):
@@ -452,7 +456,8 @@ class QuoteProvenance(BaseModel):
 class PriceBasis(BaseModel):
     """Provenance for every price used in an analysis.
 
-    ``label`` is ``Prices as of your CSV (<date>)`` unless every quote is live.
+    ``label`` is empty when every quote is live. A purchase-fill fallback
+    says so. Any other CSV price keeps the CSV date.
     """
 
     quotes: list[QuoteProvenance] = []

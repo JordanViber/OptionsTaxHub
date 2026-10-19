@@ -496,6 +496,27 @@ class TestBuildPortfolioSummary:
 # --- generate_suggestions ---
 
 class TestGenerateSuggestions:
+    def test_purchase_fill_fallback_stays_a_harvest_candidate(self):
+        lots = [
+            _lot(symbol="AAPL", cost_basis=150.0, current_price=150.0, quantity=10),
+            _lot(symbol="MSFT", cost_basis=300.0, current_price=250.0, quantity=2),
+        ]
+        lots[0].price_kind = "fill"
+        lots = compute_lot_metrics(lots, reference_date=date(2025, 6, 1))
+        suggestions = generate_suggestions(
+            tax_lots=lots,
+            transactions=[],
+            tax_profile=_profile(),
+        )
+        by_symbol = {row.symbol: row for row in suggestions}
+        assert "AAPL" in by_symbol
+        assert by_symbol["AAPL"].price_note == (
+            "Purchase price from your CSV, no live quote"
+        )
+        assert by_symbol["AAPL"].estimated_loss == pytest.approx(0.0)
+        assert "MSFT" in by_symbol
+        assert by_symbol["MSFT"].price_note == ""
+
     def test_no_losses_no_suggestions(self):
         lots = [_lot(cost_basis=100.0, current_price=120.0)]
         lots = compute_lot_metrics(lots, reference_date=date(2025, 6, 1))

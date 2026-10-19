@@ -480,13 +480,22 @@ def generate_suggestions(
     """
     suggestions: list[HarvestingSuggestion] = []
 
-    # Filter to lots with unrealized losses
+    def _purchase_fill(lot: TaxLot) -> bool:
+        # Still the seeded purchase price. A live quote or another stated
+        # price clears this, so a real flat quote is not a harvest candidate.
+        return getattr(lot, "price_kind", None) == "fill"
+
+    # Losses stay candidates. Purchase-fill fallbacks stay too: their P&L is
+    # about $0, and dropping them hides the lot with no harvest note.
     loss_lots = [
         lot for lot in tax_lots
-        if lot.unrealized_pnl is not None and lot.unrealized_pnl < 0
+        if lot.unrealized_pnl is not None
+        and lot.unrealized_pnl < 0
+        and not _purchase_fill(lot)
     ]
+    fill_lots = [lot for lot in tax_lots if _purchase_fill(lot)]
 
-    if not loss_lots:
+    if not loss_lots and not fill_lots:
         return suggestions
 
     # Compute realized gains to determine optimal harvest target
@@ -501,8 +510,9 @@ def generate_suggestions(
     clean_candidates: list[HarvestingSuggestion] = []
     risky_candidates: list[HarvestingSuggestion] = []
 
-    for lot in loss_lots:
-        loss_amount = abs(lot.unrealized_pnl)  # type: ignore[arg-type]
+    def _append_lot(lot: TaxLot, *, fill: bool) -> None:
+        pnl = lot.unrealized_pnl or 0.0
+        loss_amount = abs(pnl) if pnl < 0 else 0.0
         is_lt = lot.is_long_term or False
 
         tax_savings = calculate_tax_savings(
@@ -538,12 +548,21 @@ def generate_suggestions(
             replacement_candidates=replacements,
             ai_explanation=ai_explanation,
             ai_generated=is_ai,
+            price_note=(
+                "Purchase price from your CSV, no live quote" if fill else ""
+            ),
         )
 
-        if wash_risk:
-            risky_candidates.append(suggestion)
-        else:
-            clean_candidates.append(suggestion)
+        bucket = fill_candidates if fill else (
+            risky_candidates if wash_risk else clean_candidates
+        )
+        bucket.append(suggestion)
+
+    fill_candidates: list[HarvestingSuggestion] = []
+    for lot in loss_lots:
+        _append_lot(lot, fill=False)
+    for lot in fill_lots:
+        _append_lot(lot, fill=True)
 
     # Sort clean candidates by tax savings (highest first)
     clean_candidates.sort(key=lambda s: s.tax_savings_estimate, reverse=True)
@@ -563,6 +582,8 @@ def generate_suggestions(
         suggestions.extend(clean_candidates)
 
     suggestions.extend(risky_candidates)
+    # Fill-price lots stay even when the harvest cap is already full.
+    suggestions.extend(fill_candidates)
 
     # Assign priority rankings
     for idx, suggestion in enumerate(suggestions):

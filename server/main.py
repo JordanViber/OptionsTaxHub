@@ -1213,6 +1213,7 @@ def _apply_live_prices_to_tax_lots(
         )
     all_warnings.extend(option_price_warnings)
 
+    fixture_symbols: set[str] = set()
     if fixture_prices:
         lot_symbols = {
             lot.symbol.upper()
@@ -1223,6 +1224,7 @@ def _apply_live_prices_to_tax_lots(
             upper = symbol.upper()
             if upper not in lot_symbols:
                 continue
+            fixture_symbols.add(upper)
             live_prices[upper] = price
             quotes = _replace_quote(
                 quotes,
@@ -1230,12 +1232,32 @@ def _apply_live_prices_to_tax_lots(
                 Quote(upper, float(price), "csv", None, csv_as_of or ""),
             )
 
+    quote_by_symbol = {quote.symbol: quote for quote in quotes}
+
+    def _keep_price_kind(lot, new_price: float, quote_key: str) -> None:
+        if lot.symbol.upper() in fixture_symbols and lot.asset_type == AssetType.STOCK:
+            lot.price_kind = "fixture"
+            return
+        quote = quote_by_symbol.get(quote_key)
+        if quote is not None and quote.source == "live":
+            lot.price_kind = None
+            return
+        if getattr(lot, "price_kind", None) != "fill":
+            return
+        seeded = lot.cost_basis_per_share
+        if seeded is not None and abs(float(new_price) - float(seeded)) > 0.009:
+            lot.price_kind = "stated"
+
     for lot in tax_lots:
         if lot.asset_type == AssetType.STOCK and lot.symbol in live_prices:
-            lot.current_price = live_prices[lot.symbol]
+            new_price = live_prices[lot.symbol]
+            _keep_price_kind(lot, new_price, lot.symbol.upper())
+            lot.current_price = new_price
             continue
         if lot.asset_type == AssetType.OPTION and lot.contract_label in option_prices:
-            lot.current_price = option_prices[lot.contract_label]
+            new_price = option_prices[lot.contract_label]
+            _keep_price_kind(lot, new_price, lot.contract_label)
+            lot.current_price = new_price
 
     if price_quotes is not None:
         price_quotes.extend(quotes)
@@ -1250,7 +1272,12 @@ def _stamp_price_provenance(
     csv_as_of: str | None,
 ) -> PriceBasis:
     """Copy each quote's source and time onto the rows that display it."""
-    payload = price_basis_from_quotes(quotes, csv_as_of)
+    fill_fallback = any(getattr(lot, "price_kind", None) == "fill" for lot in tax_lots)
+    payload = price_basis_from_quotes(
+        quotes,
+        csv_as_of,
+        fill_fallback=fill_fallback,
+    )
     basis = PriceBasis(
         quotes=[QuoteProvenance.model_validate(item) for item in payload["quotes"]],
         live=bool(payload["live"]),

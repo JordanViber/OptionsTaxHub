@@ -3363,13 +3363,19 @@ def test_analyze_survives_yahoo_no_quote(monkeypatch):
     body = response.json()
     basis = body["price_basis"]
     assert basis["live"] is False
-    assert basis["label"] == "Prices as of your CSV (2024-06-01)"
+    assert basis["label"] == "Purchase price from your CSV, no live quote"
     sources = {quote["symbol"]: quote for quote in basis["quotes"]}
     assert sources["AAPL"]["source"] == "csv"
     assert sources["AAPL"]["as_of"] == "2024-06-01"
     assert sources["AAPL"]["provider"] is None
-    assert "live" not in basis["label"].lower()
     assert "current" not in basis["label"].lower()
+    symbols = {row["symbol"] for row in body["suggestions"]}
+    assert {"AAPL", "MSFT"} <= symbols
+    assert all(
+        row["price_note"] == "Purchase price from your CSV, no live quote"
+        for row in body["suggestions"]
+        if row["symbol"] in {"AAPL", "MSFT"}
+    )
     clear_cache()
 
 
