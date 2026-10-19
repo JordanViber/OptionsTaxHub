@@ -2752,6 +2752,52 @@ describe("DashboardPage", () => {
     }
   });
 
+  it("shows the upload card and re-upload notice when an uploaded handoff's history fetch fails", async () => {
+    const store = installSessionStore();
+    store.set(
+      "optionstaxhub-analysis",
+      JSON.stringify({
+        ...baseAnalysis,
+        analysis_id: "wrong-on-screen",
+        sample_run: false,
+        packet_unlocked: false,
+        tax_profile: { ...baseAnalysis.tax_profile, tax_year: 2024 },
+      }),
+    );
+    store.set(PACKET_RESUME_CHECKOUT_KEY, "1");
+    store.set(
+      PACKET_RESUME_ANALYSIS_KEY,
+      JSON.stringify({ analysisId: "uploaded-run", taxYear: 2025 }),
+    );
+    mockHistoryError = new Error("history down");
+    mockHistoryFetched = true;
+    mockHistoryData = [];
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    const checkoutCalls: Array<{ url: string; authorization: string; body: string }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = handoffFetch(checkoutCalls);
+
+    try {
+      render(<DashboardPage />, { wrapper: createWrapper() });
+      expect(await screen.findByTestId("packet-resume-reupload")).toBeInTheDocument();
+      expect(screen.getByTestId("csv-dropzone")).toBeInTheDocument();
+      expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+      expect(checkoutCalls).toHaveLength(0);
+      expect(store.get("optionstaxhub-analysis") ?? "").not.toContain("wrong-on-screen");
+      expect(store.get(PACKET_RESUME_CHECKOUT_KEY)).toBeUndefined();
+      await act(async () => {
+        await new Promise((resolve) => {
+          setTimeout(resolve, 30);
+        });
+      });
+      expect(checkoutCalls).toHaveLength(0);
+      expect(mockAnalyzeMutate).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = originalFetch;
+      window.history.replaceState(null, "", "/dashboard");
+    }
+  });
+
   it("does not load the sample when resume history fails", async () => {
     installSessionStore();
     mockHistoryError = new Error("history down");

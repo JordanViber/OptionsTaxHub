@@ -1327,6 +1327,7 @@ export default function DashboardPage() {
   const resumeBareLoadStarted = useRef(false);
   const blockHistoryAutoload = useRef(false);
   const [resumeReuploadNotice, setResumeReuploadNotice] = useState(false);
+  const [resumeOriginLoading, setResumeOriginLoading] = useState(false);
   const queryClient = useQueryClient();
 
   // Load the user's tax profile for analyze params
@@ -1916,10 +1917,13 @@ export default function DashboardPage() {
     if (resumeOriginHandled.current) {
       return;
     }
-    if (authLoading || !confirmedUserId || !historyFetched) {
+    if (authLoading || !confirmedUserId) {
       return;
     }
-    if (resumeReuploadArmed.current || historyError) {
+    if (!historyFetched && !historyError) {
+      return;
+    }
+    if (resumeReuploadArmed.current) {
       return;
     }
     let sampleMarker = false;
@@ -1952,6 +1956,7 @@ export default function DashboardPage() {
 
     // The original tab may still be saving this guest run. Keep the resume
     // markers and leave resumeOriginHandled unset until the id shows up.
+    // A history error never starts that wait: give up immediately.
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const startedAt = Date.now();
@@ -1962,14 +1967,18 @@ export default function DashboardPage() {
       }
       // Read the expected id before the markers are cleared. A different run
       // must leave the screen, or Pay turns back on for the wrong tax year.
+      // Storage counts too: the restore effect may have queued the wrong run
+      // in this same commit, before the ref updates.
       const awaited = readPacketResumeExpected();
-      const mounted = displayedAnalysisRef.current;
+      const mounted =
+        displayedAnalysisRef.current ?? restoreAnalysisFromStorage();
       const mountedMismatches =
         !!awaited &&
         !!mounted &&
         (mounted.analysis_id !== awaited.analysisId ||
           mounted.tax_profile?.tax_year !== awaited.taxYear);
       resumeOriginHandled.current = true;
+      setResumeOriginLoading(false);
       if (mountedMismatches) {
         clearCurrentAnalysisView({
           setLoadedAnalysis,
@@ -1980,6 +1989,12 @@ export default function DashboardPage() {
       clearPacketResumeSessionMarkers();
       setResumeReuploadNotice(true);
     };
+
+    if (historyError) {
+      giveUp();
+      return;
+    }
+    setResumeOriginLoading(true);
 
     const schedule = () => {
       if (cancelled || resumeOriginHandled.current) {
@@ -2022,6 +2037,7 @@ export default function DashboardPage() {
           }
           if (record?.result) {
             resumeOriginHandled.current = true;
+            setResumeOriginLoading(false);
             clearPacketResumeSessionMarkers();
             setLoadedAnalysis(normalizeAnalysis(record.result));
             setAnalysisSource("saved-history");
@@ -2040,6 +2056,7 @@ export default function DashboardPage() {
     void attempt();
     return () => {
       cancelled = true;
+      setResumeOriginLoading(false);
       if (timer !== undefined) {
         clearTimeout(timer);
       }
@@ -2261,10 +2278,19 @@ export default function DashboardPage() {
     try {
       const checkoutMarker =
         sessionStorage.getItem(PACKET_RESUME_CHECKOUT_KEY) === "1";
-      resumeHandoffPending =
+      const sampleMarker =
+        sessionStorage.getItem(PACKET_RESUME_SAMPLE_KEY) === "1";
+      const expected = readPacketResumeExpected();
+      // The center spinner is only for a loader that is actually running.
+      // A history error takes the give-up path instead of spinning forever.
+      const uploadedResumeLoading =
         checkoutMarker &&
-        (sessionStorage.getItem(PACKET_RESUME_SAMPLE_KEY) === "1" ||
-          readPacketResumeExpected() != null);
+        !sampleMarker &&
+        expected != null &&
+        !historyError &&
+        (resumeOriginLoading || !historyFetched);
+      resumeHandoffPending =
+        (checkoutMarker && sampleMarker) || uploadedResumeLoading;
     } catch {
       resumeHandoffPending = false;
     }

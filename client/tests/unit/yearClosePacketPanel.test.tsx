@@ -7,6 +7,7 @@ import YearClosePacketPanel, {
   PACKET_CHECKOUT_INFLIGHT_KEY,
   isYearClosePacketPaid,
   resetPacketResumeCheckoutLock,
+  PACKET_ENTITLEMENT_UNCONFIRMED_COPY,
   YEAR_CLOSE_PACKET_TITLE,
   yearClosePacketStorageId,
 } from "../../app/components/YearClosePacketPanel";
@@ -927,6 +928,60 @@ describe("YearClosePacketPanel", () => {
     expect(screen.getByText(/Payment confirmed for tax year 2025/i)).toBeInTheDocument();
     expect(checkoutPosts()).toHaveLength(0);
     expect(screen.queryByText(PACKET_CHECKOUT_CANCELED_COPY)).not.toBeInTheDocument();
+  });
+
+  async function expectManualPayAfterFailedEntitlement() {
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
+    });
+    expect(screen.getByTestId("packet-entitlement-unconfirmed")).toHaveTextContent(
+      PACKET_ENTITLEMENT_UNCONFIRMED_COPY,
+    );
+    expect(checkoutPosts()).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: /Pay \$49/i }));
+    await waitFor(() => {
+      expect(checkoutPosts()).toHaveLength(1);
+    });
+  }
+
+  it("leaves Pay enabled with a purchase-status message and no automatic checkout when entitlement returns 503", async () => {
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    store[PACKET_RESUME_ANALYSIS_KEY] = JSON.stringify({
+      analysisId: "analysis-1",
+      taxYear: 2025,
+    });
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    mockFetch.mockImplementation(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/api/year-close-packet/entitlement")) {
+        return {
+          ok: false,
+          status: 503,
+          json: async () => ({ detail: "Could not verify existing packet access." }),
+        };
+      }
+      return checkoutOk();
+    });
+
+    render(<YearClosePacketPanel analysis={analysis} />);
+    await expectManualPayAfterFailedEntitlement();
+  });
+
+  it("leaves Pay enabled with a purchase-status message and no automatic checkout when the entitlement request fails", async () => {
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    store[PACKET_RESUME_ANALYSIS_KEY] = JSON.stringify({
+      analysisId: "analysis-1",
+      taxYear: 2025,
+    });
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    mockFetch.mockImplementation(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/api/year-close-packet/entitlement")) {
+        throw new Error("network down");
+      }
+      return checkoutOk();
+    });
+
+    render(<YearClosePacketPanel analysis={analysis} />);
+    await expectManualPayAfterFailedEntitlement();
   });
 
   it("hides the closed-without-payment note when the year is paid and clears resume state", async () => {

@@ -66,6 +66,8 @@ export const PACKET_CHECKOUT_CANCELED_COPY =
   "Checkout was closed without payment. Pay $49 when you are ready.";
 export const PACKET_CHECKOUT_OTHER_TAB_COPY =
   "Checkout opened in your other tab";
+export const PACKET_ENTITLEMENT_UNCONFIRMED_COPY =
+  "Couldn't confirm your purchase status. Pay or refresh.";
 
 function isPacketMissingSourceDetail(detail: string): boolean {
   return /payment was received/i.test(detail) && /no source document/i.test(detail);
@@ -214,7 +216,7 @@ function payHeldForDifferentResume(analysis: PortfolioAnalysis): boolean {
   return resumeCheckoutArmed();
 }
 
-type EntitlementGate = "unknown" | "paid" | "unpaid";
+type EntitlementGate = "unknown" | "paid" | "unpaid" | "unconfirmed";
 
 /**
  * True only for a signed-in resume of this exact run, before we know whether
@@ -715,6 +717,43 @@ function YearClosePacketPanelForAnalysis({
     }
     let cancelled = false;
     setEntitlementGate("unknown");
+    const loadEntitlement = async (
+      accessToken: string,
+    ): Promise<"paid" | "unpaid"> => {
+      const response = await fetch(
+        `${API_URL}/api/year-close-packet/entitlement?tax_year=${encodeURIComponent(String(year))}`,
+        {
+          method: "GET",
+          headers: { Authorization: `Bearer ${accessToken}` },
+        },
+      );
+      if (cancelled || !response.ok) {
+        if (cancelled) {
+          return "unpaid";
+        }
+        throw new Error("entitlement unavailable");
+      }
+      const data = await response.json();
+      if (cancelled) {
+        return "unpaid";
+      }
+      if (data?.paid === true) {
+        const sid =
+          typeof data.session_id === "string" && data.session_id.startsWith("cs_")
+            ? data.session_id
+            : null;
+        if (sid) {
+          writeSessionItem(paidStorageKey(canonicalAnalysisId), sid);
+          setSessionId(sid);
+        }
+        setPaid(true);
+        setEntitlementGate("paid");
+        onPaidChangeRef.current?.(true);
+        return "paid";
+      }
+      setEntitlementGate("unpaid");
+      return "unpaid";
+    };
     void (async () => {
       let accessToken = "";
       try {
@@ -736,42 +775,20 @@ function YearClosePacketPanelForAnalysis({
         return;
       }
       try {
-        const response = await fetch(
-          `${API_URL}/api/year-close-packet/entitlement?tax_year=${encodeURIComponent(String(year))}`,
-          {
-            method: "GET",
-            headers: { Authorization: `Bearer ${accessToken}` },
-          },
-        );
-        if (cancelled) {
-          return;
-        }
-        if (!response.ok) {
-          setEntitlementGate("unknown");
-          return;
-        }
-        const data = await response.json();
-        if (cancelled) {
-          return;
-        }
-        if (data?.paid === true) {
-          const sid =
-            typeof data.session_id === "string" && data.session_id.startsWith("cs_")
-              ? data.session_id
-              : null;
-          if (sid) {
-            writeSessionItem(paidStorageKey(canonicalAnalysisId), sid);
-            setSessionId(sid);
-          }
-          setPaid(true);
-          setEntitlementGate("paid");
-          onPaidChangeRef.current?.(true);
-          return;
-        }
-        setEntitlementGate("unpaid");
+        await loadEntitlement(accessToken);
       } catch {
-        if (!cancelled) {
-          setEntitlementGate("unknown");
+        if (cancelled) {
+          return;
+        }
+        try {
+          await loadEntitlement(accessToken);
+        } catch {
+          // Manual Pay stays available. Auto-resume only runs once the
+          // check has resolved as unpaid, and the server still refuses a
+          // second charge for a year that is already paid.
+          if (!cancelled) {
+            setEntitlementGate("unconfirmed");
+          }
         }
       }
     })();
@@ -1205,6 +1222,15 @@ function YearClosePacketPanelForAnalysis({
             data-testid="packet-checkout-canceled"
           >
             {PACKET_CHECKOUT_CANCELED_COPY}
+          </Alert>
+        )}
+        {entitlementGate === "unconfirmed" && !paid && (
+          <Alert
+            severity="info"
+            role="status"
+            data-testid="packet-entitlement-unconfirmed"
+          >
+            {PACKET_ENTITLEMENT_UNCONFIRMED_COPY}
           </Alert>
         )}
         {otherTabNotice && !error && (
