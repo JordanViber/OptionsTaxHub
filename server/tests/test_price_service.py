@@ -112,6 +112,20 @@ class TestExtractSingleTickerPrice:
         df = pd.DataFrame({"Close": pd.Series([], dtype=float)})
         assert _extract_single_ticker_price(df, "AAPL") is None
 
+    def test_multiindex_single_ticker_selects_the_ticker_level(self):
+        """Current yfinance keeps a ticker level even for one symbol.
+
+        ``data["Close"].iloc[-1]`` is then a Series, and float() raises.
+        """
+        columns = pd.MultiIndex.from_tuples(
+            [("Close", "AAPL"), ("Open", "AAPL")]
+        )
+        df = pd.DataFrame(
+            [[180.0, 179.0], [181.256, 180.5]],
+            columns=columns,
+        )
+        assert _extract_single_ticker_price(df, "AAPL") == pytest.approx(181.26)
+
 
 # --- _extract_multi_ticker_prices ---
 
@@ -337,6 +351,157 @@ class TestFetchCurrentPrices:
             prices, _ = fetch_current_prices(["AAPL", "MSFT"])
             assert prices["AAPL"] == pytest.approx(150.0)
             assert prices["MSFT"] == pytest.approx(310.0)
+
+    def test_yahoo_no_quote_falls_back_to_csv_with_provenance(self, monkeypatch, caplog):
+        caplog.set_level("INFO", logger="price_service")
+        monkeypatch.setattr(
+            price_service,
+            "_download_yfinance_prices",
+            lambda symbols, timeout_seconds=5.0: (
+                {},
+                ["yfinance returned no data. Using CSV-provided prices as fallback."],
+            ),
+        )
+        fetched = fetch_current_prices(
+            ["AAPL", "MSFT"],
+            fallback_prices={"AAPL": 10.0, "MSFT": 20.0},
+            csv_as_of="2026-08-12",
+        )
+        prices, warnings = fetched
+        assert prices == {"AAPL": 10.0, "MSFT": 20.0}
+        assert any("no data" in warning for warning in warnings)
+        assert {quote.source for quote in fetched.quotes} == {"csv"}
+        assert {quote.as_of for quote in fetched.quotes} == {"2026-08-12"}
+        assert all(quote.provider is None for quote in fetched.quotes)
+        assert any(
+            status.provider == "yahoo" and status.reason == "no_quote"
+            for status in fetched.provider_statuses
+        )
+        assert (
+            "quote outcome request=stock symbols=2 live=0 cached=0 fallback=2 empty=0"
+            in caplog.text
+        )
+
+    def test_timeout_falls_back_to_csv_inside_budget(self, monkeypatch):
+        seen: dict[str, float] = {}
+
+        def hang(symbols, timeout_seconds=5.0):
+            del symbols
+            seen["timeout"] = timeout_seconds
+            time.sleep(min(timeout_seconds, 0.15))
+            return {}, [
+                "Quote fetch timed out. Using CSV-provided prices as fallback."
+            ]
+
+        monkeypatch.setattr(price_service, "_download_yfinance_prices", hang)
+        started = time.monotonic()
+        fetched = fetch_current_prices(
+            ["AAPL"],
+            fallback_prices={"AAPL": 10.0},
+            csv_as_of="2026-08-12",
+            budget_seconds=0.5,
+        )
+        elapsed = time.monotonic() - started
+        assert elapsed < 2.0
+        assert seen["timeout"] <= 0.5
+        assert fetched.prices["AAPL"] == pytest.approx(10.0)
+        assert fetched.quotes[0].source == "csv"
+        assert fetched.quotes[0].as_of == "2026-08-12"
+        assert any(
+            status.provider == "yahoo" and status.reason == "timeout"
+            for status in fetched.provider_statuses
+        )
+
+    def test_partial_live_quotes_keep_csv_for_the_rest(self, monkeypatch):
+        def partial(symbols, timeout_seconds=5.0):
+            del timeout_seconds
+            return {symbols[0]: 111.0}, []
+
+        monkeypatch.setattr(price_service, "_download_yfinance_prices", partial)
+        fetched = fetch_current_prices(
+            ["AAPL", "MSFT"],
+            fallback_prices={"AAPL": 1.0, "MSFT": 50.0},
+            csv_as_of="2024-06-01",
+        )
+        by_symbol = {quote.symbol: quote for quote in fetched.quotes}
+        assert by_symbol["AAPL"].source == "live"
+        assert by_symbol["AAPL"].provider == "yahoo"
+        assert by_symbol["AAPL"].as_of
+        assert fetched.prices["AAPL"] == pytest.approx(111.0)
+        assert by_symbol["MSFT"].source == "csv"
+        assert by_symbol["MSFT"].provider is None
+        assert by_symbol["MSFT"].as_of == "2024-06-01"
+        assert fetched.prices["MSFT"] == pytest.approx(50.0)
+        assert any(
+            status.provider == "yahoo" and status.reason is None
+            for status in fetched.provider_statuses
+        )
+
+    def test_provider_exception_does_not_raise(self, monkeypatch):
+        def boom(symbols, timeout_seconds=5.0):
+            del symbols, timeout_seconds
+            raise RuntimeError("yahoo down")
+
+        monkeypatch.setattr(price_service, "_download_yfinance_prices", boom)
+        fetched = fetch_current_prices(
+            ["AAPL"],
+            fallback_prices={"AAPL": 4.0},
+            csv_as_of="2026-01-02",
+        )
+        assert fetched.prices["AAPL"] == pytest.approx(4.0)
+        assert fetched.quotes[0].source == "csv"
+
+    def test_keyed_providers_are_off_without_env(self, monkeypatch):
+        for var in (
+            "QUOTE_PROVIDER_ORDER",
+            "ALPACA_API_KEY_ID",
+            "ALPACA_API_SECRET_KEY",
+            "TRADIER_ACCESS_TOKEN",
+            "MARKETDATA_APP_TOKEN",
+            "POLYGON_API_KEY",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        assert [provider.name for provider in price_service.active_providers()] == [
+            "yahoo"
+        ]
+        for name in ("alpaca", "tradier", "marketdata", "polygon"):
+            provider = price_service.provider_by_name(name)
+            assert provider is not None
+            assert provider.enabled() is False
+
+    def test_provider_order_skips_disabled_keyed_names(self, monkeypatch):
+        monkeypatch.setenv("QUOTE_PROVIDER_ORDER", "polygon,alpaca,yahoo")
+        monkeypatch.delenv("POLYGON_API_KEY", raising=False)
+        monkeypatch.delenv("ALPACA_API_KEY_ID", raising=False)
+        monkeypatch.delenv("ALPACA_API_SECRET_KEY", raising=False)
+        assert [provider.name for provider in price_service.active_providers()] == [
+            "yahoo"
+        ]
+
+    def test_enabled_keyed_stub_does_not_block_csv_fallback(self, monkeypatch):
+        monkeypatch.setenv("POLYGON_API_KEY", "stub-token-not-a-secret")
+        monkeypatch.setenv("QUOTE_PROVIDER_ORDER", "polygon,yahoo")
+        monkeypatch.setattr(
+            price_service,
+            "_download_yfinance_prices",
+            lambda symbols, timeout_seconds=5.0: (
+                {},
+                ["yfinance returned no data. Using CSV-provided prices as fallback."],
+            ),
+        )
+        fetched = fetch_current_prices(
+            ["AAPL"],
+            fallback_prices={"AAPL": 8.0},
+            csv_as_of="2026-08-12",
+            budget_seconds=1,
+        )
+        reasons = {
+            status.provider: status.reason for status in fetched.provider_statuses
+        }
+        assert reasons["polygon"] == "no_quote"
+        assert reasons["yahoo"] == "no_quote"
+        assert fetched.quotes[0].source == "csv"
+        assert fetched.quotes[0].as_of == "2026-08-12"
 
 
 class TestOptionPricing:

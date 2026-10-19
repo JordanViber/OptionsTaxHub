@@ -100,5 +100,48 @@ describe("harvestTeaserTotals", () => {
     expect(totals.totalLoss).toBe(400);
     expect(totals.totalSavings).toBe(88);
     expect(totals.hasTaxSavings).toBe(true);
+    expect(totals.unknownLossCount).toBe(0);
+  });
+
+  it("leaves purchase-fill lots out of the loss count and total", () => {
+    const totals = harvestTeaserTotals(
+      buildHarvestTeasers(
+        [
+          suggestion,
+          {
+            ...suggestion,
+            suggestion_id: "AAPL-fill",
+            estimated_loss: 133,
+            tax_savings_estimate: 0,
+            price_note: "Purchase price from your CSV, no live quote",
+          },
+        ],
+        [],
+      ),
+    );
+    expect(totals.count).toBe(1);
+    expect(totals.totalLoss).toBe(400);
+    expect(totals.unknownLossCount).toBe(1);
+  });
+
+  it("leaves a review-only fill out of the loss count", () => {
+    const totals = harvestTeaserTotals(
+      buildHarvestTeasers(
+        [
+          suggestion,
+          {
+            ...suggestion,
+            suggestion_id: "AAPL-review",
+            action: "REVIEW",
+            estimated_loss: 133,
+            tax_savings_estimate: 20,
+          },
+        ],
+        [],
+      ),
+    );
+    expect(totals.count).toBe(1);
+    expect(totals.totalLoss).toBe(400);
+    expect(totals.unknownLossCount).toBe(1);
   });
 });

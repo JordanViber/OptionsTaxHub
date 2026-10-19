@@ -24,12 +24,15 @@ import {
   TrendingDown as LossIcon,
 } from "@mui/icons-material";
 import { useState } from "react";
-import type { HarvestingSuggestion, Position } from "@/lib/types";
+import type { HarvestingSuggestion, Position, PriceBasis } from "@/lib/types";
+import { pricedNumbersVisible } from "@/lib/priceBasis";
+import PriceAsOfNote from "./PriceAsOfNote";
 import {
   buildHarvestTeasers,
   formatUsd,
   harvestTeaserTotals,
   PREVIEW_CARD_LIMIT,
+  purchaseFillUnknownCopy,
   scrollToPacketPanel,
   type HarvestTeaser,
 } from "@/lib/harvestPreview";
@@ -39,6 +42,7 @@ interface HarvestingSuggestionsProps {
   lotsWithLosses?: number;
   locked?: boolean;
   positions?: Position[];
+  priceBasis?: PriceBasis | null;
 }
 
 interface SuggestionDisplayMeta {
@@ -152,24 +156,30 @@ function SuggestionCard({
   suggestion,
   lotIndex,
   lotCount,
+  showPrices,
 }: Readonly<{
   suggestion: HarvestingSuggestion;
   lotIndex: number;
   lotCount: number;
+  showPrices: boolean;
 }>) {
   const [expanded, setExpanded] = useState(false);
   const needsManualReview = Boolean(suggestion.manual_review_required);
   const detailText = getSuggestionDetailText(suggestion, lotIndex, lotCount);
-  const recommended = getRecommendedActionCopy(suggestion);
+  const unknownLoss =
+    Boolean(suggestion.price_note) || suggestion.action === "REVIEW";
+  const recommended = unknownLoss ? null : getRecommendedActionCopy(suggestion);
 
   return (
     <Card
       variant="outlined"
       sx={{
         borderLeft: 4,
-        borderLeftColor: suggestion.wash_sale_risk
-          ? "warning.main"
-          : "success.main",
+        borderLeftColor: unknownLoss
+          ? "divider"
+          : suggestion.wash_sale_risk
+            ? "warning.main"
+            : "success.main",
       }}
     >
       <CardContent sx={{ pb: expanded ? 2 : "16px !important" }}>
@@ -203,19 +213,23 @@ function SuggestionCard({
                     sx={{ height: 20, fontSize: "0.65rem" }}
                   />
                 )}
-              <Chip
-                label="Sell to harvest"
-                size="small"
-                color="error"
-                variant="outlined"
-                sx={{ height: 20, fontSize: "0.65rem", fontWeight: 700 }}
-              />
-              <Chip
-                label={`#${suggestion.priority}`}
-                size="small"
-                color="primary"
-                sx={{ height: 20, fontSize: "0.65rem" }}
-              />
+              {unknownLoss ? null : (
+                <Chip
+                  label="Sell to harvest"
+                  size="small"
+                  color="error"
+                  variant="outlined"
+                  sx={{ height: 20, fontSize: "0.65rem", fontWeight: 700 }}
+                />
+              )}
+              {unknownLoss ? null : (
+                <Chip
+                  label={`#${suggestion.priority}`}
+                  size="small"
+                  color="primary"
+                  sx={{ height: 20, fontSize: "0.65rem" }}
+                />
+              )}
               {lotCount > 1 && (
                 <Chip
                   label={`Lot ${lotIndex}/${lotCount}`}
@@ -231,7 +245,7 @@ function SuggestionCard({
                 variant="outlined"
                 sx={{ height: 20, fontSize: "0.65rem" }}
               />
-              {suggestion.ai_generated && (
+              {suggestion.ai_generated && !unknownLoss && (
                 <Chip
                   icon={<AiIcon sx={{ fontSize: 12 }} />}
                   label="AI"
@@ -266,43 +280,45 @@ function SuggestionCard({
               </Typography>
             )}
 
-            <Box
-              data-testid="harvest-recommended-action"
-              sx={{
-                mt: 1,
-                mb: 1,
-                px: 1.25,
-                py: 1,
-                borderRadius: 1,
-                border: "1px solid",
-                borderColor: "divider",
-                bgcolor: "action.hover",
-              }}
-            >
-              <Typography
-                variant="caption"
-                color="text.secondary"
+            {recommended ? (
+              <Box
+                data-testid="harvest-recommended-action"
                 sx={{
-                  display: "block",
-                  letterSpacing: "0.08em",
-                  textTransform: "uppercase",
-                  fontWeight: 700,
-                  mb: 0.25,
+                  mt: 1,
+                  mb: 1,
+                  px: 1.25,
+                  py: 1,
+                  borderRadius: 1,
+                  border: "1px solid",
+                  borderColor: "divider",
+                  bgcolor: "action.hover",
                 }}
               >
-                Recommended action
-              </Typography>
-              <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
-                {recommended.headline}
-              </Typography>
-              <Typography
-                variant="body2"
-                color="text.secondary"
-                sx={{ mt: 0.25, lineHeight: 1.5 }}
-              >
-                {recommended.detail}
-              </Typography>
-            </Box>
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{
+                    display: "block",
+                    letterSpacing: "0.08em",
+                    textTransform: "uppercase",
+                    fontWeight: 700,
+                    mb: 0.25,
+                  }}
+                >
+                  Recommended action
+                </Typography>
+                <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                  {recommended.headline}
+                </Typography>
+                <Typography
+                  variant="body2"
+                  color="text.secondary"
+                  sx={{ mt: 0.25, lineHeight: 1.5 }}
+                >
+                  {recommended.detail}
+                </Typography>
+              </Box>
+            ) : null}
 
             {needsManualReview && suggestion.manual_review_reason && (
               <Box
@@ -325,19 +341,36 @@ function SuggestionCard({
               </Box>
             )}
 
+            {suggestion.price_note ? (
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                data-testid="harvest-price-note"
+                sx={{ display: "block", mt: 1 }}
+              >
+                {suggestion.price_note}
+              </Typography>
+            ) : null}
+
             <Stack direction="row" spacing={3} sx={{ mt: 1 }}>
               <Box>
                 <Typography variant="caption" color="text.secondary">
-                  Estimated Loss
+                  {unknownLoss ? "Loss" : "Estimated Loss"}
                 </Typography>
                 <Typography
                   variant="body1"
                   sx={{ fontWeight: 600, color: "error.main" }}
                 >
-                  <LossIcon
-                    sx={{ fontSize: 14, mr: 0.5, verticalAlign: "middle" }}
-                  />
-                  {formatCurrency(suggestion.estimated_loss)}
+                  {unknownLoss ? null : (
+                    <LossIcon
+                      sx={{ fontSize: 14, mr: 0.5, verticalAlign: "middle" }}
+                    />
+                  )}
+                  {unknownLoss
+                    ? "Unknown"
+                    : showPrices
+                      ? formatCurrency(suggestion.estimated_loss)
+                      : "—"}
                 </Typography>
               </Box>
               <Box>
@@ -348,7 +381,11 @@ function SuggestionCard({
                   variant="body1"
                   sx={{ fontWeight: 600, color: "success.main" }}
                 >
-                  {formatCurrency(suggestion.tax_savings_estimate)}
+                  {unknownLoss
+                    ? "Unknown"
+                    : showPrices
+                      ? formatCurrency(suggestion.tax_savings_estimate)
+                      : "—"}
                 </Typography>
               </Box>
               <Box>
@@ -397,7 +434,7 @@ function SuggestionCard({
         <Collapse in={expanded}>
           <Divider sx={{ my: 1.5 }} />
 
-          {suggestion.ai_explanation && (
+          {!unknownLoss && suggestion.ai_explanation && (
             <Box sx={{ mb: 2 }}>
               <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>
                 {suggestion.ai_generated ? "AI Analysis" : "Analysis"}
@@ -412,7 +449,7 @@ function SuggestionCard({
             </Box>
           )}
 
-          {suggestion.replacement_candidates.length > 0 && (
+          {!unknownLoss && suggestion.replacement_candidates.length > 0 && (
             <Box>
               <Typography
                 variant="subtitle2"
@@ -468,7 +505,10 @@ function SuggestionCard({
   );
 }
 
-function HarvestTeaserCard({ teaser }: Readonly<{ teaser: HarvestTeaser }>) {
+function HarvestTeaserCard({
+  teaser,
+  showPrices,
+}: Readonly<{ teaser: HarvestTeaser; showPrices: boolean }>) {
   return (
     <Card
       variant="outlined"
@@ -491,6 +531,16 @@ function HarvestTeaserCard({ teaser }: Readonly<{ teaser: HarvestTeaser }>) {
             <Typography variant="subtitle1" sx={{ fontWeight: 700 }} noWrap>
               {teaser.label}
             </Typography>
+            {teaser.priceNote ? (
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                data-testid="harvest-price-note"
+                sx={{ display: "block" }}
+              >
+                {teaser.priceNote}
+              </Typography>
+            ) : null}
             <Stack
               direction="row"
               spacing={0.75}
@@ -516,12 +566,19 @@ function HarvestTeaserCard({ teaser }: Readonly<{ teaser: HarvestTeaser }>) {
           </Box>
           <Box sx={{ textAlign: "right", flexShrink: 0 }}>
             <Typography variant="caption" color="text.secondary">
-              Open loss
+              {teaser.priceNote ? "Loss" : "Open loss"}
             </Typography>
             <Typography sx={{ fontWeight: 700, color: "error.main" }}>
-              {formatCurrency(teaser.estimatedLoss)}
+              {teaser.priceNote
+                ? "Unknown"
+                : showPrices
+                  ? formatCurrency(teaser.estimatedLoss)
+                  : "—"}
             </Typography>
-            {teaser.taxSavings != null && teaser.taxSavings > 0 && (
+            {showPrices &&
+              !teaser.priceNote &&
+              teaser.taxSavings != null &&
+              teaser.taxSavings > 0 && (
               <Typography
                 variant="caption"
                 sx={{ color: "success.main", display: "block" }}
@@ -554,7 +611,9 @@ function HarvestTeaserCard({ teaser }: Readonly<{ teaser: HarvestTeaser }>) {
 
 function LockedHarvestPreview({
   teasers,
-}: Readonly<{ teasers: HarvestTeaser[] }>) {
+  priceBasis,
+}: Readonly<{ teasers: HarvestTeaser[]; priceBasis?: PriceBasis | null }>) {
+  const showPrices = pricedNumbersVisible(priceBasis);
   const totals = harvestTeaserTotals(teasers);
   const visible = teasers.slice(0, PREVIEW_CARD_LIMIT);
   const hiddenCount = teasers.length - visible.length;
@@ -586,30 +645,49 @@ function LockedHarvestPreview({
           >
             Harvest preview
           </Typography>
-          <Typography
-            sx={{
-              mt: 0.5,
-              fontFamily: "var(--font-display), Fraunces, Georgia, serif",
-              fontSize: "1.75rem",
-              fontWeight: 600,
-              letterSpacing: "-0.03em",
-              lineHeight: 1,
-            }}
-          >
-            {formatCurrency(totals.totalLoss)}
-          </Typography>
-          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75 }}>
-            {totals.count} lot{totals.count === 1 ? "" : "s"} with unrealized
-            losses
-            {savingsLine}
-          </Typography>
+          {totals.count > 0 ? (
+            <Typography
+              sx={{
+                mt: 0.5,
+                fontFamily: "var(--font-display), Fraunces, Georgia, serif",
+                fontSize: "1.75rem",
+                fontWeight: 600,
+                letterSpacing: "-0.03em",
+                lineHeight: 1,
+              }}
+            >
+              {formatCurrency(totals.totalLoss)}
+            </Typography>
+          ) : null}
+          {totals.count > 0 ? (
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75 }}>
+              {totals.count} lot{totals.count === 1 ? "" : "s"} with unrealized
+              losses
+              {savingsLine}
+            </Typography>
+          ) : null}
+          {totals.unknownLossCount > 0 ? (
+            <Typography
+              variant="body2"
+              color="text.secondary"
+              data-testid="harvest-unknown-loss-count"
+              sx={{ mt: 0.75 }}
+            >
+              {purchaseFillUnknownCopy(totals.unknownLossCount)}
+            </Typography>
+          ) : null}
         </Box>
         <Button variant="contained" onClick={scrollToPacketPanel}>
           Unlock harvest plan — $49
         </Button>
       </Box>
+      <PriceAsOfNote basis={priceBasis} surface="harvest" />
       {visible.map((teaser) => (
-        <HarvestTeaserCard key={teaser.id} teaser={teaser} />
+        <HarvestTeaserCard
+          key={teaser.id}
+          teaser={teaser}
+          showPrices={showPrices}
+        />
       ))}
       {hiddenCount > 0 && (
         <Typography variant="caption" color="text.secondary">
@@ -645,11 +723,15 @@ export default function HarvestingSuggestions({
   lotsWithLosses = 0,
   locked = false,
   positions = [],
+  priceBasis,
 }: Readonly<HarvestingSuggestionsProps>) {
+  const showPrices = pricedNumbersVisible(priceBasis);
   if (locked) {
     const teasers = buildHarvestTeasers(suggestions, positions);
     if (teasers.length > 0) {
-      return <LockedHarvestPreview teasers={teasers} />;
+      return (
+        <LockedHarvestPreview teasers={teasers} priceBasis={priceBasis} />
+      );
     }
     return (
       <Card variant="outlined" data-testid="harvest-packet-preview">
@@ -684,9 +766,20 @@ export default function HarvestingSuggestions({
   }
 
   const displayMeta = buildSuggestionDisplayMeta(suggestions);
+  const unknownLossCount = suggestions.filter((row) => row.price_note).length;
 
   return (
     <Stack spacing={2}>
+      <PriceAsOfNote basis={priceBasis} surface="harvest" />
+      {unknownLossCount > 0 ? (
+        <Typography
+          variant="body2"
+          color="text.secondary"
+          data-testid="harvest-unknown-loss-count"
+        >
+          {purchaseFillUnknownCopy(unknownLossCount)}
+        </Typography>
+      ) : null}
       {displayMeta.map(({ suggestion, lotIndex, lotCount }) => (
         <SuggestionCard
           key={
@@ -696,6 +789,7 @@ export default function HarvestingSuggestions({
           suggestion={suggestion}
           lotIndex={lotIndex}
           lotCount={lotCount}
+          showPrices={showPrices}
         />
       ))}
     </Stack>

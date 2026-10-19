@@ -480,13 +480,22 @@ def generate_suggestions(
     """
     suggestions: list[HarvestingSuggestion] = []
 
-    # Filter to lots with unrealized losses
+    def _purchase_fill(lot: TaxLot) -> bool:
+        # Still the seeded purchase price. A live quote or another stated
+        # price clears this, so a real flat quote is not a harvest candidate.
+        return getattr(lot, "price_kind", None) == "fill"
+
+    # Losses stay candidates. Purchase-fill fallbacks stay too: their P&L is
+    # about $0, and dropping them hides the lot with no harvest note.
     loss_lots = [
         lot for lot in tax_lots
-        if lot.unrealized_pnl is not None and lot.unrealized_pnl < 0
+        if lot.unrealized_pnl is not None
+        and lot.unrealized_pnl < 0
+        and not _purchase_fill(lot)
     ]
+    fill_lots = [lot for lot in tax_lots if _purchase_fill(lot)]
 
-    if not loss_lots:
+    if not loss_lots and not fill_lots:
         return suggestions
 
     # Compute realized gains to determine optimal harvest target
@@ -501,8 +510,11 @@ def generate_suggestions(
     clean_candidates: list[HarvestingSuggestion] = []
     risky_candidates: list[HarvestingSuggestion] = []
 
-    for lot in loss_lots:
-        loss_amount = abs(lot.unrealized_pnl)  # type: ignore[arg-type]
+    def _append_lot(lot: TaxLot, *, fill: bool) -> None:
+        pnl = lot.unrealized_pnl or 0.0
+        # A purchase fill is not a market price, so a negative number here
+        # is another lot's fill, not a loss to harvest.
+        loss_amount = 0.0 if fill else (abs(pnl) if pnl < 0 else 0.0)
         is_lt = lot.is_long_term or False
 
         tax_savings = calculate_tax_savings(
@@ -516,16 +528,24 @@ def generate_suggestions(
             transactions=transactions,
         )
 
-        replacements = _get_replacements(lot.symbol, ai_suggestions)
-        ai_explanation = _get_ai_explanation(lot.symbol, ai_suggestions)
-        is_ai = ai_suggestions is not None and lot.symbol in (ai_suggestions or {})
+        # A fill is a notice that the loss is unknown, not a sell instruction.
+        if fill:
+            replacements = []
+            ai_explanation = ""
+            is_ai = False
+            action = "REVIEW"
+        else:
+            replacements = _get_replacements(lot.symbol, ai_suggestions)
+            ai_explanation = _get_ai_explanation(lot.symbol, ai_suggestions)
+            is_ai = ai_suggestions is not None and lot.symbol in (ai_suggestions or {})
+            action = "SELL"
 
         suggestion = HarvestingSuggestion(
             symbol=lot.symbol,
             suggestion_id=_suggestion_id_for_lot(lot),
             display_label=_display_label_for_lot(lot),
             lot_details=_lot_details_for_suggestion(lot),
-            action="SELL",
+            action=action,
             quantity=lot.quantity,
             current_price=lot.current_price,
             cost_basis_per_share=lot.cost_basis_per_share,
@@ -538,12 +558,21 @@ def generate_suggestions(
             replacement_candidates=replacements,
             ai_explanation=ai_explanation,
             ai_generated=is_ai,
+            price_note=(
+                "Purchase price from your CSV, no live quote" if fill else ""
+            ),
         )
 
-        if wash_risk:
-            risky_candidates.append(suggestion)
-        else:
-            clean_candidates.append(suggestion)
+        bucket = fill_candidates if fill else (
+            risky_candidates if wash_risk else clean_candidates
+        )
+        bucket.append(suggestion)
+
+    fill_candidates: list[HarvestingSuggestion] = []
+    for lot in loss_lots:
+        _append_lot(lot, fill=False)
+    for lot in fill_lots:
+        _append_lot(lot, fill=True)
 
     # Sort clean candidates by tax savings (highest first)
     clean_candidates.sort(key=lambda s: s.tax_savings_estimate, reverse=True)
@@ -563,10 +592,17 @@ def generate_suggestions(
         suggestions.extend(clean_candidates)
 
     suggestions.extend(risky_candidates)
+    # Fill-price lots stay even when the harvest cap is already full.
+    # They are notices, so they sit after every real candidate and get no rank.
+    suggestions.extend(fill_candidates)
 
-    # Assign priority rankings
-    for idx, suggestion in enumerate(suggestions):
-        suggestion.priority = idx + 1
+    rank = 1
+    for suggestion in suggestions:
+        if suggestion.action == "REVIEW":
+            suggestion.priority = 0
+            continue
+        suggestion.priority = rank
+        rank += 1
 
     return suggestions
 
@@ -648,6 +684,8 @@ def build_portfolio_summary(
     lots_with_gains = 0
     for p in positions:
         for lot in p.tax_lots:
+            if getattr(lot, "price_kind", None) == "fill":
+                continue
             if lot.unrealized_pnl is not None:
                 if lot.unrealized_pnl < 0:
                     lots_with_losses += 1
