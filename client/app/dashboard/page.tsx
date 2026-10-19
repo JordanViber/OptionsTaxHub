@@ -487,7 +487,7 @@ function getRecommendedNextSteps(
     return steps;
   }
   const lossSuggestions = analysis.suggestions.filter(
-    (suggestion) => !suggestion.price_note,
+    (suggestion) => suggestion.action !== "REVIEW" && !suggestion.price_note,
   );
   const unknownLossCount = analysis.suggestions.length - lossSuggestions.length;
   if (lossSuggestions.length > 0) {
@@ -846,9 +846,12 @@ function ResultsSection({
     displayedAnalysis.positions,
   );
   const harvestTotals = harvestTeaserTotals(harvestTeasers);
+  const realSuggestionCount = displayedAnalysis.suggestions.filter(
+    (suggestion) => suggestion.action !== "REVIEW" && !suggestion.price_note,
+  ).length;
   const suggestionTabCount = packetUnlocked
-    ? displayedAnalysis.suggestions.length
-    : harvestTeasers.length;
+    ? realSuggestionCount
+    : harvestTotals.count;
   const washSaleChains = displayedAnalysis.wash_sale_chains ?? [];
   const showChainHint =
     Boolean(washChainHint) &&

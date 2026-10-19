@@ -123,4 +123,25 @@ describe("harvestTeaserTotals", () => {
     expect(totals.totalLoss).toBe(400);
     expect(totals.unknownLossCount).toBe(1);
   });
+
+  it("leaves a review-only fill out of the loss count", () => {
+    const totals = harvestTeaserTotals(
+      buildHarvestTeasers(
+        [
+          suggestion,
+          {
+            ...suggestion,
+            suggestion_id: "AAPL-review",
+            action: "REVIEW",
+            estimated_loss: 133,
+            tax_savings_estimate: 20,
+          },
+        ],
+        [],
+      ),
+    );
+    expect(totals.count).toBe(1);
+    expect(totals.totalLoss).toBe(400);
+    expect(totals.unknownLossCount).toBe(1);
+  });
 });

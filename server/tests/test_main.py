@@ -3419,6 +3419,10 @@ def test_two_fills_of_one_symbol_stay_fill_when_yahoo_fails(monkeypatch):
         row["price_note"] == "Purchase price from your CSV, no live quote"
         for row in aapl
     )
+    assert all(row["action"] == "REVIEW" for row in aapl)
+    assert all(row["replacement_candidates"] == [] for row in aapl)
+    assert all(row["ai_explanation"] == "" for row in aapl)
+    assert all(row["priority"] == 0 for row in aapl)
     assert body["summary"]["lots_with_losses"] == 0
     clear_cache()
 
@@ -3455,6 +3459,8 @@ def test_stated_csv_current_price_still_counts_as_a_loss(monkeypatch):
     suggestion = body["suggestions"][0]
     assert suggestion["estimated_loss"] == pytest.approx(133.0)
     assert suggestion["price_note"] == ""
+    assert suggestion["action"] == "SELL"
+    assert suggestion["priority"] == 1
     assert body["summary"]["lots_with_losses"] == 1
     # The purchase date is not a quote timestamp.
     assert body["price_basis"]["label"] == "Prices as of your CSV"

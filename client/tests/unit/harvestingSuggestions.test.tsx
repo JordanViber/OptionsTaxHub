@@ -93,6 +93,48 @@ describe("HarvestingSuggestions", () => {
     expect(screen.queryByText("Sell to harvest")).not.toBeInTheDocument();
   });
 
+  it("does not present a purchase-fill card as a sell recommendation", () => {
+    const note = "Purchase price from your CSV, no live quote";
+    const fill: HarvestingSuggestion = {
+      ...baseSuggestion,
+      suggestion_id: "AAPL-fill",
+      action: "REVIEW",
+      priority: 4,
+      estimated_loss: 0,
+      tax_savings_estimate: 0,
+      price_note: note,
+      ai_generated: true,
+      ai_explanation: "Sell this fill lot now",
+      replacement_candidates: [
+        { symbol: "QQQ", name: "Invesco QQQ", reason: "Similar exposure" },
+      ],
+    };
+    render(<HarvestingSuggestions suggestions={[baseSuggestion, fill]} />);
+
+    expect(screen.getByTestId("harvest-price-note")).toHaveTextContent(note);
+    expect(screen.getByTestId("harvest-unknown-loss-count")).toHaveTextContent(
+      "1 lot uses your CSV purchase price, no live quote, loss unknown.",
+    );
+    expect(screen.getAllByText("Sell to harvest")).toHaveLength(1);
+    expect(screen.getByText("#1")).toBeInTheDocument();
+    expect(screen.queryByText("#4")).not.toBeInTheDocument();
+    expect(screen.queryByText("AI")).not.toBeInTheDocument();
+
+    const expandButtons = screen.getAllByLabelText("Show more");
+    expect(expandButtons).toHaveLength(2);
+    for (const button of expandButtons) {
+      fireEvent.click(button);
+    }
+
+    expect(screen.queryByText("Replacements")).not.toBeInTheDocument();
+    expect(screen.queryByText("AI Analysis")).not.toBeInTheDocument();
+    expect(screen.queryByText("Sell this fill lot now")).not.toBeInTheDocument();
+    expect(screen.queryByText("Invesco QQQ")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/this sale is less likely to be a wash sale/),
+    ).not.toBeInTheDocument();
+  });
+
   it("shows packet preview instead of sell recipes when locked", () => {
     render(
       <HarvestingSuggestions

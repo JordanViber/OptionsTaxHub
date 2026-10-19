@@ -514,8 +514,15 @@ class TestGenerateSuggestions:
             "Purchase price from your CSV, no live quote"
         )
         assert by_symbol["AAPL"].estimated_loss == pytest.approx(0.0)
+        assert by_symbol["AAPL"].action == "REVIEW"
+        assert by_symbol["AAPL"].replacement_candidates == []
+        assert by_symbol["AAPL"].ai_explanation == ""
+        assert by_symbol["AAPL"].ai_generated is False
+        assert by_symbol["AAPL"].priority == 0
         assert "MSFT" in by_symbol
         assert by_symbol["MSFT"].price_note == ""
+        assert by_symbol["MSFT"].action == "SELL"
+        assert by_symbol["MSFT"].priority == 1
 
     def test_same_symbol_fill_mismatch_is_not_a_real_loss(self):
         """Another lot's fill must not become a harvestable loss."""
@@ -527,10 +534,25 @@ class TestGenerateSuggestions:
         lots[0].price_kind = "fill"
         lots[1].price_kind = "fill"
         lots = compute_lot_metrics(lots, reference_date=date(2025, 6, 1))
+        ai_suggestions = {
+            "AAPL": {
+                "explanation": "Sell AAPL now",
+                "replacements": [
+                    {"symbol": "QQQ", "name": "Nasdaq", "reason": "similar"},
+                ],
+            },
+            "MSFT": {
+                "explanation": "Harvest the MSFT loss",
+                "replacements": [
+                    {"symbol": "VTI", "name": "Total market", "reason": "broad"},
+                ],
+            },
+        }
         suggestions = generate_suggestions(
             tax_lots=lots,
             transactions=[],
             tax_profile=_profile(),
+            ai_suggestions=ai_suggestions,
         )
         aapl = [row for row in suggestions if row.symbol == "AAPL"]
         assert len(aapl) == 2
@@ -539,9 +561,21 @@ class TestGenerateSuggestions:
             row.price_note == "Purchase price from your CSV, no live quote"
             for row in aapl
         )
+        assert all(row.action == "REVIEW" for row in aapl)
+        assert all(row.replacement_candidates == [] for row in aapl)
+        assert all(row.ai_explanation == "" for row in aapl)
+        assert all(row.ai_generated is False for row in aapl)
+        assert all(row.priority == 0 for row in aapl)
         msft = next(row for row in suggestions if row.symbol == "MSFT")
         assert msft.estimated_loss == pytest.approx(100.0)
         assert msft.price_note == ""
+        assert msft.action == "SELL"
+        assert msft.priority == 1
+        assert msft.ai_explanation == "Harvest the MSFT loss"
+        assert [row.symbol for row in msft.replacement_candidates] == ["VTI"]
+        assert suggestions.index(msft) < min(
+            suggestions.index(row) for row in aapl
+        )
         summary = build_portfolio_summary(
             aggregate_positions(lots),
             suggestions,

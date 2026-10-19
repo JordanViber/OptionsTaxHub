@@ -166,7 +166,8 @@ function SuggestionCard({
   const [expanded, setExpanded] = useState(false);
   const needsManualReview = Boolean(suggestion.manual_review_required);
   const detailText = getSuggestionDetailText(suggestion, lotIndex, lotCount);
-  const unknownLoss = Boolean(suggestion.price_note);
+  const unknownLoss =
+    Boolean(suggestion.price_note) || suggestion.action === "REVIEW";
   const recommended = unknownLoss ? null : getRecommendedActionCopy(suggestion);
 
   return (
@@ -174,9 +175,11 @@ function SuggestionCard({
       variant="outlined"
       sx={{
         borderLeft: 4,
-        borderLeftColor: suggestion.wash_sale_risk
-          ? "warning.main"
-          : "success.main",
+        borderLeftColor: unknownLoss
+          ? "divider"
+          : suggestion.wash_sale_risk
+            ? "warning.main"
+            : "success.main",
       }}
     >
       <CardContent sx={{ pb: expanded ? 2 : "16px !important" }}>
@@ -219,12 +222,14 @@ function SuggestionCard({
                   sx={{ height: 20, fontSize: "0.65rem", fontWeight: 700 }}
                 />
               )}
-              <Chip
-                label={`#${suggestion.priority}`}
-                size="small"
-                color="primary"
-                sx={{ height: 20, fontSize: "0.65rem" }}
-              />
+              {unknownLoss ? null : (
+                <Chip
+                  label={`#${suggestion.priority}`}
+                  size="small"
+                  color="primary"
+                  sx={{ height: 20, fontSize: "0.65rem" }}
+                />
+              )}
               {lotCount > 1 && (
                 <Chip
                   label={`Lot ${lotIndex}/${lotCount}`}
@@ -240,7 +245,7 @@ function SuggestionCard({
                 variant="outlined"
                 sx={{ height: 20, fontSize: "0.65rem" }}
               />
-              {suggestion.ai_generated && (
+              {suggestion.ai_generated && !unknownLoss && (
                 <Chip
                   icon={<AiIcon sx={{ fontSize: 12 }} />}
                   label="AI"
@@ -429,7 +434,7 @@ function SuggestionCard({
         <Collapse in={expanded}>
           <Divider sx={{ my: 1.5 }} />
 
-          {suggestion.ai_explanation && (
+          {!unknownLoss && suggestion.ai_explanation && (
             <Box sx={{ mb: 2 }}>
               <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>
                 {suggestion.ai_generated ? "AI Analysis" : "Analysis"}
@@ -444,7 +449,7 @@ function SuggestionCard({
             </Box>
           )}
 
-          {suggestion.replacement_candidates.length > 0 && (
+          {!unknownLoss && suggestion.replacement_candidates.length > 0 && (
             <Box>
               <Typography
                 variant="subtitle2"

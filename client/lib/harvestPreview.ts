@@ -12,6 +12,7 @@ export interface HarvestTeaser {
   washSaleRisk: boolean;
   isLongTerm: boolean;
   priceNote?: string;
+  reviewOnly?: boolean;
 }
 
 export interface HarvestTeaserTotals {
@@ -28,7 +29,7 @@ export function purchaseFillUnknownCopy(count: number): string {
 }
 
 function isPurchaseFill(teaser: HarvestTeaser): boolean {
-  return Boolean(teaser.priceNote);
+  return Boolean(teaser.priceNote) || Boolean(teaser.reviewOnly);
 }
 
 function losingLots(position: Position): TaxLot[] {
@@ -47,6 +48,7 @@ function teaserFromSuggestion(suggestion: HarvestingSuggestion): HarvestTeaser {
     washSaleRisk: suggestion.wash_sale_risk,
     isLongTerm: suggestion.is_long_term,
     priceNote: suggestion.price_note || undefined,
+    reviewOnly: suggestion.action === "REVIEW",
   };
 }
 

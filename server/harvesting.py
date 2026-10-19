@@ -528,16 +528,24 @@ def generate_suggestions(
             transactions=transactions,
         )
 
-        replacements = _get_replacements(lot.symbol, ai_suggestions)
-        ai_explanation = _get_ai_explanation(lot.symbol, ai_suggestions)
-        is_ai = ai_suggestions is not None and lot.symbol in (ai_suggestions or {})
+        # A fill is a notice that the loss is unknown, not a sell instruction.
+        if fill:
+            replacements = []
+            ai_explanation = ""
+            is_ai = False
+            action = "REVIEW"
+        else:
+            replacements = _get_replacements(lot.symbol, ai_suggestions)
+            ai_explanation = _get_ai_explanation(lot.symbol, ai_suggestions)
+            is_ai = ai_suggestions is not None and lot.symbol in (ai_suggestions or {})
+            action = "SELL"
 
         suggestion = HarvestingSuggestion(
             symbol=lot.symbol,
             suggestion_id=_suggestion_id_for_lot(lot),
             display_label=_display_label_for_lot(lot),
             lot_details=_lot_details_for_suggestion(lot),
-            action="SELL",
+            action=action,
             quantity=lot.quantity,
             current_price=lot.current_price,
             cost_basis_per_share=lot.cost_basis_per_share,
@@ -585,11 +593,16 @@ def generate_suggestions(
 
     suggestions.extend(risky_candidates)
     # Fill-price lots stay even when the harvest cap is already full.
+    # They are notices, so they sit after every real candidate and get no rank.
     suggestions.extend(fill_candidates)
 
-    # Assign priority rankings
-    for idx, suggestion in enumerate(suggestions):
-        suggestion.priority = idx + 1
+    rank = 1
+    for suggestion in suggestions:
+        if suggestion.action == "REVIEW":
+            suggestion.priority = 0
+            continue
+        suggestion.priority = rank
+        rank += 1
 
     return suggestions
 
