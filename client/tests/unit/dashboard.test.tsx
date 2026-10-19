@@ -1493,13 +1493,15 @@ describe("DashboardPage", () => {
     render(<DashboardPage />, { wrapper: createWrapper() });
 
     await waitFor(() => {
-      expect(screen.getByTestId("price-as-of-pnl")).toHaveTextContent(
-        "Prices as of your CSV (2026-08-12)",
-      );
+      expect(screen.getAllByText("Moderate confidence").length).toBeGreaterThan(0);
     });
-    expect(screen.getByTestId("price-as-of-prices")).toHaveTextContent(
-      "Prices as of your CSV (2026-08-12)",
-    );
+    expect(
+      screen.getAllByText("Prices as of your CSV (2026-08-12)").length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText(/prices on this page are marked with your CSV date/i)
+        .length,
+    ).toBeGreaterThan(0);
     expect(screen.queryByText(/^Live /)).not.toBeInTheDocument();
     expect(screen.queryByText(/current price/i)).not.toBeInTheDocument();
   });

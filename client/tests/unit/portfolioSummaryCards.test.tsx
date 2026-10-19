@@ -116,6 +116,36 @@ describe("PortfolioSummaryCards", () => {
     expect(screen.queryByText("Est. Tax Savings")).not.toBeInTheDocument();
   });
 
+  it("labels prices and unrealized P&L with the CSV date", () => {
+    render(
+      <PortfolioSummaryCards
+        summary={baseSummary}
+        priceBasis={{
+          quotes: [
+            {
+              symbol: "AAPL",
+              price: 190,
+              source: "csv",
+              provider: null,
+              as_of: "2026-08-12",
+            },
+          ],
+          live: false,
+          csv_as_of: "2026-08-12",
+          label: "Prices as of your CSV (2026-08-12)",
+        }}
+      />,
+    );
+
+    expect(screen.getByTestId("price-as-of-prices")).toHaveTextContent(
+      "Prices as of your CSV (2026-08-12)",
+    );
+    expect(screen.getByTestId("price-as-of-pnl")).toHaveTextContent(
+      "Prices as of your CSV (2026-08-12)",
+    );
+    expect(screen.queryByText(/^Live /)).not.toBeInTheDocument();
+  });
+
   it("does not render realized card when realized_summary is absent", () => {
     render(<PortfolioSummaryCards summary={baseSummary} />);
 
