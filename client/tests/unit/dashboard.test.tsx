@@ -137,7 +137,15 @@ jest.mock("../../app/components/TaxDisclaimer", () => ({
 
 jest.mock("../../app/components/PortfolioSummaryCards", () => ({
   __esModule: true,
-  default: () => <div data-testid="portfolio-summary-cards" />,
+  default: (props: {
+    preview?: { unknownLossCount?: number; locked?: boolean };
+  }) => (
+    <div
+      data-testid="portfolio-summary-cards"
+      data-unknown-loss-count={props.preview?.unknownLossCount ?? 0}
+      data-locked={props.preview?.locked ? "true" : "false"}
+    />
+  ),
 }));
 
 jest.mock("../../app/components/PositionsTable", () => ({
@@ -883,6 +891,53 @@ describe("DashboardPage", () => {
     expect(
       screen.queryByRole("tab", { name: "Harvest queue (3)" }),
     ).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "2 lots use your CSV purchase price, no live quote, loss unknown.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("passes the unknown-loss count when an unlocked book is all purchase fills", async () => {
+    const note = "Purchase price from your CSV, no live quote";
+    const fill = (id: string, symbol: string) => ({
+      ...baseAnalysis.suggestions[0],
+      suggestion_id: id,
+      symbol,
+      display_label: symbol,
+      action: "REVIEW",
+      priority: 0,
+      estimated_loss: 0,
+      tax_savings_estimate: 0,
+      price_note: note,
+    });
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      sample_run: true,
+      summary: {
+        ...baseAnalysis.summary,
+        total_harvestable_losses: 0,
+        estimated_tax_savings: 0,
+        lots_with_losses: 0,
+      },
+      suggestions: [fill("AAPL-fill", "AAPL"), fill("MSFT-fill", "MSFT")],
+    };
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("portfolio-summary-cards")).toHaveAttribute(
+        "data-unknown-loss-count",
+        "2",
+      );
+    });
+    expect(screen.getByTestId("portfolio-summary-cards")).toHaveAttribute(
+      "data-locked",
+      "false",
+    );
+    expect(
+      screen.getByRole("tab", { name: "Harvest queue (0)" }),
+    ).toBeInTheDocument();
     expect(
       screen.getByText(
         "2 lots use your CSV purchase price, no live quote, loss unknown.",

@@ -914,17 +914,13 @@ function ResultsSection({
         <PortfolioSummaryCards
           summary={displayedAnalysis.summary}
           priceBasis={displayedAnalysis.price_basis}
-          preview={
-            packetUnlocked
-              ? undefined
-              : {
-                  locked: true,
-                  candidateCount: harvestTotals.count,
-                  openLossTotal: harvestTotals.totalLoss,
-                  potentialTaxSavings: harvestTotals.totalSavings,
-                  unknownLossCount: harvestTotals.unknownLossCount,
-                }
-          }
+          preview={{
+            locked: !packetUnlocked,
+            candidateCount: harvestTotals.count,
+            openLossTotal: harvestTotals.totalLoss,
+            potentialTaxSavings: harvestTotals.totalSavings,
+            unknownLossCount: harvestTotals.unknownLossCount,
+          }}
         />
       </Box>
 

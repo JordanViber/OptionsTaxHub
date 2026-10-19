@@ -215,6 +215,13 @@ export default function PortfolioSummaryCards({
     Boolean(preview?.locked) &&
     (preview?.candidateCount ?? 0) > 0 &&
     summary.estimated_tax_savings <= 0;
+  // An all-fill book has no priced loss. $0 would read as a calculated harvest.
+  const unknownOnly =
+    unknownLossCount > 0 &&
+    !showLossPreview &&
+    summary.lots_with_losses <= 0 &&
+    summary.total_harvestable_losses <= 0 &&
+    summary.estimated_tax_savings <= 0;
   let heroValue = summary.estimated_tax_savings;
   if (showLossPreview) {
     heroValue = preview?.openLossTotal ?? 0;
@@ -260,20 +267,24 @@ export default function PortfolioSummaryCards({
               color: heroColor,
             }}
           >
-            {showPrices ? formatCurrency(heroValue) : "—"}
+            {unknownOnly
+              ? "Unknown"
+              : showPrices
+                ? formatCurrency(heroValue)
+                : "—"}
           </Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1.5 }}>
-            {showLossPreview
-              ? `${preview?.candidateCount ?? 0} lots with unrealized losses. Unlock the $49 plan for sell instructions and what to wait on.`
-              : unknownLossCount > 0
-                ? purchaseFillUnknownCopy(unknownLossCount)
+            {unknownOnly
+              ? purchaseFillUnknownCopy(unknownLossCount)
+              : showLossPreview
+                ? `${preview?.candidateCount ?? 0} lots with unrealized losses. Unlock the $49 plan for sell instructions and what to wait on.`
                 : showPrices
                   ? `Federal harvest still available from ${formatCurrency(
                       harvestableValue,
                     )} of losing lots.`
                   : "Federal harvest still available from the losing lots on this page."}
           </Typography>
-          {showLossPreview && unknownLossCount > 0 ? (
+          {!unknownOnly && unknownLossCount > 0 ? (
             <Typography
               variant="body2"
               color="text.secondary"
@@ -329,8 +340,14 @@ export default function PortfolioSummaryCards({
         <Grid size={{ xs: 12, sm: 6, md: hasRealized ? 3 : 4 }}>
           <MetricCard
             title="Harvestable Losses"
-            value={showPrices ? formatCurrency(harvestableValue) : "—"}
-            subtitle={harvestableSubtitle}
+            value={
+              unknownOnly
+                ? "Unknown"
+                : showPrices
+                  ? formatCurrency(harvestableValue)
+                  : "—"
+            }
+            subtitle={unknownOnly ? "Loss unknown" : harvestableSubtitle}
             icon={<LossIcon />}
             color="#c46a58"
           />

@@ -146,6 +146,63 @@ describe("PortfolioSummaryCards", () => {
     expect(screen.queryByText(/8 lots with unrealized losses/)).not.toBeInTheDocument();
   });
 
+  it("does not show a $0 harvest for an unlocked all-fill book", () => {
+    render(
+      <PortfolioSummaryCards
+        summary={{
+          ...baseSummary,
+          estimated_tax_savings: 0,
+          total_harvestable_losses: 0,
+          lots_with_losses: 0,
+          total_unrealized_pnl: 0,
+          total_unrealized_pnl_pct: 0,
+        }}
+        preview={{
+          locked: false,
+          candidateCount: 0,
+          openLossTotal: 0,
+          potentialTaxSavings: 0,
+          unknownLossCount: 10,
+        }}
+      />,
+    );
+
+    expect(
+      screen.getByText(
+        "10 lots use your CSV purchase price, no live quote, loss unknown.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/from \$0 of losing lots/)).not.toBeInTheDocument();
+    expect(screen.queryByText("$0")).not.toBeInTheDocument();
+    expect(screen.queryByText("0 lots with losses")).not.toBeInTheDocument();
+    expect(screen.getAllByText("Unknown").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText("Loss unknown")).toBeInTheDocument();
+  });
+
+  it("keeps a real unlocked harvest and still names the fill lots", () => {
+    render(
+      <PortfolioSummaryCards
+        summary={baseSummary}
+        preview={{
+          locked: false,
+          candidateCount: 3,
+          openLossTotal: 3000,
+          potentialTaxSavings: 750,
+          unknownLossCount: 2,
+        }}
+      />,
+    );
+
+    expect(
+      screen.getByText("Federal harvest still available from $3,000 of losing lots."),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("summary-unknown-loss-count")).toHaveTextContent(
+      "2 lots use your CSV purchase price, no live quote, loss unknown.",
+    );
+    expect(screen.getByText("$750")).toBeInTheDocument();
+    expect(screen.getAllByText("$3,000").length).toBeGreaterThan(0);
+  });
+
   it("labels prices and unrealized P&L with the CSV date", () => {
     render(
       <PortfolioSummaryCards
