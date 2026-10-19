@@ -1985,6 +1985,94 @@ describe("YearClosePacketPanel", () => {
     expect(screen.queryByText(/Payment confirmed for tax year/i)).not.toBeInTheDocument();
   });
 
+  it("shows a promotion 409 detail and leaves Pay usable", async () => {
+    armMatchingResume();
+    const detail =
+      "Payment was received, but this analysis has no source document. Run a new analysis for this tax year.";
+    mockFetch.mockImplementation(async (url: RequestInfo | URL) => {
+      const target = String(url);
+      if (target.includes("/api/year-close-packet/entitlement")) {
+        return paidEntitlementWithoutAnalysis();
+      }
+      if (target.includes("/api/year-close-packet/checkout")) {
+        return {
+          ok: false,
+          status: 409,
+          json: async () => ({ detail }),
+        };
+      }
+      return checkoutOk();
+    });
+
+    render(<YearClosePacketPanel analysis={{ ...analysis, packet_unlocked: false }} />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(detail);
+      expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
+    });
+    expect(screen.queryByText(PACKET_PROMOTION_UNCONFIRMED_COPY)).not.toBeInTheDocument();
+    expect(screen.queryByText(PACKET_ENTITLEMENT_UNCONFIRMED_COPY)).not.toBeInTheDocument();
+    expect(screen.queryByTestId("packet-entitlement-unconfirmed")).not.toBeInTheDocument();
+    expect(checkoutPosts()).toHaveLength(1);
+    expect(screen.queryByText(/Payment confirmed for tax year/i)).not.toBeInTheDocument();
+  });
+
+  it("enables Download when the same run unlocks while promotion checkout is pending", async () => {
+    armMatchingResume();
+    let resolveCheckout: (value: unknown) => void = () => {};
+    const checkoutPending = new Promise((resolve) => {
+      resolveCheckout = resolve;
+    });
+    mockFetch.mockImplementation((url: RequestInfo | URL) => {
+      const target = String(url);
+      if (target.includes("/api/year-close-packet/entitlement")) {
+        return Promise.resolve(paidEntitlementWithoutAnalysis());
+      }
+      if (target.includes("/api/year-close-packet/checkout")) {
+        return checkoutPending;
+      }
+      return Promise.resolve(checkoutOk());
+    });
+
+    const view = render(
+      <YearClosePacketPanel analysis={{ ...analysis, packet_unlocked: false }} />,
+    );
+    await waitFor(() => {
+      expect(checkoutPosts()).toHaveLength(1);
+    });
+    expect(screen.getByRole("button", { name: /Download/i })).toBeDisabled();
+
+    view.rerender(
+      <YearClosePacketPanel
+        analysis={{
+          ...analysis,
+          packet_unlocked: true,
+          packet_session_id: "cs_test_refetched",
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /Download/i })).toBeEnabled();
+    });
+    expect(screen.getByText(/Payment confirmed for tax year 2025/i)).toBeInTheDocument();
+    expect(checkoutPosts()).toHaveLength(1);
+
+    await act(async () => {
+      resolveCheckout({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          already_paid: true,
+          session_id: "cs_test_missing_analysis",
+          analysis_id: "analysis-1",
+        }),
+      });
+    });
+    expect(screen.getByRole("button", { name: /Download/i })).toBeEnabled();
+    expect(checkoutPosts()).toHaveLength(1);
+  });
+
   it("marks a packet_unlocked run paid immediately when entitlement would omit analysis_id", async () => {
     armMatchingResume();
     mockFetch.mockImplementation(async () => {
