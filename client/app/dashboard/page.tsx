@@ -106,8 +106,11 @@ import type {
 } from "@/lib/types";
 import { consumeAutomaticSampleRerun } from "@/lib/automaticSampleRerun";
 import {
+  clearPacketResumeSessionMarkers,
   consumePacketResumeLocalHandoff,
   PACKET_RESUME_REUPLOAD_COPY,
+  readPacketResumeExpected,
+  resumeAnalysisMatches,
 } from "@/lib/packetResumeLocal";
 import { SAMPLE_FETCH_TIMEOUT_MS } from "@/lib/constants";
 import {
@@ -145,6 +148,8 @@ const SAMPLE_CSV_FILENAME = "sample-robinhood-transactions.csv";
 const SAMPLE_1099_URL = "/sample-robinhood-1099-2026.pdf";
 const SAMPLE_1099_FILENAME = "sample-robinhood-1099-2026.pdf";
 const SAMPLE_FETCH_TIMEOUT_MESSAGE = "Could not load the 2026 sample.";
+const ORIGIN_RESUME_WAIT_MS = 12_000;
+const ORIGIN_RESUME_RETRY_MS = 3_000;
 
 function isAbortError(error: unknown): boolean {
   return (
@@ -1258,6 +1263,27 @@ function HistoryContent({
   );
 }
 
+function newestHistoryItem(
+  items: readonly AnalysisHistoryItem[],
+): AnalysisHistoryItem | null {
+  if (items.length === 0) {
+    return null;
+  }
+  return [...items].sort((left, right) => {
+    const leftTime = Date.parse(left.uploaded_at);
+    const rightTime = Date.parse(right.uploaded_at);
+    const leftOk = Number.isFinite(leftTime);
+    const rightOk = Number.isFinite(rightTime);
+    if (leftOk && rightOk && leftTime !== rightTime) {
+      return rightTime - leftTime;
+    }
+    if (leftOk !== rightOk) {
+      return leftOk ? -1 : 1;
+    }
+    return right.id.localeCompare(left.id);
+  })[0];
+}
+
 export default function DashboardPage() {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1296,6 +1322,8 @@ export default function DashboardPage() {
   const [sampleLoadError, setSampleLoadError] = useState<string | null>(null);
   const sampleAnalyzeStartedRef = useRef(false);
   const resumeReuploadArmed = useRef(false);
+  const resumeOriginHandled = useRef(false);
+  const resumeBareLoadStarted = useRef(false);
   const [resumeReuploadNotice, setResumeReuploadNotice] = useState(false);
   const queryClient = useQueryClient();
 
@@ -1310,8 +1338,14 @@ export default function DashboardPage() {
     useBackendHealth();
 
   // Load past upload history
-  const { data: history, error: historyError } =
-    usePortfolioHistory(confirmedUserId);
+  const {
+    data: history,
+    error: historyError,
+    isFetched: historyFetched,
+    refetch: refetchHistory,
+  } = usePortfolioHistory(confirmedUserId);
+  const historyRef = useRef(history);
+  historyRef.current = history;
 
   // Full portfolio analysis mutation
   const {
@@ -1822,22 +1856,27 @@ export default function DashboardPage() {
       return;
     }
     let resumeSample = false;
-    let hasAnalysis = false;
     let wantsResume = false;
+    let stored: PortfolioAnalysis | null = null;
     try {
       if (sessionStorage.getItem(LOAD_SAMPLE_KEY) === "1") {
         return;
       }
       resumeSample = sessionStorage.getItem(PACKET_RESUME_SAMPLE_KEY) === "1";
-      hasAnalysis = Boolean(sessionStorage.getItem("optionstaxhub-analysis"));
       const params = new URLSearchParams(window.location.search);
       wantsResume =
         params.get(RESUME_CHECKOUT_PARAM) === "1" ||
         sessionStorage.getItem(PACKET_RESUME_CHECKOUT_KEY) === "1";
+      stored = restoreAnalysisFromStorage();
     } catch {
       return;
     }
-    if (!resumeSample || hasAnalysis || !wantsResume) {
+    if (!resumeSample || !wantsResume) {
+      return;
+    }
+    // A re-run gets a new id. The same tax year and sample_run still match,
+    // so an already-matching sample must not be replaced.
+    if (stored && resumeAnalysisMatches(stored)) {
       return;
     }
     if (!consumeAutomaticSampleRerun()) {
@@ -1847,6 +1886,205 @@ export default function DashboardPage() {
     // The sample loader is stable for this mount; auth gates the start.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading, user, emailConfirmed]);
+
+  useEffect(() => {
+    if (resumeOriginHandled.current) {
+      return;
+    }
+    if (authLoading || !confirmedUserId || !historyFetched) {
+      return;
+    }
+    if (resumeReuploadArmed.current || historyError) {
+      return;
+    }
+    let sampleMarker = false;
+    let checkoutMarker = false;
+    let wantsResume = false;
+    try {
+      sampleMarker = sessionStorage.getItem(PACKET_RESUME_SAMPLE_KEY) === "1";
+      checkoutMarker =
+        sessionStorage.getItem(PACKET_RESUME_CHECKOUT_KEY) === "1";
+      const params = new URLSearchParams(window.location.search);
+      wantsResume =
+        params.get(RESUME_CHECKOUT_PARAM) === "1" || checkoutMarker;
+    } catch {
+      return;
+    }
+    if (!wantsResume || sampleMarker || !checkoutMarker) {
+      return;
+    }
+    const expected = readPacketResumeExpected();
+    if (!expected) {
+      return;
+    }
+    const stored = restoreAnalysisFromStorage();
+    if (
+      stored?.analysis_id === expected.analysisId &&
+      stored.tax_profile?.tax_year === expected.taxYear
+    ) {
+      return;
+    }
+
+    // The original tab may still be saving this guest run. Keep the resume
+    // markers and leave resumeOriginHandled unset until the id shows up.
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const startedAt = Date.now();
+
+    const giveUp = () => {
+      if (cancelled || resumeOriginHandled.current) {
+        return;
+      }
+      // Read the expected id before the markers are cleared. A different run
+      // must leave the screen, or Pay turns back on for the wrong tax year.
+      const awaited = readPacketResumeExpected();
+      const mounted = displayedAnalysisRef.current;
+      const mountedMismatches =
+        !!awaited &&
+        !!mounted &&
+        (mounted.analysis_id !== awaited.analysisId ||
+          mounted.tax_profile?.tax_year !== awaited.taxYear);
+      resumeOriginHandled.current = true;
+      if (mountedMismatches) {
+        clearCurrentAnalysisView({
+          setLoadedAnalysis,
+          setAnalysisSource,
+        });
+        setForceEmpty(false);
+      }
+      clearPacketResumeSessionMarkers();
+      setResumeReuploadNotice(true);
+    };
+
+    const schedule = () => {
+      if (cancelled || resumeOriginHandled.current) {
+        return;
+      }
+      const elapsed = Date.now() - startedAt;
+      if (elapsed >= ORIGIN_RESUME_WAIT_MS) {
+        giveUp();
+        return;
+      }
+      timer = setTimeout(() => {
+        void attempt();
+      }, Math.min(ORIGIN_RESUME_RETRY_MS, ORIGIN_RESUME_WAIT_MS - elapsed));
+    };
+
+    const attempt = async () => {
+      if (cancelled || resumeOriginHandled.current) {
+        return;
+      }
+      let items = historyRef.current ?? [];
+      try {
+        const refreshed = await refetchHistory();
+        if (cancelled || resumeOriginHandled.current) {
+          return;
+        }
+        if (Array.isArray(refreshed?.data)) {
+          items = refreshed.data;
+        }
+      } catch {
+        if (cancelled || resumeOriginHandled.current) {
+          return;
+        }
+      }
+      const row = items.find((item) => item.id === expected.analysisId);
+      if (row) {
+        try {
+          const record = await fetchAnalysisById(expected.analysisId);
+          if (cancelled || resumeOriginHandled.current) {
+            return;
+          }
+          if (record?.result) {
+            resumeOriginHandled.current = true;
+            clearPacketResumeSessionMarkers();
+            setLoadedAnalysis(normalizeAnalysis(record.result));
+            setAnalysisSource("saved-history");
+            setForceEmpty(false);
+            return;
+          }
+        } catch {
+          if (cancelled || resumeOriginHandled.current) {
+            return;
+          }
+        }
+      }
+      schedule();
+    };
+
+    void attempt();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
+    };
+  }, [
+    authLoading,
+    confirmedUserId,
+    historyFetched,
+    historyError,
+    refetchHistory,
+  ]);
+
+  useEffect(() => {
+    if (resumeBareLoadStarted.current || resumeOriginHandled.current) {
+      return;
+    }
+    if (authLoading || !confirmedUserId || !historyFetched || historyError) {
+      return;
+    }
+    if (resumeReuploadArmed.current) {
+      return;
+    }
+    let hasAnalysis = false;
+    let hasCheckout = false;
+    let hasSample = false;
+    let wantsUrl = false;
+    try {
+      hasAnalysis = Boolean(sessionStorage.getItem("optionstaxhub-analysis"));
+      hasCheckout =
+        sessionStorage.getItem(PACKET_RESUME_CHECKOUT_KEY) === "1";
+      hasSample = sessionStorage.getItem(PACKET_RESUME_SAMPLE_KEY) === "1";
+      wantsUrl =
+        new URLSearchParams(window.location.search).get(
+          RESUME_CHECKOUT_PARAM,
+        ) === "1";
+    } catch {
+      return;
+    }
+    if (!wantsUrl || hasAnalysis || hasCheckout || hasSample) {
+      return;
+    }
+    resumeBareLoadStarted.current = true;
+    const newest = newestHistoryItem(history ?? []);
+    if (!newest) {
+      handleLoadSample();
+      return;
+    }
+    void fetchAnalysisById(newest.id)
+      .then((record) => {
+        if (record?.result) {
+          setLoadedAnalysis(normalizeAnalysis(record.result));
+          setAnalysisSource("saved-history");
+          setForceEmpty(false);
+          return;
+        }
+        handleLoadSample();
+      })
+      .catch(() => {
+        handleLoadSample();
+      });
+    // handleLoadSample is stable for this mount. A bare resume never sets
+    // resume markers, so the packet panel cannot auto-post.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    authLoading,
+    confirmedUserId,
+    historyFetched,
+    history,
+    historyError,
+  ]);
 
   const handleSampleRerunForCheckout = (): boolean => {
     if (!consumeAutomaticSampleRerun()) {
