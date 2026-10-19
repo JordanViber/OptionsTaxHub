@@ -2513,6 +2513,70 @@ describe("DashboardPage", () => {
     }
   });
 
+  it("clears a mismatched on-screen run when the origin id never appears so Pay cannot charge it", async () => {
+    jest.useFakeTimers();
+    const store = installSessionStore();
+    store.set(
+      "optionstaxhub-analysis",
+      JSON.stringify({
+        ...baseAnalysis,
+        analysis_id: "wrong-on-screen",
+        sample_run: false,
+        packet_unlocked: false,
+        tax_profile: { ...baseAnalysis.tax_profile, tax_year: 2024 },
+      }),
+    );
+    localStorage.setItem(
+      PACKET_RESUME_LOCAL_KEY,
+      JSON.stringify({
+        v: 2,
+        sample: false,
+        exp: Date.now() + 60_000,
+        analysisId: "origin-id",
+        taxYear: 2025,
+      }),
+    );
+    mockHistoryData = [historyRow("other-run", "other.csv", "2026-01-01T00:00:00Z")];
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    const checkoutCalls: Array<{ url: string; authorization: string; body: string }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = handoffFetch(checkoutCalls);
+
+    try {
+      render(<DashboardPage />, { wrapper: createWrapper() });
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(9_000);
+      });
+      expect(screen.queryByTestId("packet-resume-reupload")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeDisabled();
+      expect(store.get("optionstaxhub-analysis")).toContain("wrong-on-screen");
+
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(3_000);
+      });
+
+      expect(screen.getByTestId("packet-resume-reupload")).toHaveTextContent(
+        "Re-upload your CSV to continue to checkout.",
+      );
+      expect(screen.getByTestId("csv-dropzone")).toBeInTheDocument();
+      const pay = screen.queryByRole("button", { name: /Pay \$49/i });
+      if (pay) {
+        expect(pay).toBeDisabled();
+        fireEvent.click(pay);
+      }
+      expect(checkoutCalls).toHaveLength(0);
+      expect(JSON.stringify(checkoutCalls)).not.toContain("wrong-on-screen");
+      expect(JSON.stringify(checkoutCalls)).not.toContain("origin-id");
+      expect(store.get("optionstaxhub-analysis") ?? "").not.toContain("wrong-on-screen");
+      expect(mockFetchAnalysisById).not.toHaveBeenCalled();
+      expect(mockAnalyzeMutate).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = originalFetch;
+      jest.useRealTimers();
+      window.history.replaceState(null, "", "/dashboard");
+    }
+  });
+
   it("asks for a re-upload when the origin run never appears in history", async () => {
     jest.useFakeTimers();
     installSessionStore();

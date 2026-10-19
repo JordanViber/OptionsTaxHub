@@ -1935,7 +1935,23 @@ export default function DashboardPage() {
       if (cancelled || resumeOriginHandled.current) {
         return;
       }
+      // Read the expected id before the markers are cleared. A different run
+      // must leave the screen, or Pay turns back on for the wrong tax year.
+      const awaited = readPacketResumeExpected();
+      const mounted = displayedAnalysisRef.current;
+      const mountedMismatches =
+        !!awaited &&
+        !!mounted &&
+        (mounted.analysis_id !== awaited.analysisId ||
+          mounted.tax_profile?.tax_year !== awaited.taxYear);
       resumeOriginHandled.current = true;
+      if (mountedMismatches) {
+        clearCurrentAnalysisView({
+          setLoadedAnalysis,
+          setAnalysisSource,
+        });
+        setForceEmpty(false);
+      }
       clearPacketResumeSessionMarkers();
       setResumeReuploadNotice(true);
     };
