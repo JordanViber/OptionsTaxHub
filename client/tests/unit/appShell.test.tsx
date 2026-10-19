@@ -152,10 +152,24 @@ describe("AppShell", () => {
       user_metadata: { display_name: "Ada" },
     };
     sessionStorage.setItem("optionstaxhub-analysis", "{\"sample\":true}");
+    sessionStorage.setItem("optionstaxhub-packet-resume-checkout", "1");
+    sessionStorage.setItem("optionstaxhub-packet-resume-sample", "1");
+    sessionStorage.setItem(
+      "optionstaxhub-packet-resume-analysis",
+      JSON.stringify({ analysisId: "analysis-1", taxYear: 2025 }),
+    );
     localStorage.setItem(
       "optionstaxhub-packet-resume",
-      JSON.stringify({ v: 1, sample: true, exp: Date.now() + 60_000 }),
+      JSON.stringify({
+        v: 2,
+        sample: true,
+        exp: Date.now() + 60_000,
+        analysisId: "analysis-1",
+        taxYear: 2025,
+      }),
     );
+    localStorage.setItem("optionstaxhub-packet-checkout-started", String(Date.now()));
+    localStorage.setItem("optionstaxhub-packet-paid:keep", "cs_test_keep");
     const client = new QueryClient();
     client.setQueryData(["portfolio-history", "user-1"], [{ id: "h1" }]);
     client.setQueryData(["tax-profile", "user-1"], { tax_year: 2026 });
@@ -182,7 +196,12 @@ describe("AppShell", () => {
     expect(deleteCache).toHaveBeenCalledWith("optionstaxhub-v6");
     expect(deleteCache).toHaveBeenCalledWith("optionstaxhub-v5");
     expect(sessionStorage.getItem("optionstaxhub-analysis")).toBeNull();
+    expect(sessionStorage.getItem("optionstaxhub-packet-resume-checkout")).toBeNull();
+    expect(sessionStorage.getItem("optionstaxhub-packet-resume-sample")).toBeNull();
+    expect(sessionStorage.getItem("optionstaxhub-packet-resume-analysis")).toBeNull();
     expect(localStorage.getItem("optionstaxhub-packet-resume")).toBeNull();
+    expect(localStorage.getItem("optionstaxhub-packet-checkout-started")).toBeNull();
+    expect(localStorage.getItem("optionstaxhub-packet-paid:keep")).toBe("cs_test_keep");
     expect(client.getQueryData(["portfolio-history", "user-1"])).toBeUndefined();
     expect(client.getQueryData(["tax-profile", "user-1"])).toBeUndefined();
     expect(mockPush).toHaveBeenCalledWith("/auth/signin");

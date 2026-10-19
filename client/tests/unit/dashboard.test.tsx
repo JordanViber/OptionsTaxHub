@@ -67,6 +67,8 @@ let mockHistoryData: Array<{
 }> = [];
 const mockAnalyzeMutate = jest.fn();
 const mockFetchAnalysisById = jest.fn();
+let mockHistoryFetched = true;
+let mockHistoryError: Error | null = null;
 const mockFetchWashSaleChains = jest.fn(() =>
   Promise.resolve({ chains: [], hint: null }),
 );
@@ -87,8 +89,9 @@ jest.mock("../../lib/api", () => ({
   }),
   usePortfolioHistory: () => ({
     data: mockHistoryData,
-    error: null,
+    error: mockHistoryError,
     isPending: false,
+    isFetched: mockHistoryFetched,
   }),
   useBackendHealth: () => ({
     isError: false,
@@ -160,6 +163,8 @@ import { resetAutomaticSampleRerunForTests } from "../../lib/automaticSampleReru
 import { resetPacketResumeCheckoutLock } from "../../app/components/YearClosePacketPanel";
 import { resetPacketResumeLocalForTests } from "../../lib/packetResumeLocal";
 import {
+  PACKET_CHECKOUT_STARTED_KEY,
+  PACKET_RESUME_ANALYSIS_KEY,
   PACKET_RESUME_CHECKOUT_KEY,
   PACKET_RESUME_LOCAL_KEY,
   PACKET_RESUME_SAMPLE_KEY,
@@ -261,6 +266,8 @@ describe("DashboardPage", () => {
     mockAuthState.loading = false;
     mockAnalyzeData = null;
     mockHistoryData = [];
+    mockHistoryFetched = true;
+    mockHistoryError = null;
     mockAnalyzeMutate.mockReset();
     mockFetchAnalysisById.mockReset();
     mockFetchWashSaleChains.mockReset();
@@ -269,7 +276,10 @@ describe("DashboardPage", () => {
     mockDeleteAnalysis.mockClear();
     mockSessionValue = null;
     resetPacketResumeLocalForTests();
+    resetPacketResumeCheckoutLock();
+    resetAutomaticSampleRerunForTests();
     localStorage.removeItem(PACKET_RESUME_LOCAL_KEY);
+    localStorage.removeItem(PACKET_CHECKOUT_STARTED_KEY);
     window.history.replaceState(null, "", "/dashboard");
     // Mock sessionStorage
     Object.defineProperty(globalThis, "sessionStorage", {
@@ -1796,13 +1806,30 @@ describe("DashboardPage", () => {
       </QueryClientProvider>,
     );
 
+    localStorage.setItem(PACKET_CHECKOUT_STARTED_KEY, String(Date.now()));
+    localStorage.setItem(
+      PACKET_RESUME_LOCAL_KEY,
+      JSON.stringify({
+        v: 2,
+        sample: false,
+        exp: Date.now() + 60_000,
+        analysisId: "analysis-test-1",
+        taxYear: 2025,
+      }),
+    );
     fireEvent.click(await screen.findByTestId("header-account"));
     fireEvent.click(screen.getByRole("menuitem", { name: "Sign Out" }));
 
     await waitFor(() => {
       expect(mockSignOut).toHaveBeenCalledTimes(1);
     });
+    expect(sessionStorage.removeItem).toHaveBeenCalledWith("optionstaxhub-analysis");
+    expect(sessionStorage.removeItem).toHaveBeenCalledWith(PACKET_RESUME_CHECKOUT_KEY);
+    expect(sessionStorage.removeItem).toHaveBeenCalledWith(PACKET_RESUME_SAMPLE_KEY);
+    expect(sessionStorage.removeItem).toHaveBeenCalledWith(PACKET_RESUME_ANALYSIS_KEY);
     expect(sessionStorage.getItem("optionstaxhub-analysis")).toBeNull();
+    expect(localStorage.getItem(PACKET_RESUME_LOCAL_KEY)).toBeNull();
+    expect(localStorage.getItem(PACKET_CHECKOUT_STARTED_KEY)).toBeNull();
     expect(
       queryClient.getQueryData(["portfolio-history", "test-user"]),
     ).toBeUndefined();
@@ -1958,7 +1985,13 @@ describe("DashboardPage", () => {
     installSessionStore();
     localStorage.setItem(
       PACKET_RESUME_LOCAL_KEY,
-      JSON.stringify({ v: 1, sample: true, exp: Date.now() + 60_000 }),
+      JSON.stringify({
+        v: 2,
+        sample: true,
+        exp: Date.now() + 60_000,
+        analysisId: "original-sample",
+        taxYear: 2025,
+      }),
     );
     window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
     mockAnalyzeData = null;
@@ -2012,13 +2045,9 @@ describe("DashboardPage", () => {
 
     try {
       render(<DashboardPage />, { wrapper: createWrapper() });
-      await screen.findByText(/Get started with your first analysis/i);
-      await act(async () => {
-        await new Promise((resolve) => {
-          setTimeout(resolve, 30);
-        });
+      await waitFor(() => {
+        expect(mockAnalyzeMutate).toHaveBeenCalledTimes(1);
       });
-      expect(mockAnalyzeMutate).not.toHaveBeenCalled();
       expect(checkoutCalls).toHaveLength(0);
       expect(localStorage.getItem(PACKET_RESUME_LOCAL_KEY)).toBeNull();
       expect(store.get(PACKET_RESUME_CHECKOUT_KEY)).toBeUndefined();
@@ -2038,19 +2067,28 @@ describe("DashboardPage", () => {
     const checkoutCalls: Array<{ url: string; authorization: string; body: string }> = [];
     const originalFetch = globalThis.fetch;
     globalThis.fetch = handoffFetch(checkoutCalls);
-    const invalid = ["{", JSON.stringify({ v: 2, sample: true, exp: Date.now() + 60_000 }), JSON.stringify({ v: 1, sample: "yes", exp: Date.now() + 60_000 })];
+    const invalid = [
+      "{",
+      JSON.stringify({ v: 3, sample: true, exp: Date.now() + 60_000 }),
+      JSON.stringify({ v: 1, sample: "yes", exp: Date.now() + 60_000 }),
+    ];
 
     try {
       for (const raw of invalid) {
         localStorage.setItem(PACKET_RESUME_LOCAL_KEY, raw);
         store.clear();
+        mockAnalyzeMutate.mockClear();
         const view = render(<DashboardPage />, { wrapper: createWrapper() });
-        await screen.findByText(/Get started with your first analysis/i);
-        expect(localStorage.getItem(PACKET_RESUME_LOCAL_KEY)).toBeNull();
+        await waitFor(() => {
+          expect(localStorage.getItem(PACKET_RESUME_LOCAL_KEY)).toBeNull();
+        });
         expect(store.get(PACKET_RESUME_CHECKOUT_KEY)).toBeUndefined();
+        expect(store.get(PACKET_RESUME_SAMPLE_KEY)).toBeUndefined();
+        await waitFor(() => {
+          expect(mockAnalyzeMutate).toHaveBeenCalled();
+        });
         view.unmount();
       }
-      expect(mockAnalyzeMutate).not.toHaveBeenCalled();
       expect(checkoutCalls).toHaveLength(0);
       expect(screen.queryByTestId("packet-resume-reupload")).not.toBeInTheDocument();
     } finally {
@@ -2102,7 +2140,13 @@ describe("DashboardPage", () => {
     );
     localStorage.setItem(
       PACKET_RESUME_LOCAL_KEY,
-      JSON.stringify({ v: 1, sample: false, exp: Date.now() + 60_000 }),
+      JSON.stringify({
+        v: 2,
+        sample: false,
+        exp: Date.now() + 60_000,
+        analysisId: "analysis-test-1",
+        taxYear: 2025,
+      }),
     );
     window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
     const checkoutCalls: Array<{ url: string; authorization: string; body: string }> = [];
@@ -2130,6 +2174,333 @@ describe("DashboardPage", () => {
       globalThis.fetch = originalFetch;
       window.history.replaceState(null, "", "/dashboard");
     }
+  });
+
+  function historyRow(
+    id: string,
+    filename: string,
+    uploadedAt: string,
+  ) {
+    return {
+      id,
+      filename,
+      uploaded_at: uploadedAt,
+      positions_count: 2,
+      total_market_value: 1000,
+    };
+  }
+
+  it("loads the newest saved run on resume_checkout when markers and session analysis are gone", async () => {
+    installSessionStore();
+    mockHistoryData = [
+      historyRow("older-run", "older.csv", "2025-05-10T14:30:00Z"),
+      historyRow("newer-run", "newer.csv", "2025-06-15T09:00:00Z"),
+    ];
+    mockFetchAnalysisById.mockResolvedValue({
+      id: "newer-run",
+      filename: "newer.csv",
+      result: {
+        ...baseAnalysis,
+        analysis_id: "newer-run",
+        sample_run: false,
+        packet_unlocked: false,
+      },
+    });
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    const checkoutCalls: Array<{ url: string; authorization: string; body: string }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = handoffFetch(checkoutCalls);
+
+    try {
+      render(<DashboardPage />, { wrapper: createWrapper() });
+      await waitFor(() => {
+        expect(screen.getByTestId("year-close-packet-panel")).toBeInTheDocument();
+      });
+      expect(mockFetchAnalysisById).toHaveBeenCalledTimes(1);
+      expect(mockFetchAnalysisById).toHaveBeenCalledWith("newer-run");
+      expect(screen.getByText("Saved analysis")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
+      expect(mockAnalyzeMutate).not.toHaveBeenCalled();
+      expect(checkoutCalls).toHaveLength(0);
+      await act(async () => {
+        await new Promise((resolve) => {
+          setTimeout(resolve, 30);
+        });
+      });
+      expect(checkoutCalls).toHaveLength(0);
+    } finally {
+      globalThis.fetch = originalFetch;
+      window.history.replaceState(null, "", "/dashboard");
+    }
+  });
+
+  it("loads the sample when resume_checkout has no markers and history is empty", async () => {
+    const store = installSessionStore();
+    mockHistoryData = [];
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    const checkoutCalls: Array<{ url: string; authorization: string; body: string }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = handoffFetch(checkoutCalls);
+
+    try {
+      render(<DashboardPage />, { wrapper: createWrapper() });
+      await waitFor(() => {
+        expect(mockAnalyzeMutate).toHaveBeenCalledTimes(1);
+      });
+      expect(checkoutCalls).toHaveLength(0);
+      expect(store.get(PACKET_RESUME_CHECKOUT_KEY)).toBeUndefined();
+      expect(store.get(PACKET_RESUME_SAMPLE_KEY)).toBeUndefined();
+      expect(store.get(PACKET_RESUME_ANALYSIS_KEY)).toBeUndefined();
+      expect(mockFetchAnalysisById).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = originalFetch;
+      window.history.replaceState(null, "", "/dashboard");
+    }
+  });
+
+  it("shows the other-tab note and does not checkout after the saved run loads when checkout started recently", async () => {
+    installSessionStore();
+    localStorage.setItem(PACKET_CHECKOUT_STARTED_KEY, String(Date.now()));
+    mockHistoryData = [
+      historyRow("older-run", "older.csv", "2025-01-01T00:00:00Z"),
+      historyRow("newer-run", "newer.csv", "2026-01-02T00:00:00Z"),
+    ];
+    mockFetchAnalysisById.mockResolvedValue({
+      id: "newer-run",
+      filename: "newer.csv",
+      result: {
+        ...baseAnalysis,
+        analysis_id: "newer-run",
+        sample_run: false,
+        packet_unlocked: false,
+      },
+    });
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    const checkoutCalls: Array<{ url: string; authorization: string; body: string }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = handoffFetch(checkoutCalls);
+
+    try {
+      render(<DashboardPage />, { wrapper: createWrapper() });
+      expect(await screen.findByTestId("packet-checkout-other-tab")).toHaveTextContent(
+        "Checkout opened in your other tab",
+      );
+      expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
+      expect(mockFetchAnalysisById).toHaveBeenCalledWith("newer-run");
+      expect(checkoutCalls).toHaveLength(0);
+      await act(async () => {
+        await new Promise((resolve) => {
+          setTimeout(resolve, 30);
+        });
+      });
+      expect(checkoutCalls).toHaveLength(0);
+      expect(localStorage.getItem(PACKET_CHECKOUT_STARTED_KEY)).toMatch(/^\d+$/);
+    } finally {
+      globalThis.fetch = originalFetch;
+      window.history.replaceState(null, "", "/dashboard");
+    }
+  });
+
+  it("does not load history or the sample on a normal dashboard", async () => {
+    installSessionStore();
+    mockHistoryData = [
+      historyRow("newer-run", "newer.csv", "2026-01-02T00:00:00Z"),
+    ];
+    window.history.replaceState(null, "", "/dashboard");
+    render(<DashboardPage />, { wrapper: createWrapper() });
+    await screen.findByText(/Get started with your first analysis/i);
+    await act(async () => {
+      await new Promise((resolve) => {
+        setTimeout(resolve, 30);
+      });
+    });
+    expect(mockFetchAnalysisById).not.toHaveBeenCalled();
+    expect(mockAnalyzeMutate).not.toHaveBeenCalled();
+  });
+
+  it("keeps the re-upload alert instead of history when an uploaded handoff has no stored analysis", async () => {
+    const store = installSessionStore();
+    mockHistoryData = [
+      historyRow("newer-run", "newer.csv", "2026-04-01T00:00:00Z"),
+    ];
+    localStorage.setItem(
+      PACKET_RESUME_LOCAL_KEY,
+      JSON.stringify({ v: 1, sample: false, exp: Date.now() + 60_000 }),
+    );
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    const checkoutCalls: Array<{ url: string; authorization: string; body: string }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = handoffFetch(checkoutCalls);
+
+    try {
+      render(<DashboardPage />, { wrapper: createWrapper() });
+      const alert = await screen.findByTestId("packet-resume-reupload");
+      expect(alert).toHaveTextContent("Re-upload your CSV to continue to checkout.");
+      expect(mockFetchAnalysisById).not.toHaveBeenCalled();
+      expect(mockAnalyzeMutate).not.toHaveBeenCalled();
+      expect(checkoutCalls).toHaveLength(0);
+      expect(store.get(PACKET_RESUME_CHECKOUT_KEY)).toBeUndefined();
+      expect(screen.queryByText("Saved analysis")).not.toBeInTheDocument();
+    } finally {
+      globalThis.fetch = originalFetch;
+      window.history.replaceState(null, "", "/dashboard");
+    }
+  });
+
+  it("does not re-run the sample after a non-sample pay cleared the sample flag", async () => {
+    const store = installSessionStore();
+    store.set(PACKET_RESUME_CHECKOUT_KEY, "1");
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    const checkoutCalls: Array<{ url: string; authorization: string; body: string }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = handoffFetch(checkoutCalls);
+
+    try {
+      render(<DashboardPage />, { wrapper: createWrapper() });
+      await screen.findByText(/Get started with your first analysis/i);
+      await act(async () => {
+        await new Promise((resolve) => {
+          setTimeout(resolve, 30);
+        });
+      });
+      expect(mockAnalyzeMutate).not.toHaveBeenCalled();
+      expect(mockFetchAnalysisById).not.toHaveBeenCalled();
+      expect(checkoutCalls).toHaveLength(0);
+      expect(store.get(PACKET_RESUME_SAMPLE_KEY)).toBeUndefined();
+    } finally {
+      globalThis.fetch = originalFetch;
+      window.history.replaceState(null, "", "/dashboard");
+    }
+  });
+
+  it("loads the origin saved run when the resume id does not match the open analysis", async () => {
+    const store = installSessionStore();
+    store.set(
+      "optionstaxhub-analysis",
+      JSON.stringify({
+        ...baseAnalysis,
+        analysis_id: "wrong-on-screen",
+        sample_run: false,
+        packet_unlocked: false,
+        tax_profile: { ...baseAnalysis.tax_profile, tax_year: 2024 },
+      }),
+    );
+    localStorage.setItem(
+      PACKET_RESUME_LOCAL_KEY,
+      JSON.stringify({
+        v: 2,
+        sample: false,
+        exp: Date.now() + 60_000,
+        analysisId: "origin-run",
+        taxYear: 2025,
+      }),
+    );
+    mockHistoryData = [
+      historyRow("origin-run", "origin.csv", "2025-03-01T00:00:00Z"),
+      historyRow("newer-other", "newer.csv", "2026-08-01T00:00:00Z"),
+    ];
+    mockFetchAnalysisById.mockResolvedValue({
+      id: "origin-run",
+      filename: "origin.csv",
+      result: {
+        ...baseAnalysis,
+        analysis_id: "origin-run",
+        sample_run: false,
+        packet_unlocked: false,
+      },
+    });
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    const checkoutCalls: Array<{ url: string; authorization: string; body: string }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = handoffFetch(checkoutCalls);
+
+    try {
+      render(<DashboardPage />, { wrapper: createWrapper() });
+      await waitFor(() => {
+        expect(store.get("optionstaxhub-analysis") ?? "").toContain("origin-run");
+      });
+      expect(mockFetchAnalysisById).toHaveBeenCalledTimes(1);
+      expect(mockFetchAnalysisById).toHaveBeenCalledWith("origin-run");
+      expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
+      expect(store.get(PACKET_RESUME_CHECKOUT_KEY)).toBeUndefined();
+      expect(mockAnalyzeMutate).not.toHaveBeenCalled();
+      expect(checkoutCalls).toHaveLength(0);
+      await act(async () => {
+        await new Promise((resolve) => {
+          setTimeout(resolve, 40);
+        });
+      });
+      expect(checkoutCalls).toHaveLength(0);
+      expect(store.get("optionstaxhub-analysis")).not.toContain("wrong-on-screen");
+    } finally {
+      globalThis.fetch = originalFetch;
+      window.history.replaceState(null, "", "/dashboard");
+    }
+  });
+
+  it("asks for a re-upload when the origin run is not in history", async () => {
+    installSessionStore();
+    localStorage.setItem(
+      PACKET_RESUME_LOCAL_KEY,
+      JSON.stringify({
+        v: 2,
+        sample: false,
+        exp: Date.now() + 60_000,
+        analysisId: "gone-run",
+        taxYear: 2025,
+      }),
+    );
+    mockHistoryData = [historyRow("other-run", "other.csv", "2026-01-01T00:00:00Z")];
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    const checkoutCalls: Array<{ url: string; authorization: string; body: string }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = handoffFetch(checkoutCalls);
+
+    try {
+      render(<DashboardPage />, { wrapper: createWrapper() });
+      expect(await screen.findByTestId("packet-resume-reupload")).toHaveTextContent(
+        "Re-upload your CSV to continue to checkout.",
+      );
+      expect(mockFetchAnalysisById).not.toHaveBeenCalled();
+      expect(mockAnalyzeMutate).not.toHaveBeenCalled();
+      expect(checkoutCalls).toHaveLength(0);
+    } finally {
+      globalThis.fetch = originalFetch;
+      window.history.replaceState(null, "", "/dashboard");
+    }
+  });
+
+  it("does not load the sample when resume history fails", async () => {
+    installSessionStore();
+    mockHistoryError = new Error("history down");
+    mockHistoryFetched = true;
+    mockHistoryData = [];
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    render(<DashboardPage />, { wrapper: createWrapper() });
+    await screen.findByText(/Get started with your first analysis/i);
+    await act(async () => {
+      await new Promise((resolve) => {
+        setTimeout(resolve, 30);
+      });
+    });
+    expect(mockAnalyzeMutate).not.toHaveBeenCalled();
+    expect(mockFetchAnalysisById).not.toHaveBeenCalled();
+  });
+
+  it("does not treat an unfetched history as empty on resume", async () => {
+    installSessionStore();
+    mockHistoryFetched = false;
+    mockHistoryData = [];
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    render(<DashboardPage />, { wrapper: createWrapper() });
+    await screen.findByText(/Get started with your first analysis/i);
+    await act(async () => {
+      await new Promise((resolve) => {
+        setTimeout(resolve, 30);
+      });
+    });
+    expect(mockAnalyzeMutate).not.toHaveBeenCalled();
+    expect(mockFetchAnalysisById).not.toHaveBeenCalled();
   });
 
 });

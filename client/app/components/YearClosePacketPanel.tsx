@@ -17,10 +17,17 @@ import {
 import { getSession } from "@/lib/supabase";
 import {
   clearPacketResumeLocal,
+  clearPacketResumeSessionMarkers,
+  packetCheckoutStartedRecently,
+  readPacketCheckoutStarted,
+  rememberPacketCheckoutStarted,
+  rememberPacketResumeExpected,
   rememberPacketResumeLocal,
+  resumeAnalysisMatches,
 } from "@/lib/packetResumeLocal";
 import {
   DASHBOARD_RESUME_CHECKOUT_PATH,
+  PACKET_RESUME_ANALYSIS_KEY,
   PACKET_RESUME_CHECKOUT_KEY,
   PACKET_RESUME_SAMPLE_KEY,
   RESUME_CHECKOUT_PARAM,
@@ -54,6 +61,8 @@ export const PACKET_CHECKOUT_INFLIGHT_KEY =
   "optionstaxhub-packet-checkout-inflight";
 export const PACKET_CHECKOUT_CANCELED_COPY =
   "Checkout was closed without payment. Pay $49 when you are ready.";
+export const PACKET_CHECKOUT_OTHER_TAB_COPY =
+  "Checkout opened in your other tab";
 
 function isPacketMissingSourceDetail(detail: string): boolean {
   return /payment was received/i.test(detail) && /no source document/i.test(detail);
@@ -319,7 +328,12 @@ function YearClosePacketPanelForAnalysis({
   const [busy, setBusy] = useState<"pay" | "download" | "confirm" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [canceledNotice, setCanceledNotice] = useState(false);
-  const [paid, setPaid] = useState(false);
+  const [paid, setPaid] = useState(
+    () =>
+      analysis.packet_unlocked === true ||
+      isYearClosePacketPaid(analysisStorageId),
+  );
+  const [otherTabNotice, setOtherTabNotice] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [checkoutUrl, setCheckoutUrl] = useState<string | null>(null);
   const [confirmPending, setConfirmPending] = useState(
@@ -554,7 +568,7 @@ function YearClosePacketPanelForAnalysis({
       clearSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY);
       // This effect strips packet_canceled before the resume effect reads the
       // URL. Drop the guest-pay marker here so a closed checkout cannot reopen.
-      clearSessionItem(PACKET_RESUME_CHECKOUT_KEY);
+      clearPacketResumeSessionMarkers();
       clearPacketResumeLocal();
       persistConfirmFlag(false);
       persistResumeFlag(false);
@@ -565,8 +579,14 @@ function YearClosePacketPanelForAnalysis({
     }
   }, [analysis, analysisId, analysisStorageId]);
 
-  const handlePay = async (options?: { guestRedirect?: boolean }) => {
+  const handlePay = async (options?: {
+    guestRedirect?: boolean;
+    claim?: string;
+  }) => {
     const guestRedirect = options?.guestRedirect !== false;
+    if (paid || analysis.packet_unlocked === true) {
+      return;
+    }
     if (existingPacketDownload || extraChargeRefund) {
       return;
     }
@@ -608,8 +628,32 @@ function YearClosePacketPanelForAnalysis({
         writeSessionItem(PACKET_RESUME_CHECKOUT_KEY, "1");
         if (analysis.sample_run) {
           writeSessionItem(PACKET_RESUME_SAMPLE_KEY, "1");
+        } else {
+          clearSessionItem(PACKET_RESUME_SAMPLE_KEY);
         }
-        rememberPacketResumeLocal(analysis.sample_run === true);
+        const resumeAnalysisId =
+          typeof analysis.analysis_id === "string" &&
+          analysis.analysis_id.length > 0
+            ? analysis.analysis_id
+            : null;
+        const resumeTaxYear = analysis.tax_profile?.tax_year;
+        if (
+          resumeAnalysisId &&
+          typeof resumeTaxYear === "number" &&
+          Number.isFinite(resumeTaxYear)
+        ) {
+          rememberPacketResumeExpected(resumeAnalysisId, resumeTaxYear);
+        } else {
+          clearSessionItem(PACKET_RESUME_ANALYSIS_KEY);
+        }
+        rememberPacketResumeLocal({
+          sample: analysis.sample_run === true,
+          analysisId: resumeAnalysisId,
+          taxYear:
+            typeof resumeTaxYear === "number" && Number.isFinite(resumeTaxYear)
+              ? resumeTaxYear
+              : null,
+        });
         try {
           router.push(signInHref(DASHBOARD_RESUME_CHECKOUT_PATH));
         } catch (navError) {
@@ -624,6 +668,14 @@ function YearClosePacketPanelForAnalysis({
       }
       writeSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY, analysisStorageId);
       const headers = await authHeaders();
+      if (options?.claim && readPacketCheckoutStarted() !== options.claim) {
+        clearSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY);
+        setOtherTabNotice(true);
+        clearPacketResumeSessionMarkers();
+        stripResumeCheckoutParam();
+        setBusy(null);
+        return;
+      }
       const response = await fetch(`${API_URL}/api/year-close-packet/checkout`, {
         method: "POST",
         headers,
@@ -704,6 +756,8 @@ function YearClosePacketPanelForAnalysis({
 
   // After sign-in, start the same checkout once. Do not send the guest back
   // to sign-in from here, and do not touch packet_session / packet_canceled.
+  // A different analysis id, a missing id, or a checkout another tab already
+  // claimed does not auto-post.
   useEffect(() => {
     if (packetResumeCheckoutLocked) {
       return;
@@ -724,7 +778,22 @@ function YearClosePacketPanelForAnalysis({
     if (params.get(RESUME_CHECKOUT_PARAM) !== "1") {
       return;
     }
+
+    const showOtherTab = () => {
+      setOtherTabNotice(true);
+      clearPacketResumeSessionMarkers();
+      clearPacketResumeLocal();
+      stripResumeCheckoutParam();
+    };
+
+    if (packetCheckoutStartedRecently()) {
+      showOtherTab();
+      return;
+    }
     if (readSessionItem(PACKET_RESUME_CHECKOUT_KEY) !== "1") {
+      return;
+    }
+    if (!resumeAnalysisMatches(analysis)) {
       return;
     }
 
@@ -737,11 +806,23 @@ function YearClosePacketPanelForAnalysis({
       if (!session?.access_token) {
         return;
       }
+      if (!resumeAnalysisMatches(analysis)) {
+        return;
+      }
+      if (packetCheckoutStartedRecently()) {
+        showOtherTab();
+        return;
+      }
+      const claim = rememberPacketCheckoutStarted();
+      if (readPacketCheckoutStarted() !== claim) {
+        showOtherTab();
+        return;
+      }
       packetResumeCheckoutLocked = true;
-      clearSessionItem(PACKET_RESUME_CHECKOUT_KEY);
+      clearPacketResumeSessionMarkers();
       clearPacketResumeLocal();
       stripResumeCheckoutParam();
-      await handlePayRef.current({ guestRedirect: false });
+      await handlePayRef.current({ guestRedirect: false, claim });
     })();
 
     return () => {
@@ -754,6 +835,7 @@ function YearClosePacketPanelForAnalysis({
     existingPacketDownload,
     extraChargeRefund,
     analysisStorageId,
+    analysis,
   ]);
 
   const handleDownload = async () => {
@@ -832,28 +914,29 @@ function YearClosePacketPanelForAnalysis({
           </Typography>
         </Box>
         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-          <Button
-            variant="contained"
-            startIcon={
-              busy === "pay" ? (
-                <CircularProgress size={16} color="inherit" />
-              ) : (
-                <PayIcon />
-              )
-            }
-            onClick={() => {
-              void handlePay();
-            }}
-            disabled={
-              busy !== null ||
-              paid ||
-              missingAnalysisId ||
-              existingPacketDownload ||
-              extraChargeRefund
-            }
-          >
-            Pay $49
-          </Button>
+          {!paid && (
+            <Button
+              variant="contained"
+              startIcon={
+                busy === "pay" ? (
+                  <CircularProgress size={16} color="inherit" />
+                ) : (
+                  <PayIcon />
+                )
+              }
+              onClick={() => {
+                void handlePay();
+              }}
+              disabled={
+                busy !== null ||
+                missingAnalysisId ||
+                existingPacketDownload ||
+                extraChargeRefund
+              }
+            >
+              Pay $49
+            </Button>
+          )}
           {!extraChargeRefund && (
             <Button
               variant={paid || existingPacketDownload ? "contained" : "outlined"}
@@ -884,6 +967,15 @@ function YearClosePacketPanelForAnalysis({
             data-testid="packet-checkout-canceled"
           >
             {PACKET_CHECKOUT_CANCELED_COPY}
+          </Alert>
+        )}
+        {otherTabNotice && !error && (
+          <Alert
+            severity="info"
+            role="status"
+            data-testid="packet-checkout-other-tab"
+          >
+            {PACKET_CHECKOUT_OTHER_TAB_COPY}
           </Alert>
         )}
         {error && (

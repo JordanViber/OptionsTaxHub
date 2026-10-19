@@ -12,6 +12,8 @@ import YearClosePacketPanel, {
 } from "../../app/components/YearClosePacketPanel";
 import {
   DASHBOARD_RESUME_CHECKOUT_PATH,
+  PACKET_CHECKOUT_STARTED_KEY,
+  PACKET_RESUME_ANALYSIS_KEY,
   PACKET_RESUME_CHECKOUT_KEY,
   PACKET_RESUME_LOCAL_KEY,
   PACKET_RESUME_LOCAL_TTL_MS,
@@ -19,6 +21,7 @@ import {
   PACKET_RESUME_SAMPLE_KEY,
   safeNextPath,
 } from "../../lib/safeNextPath";
+import { PACKET_CHECKOUT_OTHER_TAB_COPY } from "../../app/components/YearClosePacketPanel";
 import type { PortfolioAnalysis } from "../../lib/types";
 
 const mockPush = jest.fn();
@@ -346,10 +349,36 @@ describe("YearClosePacketPanel", () => {
         }}
       />,
     );
+    expect(screen.getByText(/Paid for this tax year/i)).toBeInTheDocument();
     expect(
       screen.getByText(/later updates this year stay included/i),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /Pay \$49/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Download/i })).toBeInTheDocument();
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("does not post checkout when Pay would have been clicked on an unlocked packet", async () => {
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    store[PACKET_RESUME_ANALYSIS_KEY] = JSON.stringify({
+      analysisId: "analysis-1",
+      taxYear: 2025,
+    });
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    render(
+      <YearClosePacketPanel
+        analysis={{
+          ...analysis,
+          packet_unlocked: true,
+          packet_session_id: "cs_test_year",
+        }}
+      />,
+    );
+    await new Promise((resolve) => {
+      setTimeout(resolve, 30);
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: /Pay \$49/i })).not.toBeInTheDocument();
   });
 
   it("starts packet checkout, not tips checkout", async () => {
@@ -402,17 +431,28 @@ describe("YearClosePacketPanel", () => {
     const handoff = JSON.parse(
       localStorage.getItem(PACKET_RESUME_LOCAL_KEY) as string,
     ) as Record<string, unknown>;
-    expect(Object.keys(handoff).sort()).toEqual(["exp", "sample", "v"]);
+    expect(Object.keys(handoff).sort()).toEqual([
+      "analysisId",
+      "exp",
+      "sample",
+      "taxYear",
+      "v",
+    ]);
     expect(handoff).toEqual({
       v: PACKET_RESUME_LOCAL_VERSION,
       sample: true,
       exp: expect.any(Number),
+      analysisId: "analysis-1",
+      taxYear: 2025,
     });
     expect(handoff.exp as number).toBeGreaterThan(Date.now());
     expect(handoff.exp as number).toBeLessThanOrEqual(
       Date.now() + PACKET_RESUME_LOCAL_TTL_MS + 1000,
     );
-    expect(JSON.stringify(handoff)).not.toMatch(/analysis|tax|position|symbol/i);
+    expect(JSON.stringify(handoff)).not.toMatch(/position|symbol|csv|filing|income|lot/i);
+    expect(store[PACKET_RESUME_ANALYSIS_KEY]).toBe(
+      JSON.stringify({ analysisId: "analysis-1", taxYear: 2025 }),
+    );
     expect(store[PACKET_CHECKOUT_INFLIGHT_KEY]).toBeUndefined();
     expect(screen.queryByText(/Authentication required/i)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
@@ -430,6 +470,29 @@ describe("YearClosePacketPanel", () => {
     expect(JSON.parse(localStorage.getItem(PACKET_RESUME_LOCAL_KEY) as string)).toMatchObject({
       v: PACKET_RESUME_LOCAL_VERSION,
       sample: false,
+      analysisId: "analysis-1",
+      taxYear: 2025,
+    });
+    expect(store[PACKET_RESUME_ANALYSIS_KEY]).toBe(
+      JSON.stringify({ analysisId: "analysis-1", taxYear: 2025 }),
+    );
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("clears a stale sample resume flag on a non-sample guest Pay", async () => {
+    (getSession as jest.Mock).mockResolvedValueOnce(null);
+    store[PACKET_RESUME_SAMPLE_KEY] = "1";
+    render(<YearClosePacketPanel analysis={analysis} />);
+    fireEvent.click(screen.getByRole("button", { name: /Pay \$49/i }));
+    await waitFor(() => {
+      expect(mockPush).toHaveBeenCalled();
+    });
+    expect(store[PACKET_RESUME_SAMPLE_KEY]).toBeUndefined();
+    expect(JSON.parse(localStorage.getItem(PACKET_RESUME_LOCAL_KEY) as string)).toMatchObject({
+      v: PACKET_RESUME_LOCAL_VERSION,
+      sample: false,
+      analysisId: "analysis-1",
+      taxYear: 2025,
     });
     expect(mockFetch).not.toHaveBeenCalled();
   });
@@ -448,11 +511,21 @@ describe("YearClosePacketPanel", () => {
     expect(store[PACKET_CHECKOUT_INFLIGHT_KEY]).toBeUndefined();
   });
 
-  it("auto-starts checkout once when resume_checkout=1 and a session exists", async () => {
+  it("posts checkout once when the resume analysis id and tax year match", async () => {
     store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    store[PACKET_RESUME_ANALYSIS_KEY] = JSON.stringify({
+      analysisId: "analysis-1",
+      taxYear: 2025,
+    });
     localStorage.setItem(
       PACKET_RESUME_LOCAL_KEY,
-      JSON.stringify({ v: 1, sample: true, exp: Date.now() + 60_000 }),
+      JSON.stringify({
+        v: 2,
+        sample: true,
+        exp: Date.now() + 60_000,
+        analysisId: "analysis-1",
+        taxYear: 2025,
+      }),
     );
     window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
     mockFetch.mockResolvedValueOnce(checkoutOk());
@@ -471,10 +544,149 @@ describe("YearClosePacketPanel", () => {
     expect(window.location.search).not.toContain("resume_checkout");
     expect(store[PACKET_RESUME_CHECKOUT_KEY]).toBeUndefined();
     expect(localStorage.getItem(PACKET_RESUME_LOCAL_KEY)).toBeNull();
+    expect(localStorage.getItem(PACKET_CHECKOUT_STARTED_KEY)).toMatch(/^\d+$/);
+  });
+
+  it("does not post checkout when the resume analysis id does not match", async () => {
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    store[PACKET_RESUME_ANALYSIS_KEY] = JSON.stringify({
+      analysisId: "other-run",
+      taxYear: 2025,
+    });
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    render(<YearClosePacketPanel analysis={analysis} />);
+    await new Promise((resolve) => {
+      setTimeout(resolve, 30);
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(store[PACKET_RESUME_CHECKOUT_KEY]).toBe("1");
+  });
+
+  it("does not post checkout when the resume analysis id is missing", async () => {
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    localStorage.setItem(
+      PACKET_RESUME_LOCAL_KEY,
+      JSON.stringify({ v: 1, sample: false, exp: Date.now() + 60_000 }),
+    );
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    render(<YearClosePacketPanel analysis={analysis} />);
+    await new Promise((resolve) => {
+      setTimeout(resolve, 30);
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(localStorage.getItem(PACKET_CHECKOUT_STARTED_KEY)).toBeNull();
+  });
+
+  it("posts checkout for a re-run sample with the same tax year", async () => {
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    store[PACKET_RESUME_SAMPLE_KEY] = "1";
+    store[PACKET_RESUME_ANALYSIS_KEY] = JSON.stringify({
+      analysisId: "original-sample",
+      taxYear: 2025,
+    });
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    mockFetch.mockResolvedValueOnce(checkoutOk());
+    render(
+      <YearClosePacketPanel
+        analysis={{ ...analysis, analysis_id: "rerun-sample", sample_run: true }}
+      />,
+    );
+    await waitFor(() => {
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+    expect(mockFetch.mock.calls[0][1].headers.Authorization).toBe(
+      "Bearer mock-jwt-token",
+    );
+    expect(JSON.parse(mockFetch.mock.calls[0][1].body).analysis_id).toBe(
+      "rerun-sample",
+    );
+  });
+
+  it("shows Checkout opened in your other tab and does not post when resume_checkout=1 and checkout started recently", async () => {
+    localStorage.setItem(PACKET_CHECKOUT_STARTED_KEY, String(Date.now()));
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    render(<YearClosePacketPanel analysis={analysis} />);
+    expect(await screen.findByTestId("packet-checkout-other-tab")).toHaveTextContent(
+      PACKET_CHECKOUT_OTHER_TAB_COPY,
+    );
+    expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
+    await new Promise((resolve) => {
+      setTimeout(resolve, 30);
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(window.location.search).not.toContain("resume_checkout");
+  });
+
+  it("writes checkout-started before the checkout POST and does not post when that timestamp is already recent", async () => {
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    store[PACKET_RESUME_ANALYSIS_KEY] = JSON.stringify({
+      analysisId: "analysis-1",
+      taxYear: 2025,
+    });
+    const started = String(Date.now() - 1000);
+    localStorage.setItem(PACKET_CHECKOUT_STARTED_KEY, started);
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    render(<YearClosePacketPanel analysis={analysis} />);
+    expect(await screen.findByTestId("packet-checkout-other-tab")).toHaveTextContent(
+      PACKET_CHECKOUT_OTHER_TAB_COPY,
+    );
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(localStorage.getItem(PACKET_CHECKOUT_STARTED_KEY)).toBe(started);
+  });
+
+  it("aborts auto-resume when another tab writes checkout-started during getSession", async () => {
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    store[PACKET_RESUME_ANALYSIS_KEY] = JSON.stringify({
+      analysisId: "analysis-1",
+      taxYear: 2025,
+    });
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    (getSession as jest.Mock).mockImplementation(async () => {
+      localStorage.setItem(PACKET_CHECKOUT_STARTED_KEY, String(Date.now() - 50));
+      return signedInSession;
+    });
+    render(<YearClosePacketPanel analysis={analysis} />);
+    expect(await screen.findByTestId("packet-checkout-other-tab")).toHaveTextContent(
+      PACKET_CHECKOUT_OTHER_TAB_COPY,
+    );
+    await new Promise((resolve) => {
+      setTimeout(resolve, 30);
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("aborts the checkout POST when another tab replaces the claim after getSession", async () => {
+    store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    store[PACKET_RESUME_ANALYSIS_KEY] = JSON.stringify({
+      analysisId: "analysis-1",
+      taxYear: 2025,
+    });
+    window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
+    let calls = 0;
+    (getSession as jest.Mock).mockImplementation(async () => {
+      calls += 1;
+      if (calls >= 2) {
+        localStorage.setItem(PACKET_CHECKOUT_STARTED_KEY, "1");
+      }
+      return signedInSession;
+    });
+    render(<YearClosePacketPanel analysis={analysis} />);
+    expect(await screen.findByTestId("packet-checkout-other-tab")).toHaveTextContent(
+      PACKET_CHECKOUT_OTHER_TAB_COPY,
+    );
+    await new Promise((resolve) => {
+      setTimeout(resolve, 30);
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(localStorage.getItem(PACKET_CHECKOUT_STARTED_KEY)).toBe("1");
   });
 
   it("does not auto-start a second checkout after the resume marker is consumed", async () => {
     store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    store[PACKET_RESUME_ANALYSIS_KEY] = JSON.stringify({
+      analysisId: "analysis-1",
+      taxYear: 2025,
+    });
     window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
     mockFetch.mockResolvedValue(checkoutOk());
 
@@ -496,6 +708,10 @@ describe("YearClosePacketPanel", () => {
   it("leaves the resume marker when the session is not ready", async () => {
     (getSession as jest.Mock).mockResolvedValue(null);
     store[PACKET_RESUME_CHECKOUT_KEY] = "1";
+    store[PACKET_RESUME_ANALYSIS_KEY] = JSON.stringify({
+      analysisId: "analysis-1",
+      taxYear: 2025,
+    });
     window.history.replaceState(null, "", "/dashboard?resume_checkout=1");
 
     render(<YearClosePacketPanel analysis={analysis} />);
@@ -505,6 +721,7 @@ describe("YearClosePacketPanel", () => {
     expect(mockFetch).not.toHaveBeenCalled();
     expect(mockPush).not.toHaveBeenCalled();
     expect(store[PACKET_RESUME_CHECKOUT_KEY]).toBe("1");
+    expect(localStorage.getItem(PACKET_CHECKOUT_STARTED_KEY)).toBeNull();
     expect(window.location.search).toContain("resume_checkout=1");
     expect(screen.queryByText(/Authentication required/i)).not.toBeInTheDocument();
   });
@@ -1057,7 +1274,7 @@ describe("YearClosePacketPanel", () => {
       expect(screen.getByText(/Payment confirmed for tax year/i)).toBeInTheDocument(),
     );
     expect(mockFetch).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /Pay \$49/i })).not.toBeInTheDocument();
     expect(store["optionstaxhub-packet-paid:analysis-1"]).toBe(
       "cs_test_existing_year",
     );
@@ -1579,7 +1796,7 @@ describe("YearClosePacketPanel", () => {
     await waitFor(() =>
       expect(screen.getByText(/Payment confirmed for tax year/i)).toBeInTheDocument(),
     );
-    expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /Pay \$49/i })).not.toBeInTheDocument();
     expect(store["optionstaxhub-packet-paid:analysis-1"]).toBe(
       "cs_test_finalizing_checkout",
     );
