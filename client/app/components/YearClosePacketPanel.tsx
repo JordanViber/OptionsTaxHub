@@ -424,6 +424,9 @@ function YearClosePacketPanelForAnalysis({
     }
     return resumeEntitlementPending(analysis) ? "unknown" : "unpaid";
   });
+  // Paid year whose receipt did not name this run, and promotion did not
+  // confirm it. Pay stays held so refresh cannot open a second Checkout.
+  const [paidYearUnconfirmed, setPaidYearUnconfirmed] = useState(false);
   const [otherTabNotice, setOtherTabNotice] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [checkoutUrl, setCheckoutUrl] = useState<string | null>(null);
@@ -794,43 +797,55 @@ function YearClosePacketPanelForAnalysis({
         const entitledAnalysisId =
           typeof data.analysis_id === "string" ? data.analysis_id.trim() : "";
         const currentAnalysisId = (analysisRef.current.analysis_id || "").trim();
-        const paidOnDifferentAnalysis =
-          analysisRef.current.packet_unlocked !== true &&
+        const idsMatch =
           entitledAnalysisId.length > 0 &&
           currentAnalysisId.length > 0 &&
-          entitledAnalysisId.toLowerCase() !== currentAnalysisId.toLowerCase();
-        if (paidOnDifferentAnalysis) {
-          // The year is paid on another analysis. Promote this snapshot
-          // through already_paid checkout before Download is offered.
-          // Stay on "unknown" so auto-resume does not open a second Checkout.
+          entitledAnalysisId.toLowerCase() === currentAnalysisId.toLowerCase();
+        // A missing, blank, or different id is not this snapshot. Promote
+        // before Download is offered. Stay off "unpaid" so auto-resume
+        // cannot open a second Checkout.
+        const promoteThisRun =
+          analysisRef.current.packet_unlocked !== true &&
+          currentAnalysisId.length > 0 &&
+          !idsMatch;
+        if (promoteThisRun) {
           if (!sid) {
             throw new Error("entitlement unavailable");
           }
           setBusy("pay");
+          const holdUnconfirmedPromotion = () => {
+            setBusy(null);
+            setPaidYearUnconfirmed(true);
+            setEntitlementGate("unconfirmed");
+          };
           try {
             const promoted = await promotePaidAnalysis();
             if (cancelled) {
               return "unpaid";
             }
             if (!promoted) {
-              throw new Error("entitlement unavailable");
+              holdUnconfirmedPromotion();
+              return "unpaid";
             }
             return "paid";
-          } catch (promotionError) {
+          } catch {
             if (!cancelled) {
-              setBusy(null);
+              holdUnconfirmedPromotion();
             }
-            throw promotionError;
+            return "unpaid";
           }
         }
-        if (sid) {
-          writeSessionItem(paidStorageKey(canonicalAnalysisId), sid);
-          setSessionId(sid);
+        if (analysisRef.current.packet_unlocked === true || idsMatch) {
+          if (sid) {
+            writeSessionItem(paidStorageKey(canonicalAnalysisId), sid);
+            setSessionId(sid);
+          }
+          setPaid(true);
+          setEntitlementGate("paid");
+          onPaidChangeRef.current?.(true);
+          return "paid";
         }
-        setPaid(true);
-        setEntitlementGate("paid");
-        onPaidChangeRef.current?.(true);
-        return "paid";
+        throw new Error("entitlement unavailable");
       }
       setEntitlementGate("unpaid");
       return "unpaid";
@@ -1254,13 +1269,14 @@ function YearClosePacketPanelForAnalysis({
                 existingPacketDownload ||
                 extraChargeRefund ||
                 entitlementGate === "unknown" ||
+                paidYearUnconfirmed ||
                 payHeldForDifferentResume(analysis)
               }
             >
               Pay $49
             </Button>
           )}
-          {!extraChargeRefund && (
+          {!extraChargeRefund && !paidYearUnconfirmed && (
             <Button
               variant={paid || existingPacketDownload ? "contained" : "outlined"}
               color={paid || existingPacketDownload ? "success" : "primary"}
