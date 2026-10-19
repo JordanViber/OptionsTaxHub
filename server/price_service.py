@@ -12,19 +12,32 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from functools import partial
-from typing import Any, Callable, Optional, TypeVar
+from typing import Any, Callable, Optional, Protocol, TypeVar
 
 logger = logging.getLogger(__name__)
 
 # Cache configuration
 CACHE_TTL_SECONDS = 300  # 5-minute cache TTL
 YFINANCE_TIMEOUT_SECONDS = 5.0
+# One budget for every provider and both stock and option quotes.
+QUOTE_FETCH_BUDGET_SECONDS = 5.0
+
+# Keyed quote vendors stay inactive unless the operator sets these.
+# This build does not call them; the stubs exist so the order is pluggable.
+_KEYED_PROVIDER_ENV: dict[str, tuple[str, ...]] = {
+    "alpaca": ("ALPACA_API_KEY_ID", "ALPACA_API_SECRET_KEY"),
+    "tradier": ("TRADIER_ACCESS_TOKEN",),
+    "marketdata": ("MARKETDATA_APP_TOKEN",),
+    "polygon": ("POLYGON_API_KEY",),
+}
 
 _T = TypeVar("_T")
 
@@ -47,9 +60,205 @@ def _call_with_timeout(fn: Callable[[], _T], timeout_seconds: float) -> _T:
     finally:
         executor.shutdown(wait=False, cancel_futures=True)
 
-# In-memory price cache: {symbol: (price, timestamp)}
-_price_cache: dict[str, tuple[float, float]] = {}
-_option_price_cache: dict[str, tuple[float, float]] = {}
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+@dataclass(frozen=True)
+class Quote:
+    """One price with the source that produced it.
+
+    ``live`` carries the provider name and the quote timestamp.
+    ``csv`` carries the CSV date in ``as_of`` and no provider.
+    """
+
+    symbol: str
+    price: float
+    source: str
+    provider: str | None
+    as_of: str
+
+
+@dataclass(frozen=True)
+class ProviderStatus:
+    provider: str
+    reason: str | None
+
+
+@dataclass
+class PriceFetchResult:
+    """Iterable as ``(prices, warnings)`` so existing callers keep working."""
+
+    prices: dict[str, float]
+    warnings: list[str]
+    quotes: list[Quote]
+    provider_statuses: list[ProviderStatus]
+
+    def __iter__(self):
+        yield self.prices
+        yield self.warnings
+
+
+def csv_price_label(csv_as_of: str | None) -> str:
+    """Exact desk copy when a price is not a live quote."""
+    if not csv_as_of:
+        return ""
+    return f"Prices as of your CSV ({csv_as_of})"
+
+
+def price_basis_from_quotes(
+    quotes: list[Quote],
+    csv_as_of: str | None,
+) -> dict[str, Any]:
+    """Portfolio provenance. ``live`` is true only when every quote succeeded."""
+    live = bool(quotes) and all(
+        quote.source == "live" and quote.provider and quote.as_of for quote in quotes
+    )
+    provider: str | None = None
+    as_of: str | None = None
+    label = ""
+    if live:
+        providers = {quote.provider for quote in quotes}
+        provider = next(iter(providers)) if len(providers) == 1 else None
+        as_of = max(quote.as_of for quote in quotes)
+    else:
+        label = csv_price_label(csv_as_of)
+        as_of = csv_as_of
+    return {
+        "quotes": [
+            {
+                "symbol": quote.symbol,
+                "price": quote.price,
+                "source": quote.source,
+                "provider": quote.provider,
+                "as_of": quote.as_of,
+            }
+            for quote in quotes
+        ],
+        "live": live,
+        "provider": provider,
+        "as_of": as_of,
+        "csv_as_of": None if live else csv_as_of,
+        "label": label,
+    }
+
+
+class QuoteProvider(Protocol):
+    name: str
+
+    def enabled(self) -> bool: ...
+
+    def fetch(
+        self,
+        symbols: list[str],
+        timeout_seconds: float,
+    ) -> tuple[dict[str, float], list[str], str | None]: ...
+
+
+def _reason_from_price_warnings(warnings: list[str], got_any: bool) -> str | None:
+    if got_any:
+        return None
+    text = " ".join(warnings).lower()
+    if "timed out" in text or "timeout" in text:
+        return "timeout"
+    if "no data" in text or "no_quote" in text:
+        return "no_quote"
+    if warnings:
+        return "error"
+    return "no_quote"
+
+
+class YahooQuoteProvider:
+    """Keyless Yahoo Finance quotes via yfinance."""
+
+    name = "yahoo"
+
+    def enabled(self) -> bool:
+        return True
+
+    def fetch(
+        self,
+        symbols: list[str],
+        timeout_seconds: float,
+    ) -> tuple[dict[str, float], list[str], str | None]:
+        if timeout_seconds <= 0:
+            return {}, [
+                "Quote fetch timed out. Using CSV-provided prices as fallback."
+            ], "timeout"
+        prices, warnings = _download_yfinance_prices(
+            symbols,
+            timeout_seconds=timeout_seconds,
+        )
+        return prices, warnings, _reason_from_price_warnings(warnings, bool(prices))
+
+
+class _KeyedQuoteProvider:
+    """Registered but inactive unless its env vars are set.
+
+    Even when enabled, this build does not call the vendor. No secrets are
+    read into logs and no HTTP client is constructed.
+    """
+
+    def __init__(self, name: str, env_vars: tuple[str, ...]):
+        self.name = name
+        self._env_vars = env_vars
+
+    def enabled(self) -> bool:
+        return all(os.environ.get(var, "").strip() for var in self._env_vars)
+
+    def fetch(
+        self,
+        symbols: list[str],
+        timeout_seconds: float,
+    ) -> tuple[dict[str, float], list[str], str | None]:
+        del symbols, timeout_seconds
+        return {}, [], "no_quote"
+
+
+def quote_provider_registry() -> dict[str, QuoteProvider]:
+    return {
+        "yahoo": YahooQuoteProvider(),
+        "alpaca": _KeyedQuoteProvider("alpaca", _KEYED_PROVIDER_ENV["alpaca"]),
+        "tradier": _KeyedQuoteProvider("tradier", _KEYED_PROVIDER_ENV["tradier"]),
+        "marketdata": _KeyedQuoteProvider(
+            "marketdata", _KEYED_PROVIDER_ENV["marketdata"]
+        ),
+        "polygon": _KeyedQuoteProvider("polygon", _KEYED_PROVIDER_ENV["polygon"]),
+    }
+
+
+def provider_by_name(name: str) -> QuoteProvider | None:
+    return quote_provider_registry().get(name.strip().lower())
+
+
+def active_providers() -> list[QuoteProvider]:
+    """Provider order from QUOTE_PROVIDER_ORDER. Keyed names stay off by default."""
+    raw = os.environ.get("QUOTE_PROVIDER_ORDER", "yahoo")
+    names = [part.strip().lower() for part in raw.split(",") if part.strip()]
+    registry = quote_provider_registry()
+    selected: list[QuoteProvider] = []
+    for name in names:
+        provider = registry.get(name)
+        if provider is not None and provider.enabled():
+            selected.append(provider)
+    return selected
+
+
+def _quote_deadline(
+    deadline: float | None,
+    budget_seconds: float,
+) -> float:
+    budget = min(float(budget_seconds), QUOTE_FETCH_BUDGET_SECONDS)
+    cap = time.monotonic() + budget
+    if deadline is None:
+        return cap
+    return min(deadline, cap)
+
+
+# In-memory price cache: {symbol: (price, cached_at, provider, as_of)}
+_price_cache: dict[str, tuple] = {}
+_option_price_cache: dict[str, tuple] = {}
 # Chain snapshots: {(symbol, expiration, right): (rows, timestamp)}
 _chain_cache: dict[tuple[str, str, str], tuple[list[dict[str, Any]], float]] = {}
 
@@ -60,32 +269,73 @@ OPTION_LABEL_PATTERN = re.compile(
 MAX_EXPIRATION_FALLBACK_DAYS = 7
 
 
+def _fresh_cache_entry(cache: dict[str, tuple], key: str) -> Optional[tuple]:
+    raw = cache.get(key)
+    if not raw:
+        return None
+    cached_at = raw[1]
+    if time.time() - cached_at >= CACHE_TTL_SECONDS:
+        return None
+    return raw
+
+
 def _get_cached_price(symbol: str) -> Optional[float]:
     """Get a cached price if it's still fresh."""
-    if symbol in _price_cache:
-        price, cached_at = _price_cache[symbol]
-        if time.time() - cached_at < CACHE_TTL_SECONDS:
-            return price
-    return None
+    raw = _fresh_cache_entry(_price_cache, symbol)
+    if raw is None:
+        return None
+    return float(raw[0])
 
 
-def _set_cached_price(symbol: str, price: float) -> None:
-    """Store a price in the cache."""
-    _price_cache[symbol] = (price, time.time())
+def _cached_price_quote(symbol: str) -> Optional[Quote]:
+    raw = _fresh_cache_entry(_price_cache, symbol)
+    if raw is None:
+        return None
+    provider = raw[2] if len(raw) > 2 else "yahoo"
+    as_of = raw[3] if len(raw) > 3 else ""
+    return Quote(symbol, float(raw[0]), "live", str(provider), str(as_of))
+
+
+def _set_cached_price(
+    symbol: str,
+    price: float,
+    provider: str = "yahoo",
+    as_of: str | None = None,
+) -> None:
+    """Store a live price in the cache."""
+    _price_cache[symbol] = (price, time.time(), provider, as_of or _utc_now_iso())
 
 
 def _get_cached_option_price(contract_label: str) -> Optional[float]:
     """Get a cached option price if it's still fresh."""
-    if contract_label in _option_price_cache:
-        price, cached_at = _option_price_cache[contract_label]
-        if time.time() - cached_at < CACHE_TTL_SECONDS:
-            return price
-    return None
+    raw = _fresh_cache_entry(_option_price_cache, contract_label)
+    if raw is None:
+        return None
+    return float(raw[0])
 
 
-def _set_cached_option_price(contract_label: str, price: float) -> None:
-    """Store an option price in the cache."""
-    _option_price_cache[contract_label] = (price, time.time())
+def _cached_option_quote(contract_label: str) -> Optional[Quote]:
+    raw = _fresh_cache_entry(_option_price_cache, contract_label)
+    if raw is None:
+        return None
+    provider = raw[2] if len(raw) > 2 else "yahoo"
+    as_of = raw[3] if len(raw) > 3 else ""
+    return Quote(contract_label, float(raw[0]), "live", str(provider), str(as_of))
+
+
+def _set_cached_option_price(
+    contract_label: str,
+    price: float,
+    provider: str = "yahoo",
+    as_of: str | None = None,
+) -> None:
+    """Store a live option price in the cache."""
+    _option_price_cache[contract_label] = (
+        price,
+        time.time(),
+        provider,
+        as_of or _utc_now_iso(),
+    )
 
 
 def clear_cache() -> None:
@@ -256,10 +506,14 @@ def _load_option_chain(yf: Any, symbol: str, expiration: str):
 
 def _fetch_grouped_option_prices(
     grouped_contracts: dict[tuple[str, str], list[dict[str, str | float]]],
+    deadline: float | None = None,
 ) -> tuple[dict[str, float], list[str]]:
     """Fetch grouped option prices from yfinance."""
     if not grouped_contracts:
         return {}, []
+
+    if deadline is None:
+        deadline = time.monotonic() + QUOTE_FETCH_BUDGET_SECONDS
 
     prices: dict[str, float] = {}
     warnings: list[str] = []
@@ -271,20 +525,29 @@ def _fetch_grouped_option_prices(
             "yfinance is not installed. Run: pip install yfinance. Using CSV-provided option premiums."
         ]
 
+    timed_out = False
     for (symbol, expiration), contracts in grouped_contracts.items():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            timed_out = True
+            break
         try:
             chain, resolution_warning = _call_with_timeout(
                 partial(_load_option_chain, yf, symbol, expiration),
-                YFINANCE_TIMEOUT_SECONDS,
+                min(remaining, YFINANCE_TIMEOUT_SECONDS),
             )
             if resolution_warning is not None:
                 warnings.append(resolution_warning)
         except Exception as exc:
+            if isinstance(exc, TimeoutError):
+                timed_out = True
+                break
             warnings.append(
-                f"Could not fetch live option prices for {symbol} {expiration}: {str(exc)}"
+                f"Could not fetch option prices for {symbol} {expiration}: {str(exc)}"
             )
             continue
 
+        as_of = _utc_now_iso()
         for contract in contracts:
             table = chain.calls if contract["kind"] == "call" else chain.puts
             price = _extract_option_contract_price(table, float(contract["strike"]))
@@ -293,7 +556,12 @@ def _fetch_grouped_option_prices(
 
             label = str(contract["label"])
             prices[label] = price
-            _set_cached_option_price(label, price)
+            _set_cached_option_price(label, price, provider="yahoo", as_of=as_of)
+
+    if timed_out:
+        warnings.append(
+            "Quote fetch timed out. Using CSV-provided prices as fallback."
+        )
 
     return prices, warnings
 
@@ -310,12 +578,14 @@ def _apply_option_fallback_prices(
             continue
         if fallback_prices and label in fallback_prices:
             prices[label] = fallback_prices[label]
-            warnings.append(f"Using CSV-provided option premium for {label} (live quote unavailable)")
+            warnings.append(
+                f"Using CSV-provided option premium for {label} (quote unavailable)"
+            )
 
     still_missing = [label for label in contract_labels if label not in prices]
     if still_missing:
         warnings.append(
-            "No live option prices available for: " + ", ".join(still_missing)
+            "No option prices available for: " + ", ".join(still_missing)
         )
 
     return warnings
@@ -325,27 +595,62 @@ def fetch_option_prices(
     contract_labels: list[str],
     fallback_prices: dict[str, float] | None = None,
     allow_network: bool = True,
-) -> tuple[dict[str, float], list[str]]:
-    """Fetch current option prices for parsed contract labels via yfinance."""
+    csv_as_of: str | None = None,
+    budget_seconds: float = QUOTE_FETCH_BUDGET_SECONDS,
+    deadline: float | None = None,
+) -> PriceFetchResult:
+    """Fetch option premiums. Failures fall back to CSV premiums and do not raise."""
     if not contract_labels:
-        return {}, []
+        return _empty_price_result()
 
-    unique_labels = list(dict.fromkeys(contract_labels))
-    prices, labels_to_fetch = _resolve_cached_option_prices(unique_labels)
-    warnings: list[str] = []
-    if allow_network and labels_to_fetch:
-        grouped_contracts, parse_warnings = _group_parsed_option_contracts(
-            labels_to_fetch
+    fetch_deadline = _quote_deadline(deadline, budget_seconds)
+    try:
+        unique_labels = list(dict.fromkeys(contract_labels))
+        prices, labels_to_fetch = _resolve_cached_option_prices(unique_labels)
+        quotes: list[Quote] = []
+        for label in prices:
+            cached = _cached_option_quote(label)
+            if cached is not None:
+                quotes.append(cached)
+        warnings: list[str] = []
+        if allow_network and labels_to_fetch:
+            grouped_contracts, parse_warnings = _group_parsed_option_contracts(
+                labels_to_fetch
+            )
+            warnings.extend(parse_warnings)
+            fetched_prices, fetch_warnings = _fetch_grouped_option_prices(
+                grouped_contracts,
+                deadline=fetch_deadline,
+            )
+            as_of = _utc_now_iso()
+            for label, price in fetched_prices.items():
+                prices[label] = price
+                meta = _cached_option_quote(label)
+                quotes.append(
+                    meta
+                    if meta is not None
+                    else Quote(label, price, "live", "yahoo", as_of)
+                )
+            warnings.extend(fetch_warnings)
+        quoted = {quote.symbol for quote in quotes}
+        warnings.extend(
+            _apply_option_fallback_prices(unique_labels, prices, fallback_prices)
         )
-        warnings.extend(parse_warnings)
-        fetched_prices, fetch_warnings = _fetch_grouped_option_prices(
-            grouped_contracts
+        quotes.extend(_csv_quotes_for_prices(prices, csv_as_of, quoted))
+        return PriceFetchResult(prices, warnings, quotes, [])
+    except Exception as exc:
+        logger.error("option quote fetch failed: %s", exc)
+        prices = {}
+        if fallback_prices:
+            for label in contract_labels:
+                if label in fallback_prices:
+                    prices[label] = fallback_prices[label]
+        return PriceFetchResult(
+            prices,
+            ["Quote fetch failed. Using CSV-provided prices as fallback."],
+            _csv_quotes_for_prices(prices, csv_as_of, set()),
+            [ProviderStatus("yahoo", "error")],
         )
-        prices.update(fetched_prices)
-        warnings.extend(fetch_warnings)
-    warnings.extend(_apply_option_fallback_prices(unique_labels, prices, fallback_prices))
-
-    return prices, warnings
 
 
 def _resolve_cached_prices(
@@ -393,10 +698,17 @@ def _extract_multi_ticker_prices(
 
 def _download_yfinance_prices(
     symbols_to_fetch: list[str],
+    timeout_seconds: float = YFINANCE_TIMEOUT_SECONDS,
 ) -> tuple[dict[str, float], list[str]]:
     """Download prices via yfinance with error handling. Returns (prices, warnings)."""
     prices: dict[str, float] = {}
     warnings: list[str] = []
+    timeout_seconds = min(float(timeout_seconds), YFINANCE_TIMEOUT_SECONDS)
+    if timeout_seconds <= 0:
+        warnings.append(
+            "Quote fetch timed out. Using CSV-provided prices as fallback."
+        )
+        return prices, warnings
 
     try:
         import yfinance as yf
@@ -408,7 +720,7 @@ def _download_yfinance_prices(
                 progress=False,
                 threads=True,
             ),
-            YFINANCE_TIMEOUT_SECONDS,
+            timeout_seconds,
         )
 
         if data is None or data.empty:
@@ -436,12 +748,12 @@ def _download_yfinance_prices(
     except TimeoutError as e:
         logger.error(f"yfinance timeout: {e}")
         warnings.append(
-            "Live price fetch timed out. Using CSV-provided prices as fallback."
+            "Quote fetch timed out. Using CSV-provided prices as fallback."
         )
     except Exception as e:
         logger.error(f"yfinance error: {e}")
         warnings.append(
-            f"Could not fetch live prices from Yahoo Finance: {str(e)}. "
+            f"Could not fetch prices from Yahoo Finance: {str(e)}. "
             f"Using CSV-provided prices as fallback."
         )
 
@@ -452,6 +764,7 @@ def _apply_fallback_prices(
     symbols: list[str],
     prices: dict[str, float],
     fallback_prices: dict[str, float] | None,
+    csv_as_of: str | None = None,
 ) -> list[str]:
     """Fill missing prices from fallback dict. Returns list of warnings."""
     warnings: list[str] = []
@@ -460,10 +773,15 @@ def _apply_fallback_prices(
             upper = symbol.upper()
             if upper not in prices and upper in fallback_prices:
                 prices[upper] = fallback_prices[upper]
-                warnings.append(
-                    f"Using CSV-provided price for {upper} "
-                    f"(live price unavailable)"
-                )
+                if csv_as_of:
+                    warnings.append(
+                        f"Using CSV-provided price for {upper} "
+                        f"as-of {csv_as_of} (quote unavailable)"
+                    )
+                else:
+                    warnings.append(
+                        f"Using CSV-provided price for {upper} (quote unavailable)"
+                    )
 
     missing = [s.upper() for s in symbols if s.upper() not in prices]
     if missing:
@@ -471,38 +789,150 @@ def _apply_fallback_prices(
     return warnings
 
 
+def _empty_price_result() -> PriceFetchResult:
+    return PriceFetchResult({}, [], [], [])
+
+
+def _csv_quotes_for_prices(
+    prices: dict[str, float],
+    csv_as_of: str | None,
+    already: set[str],
+) -> list[Quote]:
+    quotes: list[Quote] = []
+    for symbol, price in prices.items():
+        if symbol in already:
+            continue
+        quotes.append(Quote(symbol, price, "csv", None, csv_as_of or ""))
+    return quotes
+
+
+def _fetch_current_prices_impl(
+    symbols: list[str],
+    fallback_prices: dict[str, float] | None,
+    *,
+    allow_network: bool,
+    csv_as_of: str | None,
+    deadline: float,
+    providers: list[QuoteProvider] | None,
+) -> PriceFetchResult:
+    unique = list(dict.fromkeys(symbol.upper() for symbol in symbols if symbol))
+    prices: dict[str, float] = {}
+    quotes: list[Quote] = []
+    warnings: list[str] = []
+    statuses: list[ProviderStatus] = []
+
+    for symbol in unique:
+        cached = _cached_price_quote(symbol)
+        if cached is None:
+            continue
+        prices[symbol] = cached.price
+        quotes.append(cached)
+
+    to_fetch = [symbol for symbol in unique if symbol not in prices]
+    if allow_network and to_fetch:
+        chain = active_providers() if providers is None else providers
+        for provider in chain:
+            if not to_fetch:
+                break
+            if not provider.enabled():
+                continue
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                statuses.append(ProviderStatus(provider.name, "timeout"))
+                warnings.append(
+                    "Quote fetch timed out. Using CSV-provided prices as fallback."
+                )
+                break
+            try:
+                got, provider_warnings, reason = provider.fetch(to_fetch, remaining)
+            except Exception as exc:
+                logger.error("%s quote provider failed: %s", provider.name, exc)
+                statuses.append(ProviderStatus(provider.name, "error"))
+                warnings.append(
+                    f"Could not fetch prices from {provider.name}. "
+                    "Using CSV-provided prices as fallback."
+                )
+                continue
+            warnings.extend(provider_warnings)
+            as_of = _utc_now_iso()
+            for symbol, price in got.items():
+                upper = symbol.upper()
+                prices[upper] = price
+                _set_cached_price(upper, price, provider=provider.name, as_of=as_of)
+                quotes.append(Quote(upper, price, "live", provider.name, as_of))
+            statuses.append(ProviderStatus(provider.name, reason))
+            to_fetch = [symbol for symbol in to_fetch if symbol not in prices]
+            if reason == "timeout":
+                break
+
+    quoted = {quote.symbol for quote in quotes}
+    warnings.extend(
+        _apply_fallback_prices(unique, prices, fallback_prices, csv_as_of=csv_as_of)
+    )
+    quotes.extend(_csv_quotes_for_prices(prices, csv_as_of, quoted))
+    return PriceFetchResult(prices, warnings, quotes, statuses)
+
+
 def fetch_current_prices(
     symbols: list[str],
     fallback_prices: dict[str, float] | None = None,
     allow_network: bool = True,
-) -> tuple[dict[str, float], list[str]]:
+    csv_as_of: str | None = None,
+    budget_seconds: float = QUOTE_FETCH_BUDGET_SECONDS,
+    deadline: float | None = None,
+    providers: list[QuoteProvider] | None = None,
+) -> PriceFetchResult:
     """
-    Fetch current prices for a list of stock symbols using yfinance.
+    Fetch prices for stock symbols.
 
-    Uses batch downloading for efficiency and caches results for 5 minutes.
-    Falls back to provided prices if yfinance is unavailable.
+    Tries enabled providers in order, then CSV fallbacks. The whole call stays
+    inside a 5 second budget. A provider failure returns CSV prices instead of
+    raising.
 
     Args:
         symbols: List of ticker symbols (e.g., ["AAPL", "MSFT"]).
-        fallback_prices: Optional dict of symbol->price to use if yfinance fails.
-        allow_network: When False, skip Yahoo and use cache plus fallback only.
+        fallback_prices: Optional dict of symbol->price to use when a quote misses.
+        allow_network: When False, skip providers and use cache plus fallback only.
+        csv_as_of: ISO date of the CSV those fallback prices came from.
+        budget_seconds: Total time allowed for this call, capped at 5 seconds.
+        deadline: Shared monotonic deadline so stock and option quotes share one budget.
+        providers: Override the configured provider order. Used by tests.
 
     Returns:
-        Tuple of (dict mapping symbol to current price, list of warnings).
+        PriceFetchResult, also iterable as (prices, warnings).
     """
     if not symbols:
-        return {}, []
+        return _empty_price_result()
 
-    prices, symbols_to_fetch = _resolve_cached_prices(symbols)
-    warnings: list[str] = []
-    if allow_network and symbols_to_fetch:
-        fetched, warnings = _download_yfinance_prices(symbols_to_fetch)
-        prices.update(fetched)
-
-    fallback_warnings = _apply_fallback_prices(symbols, prices, fallback_prices)
-    warnings.extend(fallback_warnings)
-
-    return prices, warnings
+    fetch_deadline = _quote_deadline(deadline, budget_seconds)
+    try:
+        return _fetch_current_prices_impl(
+            symbols,
+            fallback_prices,
+            allow_network=allow_network,
+            csv_as_of=csv_as_of,
+            deadline=fetch_deadline,
+            providers=providers,
+        )
+    except Exception as exc:
+        logger.error("quote fetch failed: %s", exc)
+        prices: dict[str, float] = {}
+        warnings = ["Quote fetch failed. Using CSV-provided prices as fallback."]
+        if fallback_prices:
+            for symbol in symbols:
+                upper = symbol.upper()
+                if upper in fallback_prices:
+                    prices[upper] = fallback_prices[upper]
+        quotes = _csv_quotes_for_prices(prices, csv_as_of, set())
+        missing = [symbol.upper() for symbol in symbols if symbol.upper() not in prices]
+        if missing:
+            warnings.append(f"No prices available for: {', '.join(missing)}")
+        return PriceFetchResult(
+            prices,
+            warnings,
+            quotes,
+            [ProviderStatus("yahoo", "error")],
+        )
 
 
 def fetch_single_price(symbol: str) -> Optional[float]:

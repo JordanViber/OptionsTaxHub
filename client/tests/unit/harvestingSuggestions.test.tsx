@@ -2,7 +2,7 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import HarvestingSuggestions, {
   getRecommendedActionCopy,
 } from "../../app/components/HarvestingSuggestions";
-import type { HarvestingSuggestion } from "../../lib/types";
+import type { HarvestingSuggestion, PriceBasis } from "../../lib/types";
 
 const baseSuggestion: HarvestingSuggestion = {
   symbol: "AAPL",
@@ -315,6 +315,44 @@ describe("HarvestingSuggestions", () => {
     expect(screen.getByText("VTI")).toBeInTheDocument();
     expect(screen.getByText("Vanguard Total Market")).toBeInTheDocument();
     expect(screen.getByText("Similar exposure")).toBeInTheDocument();
+  });
+
+  it("says harvest candidates use CSV prices", () => {
+    const basis: PriceBasis = {
+      quotes: [
+        {
+          symbol: "AAPL",
+          price: 140,
+          source: "csv",
+          provider: null,
+          as_of: "2026-08-12",
+        },
+      ],
+      live: false,
+      csv_as_of: "2026-08-12",
+      label: "Prices as of your CSV (2026-08-12)",
+    };
+    const { rerender } = render(
+      <HarvestingSuggestions
+        suggestions={[baseSuggestion]}
+        priceBasis={basis}
+      />,
+    );
+    expect(screen.getByTestId("price-as-of-harvest")).toHaveTextContent(
+      "Prices as of your CSV (2026-08-12)",
+    );
+    expect(screen.queryByText(/^Live /)).not.toBeInTheDocument();
+
+    rerender(
+      <HarvestingSuggestions
+        suggestions={[baseSuggestion]}
+        locked
+        priceBasis={basis}
+      />,
+    );
+    expect(screen.getByTestId("price-as-of-harvest")).toHaveTextContent(
+      "Prices as of your CSV (2026-08-12)",
+    );
   });
 
   it("collapses details on second click", () => {

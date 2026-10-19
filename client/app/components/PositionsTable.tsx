@@ -22,7 +22,9 @@ import {
   ExpandMore as ExpandIcon,
   Warning as WarnIcon,
 } from "@mui/icons-material";
-import type { Position, TaxLot, WashSaleFlag } from "@/lib/types";
+import type { Position, PriceBasis, TaxLot, WashSaleFlag } from "@/lib/types";
+import { pricedNumbersVisible } from "@/lib/priceBasis";
+import PriceAsOfNote from "./PriceAsOfNote";
 
 /**
  * Convert raw holding-period days to a human-readable label.
@@ -42,6 +44,7 @@ interface PositionsTableProps {
   washSaleFlags?: WashSaleFlag[];
   /** When false, hide lot drill-in (packet preview). */
   lotDetailsUnlocked?: boolean;
+  priceBasis?: PriceBasis | null;
 }
 
 function getPositionRowId(row: Position): string {
@@ -545,7 +548,7 @@ function CompactLotCard({
           {formatCurrency(lot.total_cost_basis)}
         </Typography>
         <Typography variant="body2">
-          Current {formatCurrency(lotCurrent)}
+          Price {formatCurrency(lotCurrent)}
           {lot.current_price != null
             ? ` (${formatCurrency(lot.current_price)}/sh)`
             : ""}
@@ -572,7 +575,13 @@ function CompactLotCard({
 export function TaxLotsPanel({
   position,
   washSaleFlags = [],
-}: Readonly<{ position: Position; washSaleFlags?: WashSaleFlag[] }>) {
+  priceBasis,
+}: Readonly<{
+  position: Position;
+  washSaleFlags?: WashSaleFlag[];
+  priceBasis?: PriceBasis | null;
+}>) {
+  const priceHeading = priceBasis?.live ? "Current" : "Price";
   const lots: TaxLot[] = position.tax_lots ?? [];
   const compact = useCompactLayout();
 
@@ -623,7 +632,7 @@ export function TaxLotsPanel({
                 <TableCell align="right">Qty</TableCell>
                 <TableCell align="right">Cost / share</TableCell>
                 <TableCell align="right">Cost basis</TableCell>
-                <TableCell align="right">Current</TableCell>
+                <TableCell align="right">{priceHeading}</TableCell>
                 <TableCell>Term</TableCell>
                 <TableCell align="right">Wash-sale adj.</TableCell>
               </TableRow>
@@ -1022,7 +1031,9 @@ export default function PositionsTable({
   positions,
   washSaleFlags = [],
   lotDetailsUnlocked = true,
+  priceBasis,
 }: Readonly<PositionsTableProps>) {
+  const showPrices = pricedNumbersVisible(priceBasis);
   const compact = useCompactLayout();
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
@@ -1057,6 +1068,7 @@ export default function PositionsTable({
       sx={{ width: "100%", maxWidth: "100%", minWidth: 0, overflow: "hidden" }}
       data-testid="positions-table-wrap"
     >
+      <PriceAsOfNote basis={priceBasis} surface="positions" />
       <LotLedgerLegend />
       {compact ? (
         <Stack
@@ -1079,6 +1091,7 @@ export default function PositionsTable({
                   <TaxLotsPanel
                     position={position}
                     washSaleFlags={washSaleFlags}
+                    priceBasis={priceBasis}
                   />
                 </Collapse>
               </Box>
@@ -1136,6 +1149,7 @@ export default function PositionsTable({
             <TaxLotsPanel
               position={expandedPosition}
               washSaleFlags={washSaleFlags}
+              priceBasis={priceBasis}
             />
           )}
         </Collapse>

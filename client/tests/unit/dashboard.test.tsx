@@ -1471,6 +1471,39 @@ describe("DashboardPage", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("labels unrealized P&L with the CSV date and does not call it live", async () => {
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      price_basis: {
+        quotes: [
+          {
+            symbol: "TSLA",
+            price: 200,
+            source: "csv",
+            provider: null,
+            as_of: "2026-08-12",
+          },
+        ],
+        live: false,
+        csv_as_of: "2026-08-12",
+        label: "Prices as of your CSV (2026-08-12)",
+      },
+    };
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("price-as-of-pnl")).toHaveTextContent(
+        "Prices as of your CSV (2026-08-12)",
+      );
+    });
+    expect(screen.getByTestId("price-as-of-prices")).toHaveTextContent(
+      "Prices as of your CSV (2026-08-12)",
+    );
+    expect(screen.queryByText(/^Live /)).not.toBeInTheDocument();
+    expect(screen.queryByText(/current price/i)).not.toBeInTheDocument();
+  });
+
   it("does not treat a $300 loss + $300 disallowed as a settlement gap on the dashboard compare", async () => {
     mockAnalyzeData = {
       ...baseAnalysis,

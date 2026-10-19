@@ -350,7 +350,7 @@ function getAnalysisSourceDisplay(source: AnalysisSource): {
 }
 
 function isSamplePriceWarning(warning: string): boolean {
-  return /live prices were unavailable|fallback pric|csv-provided price|csv-provided option/i.test(
+  return /live prices were unavailable|fallback pric|csv-provided price|csv-provided option|prices as of your csv/i.test(
     warning,
   );
 }
@@ -406,12 +406,19 @@ function getConfidenceSummary(analysis: PortfolioAnalysis): {
     );
   }
 
-  if (
-    warnings.some((warning) => /Live prices were unavailable/i.test(warning))
+  const csvPriceDetail =
+    !analysis.sample_run && analysis.price_basis && !analysis.price_basis.live
+      ? analysis.price_basis.label || "Prices came from your CSV."
+      : "";
+  if (csvPriceDetail) {
+    details.push(csvPriceDetail);
+  } else if (
+    !analysis.sample_run &&
+    warnings.some((warning) =>
+      /live prices were unavailable|prices as of your csv/i.test(warning),
+    )
   ) {
-    details.push(
-      "Some current prices came from the CSV instead of a live market quote.",
-    );
+    details.push("Prices came from your CSV.");
   }
 
   if (details.length === 0) {
@@ -424,12 +431,15 @@ function getConfidenceSummary(analysis: PortfolioAnalysis): {
     };
   }
 
-  if (details.length === 1 && /live market quote/i.test(details[0])) {
+  if (
+    details.length === 1 &&
+    /prices as of your csv|prices came from your csv/i.test(details[0])
+  ) {
     return {
       severity: "info",
       label: "Moderate confidence",
       summary:
-        "This result is usable, but a small part of the valuation relied on fallback pricing instead of a live quote.",
+        "This result is usable. The prices on this page are marked with your CSV date.",
       details,
     };
   }
@@ -524,12 +534,14 @@ function SuggestionsPanel({
   lotsWithLosses,
   locked,
   positions,
+  priceBasis,
 }: Readonly<{
   suggestions: PortfolioAnalysis["suggestions"];
   skippedSuggestionSymbols: string[];
   lotsWithLosses: number;
   locked: boolean;
   positions: PortfolioAnalysis["positions"];
+  priceBasis?: PortfolioAnalysis["price_basis"];
 }>) {
   return (
     <Stack spacing={2}>
@@ -547,6 +559,7 @@ function SuggestionsPanel({
         lotsWithLosses={lotsWithLosses}
         locked={locked}
         positions={positions}
+        priceBasis={priceBasis}
       />
     </Stack>
   );
@@ -881,6 +894,7 @@ function ResultsSection({
       <Box data-testid="tax-section-kpis">
         <PortfolioSummaryCards
           summary={displayedAnalysis.summary}
+          priceBasis={displayedAnalysis.price_basis}
           preview={
             packetUnlocked
               ? undefined
@@ -970,6 +984,7 @@ function ResultsSection({
               }
               locked={!packetUnlocked}
               positions={displayedAnalysis.positions}
+              priceBasis={displayedAnalysis.price_basis}
             />
           )}
           {activeTab === 1 && (
@@ -977,6 +992,7 @@ function ResultsSection({
               positions={displayedAnalysis.positions}
               washSaleFlags={displayedAnalysis.wash_sale_flags}
               lotDetailsUnlocked={packetUnlocked}
+              priceBasis={displayedAnalysis.price_basis}
             />
           )}
         </CardContent>
@@ -1013,7 +1029,7 @@ function ResultsSection({
           {analysisSource === "saved-history" && (
             <Typography variant="caption" sx={{ display: "block", mb: 0.5 }}>
               This result was loaded from saved history. Re-upload the CSV if
-              you want the latest prices and a new live analysis.
+              you want prices from that file.
             </Typography>
           )}
           {confidenceSummary.details.length > 0 && (

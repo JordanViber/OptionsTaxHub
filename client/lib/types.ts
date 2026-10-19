@@ -269,6 +269,25 @@ export interface RealizedSummary {
   transactions_count: number;
 }
 
+export interface QuoteProvenance {
+  symbol: string;
+  price: number;
+  source: "live" | "csv";
+  provider?: string | null;
+  as_of: string;
+}
+
+export interface PriceBasis {
+  quotes: QuoteProvenance[];
+  /** True only when every quote in this analysis is a live success. */
+  live: boolean;
+  provider?: string | null;
+  as_of?: string | null;
+  csv_as_of?: string | null;
+  /** "Prices as of your CSV (<date>)" when any price is not live. */
+  label: string;
+}
+
 export interface PortfolioSummary {
   total_market_value: number;
   total_cost_basis: number;
@@ -318,6 +337,7 @@ export interface PortfolioAnalysis {
   disclaimer: string;
   errors: string[];
   warnings: string[];
+  price_basis?: PriceBasis | null;
 }
 
 // --- Tax Brackets API ---
@@ -344,6 +364,7 @@ export interface TaxBracketsSummary {
 export interface PricesResponse {
   prices: Record<string, number>;
   warnings: string[];
+  quotes?: QuoteProvenance[];
 }
 
 // --- LEAP rank vs owning the stock ---

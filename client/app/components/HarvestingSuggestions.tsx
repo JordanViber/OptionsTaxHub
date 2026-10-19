@@ -24,7 +24,9 @@ import {
   TrendingDown as LossIcon,
 } from "@mui/icons-material";
 import { useState } from "react";
-import type { HarvestingSuggestion, Position } from "@/lib/types";
+import type { HarvestingSuggestion, Position, PriceBasis } from "@/lib/types";
+import { pricedNumbersVisible } from "@/lib/priceBasis";
+import PriceAsOfNote from "./PriceAsOfNote";
 import {
   buildHarvestTeasers,
   formatUsd,
@@ -39,6 +41,7 @@ interface HarvestingSuggestionsProps {
   lotsWithLosses?: number;
   locked?: boolean;
   positions?: Position[];
+  priceBasis?: PriceBasis | null;
 }
 
 interface SuggestionDisplayMeta {
@@ -152,10 +155,12 @@ function SuggestionCard({
   suggestion,
   lotIndex,
   lotCount,
+  showPrices,
 }: Readonly<{
   suggestion: HarvestingSuggestion;
   lotIndex: number;
   lotCount: number;
+  showPrices: boolean;
 }>) {
   const [expanded, setExpanded] = useState(false);
   const needsManualReview = Boolean(suggestion.manual_review_required);
@@ -337,7 +342,9 @@ function SuggestionCard({
                   <LossIcon
                     sx={{ fontSize: 14, mr: 0.5, verticalAlign: "middle" }}
                   />
-                  {formatCurrency(suggestion.estimated_loss)}
+                  {showPrices
+                    ? formatCurrency(suggestion.estimated_loss)
+                    : "—"}
                 </Typography>
               </Box>
               <Box>
@@ -348,7 +355,9 @@ function SuggestionCard({
                   variant="body1"
                   sx={{ fontWeight: 600, color: "success.main" }}
                 >
-                  {formatCurrency(suggestion.tax_savings_estimate)}
+                  {showPrices
+                    ? formatCurrency(suggestion.tax_savings_estimate)
+                    : "—"}
                 </Typography>
               </Box>
               <Box>
@@ -468,7 +477,10 @@ function SuggestionCard({
   );
 }
 
-function HarvestTeaserCard({ teaser }: Readonly<{ teaser: HarvestTeaser }>) {
+function HarvestTeaserCard({
+  teaser,
+  showPrices,
+}: Readonly<{ teaser: HarvestTeaser; showPrices: boolean }>) {
   return (
     <Card
       variant="outlined"
@@ -519,9 +531,9 @@ function HarvestTeaserCard({ teaser }: Readonly<{ teaser: HarvestTeaser }>) {
               Open loss
             </Typography>
             <Typography sx={{ fontWeight: 700, color: "error.main" }}>
-              {formatCurrency(teaser.estimatedLoss)}
+              {showPrices ? formatCurrency(teaser.estimatedLoss) : "—"}
             </Typography>
-            {teaser.taxSavings != null && teaser.taxSavings > 0 && (
+            {showPrices && teaser.taxSavings != null && teaser.taxSavings > 0 && (
               <Typography
                 variant="caption"
                 sx={{ color: "success.main", display: "block" }}
@@ -554,7 +566,9 @@ function HarvestTeaserCard({ teaser }: Readonly<{ teaser: HarvestTeaser }>) {
 
 function LockedHarvestPreview({
   teasers,
-}: Readonly<{ teasers: HarvestTeaser[] }>) {
+  priceBasis,
+}: Readonly<{ teasers: HarvestTeaser[]; priceBasis?: PriceBasis | null }>) {
+  const showPrices = pricedNumbersVisible(priceBasis);
   const totals = harvestTeaserTotals(teasers);
   const visible = teasers.slice(0, PREVIEW_CARD_LIMIT);
   const hiddenCount = teasers.length - visible.length;
@@ -608,8 +622,13 @@ function LockedHarvestPreview({
           Unlock harvest plan — $49
         </Button>
       </Box>
+      <PriceAsOfNote basis={priceBasis} surface="harvest" />
       {visible.map((teaser) => (
-        <HarvestTeaserCard key={teaser.id} teaser={teaser} />
+        <HarvestTeaserCard
+          key={teaser.id}
+          teaser={teaser}
+          showPrices={showPrices}
+        />
       ))}
       {hiddenCount > 0 && (
         <Typography variant="caption" color="text.secondary">
@@ -645,11 +664,15 @@ export default function HarvestingSuggestions({
   lotsWithLosses = 0,
   locked = false,
   positions = [],
+  priceBasis,
 }: Readonly<HarvestingSuggestionsProps>) {
+  const showPrices = pricedNumbersVisible(priceBasis);
   if (locked) {
     const teasers = buildHarvestTeasers(suggestions, positions);
     if (teasers.length > 0) {
-      return <LockedHarvestPreview teasers={teasers} />;
+      return (
+        <LockedHarvestPreview teasers={teasers} priceBasis={priceBasis} />
+      );
     }
     return (
       <Card variant="outlined" data-testid="harvest-packet-preview">
@@ -687,6 +710,7 @@ export default function HarvestingSuggestions({
 
   return (
     <Stack spacing={2}>
+      <PriceAsOfNote basis={priceBasis} surface="harvest" />
       {displayMeta.map(({ suggestion, lotIndex, lotCount }) => (
         <SuggestionCard
           key={
@@ -696,6 +720,7 @@ export default function HarvestingSuggestions({
           suggestion={suggestion}
           lotIndex={lotIndex}
           lotCount={lotCount}
+          showPrices={showPrices}
         />
       ))}
     </Stack>

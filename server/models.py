@@ -117,6 +117,10 @@ class TaxLot(BaseModel):
     is_long_term: Optional[bool] = None
     wash_sale_disallowed: float = 0.0  # Amount of loss disallowed by wash-sale rule
     is_short_position: bool = False  # True for STO (sold-to-open) short option lots
+    # Quote provenance. Empty unless a price was applied for this lot.
+    price_source: Optional[Literal["live", "csv"]] = None
+    price_provider: Optional[str] = None
+    price_as_of: Optional[str] = None
 
 
 class Position(BaseModel):
@@ -145,6 +149,9 @@ class Position(BaseModel):
     wash_sale_risk: bool = False
     manual_review_required: bool = False
     manual_review_reason: str = ""
+    price_source: Optional[Literal["live", "csv"]] = None
+    price_provider: Optional[str] = None
+    price_as_of: Optional[str] = None
 
 
 # --- Wash-Sale Models ---
@@ -352,6 +359,9 @@ class HarvestingSuggestion(BaseModel):
     priority: int = Field(
         default=0, description="Priority ranking (1 = highest tax benefit)"
     )
+    price_source: Optional[Literal["live", "csv"]] = None
+    price_provider: Optional[str] = None
+    price_as_of: Optional[str] = None
 
 
 class Form1099BLot(BaseModel):
@@ -427,6 +437,30 @@ class Supplemental1099Summary(BaseModel):
 
 
 # --- Portfolio Analysis Response ---
+
+
+class QuoteProvenance(BaseModel):
+    """One price and the source that produced it."""
+
+    symbol: str
+    price: float
+    source: Literal["live", "csv"]
+    provider: Optional[str] = None
+    as_of: str = ""
+
+
+class PriceBasis(BaseModel):
+    """Provenance for every price used in an analysis.
+
+    ``label`` is ``Prices as of your CSV (<date>)`` unless every quote is live.
+    """
+
+    quotes: list[QuoteProvenance] = []
+    live: bool = False
+    provider: Optional[str] = None
+    as_of: Optional[str] = None
+    csv_as_of: Optional[str] = None
+    label: str = ""
 
 
 class PortfolioSummary(BaseModel):
@@ -512,3 +546,4 @@ class PortfolioAnalysis(BaseModel):
     )
     errors: list[str] = []
     warnings: list[str] = []
+    price_basis: PriceBasis = PriceBasis()

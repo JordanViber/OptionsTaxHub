@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import inspect
 import os
 import logging
 import re
@@ -37,6 +38,8 @@ from models import (
     ActivityBookSummary,
     LotMatchReport,
     PortfolioAnalysis,
+    PriceBasis,
+    QuoteProvenance,
     RealizedSummary,
     Supplemental1099Summary,
     TaxProfile,
@@ -101,9 +104,12 @@ from harvesting import (
 from wash_sale import detect_wash_sales, adjust_lots_for_wash_sales
 from wash_sale_chain import build_wash_sale_chains
 from price_service import (
+    QUOTE_FETCH_BUDGET_SECONDS,
+    Quote,
     fetch_current_prices,
     fetch_option_chain_window,
     fetch_option_prices,
+    price_basis_from_quotes,
 )
 from leap_rank import rank_from_chain
 from rh_chain import (
@@ -741,6 +747,7 @@ def _classify_warning(
     corporate_actions: dict[str, int],
     stock_splits: dict[str, int],
     fallback_prices: list[str],
+    fallback_dates: list[str],
     passthrough: list[str],
 ) -> None:
     """Place a raw warning into the appropriate summary bucket."""
@@ -781,9 +788,15 @@ def _classify_warning(
         stock_splits[split_match.group("symbol")] += 1
         return
 
-    price_match = re.match(r"^Using CSV-provided price for (?P<symbol>\S+) ", warning)
+    price_match = re.match(
+        r"^Using CSV-provided price for (?P<symbol>\S+)"
+        r"(?: as-of (?P<as_of>\d{4}-\d{2}-\d{2}))?",
+        warning,
+    )
     if price_match:
         fallback_prices.append(price_match.group("symbol"))
+        if price_match.group("as_of"):
+            fallback_dates.append(price_match.group("as_of"))
         return
 
     passthrough.append(warning)
@@ -795,6 +808,7 @@ def _build_summarized_warning_messages(
     corporate_actions: dict[str, int],
     stock_splits: dict[str, int],
     fallback_prices: list[str],
+    fallback_dates: list[str],
 ) -> list[str]:
     """Convert warning buckets into short plain-English messages."""
     summarized: list[str] = []
@@ -832,9 +846,11 @@ def _build_summarized_warning_messages(
 
     if fallback_prices:
         symbols = ", ".join(sorted(set(fallback_prices)))
-        summarized.append(
-            f"Live prices were unavailable for {symbols}, so the analysis used the CSV-provided price instead."
-        )
+        if fallback_dates:
+            as_of = sorted(set(fallback_dates))[-1]
+            summarized.append(f"Prices as of your CSV ({as_of}) for {symbols}.")
+        else:
+            summarized.append(f"Prices as of your CSV for {symbols}.")
 
     return summarized
 
@@ -860,6 +876,7 @@ def _summarize_warnings(warnings: List[str]) -> List[str]:
     corporate_actions: dict[str, int] = defaultdict(int)
     stock_splits: dict[str, int] = defaultdict(int)
     fallback_prices: list[str] = []
+    fallback_dates: list[str] = []
     passthrough: list[str] = []
 
     for warning in warnings:
@@ -870,6 +887,7 @@ def _summarize_warnings(warnings: List[str]) -> List[str]:
             corporate_actions,
             stock_splits,
             fallback_prices,
+            fallback_dates,
             passthrough,
         )
 
@@ -879,6 +897,7 @@ def _summarize_warnings(warnings: List[str]) -> List[str]:
         corporate_actions,
         stock_splits,
         fallback_prices,
+        fallback_dates,
     )
 
     return _dedupe_preserving_order([*summarized, *passthrough])
@@ -1039,10 +1058,15 @@ def _drop_sample_fixture_price_warnings(warnings: list[str]) -> list[str]:
         "Using CSV-provided prices",
         "yfinance returned no data",
         "Live price fetch timed out",
+        "Quote fetch timed out",
+        "Quote fetch failed",
         "Could not fetch live prices",
+        "Could not fetch prices from ",
         "Could not fetch live option prices",
+        "Could not fetch option prices",
         "yfinance is not installed",
         "No live option prices available",
+        "No option prices available",
     )
     return [
         warning
@@ -1051,14 +1075,87 @@ def _drop_sample_fixture_price_warnings(warnings: list[str]) -> list[str]:
     ]
 
 
+def _csv_price_as_of(transactions: list, tax_lots: list) -> str | None:
+    """Latest activity date in the file, else the latest lot purchase date."""
+    dates: list[date] = []
+    for txn in transactions or []:
+        activity = getattr(txn, "activity_date", None)
+        if isinstance(activity, date):
+            dates.append(activity)
+    if not dates:
+        for lot in tax_lots or []:
+            purchased = getattr(lot, "purchase_date", None)
+            if isinstance(purchased, date):
+                dates.append(purchased)
+    if not dates:
+        return None
+    return max(dates).isoformat()
+
+
+def _invoke_quote_fetch(
+    fn,
+    symbols_or_labels,
+    fallback: dict[str, float] | None,
+    *,
+    allow_network: bool,
+    csv_as_of: str | None,
+    deadline: float,
+):
+    """Call a quote function without breaking older test doubles.
+
+    Production functions accept csv_as_of and deadline. Many tests replace
+    the function with a lambda that only accepts symbols and fallbacks.
+    """
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        params = {}
+    accepts_var = any(
+        param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values()
+    )
+    kwargs: dict[str, Any] = {}
+    if accepts_var or "allow_network" in params:
+        kwargs["allow_network"] = allow_network
+    if accepts_var or "csv_as_of" in params:
+        kwargs["csv_as_of"] = csv_as_of
+    if accepts_var or "deadline" in params:
+        kwargs["deadline"] = deadline
+    return fn(symbols_or_labels, fallback, **kwargs)
+
+
+def _quotes_from_fetch(fetched, csv_as_of: str | None) -> list[Quote]:
+    quotes = getattr(fetched, "quotes", None)
+    if quotes is not None:
+        return list(quotes)
+    try:
+        prices = fetched[0]
+    except (TypeError, KeyError, IndexError):
+        prices = {}
+    # A bare tuple from a test double is not a live quote.
+    return [
+        Quote(str(symbol), float(price), "csv", None, csv_as_of or "")
+        for symbol, price in (prices or {}).items()
+    ]
+
+
+def _replace_quote(quotes: list[Quote], symbol: str, quote: Quote) -> list[Quote]:
+    return [item for item in quotes if item.symbol != symbol] + [quote]
+
+
 def _apply_live_prices_to_tax_lots(
     tax_lots: list,
     all_warnings: list[str],
     *,
     allow_network: bool = True,
     fixture_prices: dict[str, float] | None = None,
+    csv_as_of: str | None = None,
+    price_quotes: list | None = None,
 ) -> list:
-    """Populate stock and option lots with live prices when available."""
+    """Populate stock and option lots with quotes when available.
+
+    A provider failure or timeout fills from the CSV and does not raise.
+    Sample fixture prices stay on the lots and are recorded as CSV quotes.
+    """
     symbols = list({lot.symbol for lot in tax_lots if lot.asset_type == AssetType.STOCK})
     fallback_prices = {
         lot.symbol: lot.current_price
@@ -1071,14 +1168,17 @@ def _apply_live_prices_to_tax_lots(
             **fallback_prices,
             **{symbol.upper(): price for symbol, price in fixture_prices.items()},
         }
-    if allow_network:
-        live_prices, price_warnings = fetch_current_prices(symbols, fallback_prices)
-    else:
-        live_prices, price_warnings = fetch_current_prices(
-            symbols,
-            fallback_prices,
-            allow_network=False,
-        )
+    deadline = time.monotonic() + QUOTE_FETCH_BUDGET_SECONDS
+    fetched_prices = _invoke_quote_fetch(
+        fetch_current_prices,
+        symbols,
+        fallback_prices,
+        allow_network=allow_network,
+        csv_as_of=csv_as_of,
+        deadline=deadline,
+    )
+    live_prices, price_warnings = fetched_prices
+    quotes = _quotes_from_fetch(fetched_prices, csv_as_of)
     if fixture_prices is not None:
         price_warnings = _drop_sample_fixture_price_warnings(price_warnings)
     all_warnings.extend(price_warnings)
@@ -1097,17 +1197,16 @@ def _apply_live_prices_to_tax_lots(
         and lot.contract_label
         and lot.current_price is not None
     }
-    if allow_network:
-        option_prices, option_price_warnings = fetch_option_prices(
-            option_labels,
-            option_fallback_prices,
-        )
-    else:
-        option_prices, option_price_warnings = fetch_option_prices(
-            option_labels,
-            option_fallback_prices,
-            allow_network=False,
-        )
+    fetched_options = _invoke_quote_fetch(
+        fetch_option_prices,
+        option_labels,
+        option_fallback_prices,
+        allow_network=allow_network,
+        csv_as_of=csv_as_of,
+        deadline=deadline,
+    )
+    option_prices, option_price_warnings = fetched_options
+    quotes.extend(_quotes_from_fetch(fetched_options, csv_as_of))
     if fixture_prices is not None:
         option_price_warnings = _drop_sample_fixture_price_warnings(
             option_price_warnings
@@ -1115,8 +1214,21 @@ def _apply_live_prices_to_tax_lots(
     all_warnings.extend(option_price_warnings)
 
     if fixture_prices:
+        lot_symbols = {
+            lot.symbol.upper()
+            for lot in tax_lots
+            if lot.asset_type == AssetType.STOCK
+        }
         for symbol, price in fixture_prices.items():
-            live_prices[symbol.upper()] = price
+            upper = symbol.upper()
+            if upper not in lot_symbols:
+                continue
+            live_prices[upper] = price
+            quotes = _replace_quote(
+                quotes,
+                upper,
+                Quote(upper, float(price), "csv", None, csv_as_of or ""),
+            )
 
     for lot in tax_lots:
         if lot.asset_type == AssetType.STOCK and lot.symbol in live_prices:
@@ -1125,7 +1237,57 @@ def _apply_live_prices_to_tax_lots(
         if lot.asset_type == AssetType.OPTION and lot.contract_label in option_prices:
             lot.current_price = option_prices[lot.contract_label]
 
+    if price_quotes is not None:
+        price_quotes.extend(quotes)
     return tax_lots
+
+
+def _stamp_price_provenance(
+    tax_lots: list,
+    positions: list,
+    suggestions: list,
+    quotes: list[Quote],
+    csv_as_of: str | None,
+) -> PriceBasis:
+    """Copy each quote's source and time onto the rows that display it."""
+    payload = price_basis_from_quotes(quotes, csv_as_of)
+    basis = PriceBasis(
+        quotes=[QuoteProvenance.model_validate(item) for item in payload["quotes"]],
+        live=bool(payload["live"]),
+        provider=payload["provider"],
+        as_of=payload["as_of"],
+        csv_as_of=payload["csv_as_of"],
+        label=payload["label"],
+    )
+    index = {quote.symbol: quote for quote in quotes}
+
+    def stamp(obj, key: str | None) -> None:
+        if not key:
+            return
+        quote = index.get(key)
+        if quote is None or quote.source not in ("live", "csv"):
+            return
+        obj.price_source = quote.source
+        obj.price_provider = quote.provider
+        obj.price_as_of = quote.as_of or None
+
+    for lot in tax_lots:
+        if lot.asset_type == AssetType.OPTION and lot.contract_label:
+            stamp(lot, lot.contract_label)
+        else:
+            stamp(lot, lot.symbol.upper())
+    for position in positions:
+        if position.asset_type == AssetType.OPTION and position.display_label:
+            stamp(position, position.display_label)
+        else:
+            stamp(position, position.symbol.upper())
+    for suggestion in suggestions:
+        label = suggestion.display_label or ""
+        if label and label != suggestion.symbol:
+            stamp(suggestion, label)
+        else:
+            stamp(suggestion, suggestion.symbol.upper())
+    return basis
 
 
 def _filter_suggestion_tax_lots(
@@ -1585,11 +1747,15 @@ async def _run_portfolio_analysis(
     all_warnings.extend(supplemental_1099_warnings)
 
     trusted_sample = is_trusted_in_app_sample(contents, supplemental_bytes)
+    csv_as_of = _csv_price_as_of(transactions, tax_lots)
+    price_quotes: list[Quote] = []
     tax_lots = _apply_live_prices_to_tax_lots(
         tax_lots,
         all_warnings,
         allow_network=not trusted_sample,
         fixture_prices=SAMPLE_FIXTURE_PRICES if trusted_sample else None,
+        csv_as_of=csv_as_of,
+        price_quotes=price_quotes,
     )
 
     tax_lots = compute_lot_metrics(tax_lots)
@@ -1633,6 +1799,13 @@ async def _run_portfolio_analysis(
     positions = aggregate_positions(tax_lots)
     manual_review_notes = _build_manual_review_notes_by_symbol(transactions)
     _apply_manual_review_flags(positions, suggestions, manual_review_notes)
+    price_basis = _stamp_price_provenance(
+        tax_lots,
+        positions,
+        suggestions,
+        price_quotes,
+        csv_as_of,
+    )
     summary = build_portfolio_summary(positions, suggestions, wash_sale_flags)
 
     # Compute realized gain/loss breakdown for the requested tax year
@@ -1689,6 +1862,7 @@ async def _run_portfolio_analysis(
         analysis_id=analysis_id,
         activity_book=activity_book,
         warnings=_summarize_warnings(all_warnings),
+        price_basis=price_basis,
     )
     result = _apply_packet_year_grant(result, user_id)
     wrote_private_book = False
@@ -2225,8 +2399,19 @@ async def get_prices(
     if not symbol_list:
         raise HTTPException(status_code=400, detail="No symbols provided")
 
-    prices, warnings = fetch_current_prices(symbol_list)
-    return {"prices": prices, "warnings": warnings}
+    fetched = fetch_current_prices(symbol_list)
+    prices, warnings = fetched
+    quotes = [
+        {
+            "symbol": quote.symbol,
+            "price": quote.price,
+            "source": quote.source,
+            "provider": quote.provider,
+            "as_of": quote.as_of,
+        }
+        for quote in (getattr(fetched, "quotes", []) or [])
+    ]
+    return {"prices": prices, "warnings": warnings, "quotes": quotes}
 
 
 def _parse_iso_date_query(value: str, field: str) -> date:

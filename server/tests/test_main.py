@@ -1506,7 +1506,8 @@ def test_summarize_warnings_consolidates_repetitive_broker_messages():
 
     assert any("Option assignments affected TSLL 2 times" in w for w in summarized)
     assert any("Corporate action activity may have changed" in w for w in summarized)
-    assert any("Live prices were unavailable for CEP" in w for w in summarized)
+    assert any("Prices as of your CSV for CEP." in w for w in summarized)
+    assert all("live" not in w.lower() for w in summarized)
     assert len(summarized) == 3
 
 
@@ -3326,6 +3327,50 @@ def test_trusted_in_app_sample_skips_yahoo_and_still_returns_positions(monkeypat
         assert position["current_price"] == pytest.approx(
             SAMPLE_FIXTURE_PRICES[position["symbol"]]
         )
+    basis = body["price_basis"]
+    assert basis["live"] is False
+    assert basis["label"] == "Prices as of your CSV (2026-08-12)"
+    assert basis["quotes"]
+    assert all(quote["source"] == "csv" for quote in basis["quotes"])
+    assert all(quote["as_of"] == "2026-08-12" for quote in basis["quotes"])
+
+
+def test_analyze_survives_yahoo_no_quote(monkeypatch):
+    """A Yahoo no_quote must not 500 the tax analysis, and prices stay labeled CSV."""
+    from price_service import clear_cache
+
+    clear_cache()
+    monkeypatch.setattr(
+        "price_service._download_yfinance_prices",
+        lambda symbols, timeout_seconds=5.0: (
+            {},
+            ["yfinance returned no data. Using CSV-provided prices as fallback."],
+        ),
+    )
+    monkeypatch.setattr("main.prepare_positions_for_ai", lambda lots: [])
+    monkeypatch.setattr("main._save_history_best_effort", lambda *args, **kwargs: True)
+    monkeypatch.setattr("main._try_get_ai_suggestions", lambda *args, **kwargs: None)
+
+    response = client.post(
+        "/api/portfolio/analyze?tax_year=2024",
+        files=_make_csv(
+            "Activity Date,Process Date,Settle Date,Instrument,Description,Trans Code,Quantity,Price,Amount\n"
+            "01/15/2024,01/15/2024,01/17/2024,AAPL,Apple,Buy,10,150.00,-1500.00\n"
+            "06/01/2024,06/01/2024,06/03/2024,MSFT,Microsoft,Buy,5,300.00,-1500.00\n"
+        ),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    basis = body["price_basis"]
+    assert basis["live"] is False
+    assert basis["label"] == "Prices as of your CSV (2024-06-01)"
+    sources = {quote["symbol"]: quote for quote in basis["quotes"]}
+    assert sources["AAPL"]["source"] == "csv"
+    assert sources["AAPL"]["as_of"] == "2024-06-01"
+    assert sources["AAPL"]["provider"] is None
+    assert "live" not in basis["label"].lower()
+    assert "current" not in basis["label"].lower()
+    clear_cache()
 
 
 def test_trusted_sample_fixture_prices_win_over_cache_and_lot_fills():
