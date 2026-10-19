@@ -283,21 +283,92 @@ test.describe("Guest packet checkout", () => {
     }, JSON.stringify(wrongRun(wrongId)));
     await injectMockSession(resumePage);
     await armResumeApis(resumePage, sample, checkoutBodies);
+    // Test-local override, registered after armResumeApis. The mock Stripe
+    // URL embeds the posted analysis id so a navigation is proof of which
+    // run was checked out. Other tests keep the shared helper.
+    await resumePage.route("**/api/year-close-packet/checkout", async (route) => {
+      const body = route.request().postData() || "";
+      checkoutBodies.push(body);
+      let postedId = "";
+      try {
+        const parsed = JSON.parse(body) as { analysis_id?: unknown };
+        postedId = typeof parsed.analysis_id === "string" ? parsed.analysis_id : "";
+      } catch {
+        postedId = "";
+      }
+      const sessionId = `cs_test_e2e_resume_${postedId}`;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          checkout_url: `https://checkout.stripe.com/c/pay/${sessionId}`,
+          session_id: sessionId,
+          amount: 4900,
+          stripe_mode: "test",
+        }),
+      });
+    });
     await resumePage.goto(RESUME_PATH);
 
-    await expect(resumePage.getByTestId("year-close-packet-panel")).toBeVisible({
-      timeout: 20000,
-    });
-    await expect.poll(() => checkoutBodies.length, { timeout: 20000 }).toBeGreaterThan(0);
+    // Firefox at 390 can leave for Stripe before the panel is observed.
+    // One 20s poll: a checkout POST has arrived, and either the panel is
+    // visible or the page is already on the mock Stripe URL for that id.
+    // A navigation that has left the panel but not committed Stripe yet
+    // stays inside this same wait.
+    let settledUrl = "";
+    let settledPanel = false;
+    await expect
+      .poll(
+        async () => {
+          const panelVisible = await resumePage
+            .getByTestId("year-close-packet-panel")
+            .isVisible()
+            .catch(() => false);
+          const url = resumePage.url();
+          const onCorrectStripe =
+            url.includes("checkout.stripe.com") &&
+            url.includes(`cs_test_e2e_resume_${ANALYSIS_ID}`) &&
+            !url.includes(wrongId);
+          if (checkoutBodies.length > 0 && (panelVisible || onCorrectStripe)) {
+            settledUrl = url;
+            settledPanel = panelVisible;
+            return true;
+          }
+          return false;
+        },
+        { timeout: 20000 },
+      )
+      .toBe(true);
+    expect(checkoutBodies.length).toBeLessThanOrEqual(1);
     for (const body of checkoutBodies) {
-      expect(JSON.parse(body).analysis_id).not.toBe(wrongId);
+      const postedId = JSON.parse(body).analysis_id;
+      expect(postedId).not.toBe(wrongId);
+      expect(postedId).toBe(ANALYSIS_ID);
     }
     expect(JSON.parse(checkoutBodies[0]).analysis_id).toBe(ANALYSIS_ID);
+    expect(settledUrl).not.toContain(wrongId);
+    expect(
+      settledPanel ||
+        (settledUrl.includes("checkout.stripe.com") &&
+          settledUrl.includes(`cs_test_e2e_resume_${ANALYSIS_ID}`)),
+    ).toBe(true);
+    if (settledUrl.includes("checkout.stripe.com")) {
+      expect(settledUrl).toContain(ANALYSIS_ID);
+      expect(settledUrl).not.toContain(wrongId);
+    }
+    const finalUrl = resumePage.url();
+    expect(finalUrl).not.toContain(wrongId);
+    if (finalUrl.includes("checkout.stripe.com")) {
+      expect(finalUrl).toContain(ANALYSIS_ID);
+      expect(finalUrl).toContain(`cs_test_e2e_resume_${ANALYSIS_ID}`);
+      expect(finalUrl).not.toContain(wrongId);
+    }
     await expect
       .poll(
         () => checkoutBodies.filter((body) => JSON.parse(body).analysis_id === wrongId).length,
       )
       .toBe(0);
+    expect(checkoutBodies.length).toBeLessThanOrEqual(1);
   });
 
   test("original tab checkout is the only POST when confirm lands in a second page", async ({
@@ -491,6 +562,67 @@ test.describe("Guest packet checkout", () => {
     expect(page2Bodies).toHaveLength(0);
     await expect.poll(() => page1Bodies.length).toBe(1);
     expect(page2Bodies).toHaveLength(0);
+  });
+
+  test("a second dashboard tab shows the handoff and then the saved run", async ({
+    page,
+    browserName,
+  }) => {
+    test.skip(browserName === "webkit", "WebKit auth mocking limitation");
+    test.setTimeout(90_000);
+
+    const sample = guestSample();
+    await armGuestLanding(page, sample);
+    await page.goto("/");
+    await page.getByTestId("landing-try-sample").click();
+    await expect(page).toHaveURL(/\/dashboard/, { timeout: 30000 });
+    const pay = page.getByRole("button", { name: "Pay $49" });
+    await expect(pay).toBeEnabled({ timeout: 20000 });
+    await pay.click();
+    await expect(page).toHaveURL(/\/auth\/signin/, { timeout: 15000 });
+    const handoff = await page.evaluate(() =>
+      localStorage.getItem("optionstaxhub-packet-resume"),
+    );
+    expect(handoff).toContain(ANALYSIS_ID);
+
+    const tab2 = await page.context().newPage();
+    await armGuestLanding(tab2, sample);
+    await tab2.goto("/dashboard");
+    await expect(
+      tab2.getByText(/Get started with your first analysis/i),
+    ).toHaveCount(0);
+    await expect(
+      tab2
+        .getByText("AAPL")
+        .or(tab2.getByRole("button", { name: "Pay $49" }))
+        .or(tab2.getByText("Checkout opened in your other tab"))
+        .or(tab2.getByTestId("packet-resume-reupload"))
+        .first(),
+    ).toBeVisible({ timeout: 20000 });
+
+    const saved = savedRunAnalysis();
+    await injectMockSession(tab2);
+    await setupMockAuth(tab2);
+    await tab2.route("**/api/portfolio/history*", fulfillJson(saved.history));
+    await tab2.route(
+      "**/api/portfolio/analysis/**",
+      fulfillJson({
+        ...saved.history[0],
+        result: saved.analysis,
+      }),
+    );
+    await tab2.evaluate(() => {
+      sessionStorage.clear();
+    });
+    await tab2.goto("/dashboard");
+    await expect(tab2.getByText("ZZSAVED").first()).toBeVisible({
+      timeout: 20000,
+    });
+    await expect(tab2.getByText(/First upload/i)).not.toBeVisible();
+    await expect(
+      tab2.getByText(/Get started with your first analysis/i),
+    ).toHaveCount(0);
+    await tab2.close();
   });
 });
 
