@@ -68,6 +68,8 @@ export const PACKET_CHECKOUT_OTHER_TAB_COPY =
   "Checkout opened in your other tab";
 export const PACKET_ENTITLEMENT_UNCONFIRMED_COPY =
   "Couldn't confirm your purchase status. Pay or refresh.";
+export const PACKET_PROMOTION_UNCONFIRMED_COPY =
+  "Couldn't confirm your purchase status. Refresh to try again.";
 
 function isPacketMissingSourceDetail(detail: string): boolean {
   return /payment was received/i.test(detail) && /no source document/i.test(detail);
@@ -426,6 +428,7 @@ function YearClosePacketPanelForAnalysis({
   });
   // Paid year whose receipt did not name this run, and promotion did not
   // confirm it. Pay stays held so refresh cannot open a second Checkout.
+  // Cleared once this mount becomes paid, including a later unlocked refetch.
   const [paidYearUnconfirmed, setPaidYearUnconfirmed] = useState(false);
   const [otherTabNotice, setOtherTabNotice] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -710,6 +713,7 @@ function YearClosePacketPanelForAnalysis({
       return;
     }
     setCanceledNotice(false);
+    setPaidYearUnconfirmed(false);
     clearPacketResumeSessionMarkers();
     clearPacketResumeLocal();
     clearPacketCheckoutStarted();
@@ -1225,6 +1229,8 @@ function YearClosePacketPanelForAnalysis({
     }
   };
 
+  const holdUnconfirmedPay = paidYearUnconfirmed && !paid;
+
   return (
     <Box
       data-testid="year-close-packet-panel"
@@ -1269,14 +1275,14 @@ function YearClosePacketPanelForAnalysis({
                 existingPacketDownload ||
                 extraChargeRefund ||
                 entitlementGate === "unknown" ||
-                paidYearUnconfirmed ||
+                holdUnconfirmedPay ||
                 payHeldForDifferentResume(analysis)
               }
             >
               Pay $49
             </Button>
           )}
-          {!extraChargeRefund && !paidYearUnconfirmed && (
+          {!extraChargeRefund && !holdUnconfirmedPay && (
             <Button
               variant={paid || existingPacketDownload ? "contained" : "outlined"}
               color={paid || existingPacketDownload ? "success" : "primary"}
@@ -1314,7 +1320,9 @@ function YearClosePacketPanelForAnalysis({
             role="status"
             data-testid="packet-entitlement-unconfirmed"
           >
-            {PACKET_ENTITLEMENT_UNCONFIRMED_COPY}
+            {paidYearUnconfirmed
+              ? PACKET_PROMOTION_UNCONFIRMED_COPY
+              : PACKET_ENTITLEMENT_UNCONFIRMED_COPY}
           </Alert>
         )}
         {otherTabNotice && !error && (

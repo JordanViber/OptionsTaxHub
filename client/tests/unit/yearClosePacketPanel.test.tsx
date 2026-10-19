@@ -8,6 +8,7 @@ import YearClosePacketPanel, {
   isYearClosePacketPaid,
   resetPacketResumeCheckoutLock,
   PACKET_ENTITLEMENT_UNCONFIRMED_COPY,
+  PACKET_PROMOTION_UNCONFIRMED_COPY,
   YEAR_CLOSE_PACKET_TITLE,
   yearClosePacketStorageId,
 } from "../../app/components/YearClosePacketPanel";
@@ -1883,7 +1884,7 @@ describe("YearClosePacketPanel", () => {
       render(<YearClosePacketPanel analysis={{ ...analysis, packet_unlocked: false }} />);
       await waitFor(() => {
         expect(screen.getByTestId("packet-entitlement-unconfirmed")).toHaveTextContent(
-          PACKET_ENTITLEMENT_UNCONFIRMED_COPY,
+          PACKET_PROMOTION_UNCONFIRMED_COPY,
         );
       });
       expect(screen.queryByRole("button", { name: /Download/i })).not.toBeInTheDocument();
@@ -1903,6 +1904,85 @@ describe("YearClosePacketPanel", () => {
     } finally {
       consoleError.mockRestore();
     }
+  });
+
+  it("enables Download when the same run later arrives unlocked after a failed promotion", async () => {
+    armMatchingResume();
+    mockFetch.mockImplementation(async (url: RequestInfo | URL) => {
+      const target = String(url);
+      if (target.includes("/api/year-close-packet/entitlement")) {
+        return paidEntitlementWithoutAnalysis();
+      }
+      if (target.includes("/api/year-close-packet/checkout")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            checkout_url: "https://checkout.stripe.com/c/pay/cs_test_second",
+            session_id: "cs_test_second",
+          }),
+        };
+      }
+      return checkoutOk();
+    });
+
+    const view = render(
+      <YearClosePacketPanel analysis={{ ...analysis, packet_unlocked: false }} />,
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId("packet-entitlement-unconfirmed")).toHaveTextContent(
+        PACKET_PROMOTION_UNCONFIRMED_COPY,
+      );
+    });
+    expect(screen.queryByRole("button", { name: /Download/i })).not.toBeInTheDocument();
+    expect(checkoutPosts()).toHaveLength(1);
+
+    view.rerender(
+      <YearClosePacketPanel
+        analysis={{
+          ...analysis,
+          packet_unlocked: true,
+          packet_session_id: "cs_test_refetched",
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /Download/i })).toBeEnabled();
+    });
+    expect(screen.getByText(/Payment confirmed for tax year 2025/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Pay \$49/i })).not.toBeInTheDocument();
+    expect(screen.queryByTestId("packet-entitlement-unconfirmed")).not.toBeInTheDocument();
+    expect(checkoutPosts()).toHaveLength(1);
+    expect(window.location.href).not.toContain("checkout.stripe.com");
+  });
+
+  it("stays unconfirmed when promotion throws", async () => {
+    armMatchingResume();
+    mockFetch.mockImplementation(async (url: RequestInfo | URL) => {
+      const target = String(url);
+      if (target.includes("/api/year-close-packet/entitlement")) {
+        return paidEntitlementWithoutAnalysis();
+      }
+      if (target.includes("/api/year-close-packet/checkout")) {
+        throw new Error("network down");
+      }
+      return checkoutOk();
+    });
+
+    render(<YearClosePacketPanel analysis={{ ...analysis, packet_unlocked: false }} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("packet-entitlement-unconfirmed")).toHaveTextContent(
+        PACKET_PROMOTION_UNCONFIRMED_COPY,
+      );
+    });
+    expect(screen.queryByRole("button", { name: /Download/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeDisabled();
+    expect(screen.queryByText(/Pay or refresh/i)).not.toBeInTheDocument();
+    expect(checkoutPosts()).toHaveLength(1);
+    expect(window.location.href).not.toContain("checkout.stripe.com");
+    expect(screen.queryByText(/Payment confirmed for tax year/i)).not.toBeInTheDocument();
   });
 
   it("marks a packet_unlocked run paid immediately when entitlement would omit analysis_id", async () => {
