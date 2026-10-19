@@ -6162,6 +6162,146 @@ def test_genuine_different_session_duplicate_inserts_receipt_and_refund_copy(
     assert snapshot_client.rows[0]["packet_session_id"] == "cs_owner"
 
 
+def test_same_year_second_payment_on_a_different_run_is_duplicate(monkeypatch, caplog):
+    """S1 paid on run A, then S2 settles on run B in that same tax year.
+
+    A paid grant on another analysis is not visible to ``mark_packet_snapshot_paid``.
+    S2 must be the duplicate result: one ``conflict:`` receipt, no normal
+    receipt for B, and the refund log. Confirm uses the duplicate sentence.
+    Run B stays unpaid.
+    """
+    _test_stripe_env(monkeypatch)
+    user = "test-user-123"
+    year = 2025
+    run_a = "analysis-run-a"
+    run_b = "analysis-run-b"
+    session_a = "cs_run_a"
+    session_b = "cs_run_b"
+    payload_a = {
+        "analysis_id": run_a,
+        "analysis_tax_year": year,
+        "tax_profile": {"tax_year": year, "filing_status": "single"},
+        "marker": "RUN-A",
+    }
+    payload_b = {
+        "analysis_id": run_b,
+        "analysis_tax_year": year,
+        "tax_profile": {"tax_year": year, "filing_status": "single"},
+        "marker": "RUN-B",
+    }
+    assert packet_payload_rows_match_counts(payload_a) is True
+    assert packet_payload_rows_match_counts(payload_b) is True
+    _seed_raw_history(run_a, user, payload_a)
+    _seed_raw_history(run_b, user, payload_b)
+    snapshot_client = _wire_real_snapshot_client(
+        monkeypatch,
+        [
+            _snapshot_row(
+                run_a, user, year, payload_a,
+                session_id=None, paid_at=None, expires_at="2099-01-01T00:00:00+00:00",
+            ),
+            _snapshot_row(
+                run_b, user, year, payload_b,
+                session_id=None, paid_at=None, expires_at="2099-01-01T00:00:00+00:00",
+            ),
+        ],
+    )
+    monkeypatch.setattr(main, "save_packet_entitlement", db.save_packet_entitlement)
+    monkeypatch.setattr(
+        main,
+        "lookup_packet_grant_for_tax_year",
+        db.lookup_packet_grant_for_tax_year,
+    )
+    session_s1 = _stripe_object_session(
+        id=session_a,
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": run_a,
+            "user_id": user,
+            "tax_year": str(year),
+        },
+    )
+    session_s2 = _stripe_object_session(
+        id=session_b,
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": run_b,
+            "user_id": user,
+            "tax_year": str(year),
+        },
+    )
+
+    with caplog.at_level(logging.ERROR):
+        granted_a = main._persist_packet_grant(session_s1, run_a, user)
+        granted_b = main._persist_packet_grant(session_s2, run_b, user)
+        refund_lines = [
+            record.message
+            for record in caplog.records
+            if record.levelno >= logging.ERROR
+            and "PACKET_GRANT_SAME_YEAR_DUPLICATE" in record.message
+        ]
+
+    assert granted_a is True
+    assert granted_b == main.PACKET_GRANT_SAME_YEAR_DUPLICATE
+    row_a = next(row for row in snapshot_client.rows if row["analysis_id"] == run_a)
+    row_b = next(row for row in snapshot_client.rows if row["analysis_id"] == run_b)
+    assert row_a["paid_at"]
+    assert row_a["packet_session_id"] == session_a
+    assert row_b["paid_at"] is None
+    assert row_b["packet_session_id"] is None
+    normal_receipts = [
+        row for row in snapshot_client.entitlements
+        if not str(row.get("analysis_id") or "").startswith("conflict:")
+    ]
+    conflict_receipts = [
+        row for row in snapshot_client.entitlements
+        if str(row.get("analysis_id") or "").startswith("conflict:")
+    ]
+    assert normal_receipts == [{
+        "analysis_id": run_a,
+        "user_id": user,
+        "tax_year": year,
+        "packet_session_id": session_a,
+        "created_at": normal_receipts[0]["created_at"],
+    }]
+    assert len(conflict_receipts) == 1
+    assert conflict_receipts[0]["analysis_id"] == f"conflict:{run_b}"
+    assert conflict_receipts[0]["packet_session_id"] == session_b
+    assert conflict_receipts[0]["tax_year"] == year
+    assert not any(row.get("analysis_id") == run_b for row in snapshot_client.entitlements)
+    assert len(refund_lines) == 1
+    assert session_b in refund_lines[0]
+    assert run_b in refund_lines[0]
+
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda *_args, **_kwargs: session_s2,
+    )
+    confirm = client.post(
+        "/api/year-close-packet/confirm",
+        json={"session_id": session_b, "analysis_id": run_b},
+    )
+    assert confirm.status_code == 409, confirm.text
+    assert confirm.json()["detail"] == main.PACKET_SAME_YEAR_DUPLICATE_DETAIL
+    assert "recorded for a refund" in confirm.text
+    assert confirm.json().get("paid") is not True
+    assert row_b["paid_at"] is None
+    assert row_b["packet_session_id"] is None
+    assert len([
+        row for row in snapshot_client.entitlements
+        if str(row.get("analysis_id") or "").startswith("conflict:")
+    ]) == 1
+    assert not any(row.get("analysis_id") == run_b for row in snapshot_client.entitlements)
+
+    downloaded = client.get(
+        "/api/year-close-packet/download",
+        params={"analysis_id": run_b, "session_id": session_b},
+    )
+    assert downloaded.status_code == 403, downloaded.text
+    assert not downloaded.content.startswith(b"%PDF")
+
+
 def test_download_rejects_unpaid_snapshot_despite_memory_paid_flag(monkeypatch):
     """An unpaid year-scoped row plus a sticky paid flag is 403 and does not grant."""
     _test_stripe_env(monkeypatch)
