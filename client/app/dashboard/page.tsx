@@ -91,6 +91,7 @@ import YearClosePacketPanel, {
   rememberYearClosePacketPaid,
   yearClosePacketStorageId,
 } from "../components/YearClosePacketPanel";
+import LatestRunBar from "../components/LatestRunBar";
 import {
   buildHarvestTeasers,
   formatUsd,
@@ -1370,6 +1371,11 @@ export default function DashboardPage() {
     severity: "success" | "error" | "info";
   } | null>(null);
   const [forceEmpty, setForceEmpty] = useState(false);
+  const [latestRunBanner, setLatestRunBanner] = useState<{
+    filename: string;
+    uploadedAt: string;
+    sampleRun: boolean;
+  } | null>(null);
   const [heldAnalysis, setHeldAnalysis] = useState<PortfolioAnalysis | null>(
     null,
   );
@@ -1595,6 +1601,18 @@ export default function DashboardPage() {
     setForceEmpty(false);
   };
 
+  const handleUploadNew = () => {
+    blockHistoryAutoload.current = true;
+    setLatestRunBanner(null);
+    setHeldAnalysis(null);
+    setForceEmpty(true);
+    setUploadOpen(true);
+    clearCurrentAnalysisView({
+      setLoadedAnalysis,
+      setAnalysisSource,
+    });
+  };
+
   const runPortfolioAnalysis = (
     csvFile: File,
     supplementalFile: File | null = supplemental1099File,
@@ -1623,6 +1641,7 @@ export default function DashboardPage() {
           saveAnalysisToStorage(normalized);
           setLoadedAnalysis(normalized);
           setAnalysisSource("fresh-upload");
+          setLatestRunBanner(null);
           setForceEmpty(false);
           setSampleLoading(false);
           if (sample) {
@@ -1680,6 +1699,7 @@ export default function DashboardPage() {
   };
 
   const handleLoadSample = () => {
+    setLatestRunBanner(null);
     const abort = new AbortController();
     void (async () => {
       try {
@@ -1908,6 +1928,7 @@ export default function DashboardPage() {
    * the load (or reports an error).
    */
   const handleHistoryItemClick = async (itemId: string, filename: string) => {
+    setLatestRunBanner(null);
     await loadHistoryAnalysis({
       userId: user?.id,
       itemId,
@@ -2295,11 +2316,18 @@ export default function DashboardPage() {
         } catch {
           return;
         }
-        setLoadedAnalysis((current) =>
-          current ? current : normalizeAnalysis(record.result),
-        );
+        if (displayedAnalysisRef.current) {
+          return;
+        }
+        const normalized = normalizeAnalysis(record.result);
+        setLoadedAnalysis((current) => (current ? current : normalized));
         setAnalysisSource((current) => current ?? "saved-history");
         setForceEmpty(false);
+        setLatestRunBanner({
+          filename: newest.filename,
+          uploadedAt: newest.uploaded_at,
+          sampleRun: Boolean(normalized.sample_run),
+        });
       })
       .catch(() => {
         // Leave the upload card. Do not fall back to the sample.
@@ -2388,6 +2416,9 @@ export default function DashboardPage() {
   // displayedAnalysis is computed above (near sessionStorage effects)
   const analyzing = isPending || sampleLoading;
   const hasResults = !!displayedAnalysis && !forceEmpty;
+  const showLatestRunBar = Boolean(
+    hasResults && analysisSource === "saved-history" && latestRunBanner,
+  );
   let resumeHandoffPending = false;
   if (!hasResults && !resumeReuploadNotice) {
     try {
@@ -2721,6 +2752,15 @@ export default function DashboardPage() {
       {/* Main Content */}
       <Container maxWidth="lg" sx={{ py: 3 }}>
         <Stack spacing={3}>
+          {showLatestRunBar && latestRunBanner && (
+            <LatestRunBar
+              filename={latestRunBanner.filename}
+              uploadedAt={latestRunBanner.uploadedAt}
+              sampleRun={latestRunBanner.sampleRun}
+              onUploadNew={handleUploadNew}
+              onAllSavedRuns={() => setHistoryOpen(true)}
+            />
+          )}
           {!hasResults && !resumeHandoffPending && uploadSection}
           {!hasResults && resumeHandoffPending && !analyzing && (
             <Box sx={{ display: "flex", justifyContent: "center", py: 6 }}>

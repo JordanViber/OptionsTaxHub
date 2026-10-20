@@ -2583,11 +2583,88 @@ describe("DashboardPage", () => {
     window.history.replaceState(null, "", "/dashboard");
     render(<DashboardPage />, { wrapper: createWrapper() });
     expect(await screen.findByText("Saved analysis")).toBeInTheDocument();
+    expect(screen.getByTestId("latest-run-bar")).toHaveTextContent(
+      "Showing your latest run: newer.csv · Jan 2, 2026",
+    );
+    expect(screen.getByRole("button", { name: "Upload new" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "All saved runs" }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("latest-run-all-saved"));
+    expect(
+      screen.getByRole("heading", { name: "Saved runs" }),
+    ).toBeInTheDocument();
     expect(screen.getByTestId("year-close-packet-panel")).toBeInTheDocument();
     expect(mockFetchAnalysisById).toHaveBeenCalledTimes(1);
     expect(mockFetchAnalysisById).toHaveBeenCalledWith("newer-run");
     expect(mockAnalyzeMutate).not.toHaveBeenCalled();
     expect(screen.queryByText(/Get started with your first analysis/i)).not.toBeInTheDocument();
+  });
+
+  it("labels the newest saved sample as sample on the latest-run bar", async () => {
+    installSessionStore();
+    mockHistoryData = [
+      historyRow(
+        "sample-run",
+        "sample-robinhood-transactions.csv",
+        "2026-04-01T00:00:00Z",
+      ),
+    ];
+    mockFetchAnalysisById.mockResolvedValue({
+      id: "sample-run",
+      filename: "sample-robinhood-transactions.csv",
+      result: {
+        ...baseAnalysis,
+        analysis_id: "sample-run",
+        sample_run: true,
+        packet_unlocked: false,
+      },
+    });
+    window.history.replaceState(null, "", "/dashboard");
+    render(<DashboardPage />, { wrapper: createWrapper() });
+    const bar = await screen.findByTestId("latest-run-bar");
+    expect(bar).toHaveTextContent("Showing your latest run: sample · Apr 1, 2026");
+    expect(bar).not.toHaveTextContent("sample-robinhood-transactions.csv");
+  });
+
+  it("returns to the upload card in one click from the latest-run bar", async () => {
+    installSessionStore();
+    mockHistoryData = [
+      historyRow("older-run", "older.csv", "2025-01-01T00:00:00Z"),
+      historyRow("newer-run", "newer.csv", "2026-01-02T00:00:00Z"),
+    ];
+    mockFetchAnalysisById.mockResolvedValue({
+      id: "newer-run",
+      filename: "newer.csv",
+      result: {
+        ...baseAnalysis,
+        analysis_id: "newer-run",
+        sample_run: false,
+        packet_unlocked: false,
+      },
+    });
+    window.history.replaceState(null, "", "/dashboard");
+    render(<DashboardPage />, { wrapper: createWrapper() });
+    expect(await screen.findByTestId("latest-run-bar")).toHaveTextContent(
+      "Showing your latest run: newer.csv · Jan 2, 2026",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Upload new" }));
+    expect(screen.queryByTestId("latest-run-bar")).not.toBeInTheDocument();
+    expect(screen.getByTestId("tax-upload")).toBeInTheDocument();
+    expect(screen.getByTestId("csv-dropzone")).toBeInTheDocument();
+    expect(screen.queryByText("Saved analysis")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Keep current run" }),
+    ).not.toBeInTheDocument();
+    expect(mockAnalyzeMutate).not.toHaveBeenCalled();
+    await act(async () => {
+      await new Promise((resolve) => {
+        setTimeout(resolve, 30);
+      });
+    });
+    expect(mockFetchAnalysisById).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("latest-run-bar")).not.toBeInTheDocument();
+    expect(screen.getByTestId("csv-dropzone")).toBeInTheDocument();
   });
 
   it("does not load the sample when the newest saved run cannot be fetched", async () => {
@@ -2599,6 +2676,8 @@ describe("DashboardPage", () => {
     window.history.replaceState(null, "", "/dashboard");
     render(<DashboardPage />, { wrapper: createWrapper() });
     await screen.findByText(/Get started with your first analysis/i);
+    expect(screen.getByTestId("tax-upload")).toBeInTheDocument();
+    expect(screen.getByTestId("csv-dropzone")).toBeInTheDocument();
     await act(async () => {
       await new Promise((resolve) => {
         setTimeout(resolve, 30);
@@ -2607,6 +2686,8 @@ describe("DashboardPage", () => {
     expect(mockFetchAnalysisById).toHaveBeenCalledWith("newer-run");
     expect(mockAnalyzeMutate).not.toHaveBeenCalled();
     expect(screen.queryByText("Saved analysis")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("latest-run-bar")).not.toBeInTheDocument();
+    expect(screen.getByTestId("csv-dropzone")).toBeInTheDocument();
   });
 
   it("does not show another account's paid status on a guest sample", async () => {

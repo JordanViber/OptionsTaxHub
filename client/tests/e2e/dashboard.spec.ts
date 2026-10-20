@@ -7,7 +7,9 @@ import {
   MOCK_ANALYSIS_WITH_WARNINGS,
   MOCK_HISTORY,
   goToAuthenticatedHome,
+  injectMockSession,
   setupMockAnalysis,
+  setupMockAuth,
   uploadTestCsv,
 } from "./fixtures";
 import { RH_CONNECTION_REQUIRED_COPY } from "../../lib/types";
@@ -1417,4 +1419,151 @@ test.describe("JOR-88 product walk", () => {
     });
     expect(clipped).toBe(false);
   });
+});
+
+test.describe("Latest saved run bar", () => {
+  const viewports = [
+    { name: "desktop", width: 1280, height: 800 },
+    { name: "phone-390", width: 390, height: 844 },
+  ] as const;
+
+  function historyRow(id: string, filename: string, uploadedAt: string) {
+    return {
+      id,
+      user_id: "test-user-123",
+      filename,
+      uploaded_at: uploadedAt,
+      summary: MOCK_ANALYSIS.summary,
+      positions_count: 2,
+      total_market_value: 21100,
+    };
+  }
+
+  async function openSavedDashboard(
+    page: import("@playwright/test").Page,
+    history: ReturnType<typeof historyRow>[],
+    analysis: Record<string, unknown>,
+  ) {
+    await setupMockAuth(page);
+    await page.route("**/api/portfolio/history*", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(history),
+      }),
+    );
+    await page.route("**/api/portfolio/analysis/**", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ...history[0],
+          result: analysis,
+        }),
+      }),
+    );
+    await injectMockSession(page);
+    await page.goto("/dashboard");
+  }
+
+  for (const viewport of viewports) {
+    test(`shows the latest run and starts fresh in one click on ${viewport.name}`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({
+        width: viewport.width,
+        height: viewport.height,
+      });
+      const history = [
+        historyRow("older-run", "older.csv", "2025-01-01T00:00:00Z"),
+        historyRow("newer-run", "newer.csv", "2026-01-02T00:00:00Z"),
+      ];
+      await openSavedDashboard(page, history, {
+        ...MOCK_ANALYSIS,
+        analysis_id: "newer-run",
+        sample_run: false,
+        packet_unlocked: false,
+      });
+      const bar = page.getByTestId("latest-run-bar");
+      await expect(bar).toBeVisible({ timeout: 15000 });
+      await bar.scrollIntoViewIfNeeded();
+      await expect(bar).toContainText(
+        "Showing your latest run: newer.csv · Jan 2, 2026",
+      );
+      const uploadNew = page.getByTestId("latest-run-upload-new");
+      const allSaved = page.getByTestId("latest-run-all-saved");
+      await uploadNew.scrollIntoViewIfNeeded();
+      await expect(uploadNew).toBeVisible();
+      await expect(allSaved).toBeVisible();
+      const uploadBox = await uploadNew.boundingBox();
+      const savedBox = await allSaved.boundingBox();
+      const size = page.viewportSize();
+      expect(uploadBox && savedBox && size).toBeTruthy();
+      expect(uploadBox!.height).toBeGreaterThanOrEqual(44);
+      expect(savedBox!.height).toBeGreaterThanOrEqual(44);
+      expect(uploadBox!.width).toBeGreaterThanOrEqual(44);
+      expect(uploadBox!.y).toBeGreaterThanOrEqual(0);
+      expect(uploadBox!.y + uploadBox!.height).toBeLessThanOrEqual(
+        size!.height + 1,
+      );
+      expect(savedBox!.y + savedBox!.height).toBeLessThanOrEqual(
+        size!.height + 1,
+      );
+      if (viewport.width === 390) {
+        expect(uploadBox!.width).toBeGreaterThanOrEqual(240);
+        expect(savedBox!.width).toBeGreaterThanOrEqual(240);
+        expect(savedBox!.y).toBeGreaterThanOrEqual(
+          uploadBox!.y + uploadBox!.height - 1,
+        );
+      } else {
+        expect(savedBox!.x).toBeGreaterThan(uploadBox!.x);
+      }
+      await allSaved.click();
+      const savedHeading = page.getByRole("heading", { name: "Saved runs" });
+      await expect(savedHeading).toBeVisible();
+      await page.keyboard.press("Escape");
+      await expect(savedHeading).toBeHidden();
+      await uploadNew.click();
+      await expect(page.getByTestId("latest-run-bar")).toHaveCount(0);
+      await expect(page.getByTestId("csv-dropzone")).toBeVisible();
+      await expect(page.getByText("Keep current run")).toHaveCount(0);
+      await expect(page.getByText("Saved analysis")).toHaveCount(0);
+    });
+
+    test(`calls a saved sample run sample on ${viewport.name}`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({
+        width: viewport.width,
+        height: viewport.height,
+      });
+      await openSavedDashboard(
+        page,
+        [
+          historyRow(
+            "sample-run",
+            "sample-robinhood-transactions.csv",
+            "2026-04-01T00:00:00Z",
+          ),
+        ],
+        {
+          ...MOCK_ANALYSIS,
+          analysis_id: "sample-run",
+          sample_run: true,
+          packet_unlocked: false,
+        },
+      );
+      const bar = page.getByTestId("latest-run-bar");
+      await expect(bar).toBeVisible({ timeout: 15000 });
+      await expect(bar).toContainText(
+        "Showing your latest run: sample · Apr 1, 2026",
+      );
+      await expect(bar).not.toContainText("sample-robinhood-transactions.csv");
+      const box = await bar.boundingBox();
+      const size = page.viewportSize();
+      expect(box && size).toBeTruthy();
+      expect(box!.width).toBeLessThanOrEqual(size!.width);
+      expect(box!.x).toBeGreaterThanOrEqual(0);
+    });
+  }
 });
