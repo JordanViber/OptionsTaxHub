@@ -2908,6 +2908,7 @@ export default function DashboardPage() {
                 }
                 guest={!user}
                 restoredRun={analysisSource === "restored-session"}
+                freshUpload={analysisSource === "fresh-upload"}
                 onPaidChange={setPacketPaid}
                 onSampleRerunForCheckout={handleSampleRerunForCheckout}
               />

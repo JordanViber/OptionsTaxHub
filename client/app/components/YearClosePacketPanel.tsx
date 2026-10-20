@@ -298,6 +298,31 @@ function restoredEntitlementPending(
   return typeof year === "number" && Number.isFinite(year);
 }
 
+/**
+ * A fresh signed-in CSV upload has no resume markers. The year may already
+ * be paid, so Pay stays held until entitlement returns. Resume checkout
+ * keeps its own guard. The sample desk is not this path.
+ */
+function freshUploadEntitlementPending(
+  analysis: PortfolioAnalysis,
+  freshUpload: boolean,
+): boolean {
+  if (!freshUpload || analysis.sample_run === true || resumeCheckoutArmed()) {
+    return false;
+  }
+  if (
+    analysis.packet_unlocked === true ||
+    isYearClosePacketPaid(yearClosePacketStorageId(analysis))
+  ) {
+    return false;
+  }
+  if (!analysis.analysis_id || analysis.analysis_id === "local-analysis") {
+    return false;
+  }
+  const year = analysis.tax_profile?.tax_year;
+  return typeof year === "number" && Number.isFinite(year);
+}
+
 function isGuestSnapshotRerunDetail(detail: string): boolean {
   return (
     /guest snapshot must be restored/i.test(detail) ||
@@ -410,6 +435,7 @@ export default function YearClosePacketPanel(props: Readonly<{
   analysis: PortfolioAnalysis;
   guest?: boolean;
   restoredRun?: boolean;
+  freshUpload?: boolean;
   onPaidChange?: (paid: boolean) => void;
   onSampleRerunForCheckout?: () => boolean;
 }>) {
@@ -421,6 +447,7 @@ export default function YearClosePacketPanel(props: Readonly<{
       analysisStorageId={identity}
       guest={props.guest === true}
       restoredRun={props.restoredRun === true}
+      freshUpload={props.freshUpload === true}
       onPaidChange={props.onPaidChange}
       onSampleRerunForCheckout={props.onSampleRerunForCheckout}
     />
@@ -432,6 +459,7 @@ function YearClosePacketPanelForAnalysis({
   analysisStorageId,
   guest,
   restoredRun,
+  freshUpload,
   onPaidChange,
   onSampleRerunForCheckout,
 }: Readonly<{
@@ -439,6 +467,7 @@ function YearClosePacketPanelForAnalysis({
   analysisStorageId: string;
   guest: boolean;
   restoredRun: boolean;
+  freshUpload: boolean;
   onPaidChange?: (paid: boolean) => void;
   onSampleRerunForCheckout?: () => boolean;
 }>) {
@@ -474,7 +503,8 @@ function YearClosePacketPanelForAnalysis({
       return "paid";
     }
     return resumeEntitlementPending(analysis) ||
-      restoredEntitlementPending(analysis, restoredRun)
+      restoredEntitlementPending(analysis, restoredRun) ||
+      freshUploadEntitlementPending(analysis, freshUpload)
       ? "unknown"
       : "unpaid";
   });
@@ -546,8 +576,50 @@ function YearClosePacketPanelForAnalysis({
     writeSessionItem(canonicalStorageKey(analysisStorageId), paidAnalysisId);
     writeSessionItem(paidStorageKey(paidAnalysisId), session);
     onPaidChangeRef.current?.(true);
+    setError(null);
     setBusy(null);
   };
+
+  const refetchPaidYear = async (): Promise<boolean> => {
+    const year = analysisRef.current.tax_profile?.tax_year;
+    if (typeof year !== "number" || !Number.isFinite(year)) {
+      return false;
+    }
+    let headers: Record<string, string>;
+    try {
+      headers = await authHeaders();
+    } catch {
+      return false;
+    }
+    const response = await fetch(
+      `${API_URL}/api/year-close-packet/entitlement?tax_year=${encodeURIComponent(String(year))}`,
+      {
+        method: "GET",
+        headers,
+      },
+    );
+    if (!response.ok) {
+      return false;
+    }
+    const data = await response.json().catch(() => null);
+    if (!data || data.paid !== true) {
+      return false;
+    }
+    const sid =
+      typeof data.session_id === "string" && data.session_id.startsWith("cs_")
+        ? data.session_id
+        : null;
+    if (!sid) {
+      return false;
+    }
+    const entitled =
+      typeof data.analysis_id === "string" ? data.analysis_id.trim() : "";
+    const currentId = (analysisRef.current.analysis_id || "").trim();
+    applyAlreadyPaidRef.current(sid, entitled || currentId || canonicalAnalysisId);
+    return true;
+  };
+  const refetchPaidYearRef = useRef(refetchPaidYear);
+  refetchPaidYearRef.current = refetchPaidYear;
 
   const confirmPacketSession = async (sid: string, confirmedAnalysisId: string) => {
     const attempt = ++confirmAttempt.current;
@@ -788,7 +860,8 @@ function YearClosePacketPanelForAnalysis({
     }
     const checkEntitlement =
       resumeEntitlementPending(current) ||
-      restoredEntitlementPending(current, restoredRun);
+      restoredEntitlementPending(current, restoredRun) ||
+      freshUploadEntitlementPending(current, freshUpload);
     if (!checkEntitlement) {
       setEntitlementGate("unpaid");
       return;
@@ -827,6 +900,19 @@ function YearClosePacketPanelForAnalysis({
           const detail = String(
             errData && typeof errData === "object" ? errData.detail || "" : "",
           );
+          if (
+            response.status === 409 &&
+            isPacketMissingSourceDetail(detail) &&
+            freshUploadEntitlementPending(analysisRef.current, freshUpload)
+          ) {
+            const recovered = await refetchPaidYearRef.current();
+            if (cancelled) {
+              return "hold";
+            }
+            if (recovered) {
+              return "paid";
+            }
+          }
           if (!cancelled) {
             showPromotionClientError(detail || "Failed to start checkout.");
           }
@@ -944,13 +1030,15 @@ function YearClosePacketPanelForAnalysis({
       const latest = analysisRef.current;
       const resumePending = resumeEntitlementPending(latest);
       const restoredPending = restoredEntitlementPending(latest, restoredRun);
-      if (!accessToken || (!resumePending && !restoredPending)) {
+      const freshPending = freshUploadEntitlementPending(latest, freshUpload);
+      if (!accessToken || (!resumePending && !restoredPending && !freshPending)) {
         setEntitlementGate("unpaid");
         return;
       }
       // A checkout claim in the last five minutes skips only the resume
-      // check. A restored run still has to learn whether the year is paid.
-      if (!restoredPending && packetCheckoutStartedRecently()) {
+      // check. A restored run and a fresh upload still have to learn
+      // whether the year is paid.
+      if (!restoredPending && !freshPending && packetCheckoutStartedRecently()) {
         setEntitlementGate("unpaid");
         return;
       }
@@ -979,6 +1067,7 @@ function YearClosePacketPanelForAnalysis({
   }, [
     guest,
     restoredRun,
+    freshUpload,
     paid,
     analysis.analysis_id,
     analysis.packet_unlocked,
@@ -1100,6 +1189,14 @@ function YearClosePacketPanelForAnalysis({
       if (!response.ok) {
         const errData = await response.json().catch(() => null);
         const detail = String(errData?.detail || "");
+        if (response.status === 409 && isPacketMissingSourceDetail(detail)) {
+          if (await refetchPaidYearRef.current()) {
+            releaseCheckoutClaim(options?.claim);
+            clearSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY);
+            setBusy(null);
+            return;
+          }
+        }
         if (
           response.status === 409 &&
           analysis.sample_run &&

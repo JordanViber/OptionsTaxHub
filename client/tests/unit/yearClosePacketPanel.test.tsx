@@ -2358,6 +2358,11 @@ describe("YearClosePacketPanel", () => {
         ok: false,
         status: 409,
         json: () => Promise.resolve({ detail }),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        json: () => Promise.resolve({ detail }),
       });
 
     render(<YearClosePacketPanel analysis={analysis} />);
@@ -2372,7 +2377,7 @@ describe("YearClosePacketPanel", () => {
 
       fireEvent.click(screen.getByRole("button", { name: /Pay \$49/i }));
       await waitFor(() => {
-        expect(mockFetch).toHaveBeenCalledTimes(2);
+        expect(mockFetch).toHaveBeenCalledTimes(3);
         expect(screen.getByRole("alert")).toHaveTextContent(detail);
         expect(screen.getByRole("button", { name: /Download/i })).toBeEnabled();
       });
@@ -2380,6 +2385,9 @@ describe("YearClosePacketPanel", () => {
         "/api/year-close-packet/checkout",
       );
       expect(String(mockFetch.mock.calls[1][0])).not.toContain("/confirm");
+      expect(String(mockFetch.mock.calls[2][0])).toContain(
+        "/api/year-close-packet/entitlement",
+      );
       expect(window.location.href).not.toContain(checkoutUrl);
       expect(window.location.href).not.toContain("checkout.stripe.com");
       expect(
@@ -2392,8 +2400,8 @@ describe("YearClosePacketPanel", () => {
       );
 
       fireEvent.click(screen.getByRole("button", { name: /Download/i }));
-      await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(3));
-      expect(String(mockFetch.mock.calls[2][0])).toContain("/api/year-close-packet/download");
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(4));
+      expect(String(mockFetch.mock.calls[3][0])).toContain("/api/year-close-packet/download");
       expect(screen.getByRole("alert")).toHaveTextContent(detail);
       expect(screen.getByRole("alert")).not.toHaveTextContent(
         /Pay \$49 to download the year-close packet/i,
@@ -2741,6 +2749,69 @@ describe("YearClosePacketPanel", () => {
     expect(screen.queryByText(/Paid for this tax year/i)).not.toBeInTheDocument();
     expect(checkoutPosts()).toHaveLength(1);
     expect(window.location.href).not.toContain("checkout.stripe.com");
+  });
+
+  it("holds Pay on a fresh upload and shows the paid year after a same-year 409", async () => {
+    const detail =
+      "Payment was received, but this analysis has no source document. Run a new analysis for this tax year.";
+    let entitlementCalls = 0;
+    mockFetch.mockImplementation(async (url: RequestInfo | URL) => {
+      const target = String(url);
+      if (target.includes("/api/year-close-packet/entitlement")) {
+        entitlementCalls += 1;
+        if (entitlementCalls === 1) {
+          return paidYearEntitlement("analysis-other");
+        }
+        return paidYearEntitlement("analysis-1");
+      }
+      if (target.includes("/api/year-close-packet/checkout")) {
+        return {
+          ok: false,
+          status: 409,
+          json: async () => ({ detail }),
+        };
+      }
+      return checkoutOk();
+    });
+
+    render(<YearClosePacketPanel analysis={restoredAnalysis} freshUpload />);
+
+    expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeDisabled();
+
+    await waitFor(() => {
+      expect(screen.getByText(/Paid for this tax year/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/no source document/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Pay \$49/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Download/i })).toBeEnabled();
+    expect(
+      screen.getAllByText(/no second \$49/i).length,
+    ).toBeGreaterThan(0);
+    expect(checkoutPosts()).toHaveLength(1);
+    expect(entitlementCalls).toBe(2);
+    expect(window.location.href).not.toContain("checkout.stripe.com");
+    expect(store["optionstaxhub-packet-paid:analysis-1"]).toBe(
+      "cs_test_restored_year",
+    );
+  });
+
+  it("shows a matching fresh upload as paid without a Pay click", async () => {
+    mockFetch.mockImplementation(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/api/year-close-packet/entitlement")) {
+        return paidYearEntitlement("analysis-1");
+      }
+      return checkoutOk();
+    });
+
+    render(<YearClosePacketPanel analysis={restoredAnalysis} freshUpload />);
+
+    expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeDisabled();
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: /Pay \$49/i })).not.toBeInTheDocument();
+    });
+    expect(screen.getByText(/Paid for this tax year/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Download/i })).toBeEnabled();
+    expect(checkoutPosts()).toHaveLength(0);
   });
 
   it("does not check entitlement for a fresh upload", async () => {
