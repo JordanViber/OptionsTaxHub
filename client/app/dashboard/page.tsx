@@ -94,6 +94,7 @@ import {
   buildHarvestTeasers,
   formatUsd,
   harvestTeaserTotals,
+  purchaseFillUnknownCopy,
 } from "@/lib/harvestPreview";
 import { useAuth } from "@/app/context/auth";
 import { isEmailConfirmed } from "@/lib/supabase";
@@ -351,7 +352,7 @@ function getAnalysisSourceDisplay(source: AnalysisSource): {
 }
 
 function isSamplePriceWarning(warning: string): boolean {
-  return /live prices were unavailable|fallback pric|csv-provided price|csv-provided option/i.test(
+  return /live prices were unavailable|fallback pric|csv-provided price|csv-provided option|prices as of your csv/i.test(
     warning,
   );
 }
@@ -407,12 +408,19 @@ function getConfidenceSummary(analysis: PortfolioAnalysis): {
     );
   }
 
-  if (
-    warnings.some((warning) => /Live prices were unavailable/i.test(warning))
+  const csvPriceDetail =
+    !analysis.sample_run && analysis.price_basis && !analysis.price_basis.live
+      ? analysis.price_basis.label || "Prices came from your CSV."
+      : "";
+  if (csvPriceDetail) {
+    details.push(csvPriceDetail);
+  } else if (
+    !analysis.sample_run &&
+    warnings.some((warning) =>
+      /live prices were unavailable|prices as of your csv/i.test(warning),
+    )
   ) {
-    details.push(
-      "Some current prices came from the CSV instead of a live market quote.",
-    );
+    details.push("Prices came from your CSV.");
   }
 
   if (details.length === 0) {
@@ -425,12 +433,19 @@ function getConfidenceSummary(analysis: PortfolioAnalysis): {
     };
   }
 
-  if (details.length === 1 && /live market quote/i.test(details[0])) {
+  if (
+    details.length === 1 &&
+    /prices as of your csv|prices came from your csv|purchase price from your csv/i.test(
+      details[0],
+    )
+  ) {
+    const purchaseFill = /purchase price from your csv/i.test(details[0]);
     return {
       severity: "info",
       label: "Moderate confidence",
-      summary:
-        "This result is usable, but a small part of the valuation relied on fallback pricing instead of a live quote.",
+      summary: purchaseFill
+        ? "This result is usable. The prices on this page are purchase fills from your CSV."
+        : "This result is usable. The prices on this page are marked with your CSV date.",
       details,
     };
   }
@@ -462,21 +477,31 @@ function getRecommendedNextSteps(
           totals.totalLoss,
         )} in unrealized losses. The $49 PDF adds sell instructions, replacements, wash chains, and harvest notes.`,
       );
-    } else {
+    } else if (totals.unknownLossCount === 0) {
       steps.push(
         "This page shows the free compare. The $49 PDF adds harvest notes, wash chains, and lot-level 1099 reconciliation.",
       );
     }
+    if (totals.unknownLossCount > 0) {
+      steps.push(purchaseFillUnknownCopy(totals.unknownLossCount));
+    }
     return steps;
   }
-  if (analysis.suggestions.length > 0) {
+  const lossSuggestions = analysis.suggestions.filter(
+    (suggestion) => suggestion.action !== "REVIEW" && !suggestion.price_note,
+  );
+  const unknownLossCount = analysis.suggestions.length - lossSuggestions.length;
+  if (lossSuggestions.length > 0) {
     steps.push(
-      `Start with the ${analysis.suggestions.length} ${analysis.suggestions.length === 1 ? "lot" : "lots"} in the harvest queue.`,
+      `Start with the ${lossSuggestions.length} ${lossSuggestions.length === 1 ? "lot" : "lots"} in the harvest queue.`,
     );
-  } else {
+  } else if (unknownLossCount === 0) {
     steps.push(
       "The harvest queue is empty, so review the lot ledger and realized gains for this tax year first.",
     );
+  }
+  if (unknownLossCount > 0) {
+    steps.push(purchaseFillUnknownCopy(unknownLossCount));
   }
 
   if (analysis.wash_sale_flags.length > 0) {
@@ -525,12 +550,14 @@ function SuggestionsPanel({
   lotsWithLosses,
   locked,
   positions,
+  priceBasis,
 }: Readonly<{
   suggestions: PortfolioAnalysis["suggestions"];
   skippedSuggestionSymbols: string[];
   lotsWithLosses: number;
   locked: boolean;
   positions: PortfolioAnalysis["positions"];
+  priceBasis?: PortfolioAnalysis["price_basis"];
 }>) {
   return (
     <Stack spacing={2}>
@@ -548,6 +575,7 @@ function SuggestionsPanel({
         lotsWithLosses={lotsWithLosses}
         locked={locked}
         positions={positions}
+        priceBasis={priceBasis}
       />
     </Stack>
   );
@@ -819,9 +847,12 @@ function ResultsSection({
     displayedAnalysis.positions,
   );
   const harvestTotals = harvestTeaserTotals(harvestTeasers);
+  const realSuggestionCount = displayedAnalysis.suggestions.filter(
+    (suggestion) => suggestion.action !== "REVIEW" && !suggestion.price_note,
+  ).length;
   const suggestionTabCount = packetUnlocked
-    ? displayedAnalysis.suggestions.length
-    : harvestTeasers.length;
+    ? realSuggestionCount
+    : harvestTotals.count;
   const washSaleChains = displayedAnalysis.wash_sale_chains ?? [];
   const showChainHint =
     Boolean(washChainHint) &&
@@ -882,16 +913,14 @@ function ResultsSection({
       <Box data-testid="tax-section-kpis">
         <PortfolioSummaryCards
           summary={displayedAnalysis.summary}
-          preview={
-            packetUnlocked
-              ? undefined
-              : {
-                  locked: true,
-                  candidateCount: harvestTotals.count,
-                  openLossTotal: harvestTotals.totalLoss,
-                  potentialTaxSavings: harvestTotals.totalSavings,
-                }
-          }
+          priceBasis={displayedAnalysis.price_basis}
+          preview={{
+            locked: !packetUnlocked,
+            candidateCount: harvestTotals.count,
+            openLossTotal: harvestTotals.totalLoss,
+            potentialTaxSavings: harvestTotals.totalSavings,
+            unknownLossCount: harvestTotals.unknownLossCount,
+          }}
         />
       </Box>
 
@@ -971,6 +1000,7 @@ function ResultsSection({
               }
               locked={!packetUnlocked}
               positions={displayedAnalysis.positions}
+              priceBasis={displayedAnalysis.price_basis}
             />
           )}
           {activeTab === 1 && (
@@ -978,6 +1008,7 @@ function ResultsSection({
               positions={displayedAnalysis.positions}
               washSaleFlags={displayedAnalysis.wash_sale_flags}
               lotDetailsUnlocked={packetUnlocked}
+              priceBasis={displayedAnalysis.price_basis}
             />
           )}
         </CardContent>
@@ -1014,7 +1045,7 @@ function ResultsSection({
           {analysisSource === "saved-history" && (
             <Typography variant="caption" sx={{ display: "block", mb: 0.5 }}>
               This result was loaded from saved history. Re-upload the CSV if
-              you want the latest prices and a new live analysis.
+              you want prices from that file.
             </Typography>
           )}
           {confidenceSummary.details.length > 0 && (

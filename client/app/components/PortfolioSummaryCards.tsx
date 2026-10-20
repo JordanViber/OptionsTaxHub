@@ -17,15 +17,20 @@ import {
   Warning as WarnIcon,
   Receipt as RealizedIcon,
 } from "@mui/icons-material";
-import type { PortfolioSummary, RealizedSummary } from "@/lib/types";
+import type { PortfolioSummary, PriceBasis, RealizedSummary } from "@/lib/types";
+import { purchaseFillUnknownCopy } from "@/lib/harvestPreview";
+import { pricedNumbersVisible } from "@/lib/priceBasis";
+import PriceAsOfNote from "./PriceAsOfNote";
 
 interface PortfolioSummaryCardsProps {
   summary: PortfolioSummary;
+  priceBasis?: PriceBasis | null;
   preview?: {
     locked: boolean;
     candidateCount: number;
     openLossTotal: number;
     potentialTaxSavings: number;
+    unknownLossCount?: number;
   };
 }
 
@@ -50,12 +55,14 @@ function MetricCard({
   subtitle,
   icon,
   color,
+  footnote,
 }: Readonly<{
   title: string;
   value: string;
   subtitle?: string;
   icon: React.ReactNode;
   color: string;
+  footnote?: React.ReactNode;
 }>) {
   return (
     <Card sx={{ height: "100%" }}>
@@ -94,6 +101,7 @@ function MetricCard({
                 {subtitle}
               </Typography>
             )}
+            {footnote}
           </Box>
         </Box>
       </CardContent>
@@ -192,15 +200,27 @@ function RealizedCard({ realized }: Readonly<{ realized: RealizedSummary }>) {
 export default function PortfolioSummaryCards({
   summary,
   preview,
+  priceBasis,
 }: Readonly<PortfolioSummaryCardsProps>) {
+  const showPrices = pricedNumbersVisible(priceBasis);
   const pnlColor = summary.total_unrealized_pnl >= 0 ? "#7a9e84" : "#c46a58";
   const pnlSign = summary.total_unrealized_pnl >= 0 ? "+" : "";
+  const priceNote = (surface: "prices" | "pnl") =>
+    showPrices ? <PriceAsOfNote basis={priceBasis} surface={surface} /> : null;
   const hasRealized = !!summary.realized_summary;
   const savingsColor =
     summary.wash_sale_flags_count > 0 ? "#c4a36a" : "#7a9e84";
+  const unknownLossCount = preview?.unknownLossCount ?? 0;
   const showLossPreview =
     Boolean(preview?.locked) &&
     (preview?.candidateCount ?? 0) > 0 &&
+    summary.estimated_tax_savings <= 0;
+  // An all-fill book has no priced loss. $0 would read as a calculated harvest.
+  const unknownOnly =
+    unknownLossCount > 0 &&
+    !showLossPreview &&
+    summary.lots_with_losses <= 0 &&
+    summary.total_harvestable_losses <= 0 &&
     summary.estimated_tax_savings <= 0;
   let heroValue = summary.estimated_tax_savings;
   if (showLossPreview) {
@@ -247,15 +267,33 @@ export default function PortfolioSummaryCards({
               color: heroColor,
             }}
           >
-            {formatCurrency(heroValue)}
+            {unknownOnly
+              ? "Unknown"
+              : showPrices
+                ? formatCurrency(heroValue)
+                : "—"}
           </Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1.5 }}>
-            {showLossPreview
-              ? `${preview?.candidateCount ?? 0} lots with unrealized losses. Unlock the $49 plan for sell instructions and what to wait on.`
-              : `Federal harvest still available from ${formatCurrency(
-                  harvestableValue,
-                )} of losing lots.`}
+            {unknownOnly
+              ? purchaseFillUnknownCopy(unknownLossCount)
+              : showLossPreview
+                ? `${preview?.candidateCount ?? 0} lots with unrealized losses. Unlock the $49 plan for sell instructions and what to wait on.`
+                : showPrices
+                  ? `Federal harvest still available from ${formatCurrency(
+                      harvestableValue,
+                    )} of losing lots.`
+                  : "Federal harvest still available from the losing lots on this page."}
           </Typography>
+          {!unknownOnly && unknownLossCount > 0 ? (
+            <Typography
+              variant="body2"
+              color="text.secondary"
+              data-testid="summary-unknown-loss-count"
+              sx={{ mt: 0.75 }}
+            >
+              {purchaseFillUnknownCopy(unknownLossCount)}
+            </Typography>
+          ) : null}
           <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
             {summary.wash_sale_flags_count > 0
               ? `${summary.wash_sale_flags_count} wash-sale warning(s)`
@@ -270,28 +308,46 @@ export default function PortfolioSummaryCards({
         <Grid size={{ xs: 12, sm: 6, md: hasRealized ? 3 : 4 }}>
           <MetricCard
             title="Net Open Position Value"
-            value={formatCurrency(summary.total_market_value)}
+            value={
+              showPrices ? formatCurrency(summary.total_market_value) : "—"
+            }
             subtitle={`${summary.positions_count} open positions — short options count as liabilities; excludes cash`}
             icon={<PortfolioIcon />}
             color="#d8d2c6"
+            footnote={priceNote("prices")}
           />
         </Grid>
         <Grid size={{ xs: 12, sm: 6, md: hasRealized ? 3 : 4 }}>
           <MetricCard
             title="Unrealized P&L"
-            value={`${pnlSign}${formatCurrency(summary.total_unrealized_pnl)}`}
-            subtitle={`${pnlSign}${summary.total_unrealized_pnl_pct.toFixed(1)}%`}
+            value={
+              showPrices
+                ? `${pnlSign}${formatCurrency(summary.total_unrealized_pnl)}`
+                : "—"
+            }
+            subtitle={
+              showPrices
+                ? `${pnlSign}${summary.total_unrealized_pnl_pct.toFixed(1)}%`
+                : undefined
+            }
             icon={
               summary.total_unrealized_pnl >= 0 ? <GainIcon /> : <LossIcon />
             }
             color={pnlColor}
+            footnote={priceNote("pnl")}
           />
         </Grid>
         <Grid size={{ xs: 12, sm: 6, md: hasRealized ? 3 : 4 }}>
           <MetricCard
             title="Harvestable Losses"
-            value={formatCurrency(harvestableValue)}
-            subtitle={harvestableSubtitle}
+            value={
+              unknownOnly
+                ? "Unknown"
+                : showPrices
+                  ? formatCurrency(harvestableValue)
+                  : "—"
+            }
+            subtitle={unknownOnly ? "Loss unknown" : harvestableSubtitle}
             icon={<LossIcon />}
             color="#c46a58"
           />

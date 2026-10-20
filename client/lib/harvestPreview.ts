@@ -11,6 +11,8 @@ export interface HarvestTeaser {
   taxSavings: number | null;
   washSaleRisk: boolean;
   isLongTerm: boolean;
+  priceNote?: string;
+  reviewOnly?: boolean;
 }
 
 export interface HarvestTeaserTotals {
@@ -18,6 +20,16 @@ export interface HarvestTeaserTotals {
   totalLoss: number;
   totalSavings: number;
   hasTaxSavings: boolean;
+  unknownLossCount: number;
+}
+
+export function purchaseFillUnknownCopy(count: number): string {
+  const noun = count === 1 ? "lot uses" : "lots use";
+  return `${count} ${noun} your CSV purchase price, no live quote, loss unknown.`;
+}
+
+function isPurchaseFill(teaser: HarvestTeaser): boolean {
+  return Boolean(teaser.priceNote) || Boolean(teaser.reviewOnly);
 }
 
 function losingLots(position: Position): TaxLot[] {
@@ -35,6 +47,8 @@ function teaserFromSuggestion(suggestion: HarvestingSuggestion): HarvestTeaser {
     taxSavings: suggestion.tax_savings_estimate,
     washSaleRisk: suggestion.wash_sale_risk,
     isLongTerm: suggestion.is_long_term,
+    priceNote: suggestion.price_note || undefined,
+    reviewOnly: suggestion.action === "REVIEW",
   };
 }
 
@@ -102,18 +116,20 @@ export function buildHarvestTeasers(
 export function harvestTeaserTotals(
   teasers: HarvestTeaser[],
 ): HarvestTeaserTotals {
-  const totalLoss = teasers.reduce((sum, teaser) => sum + teaser.estimatedLoss, 0);
-  const totalSavings = teasers.reduce(
+  const losses = teasers.filter((teaser) => !isPurchaseFill(teaser));
+  const totalLoss = losses.reduce((sum, teaser) => sum + teaser.estimatedLoss, 0);
+  const totalSavings = losses.reduce(
     (sum, teaser) => sum + (teaser.taxSavings ?? 0),
     0,
   );
   return {
-    count: teasers.length,
+    count: losses.length,
     totalLoss,
     totalSavings,
-    hasTaxSavings: teasers.some(
+    hasTaxSavings: losses.some(
       (teaser) => teaser.taxSavings != null && teaser.taxSavings > 0,
     ),
+    unknownLossCount: teasers.length - losses.length,
   };
 }
 

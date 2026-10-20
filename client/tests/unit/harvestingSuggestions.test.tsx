@@ -2,7 +2,7 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import HarvestingSuggestions, {
   getRecommendedActionCopy,
 } from "../../app/components/HarvestingSuggestions";
-import type { HarvestingSuggestion } from "../../lib/types";
+import type { HarvestingSuggestion, PriceBasis } from "../../lib/types";
 
 const baseSuggestion: HarvestingSuggestion = {
   symbol: "AAPL",
@@ -47,6 +47,91 @@ describe("HarvestingSuggestions", () => {
     ).toBeInTheDocument();
     expect(
       screen.queryByText(/All positions are currently at a gain/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps a purchase-fill note on unlocked harvest cards", () => {
+    const note = "Purchase price from your CSV, no live quote";
+    render(
+      <HarvestingSuggestions
+        suggestions={[
+          baseSuggestion,
+          { ...baseSuggestion, suggestion_id: "AAPL-fill", price_note: note, estimated_loss: 0 },
+        ]}
+      />,
+    );
+
+    expect(screen.getByTestId("harvest-price-note")).toHaveTextContent(note);
+    expect(screen.getByTestId("harvest-unknown-loss-count")).toHaveTextContent(
+      "1 lot uses your CSV purchase price, no live quote, loss unknown.",
+    );
+    expect(screen.getAllByText("Sell to harvest")).toHaveLength(1);
+    expect(
+      screen.queryByText("Sell 10 AAPL to harvest this short-term loss"),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText("Unknown").length).toBeGreaterThan(0);
+  });
+
+  it("keeps a purchase-fill note on locked harvest teasers", () => {
+    const note = "Purchase price from your CSV, no live quote";
+    render(
+      <HarvestingSuggestions
+        suggestions={[
+          baseSuggestion,
+          { ...baseSuggestion, suggestion_id: "AAPL-fill", price_note: note, estimated_loss: 133 },
+        ]}
+        locked
+      />,
+    );
+
+    expect(screen.getByTestId("harvest-price-note")).toHaveTextContent(note);
+    expect(screen.getByText(/1\s*lot\s*with unrealized losses/)).toBeInTheDocument();
+    expect(screen.getByTestId("harvest-unknown-loss-count")).toHaveTextContent(
+      "1 lot uses your CSV purchase price, no live quote, loss unknown.",
+    );
+    expect(screen.queryByText(/2 lots with unrealized losses/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Sell to harvest")).not.toBeInTheDocument();
+  });
+
+  it("does not present a purchase-fill card as a sell recommendation", () => {
+    const note = "Purchase price from your CSV, no live quote";
+    const fill: HarvestingSuggestion = {
+      ...baseSuggestion,
+      suggestion_id: "AAPL-fill",
+      action: "REVIEW",
+      priority: 4,
+      estimated_loss: 0,
+      tax_savings_estimate: 0,
+      price_note: note,
+      ai_generated: true,
+      ai_explanation: "Sell this fill lot now",
+      replacement_candidates: [
+        { symbol: "QQQ", name: "Invesco QQQ", reason: "Similar exposure" },
+      ],
+    };
+    render(<HarvestingSuggestions suggestions={[baseSuggestion, fill]} />);
+
+    expect(screen.getByTestId("harvest-price-note")).toHaveTextContent(note);
+    expect(screen.getByTestId("harvest-unknown-loss-count")).toHaveTextContent(
+      "1 lot uses your CSV purchase price, no live quote, loss unknown.",
+    );
+    expect(screen.getAllByText("Sell to harvest")).toHaveLength(1);
+    expect(screen.getByText("#1")).toBeInTheDocument();
+    expect(screen.queryByText("#4")).not.toBeInTheDocument();
+    expect(screen.queryByText("AI")).not.toBeInTheDocument();
+
+    const expandButtons = screen.getAllByLabelText("Show more");
+    expect(expandButtons).toHaveLength(2);
+    for (const button of expandButtons) {
+      fireEvent.click(button);
+    }
+
+    expect(screen.queryByText("Replacements")).not.toBeInTheDocument();
+    expect(screen.queryByText("AI Analysis")).not.toBeInTheDocument();
+    expect(screen.queryByText("Sell this fill lot now")).not.toBeInTheDocument();
+    expect(screen.queryByText("Invesco QQQ")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/this sale is less likely to be a wash sale/),
     ).not.toBeInTheDocument();
   });
 
@@ -315,6 +400,44 @@ describe("HarvestingSuggestions", () => {
     expect(screen.getByText("VTI")).toBeInTheDocument();
     expect(screen.getByText("Vanguard Total Market")).toBeInTheDocument();
     expect(screen.getByText("Similar exposure")).toBeInTheDocument();
+  });
+
+  it("says harvest candidates use CSV prices", () => {
+    const basis: PriceBasis = {
+      quotes: [
+        {
+          symbol: "AAPL",
+          price: 140,
+          source: "csv",
+          provider: null,
+          as_of: "2026-08-12",
+        },
+      ],
+      live: false,
+      csv_as_of: "2026-08-12",
+      label: "Prices as of your CSV (2026-08-12)",
+    };
+    const { rerender } = render(
+      <HarvestingSuggestions
+        suggestions={[baseSuggestion]}
+        priceBasis={basis}
+      />,
+    );
+    expect(screen.getByTestId("price-as-of-harvest")).toHaveTextContent(
+      "Prices as of your CSV (2026-08-12)",
+    );
+    expect(screen.queryByText(/^Live /)).not.toBeInTheDocument();
+
+    rerender(
+      <HarvestingSuggestions
+        suggestions={[baseSuggestion]}
+        locked
+        priceBasis={basis}
+      />,
+    );
+    expect(screen.getByTestId("price-as-of-harvest")).toHaveTextContent(
+      "Prices as of your CSV (2026-08-12)",
+    );
   });
 
   it("collapses details on second click", () => {

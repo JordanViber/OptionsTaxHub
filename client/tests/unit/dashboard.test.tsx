@@ -137,7 +137,15 @@ jest.mock("../../app/components/TaxDisclaimer", () => ({
 
 jest.mock("../../app/components/PortfolioSummaryCards", () => ({
   __esModule: true,
-  default: () => <div data-testid="portfolio-summary-cards" />,
+  default: (props: {
+    preview?: { unknownLossCount?: number; locked?: boolean };
+  }) => (
+    <div
+      data-testid="portfolio-summary-cards"
+      data-unknown-loss-count={props.preview?.unknownLossCount ?? 0}
+      data-locked={props.preview?.locked ? "true" : "false"}
+    />
+  ),
 }));
 
 jest.mock("../../app/components/PositionsTable", () => ({
@@ -784,6 +792,157 @@ describe("DashboardPage", () => {
         screen.getByText(/check the data quality notes/i),
       ).toBeInTheDocument();
     });
+  });
+
+  it("does not count purchase-fill lots in the harvest next step", async () => {
+    const note = "Purchase price from your CSV, no live quote";
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      sample_run: false,
+      packet_unlocked: false,
+      suggestions: [
+        ...baseAnalysis.suggestions,
+        {
+          ...baseAnalysis.suggestions[0],
+          suggestion_id: "AAPL-fill-1",
+          symbol: "AAPL",
+          display_label: "AAPL",
+          estimated_loss: 0,
+          tax_savings_estimate: 0,
+          price_note: note,
+        },
+        {
+          ...baseAnalysis.suggestions[0],
+          suggestion_id: "MSFT-fill-1",
+          symbol: "MSFT",
+          display_label: "MSFT",
+          estimated_loss: 133,
+          tax_savings_estimate: 0,
+          price_note: note,
+        },
+      ],
+    };
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          "2 lots use your CSV purchase price, no live quote, loss unknown.",
+        ),
+      ).toBeInTheDocument();
+    });
+    expect(
+      screen.queryByText(/3 lots/i),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("tab", { name: "Harvest queue (1)" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("tab", { name: "Harvest queue (3)" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps fill lots out of the harvest tab when the packet is locked", async () => {
+    const note = "Purchase price from your CSV, no live quote";
+    Object.defineProperty(globalThis, "sessionStorage", {
+      value: {
+        getItem: jest.fn(() => null),
+        setItem: jest.fn(),
+        removeItem: jest.fn(),
+        clear: jest.fn(),
+      },
+      writable: true,
+    });
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      sample_run: false,
+      packet_unlocked: false,
+      suggestions: [
+        ...baseAnalysis.suggestions,
+        {
+          ...baseAnalysis.suggestions[0],
+          suggestion_id: "AAPL-fill-1",
+          symbol: "AAPL",
+          display_label: "AAPL",
+          action: "REVIEW",
+          estimated_loss: 0,
+          price_note: note,
+        },
+        {
+          ...baseAnalysis.suggestions[0],
+          suggestion_id: "MSFT-fill-1",
+          symbol: "MSFT",
+          display_label: "MSFT",
+          action: "REVIEW",
+          estimated_loss: 0,
+          price_note: note,
+        },
+      ],
+    };
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("tab", { name: "Harvest queue (1)" }),
+      ).toBeInTheDocument();
+    });
+    expect(
+      screen.queryByRole("tab", { name: "Harvest queue (3)" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "2 lots use your CSV purchase price, no live quote, loss unknown.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("passes the unknown-loss count when an unlocked book is all purchase fills", async () => {
+    const note = "Purchase price from your CSV, no live quote";
+    const fill = (id: string, symbol: string) => ({
+      ...baseAnalysis.suggestions[0],
+      suggestion_id: id,
+      symbol,
+      display_label: symbol,
+      action: "REVIEW",
+      priority: 0,
+      estimated_loss: 0,
+      tax_savings_estimate: 0,
+      price_note: note,
+    });
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      sample_run: true,
+      summary: {
+        ...baseAnalysis.summary,
+        total_harvestable_losses: 0,
+        estimated_tax_savings: 0,
+        lots_with_losses: 0,
+      },
+      suggestions: [fill("AAPL-fill", "AAPL"), fill("MSFT-fill", "MSFT")],
+    };
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("portfolio-summary-cards")).toHaveAttribute(
+        "data-unknown-loss-count",
+        "2",
+      );
+    });
+    expect(screen.getByTestId("portfolio-summary-cards")).toHaveAttribute(
+      "data-locked",
+      "false",
+    );
+    expect(
+      screen.getByRole("tab", { name: "Harvest queue (0)" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "2 lots use your CSV purchase price, no live quote, loss unknown.",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("explains when automated suggestions were skipped for split-affected symbols", async () => {
@@ -1469,6 +1628,41 @@ describe("DashboardPage", () => {
     expect(
       screen.queryByText(/Live prices were unavailable/i),
     ).not.toBeInTheDocument();
+  });
+
+  it("labels unrealized P&L with the CSV date and does not call it live", async () => {
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      price_basis: {
+        quotes: [
+          {
+            symbol: "TSLA",
+            price: 200,
+            source: "csv",
+            provider: null,
+            as_of: "2026-08-12",
+          },
+        ],
+        live: false,
+        csv_as_of: "2026-08-12",
+        label: "Prices as of your CSV (2026-08-12)",
+      },
+    };
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Moderate confidence").length).toBeGreaterThan(0);
+    });
+    expect(
+      screen.getAllByText("Prices as of your CSV (2026-08-12)").length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText(/prices on this page are marked with your CSV date/i)
+        .length,
+    ).toBeGreaterThan(0);
+    expect(screen.queryByText(/^Live /)).not.toBeInTheDocument();
+    expect(screen.queryByText(/current price/i)).not.toBeInTheDocument();
   });
 
   it("does not treat a $300 loss + $300 disallowed as a settlement gap on the dashboard compare", async () => {

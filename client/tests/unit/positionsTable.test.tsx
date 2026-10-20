@@ -1064,6 +1064,32 @@ describe("PositionsTable compact layout (~390px)", () => {
     expect(card).toHaveTextContent("2 lots");
   });
 
+  it("labels position prices with the CSV date", () => {
+    render(
+      <PositionsTable
+        positions={[compactPosition]}
+        priceBasis={{
+          quotes: [
+            {
+              symbol: "AAPL",
+              price: 190,
+              source: "csv",
+              provider: null,
+              as_of: "2026-08-12",
+            },
+          ],
+          live: false,
+          csv_as_of: "2026-08-12",
+          label: "Prices as of your CSV (2026-08-12)",
+        }}
+      />,
+    );
+    expect(screen.getByTestId("price-as-of-positions")).toHaveTextContent(
+      "Prices as of your CSV (2026-08-12)",
+    );
+    expect(screen.queryByText(/^Live /)).not.toBeInTheDocument();
+  });
+
   it("still reaches lots when a compact card is expanded", () => {
     render(<PositionsTable positions={[compactPosition]} />);
 

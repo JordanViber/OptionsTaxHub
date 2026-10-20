@@ -236,6 +236,12 @@ describe("EntryAnalysisPanel", () => {
     expect(screen.queryByTestId("entry-results")).not.toBeInTheDocument();
     expect(screen.queryByTestId("entry-context")).not.toBeInTheDocument();
     expect(screen.queryByTestId("entry-rank-1")).not.toBeInTheDocument();
+    expect(screen.getByTestId("entry-quote-disclaimer")).toHaveTextContent(
+      /Ranking is not advice/,
+    );
+    expect(screen.getByTestId("entry-quote-disclaimer")).not.toHaveTextContent(
+      /live quote snapshot/,
+    );
     expect(
       screen.getByText(/not a filed Form 8949/i),
     ).toBeInTheDocument();
@@ -411,6 +417,9 @@ describe("EntryAnalysisPanel", () => {
     expect(
       screen.getByTestId("entry-analysis-panel").querySelector("table"),
     ).toBeNull();
+    expect(screen.getByTestId("entry-quote-disclaimer")).toHaveTextContent(
+      "Ranking is a live quote snapshot, not advice.",
+    );
   });
 
   it("ranks long puts with annualized decline copy, not call-style return", async () => {
@@ -507,6 +516,9 @@ describe("EntryAnalysisPanel", () => {
       );
     });
     expect(screen.queryByTestId("entry-rank-1")).not.toBeInTheDocument();
+    expect(screen.getByTestId("entry-quote-disclaimer")).not.toHaveTextContent(
+      /live quote snapshot/,
+    );
   });
 
   it("shows the 429 lookup message without fake ranks", async () => {
