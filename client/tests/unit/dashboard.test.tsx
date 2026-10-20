@@ -168,7 +168,11 @@ jest.mock("../../app/components/TipJar", () => ({
   default: () => <div data-testid="tip-jar-dialog" />,
 }));
 
-import DashboardPage from "../../app/dashboard/page";
+import DashboardPage, {
+  rememberFreshUploadOrigin,
+  resetAnalysisOriginForTests,
+  SIGNED_OUT_RESUME_TIMEOUT_MS,
+} from "../../app/dashboard/page";
 import { resetAutomaticSampleRerunForTests } from "../../lib/automaticSampleRerun";
 import { resetPacketResumeCheckoutLock } from "../../app/components/YearClosePacketPanel";
 import { resetPacketResumeLocalForTests } from "../../lib/packetResumeLocal";
@@ -290,6 +294,7 @@ describe("DashboardPage", () => {
     resetPacketResumeLocalForTests();
     resetPacketResumeCheckoutLock();
     resetAutomaticSampleRerunForTests();
+    resetAnalysisOriginForTests();
     localStorage.removeItem(PACKET_RESUME_LOCAL_KEY);
     localStorage.removeItem(PACKET_CHECKOUT_STARTED_KEY);
     window.history.replaceState(null, "", "/dashboard");
@@ -381,6 +386,9 @@ describe("DashboardPage", () => {
           /Some sells could not be matched to complete tax lots/i,
         ),
       ).toBeInTheDocument();
+      expect(
+        screen.queryByText(/This result was restored from browser storage/i),
+      ).not.toBeInTheDocument();
     });
   });
 
@@ -2575,11 +2583,88 @@ describe("DashboardPage", () => {
     window.history.replaceState(null, "", "/dashboard");
     render(<DashboardPage />, { wrapper: createWrapper() });
     expect(await screen.findByText("Saved analysis")).toBeInTheDocument();
+    expect(screen.getByTestId("latest-run-bar")).toHaveTextContent(
+      "Showing your latest run: newer.csv · Jan 2, 2026",
+    );
+    expect(screen.getByRole("button", { name: "Upload new" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "All saved runs" }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("latest-run-all-saved"));
+    expect(
+      screen.getByRole("heading", { name: "Saved runs" }),
+    ).toBeInTheDocument();
     expect(screen.getByTestId("year-close-packet-panel")).toBeInTheDocument();
     expect(mockFetchAnalysisById).toHaveBeenCalledTimes(1);
     expect(mockFetchAnalysisById).toHaveBeenCalledWith("newer-run");
     expect(mockAnalyzeMutate).not.toHaveBeenCalled();
     expect(screen.queryByText(/Get started with your first analysis/i)).not.toBeInTheDocument();
+  });
+
+  it("labels the newest saved sample as sample on the latest-run bar", async () => {
+    installSessionStore();
+    mockHistoryData = [
+      historyRow(
+        "sample-run",
+        "sample-robinhood-transactions.csv",
+        "2026-04-01T00:00:00Z",
+      ),
+    ];
+    mockFetchAnalysisById.mockResolvedValue({
+      id: "sample-run",
+      filename: "sample-robinhood-transactions.csv",
+      result: {
+        ...baseAnalysis,
+        analysis_id: "sample-run",
+        sample_run: true,
+        packet_unlocked: false,
+      },
+    });
+    window.history.replaceState(null, "", "/dashboard");
+    render(<DashboardPage />, { wrapper: createWrapper() });
+    const bar = await screen.findByTestId("latest-run-bar");
+    expect(bar).toHaveTextContent("Showing your latest run: sample · Apr 1, 2026");
+    expect(bar).not.toHaveTextContent("sample-robinhood-transactions.csv");
+  });
+
+  it("returns to the upload card in one click from the latest-run bar", async () => {
+    installSessionStore();
+    mockHistoryData = [
+      historyRow("older-run", "older.csv", "2025-01-01T00:00:00Z"),
+      historyRow("newer-run", "newer.csv", "2026-01-02T00:00:00Z"),
+    ];
+    mockFetchAnalysisById.mockResolvedValue({
+      id: "newer-run",
+      filename: "newer.csv",
+      result: {
+        ...baseAnalysis,
+        analysis_id: "newer-run",
+        sample_run: false,
+        packet_unlocked: false,
+      },
+    });
+    window.history.replaceState(null, "", "/dashboard");
+    render(<DashboardPage />, { wrapper: createWrapper() });
+    expect(await screen.findByTestId("latest-run-bar")).toHaveTextContent(
+      "Showing your latest run: newer.csv · Jan 2, 2026",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Upload new" }));
+    expect(screen.queryByTestId("latest-run-bar")).not.toBeInTheDocument();
+    expect(screen.getByTestId("tax-upload")).toBeInTheDocument();
+    expect(screen.getByTestId("csv-dropzone")).toBeInTheDocument();
+    expect(screen.queryByText("Saved analysis")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Keep current run" }),
+    ).not.toBeInTheDocument();
+    expect(mockAnalyzeMutate).not.toHaveBeenCalled();
+    await act(async () => {
+      await new Promise((resolve) => {
+        setTimeout(resolve, 30);
+      });
+    });
+    expect(mockFetchAnalysisById).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("latest-run-bar")).not.toBeInTheDocument();
+    expect(screen.getByTestId("csv-dropzone")).toBeInTheDocument();
   });
 
   it("does not load the sample when the newest saved run cannot be fetched", async () => {
@@ -2591,6 +2676,8 @@ describe("DashboardPage", () => {
     window.history.replaceState(null, "", "/dashboard");
     render(<DashboardPage />, { wrapper: createWrapper() });
     await screen.findByText(/Get started with your first analysis/i);
+    expect(screen.getByTestId("tax-upload")).toBeInTheDocument();
+    expect(screen.getByTestId("csv-dropzone")).toBeInTheDocument();
     await act(async () => {
       await new Promise((resolve) => {
         setTimeout(resolve, 30);
@@ -2599,6 +2686,8 @@ describe("DashboardPage", () => {
     expect(mockFetchAnalysisById).toHaveBeenCalledWith("newer-run");
     expect(mockAnalyzeMutate).not.toHaveBeenCalled();
     expect(screen.queryByText("Saved analysis")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("latest-run-bar")).not.toBeInTheDocument();
+    expect(screen.getByTestId("csv-dropzone")).toBeInTheDocument();
   });
 
   it("does not show another account's paid status on a guest sample", async () => {
@@ -3143,6 +3232,171 @@ describe("DashboardPage", () => {
     });
     expect(mockAnalyzeMutate).not.toHaveBeenCalled();
     expect(mockFetchAnalysisById).not.toHaveBeenCalled();
+  });
+
+  it("does not label a fresh upload as restored when the page remounts", async () => {
+    rememberFreshUploadOrigin(baseAnalysis.analysis_id);
+    const store = installSessionStore();
+    store.set("optionstaxhub-analysis", JSON.stringify(baseAnalysis));
+
+    const first = render(<DashboardPage />, { wrapper: createWrapper() });
+    await waitFor(() => {
+      expect(screen.getByText("Fresh upload")).toBeInTheDocument();
+    });
+    expect(
+      screen.queryByText(/This result was restored from browser storage/i),
+    ).not.toBeInTheDocument();
+    first.unmount();
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+    await waitFor(() => {
+      expect(screen.getByText("Fresh upload")).toBeInTheDocument();
+    });
+    expect(
+      screen.queryByText(/This result was restored from browser storage/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("hides Pay when a restored run is already paid for the year", async () => {
+    const store = installSessionStore();
+    store.set(
+      "optionstaxhub-analysis",
+      JSON.stringify({ ...baseAnalysis, packet_unlocked: false }),
+    );
+    const originalFetch = globalThis.fetch;
+    const calls: string[] = [];
+    globalThis.fetch = jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.includes("/api/year-close-packet/entitlement")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            paid: true,
+            tax_year: 2025,
+            session_id: "cs_test_restored_year",
+            analysis_id: "analysis-test-1",
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    }) as unknown as typeof fetch;
+
+    try {
+      render(<DashboardPage />, { wrapper: createWrapper() });
+      await waitFor(() => {
+        expect(calls.some((url) => url.includes("/api/year-close-packet/entitlement"))).toBe(
+          true,
+        );
+      });
+      expect(screen.queryByRole("button", { name: /Pay \$49/i })).not.toBeInTheDocument();
+      expect(screen.getByText(/Paid for this tax year/i)).toBeInTheDocument();
+      expect(
+        screen.getByText(/This result was restored from browser storage/i),
+      ).toBeInTheDocument();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("times out a signed-out second tab to the re-upload prompt", async () => {
+    jest.useFakeTimers();
+    const previousUser = mockAuthState.user;
+    mockAuthState.user = null;
+    const store = installSessionStore();
+    store.set(PACKET_RESUME_CHECKOUT_KEY, "1");
+    store.set(PACKET_RESUME_SAMPLE_KEY, "1");
+    store.set(
+      PACKET_RESUME_ANALYSIS_KEY,
+      JSON.stringify({ analysisId: "analysis-test-1", taxYear: 2025 }),
+    );
+    window.history.replaceState(null, "", "/dashboard");
+
+    try {
+      render(<DashboardPage />, { wrapper: createWrapper() });
+      expect(
+        screen.queryByText(/Get started with your first analysis/i),
+      ).not.toBeInTheDocument();
+      expect(screen.queryByTestId("packet-resume-reupload")).not.toBeInTheDocument();
+      expect(screen.getByRole("progressbar")).toBeInTheDocument();
+      expect(mockAnalyzeMutate).not.toHaveBeenCalled();
+
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(SIGNED_OUT_RESUME_TIMEOUT_MS);
+      });
+
+      expect(screen.getByTestId("packet-resume-reupload")).toHaveTextContent(
+        "Re-upload your CSV to continue to checkout.",
+      );
+      expect(mockAnalyzeMutate).not.toHaveBeenCalled();
+      expect(store.get(PACKET_RESUME_CHECKOUT_KEY)).toBeUndefined();
+    } finally {
+      mockAuthState.user = previousUser;
+      jest.useRealTimers();
+      window.history.replaceState(null, "", "/dashboard");
+    }
+  });
+
+  it("shows the other-tab note when a signed-out resume tab already has a checkout claim", async () => {
+    jest.useFakeTimers();
+    const previousUser = mockAuthState.user;
+    mockAuthState.user = null;
+    localStorage.setItem(PACKET_CHECKOUT_STARTED_KEY, String(Date.now()));
+    const store = installSessionStore();
+    store.set(PACKET_RESUME_CHECKOUT_KEY, "1");
+    store.set(PACKET_RESUME_SAMPLE_KEY, "1");
+    window.history.replaceState(null, "", "/dashboard");
+
+    try {
+      render(<DashboardPage />, { wrapper: createWrapper() });
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(SIGNED_OUT_RESUME_TIMEOUT_MS);
+      });
+      expect(screen.getByTestId("packet-checkout-other-tab")).toHaveTextContent(
+        "Checkout opened in your other tab",
+      );
+      expect(screen.queryByTestId("packet-resume-reupload")).not.toBeInTheDocument();
+      expect(mockAnalyzeMutate).not.toHaveBeenCalled();
+    } finally {
+      mockAuthState.user = previousUser;
+      localStorage.removeItem(PACKET_CHECKOUT_STARTED_KEY);
+      jest.useRealTimers();
+      window.history.replaceState(null, "", "/dashboard");
+    }
+  });
+
+  it("keeps resume markers when sign-in finishes before the signed-out timeout", async () => {
+    jest.useFakeTimers();
+    const previousUser = mockAuthState.user;
+    mockAuthState.user = null;
+    const store = installSessionStore();
+    store.set(PACKET_RESUME_CHECKOUT_KEY, "1");
+    store.set(
+      PACKET_RESUME_ANALYSIS_KEY,
+      JSON.stringify({ analysisId: "origin-id", taxYear: 2025 }),
+    );
+    window.history.replaceState(null, "", "/dashboard");
+
+    try {
+      const view = render(<DashboardPage />, { wrapper: createWrapper() });
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(3_000);
+      });
+      expect(store.get(PACKET_RESUME_CHECKOUT_KEY)).toBe("1");
+      mockAuthState.user = previousUser;
+      view.rerender(<DashboardPage />);
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(SIGNED_OUT_RESUME_TIMEOUT_MS);
+      });
+      expect(store.get(PACKET_RESUME_CHECKOUT_KEY)).toBe("1");
+      expect(screen.queryByTestId("packet-resume-reupload")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("packet-checkout-other-tab")).not.toBeInTheDocument();
+    } finally {
+      mockAuthState.user = previousUser;
+      jest.useRealTimers();
+      window.history.replaceState(null, "", "/dashboard");
+    }
   });
 
 });
