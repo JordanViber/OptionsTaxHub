@@ -150,11 +150,13 @@ from db import (
     PacketSnapshotYearConflict,
     ALREADY_GRANTED_ENTITLEMENT,
     PACKET_GRANT_SAME_YEAR_DUPLICATE,
+    PACKET_YEAR_CLAIM_HELD,
     STICKY_CONFLICT_RECEIPT,
     canonical_history_embedded_on_other_row,
     lookup_packet_session_entitlement,
     save_packet_conflict_receipt,
     save_packet_entitlement,
+    release_packet_snapshot_paid_stamp,
     _is_conflict_analysis_id,
     save_packet_snapshot,
     get_packet_snapshot,
@@ -3748,6 +3750,38 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
             )
         return False
 
+    def _save_grant_entitlement():
+        """Insert this session's receipt, or the duplicate result if the year is taken.
+
+        The partial unique index rejects a second non-conflict receipt.
+        ``PACKET_YEAR_CLAIM_HELD`` means this ``cs_`` has no row. Clear a
+        paid stamp this request may have just written, then store the
+        ``conflict:`` receipt. A same-``cs_`` replay rereads its own row
+        and is not this sentinel.
+        """
+        saved = save_packet_entitlement(
+            session_analysis_id,
+            session_user_id,
+            tax_year,
+            session_id,
+        )
+        if saved is not PACKET_YEAR_CLAIM_HELD:
+            return saved
+        released = release_packet_snapshot_paid_stamp(
+            session_analysis_id,
+            session_user_id,
+            tax_year,
+            session_id,
+        )
+        if released is None:
+            return None
+        return _same_year_duplicate_grant(
+            session_analysis_id,
+            session_user_id,
+            tax_year,
+            session_id,
+        )
+
     if not isinstance(packet_payload, dict):
         # Keep the settled session as a same-year entitlement, but do not tell
         # confirm/webhook that a downloadable packet exists without its private
@@ -3764,16 +3798,11 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
             return None
         if same_year_other_session:
             return same_year_other_session
-        saved_entitlement = save_packet_entitlement(
-            session_analysis_id,
-            session_user_id,
-            tax_year,
-            session_id,
-        )
+        saved_entitlement = _save_grant_entitlement()
         if saved_entitlement is STICKY_CONFLICT_RECEIPT:
             return PACKET_GRANT_CONFLICT_RECEIPT
-        if saved_entitlement is None:
-            return None
+        if not isinstance(saved_entitlement, dict):
+            return saved_entitlement
         logger.error(
             "Persisted paid packet entitlement without its source document: %s",
             session_analysis_id,
@@ -3819,16 +3848,11 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
             return None
         if same_year_other_session:
             return same_year_other_session
-        saved_entitlement = save_packet_entitlement(
-            session_analysis_id,
-            session_user_id,
-            tax_year,
-            session_id,
-        )
+        saved_entitlement = _save_grant_entitlement()
         if saved_entitlement is STICKY_CONFLICT_RECEIPT:
             return PACKET_GRANT_CONFLICT_RECEIPT
-        if saved_entitlement is None:
-            return None
+        if not isinstance(saved_entitlement, dict):
+            return saved_entitlement
         return PACKET_GRANT_MISSING_SOURCE
     # Another analysis may already hold this year under a different cs_.
     # Refuse before mark_packet_snapshot_paid stamps this run paid.
@@ -3902,16 +3926,11 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
         if not history_ok:
             return None
         if not latest_snapshot or not history_row:
-            saved_entitlement = save_packet_entitlement(
-                session_analysis_id,
-                session_user_id,
-                tax_year,
-                session_id,
-            )
+            saved_entitlement = _save_grant_entitlement()
             if saved_entitlement is STICKY_CONFLICT_RECEIPT:
                 return PACKET_GRANT_CONFLICT_RECEIPT
-            if saved_entitlement is None:
-                return None
+            if not isinstance(saved_entitlement, dict):
+                return saved_entitlement
             return PACKET_GRANT_MISSING_SOURCE
         repaired = _save_grant_snapshot(packet_payload, paid=True)
         if repaired is True or repaired == PACKET_GRANT_YEAR_CONFLICT:
@@ -3924,16 +3943,11 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
             )
         if not repaired:
             return None
-    saved_entitlement = save_packet_entitlement(
-        session_analysis_id,
-        session_user_id,
-        tax_year,
-        session_id,
-    )
+    saved_entitlement = _save_grant_entitlement()
     if saved_entitlement is STICKY_CONFLICT_RECEIPT:
         return PACKET_GRANT_CONFLICT_RECEIPT
-    if not saved_entitlement:
-        return None
+    if not isinstance(saved_entitlement, dict):
+        return saved_entitlement
     # Success is a paid full snapshot. A teaser or unpaid row is not one,
     # even when the entitlement row was saved.
     stored_snapshot, stored_ok = get_packet_snapshot(
