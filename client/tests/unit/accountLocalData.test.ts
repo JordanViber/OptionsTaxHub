@@ -2,6 +2,8 @@ import {
   ANALYSIS_OWNER_STORAGE_KEY,
   ANALYSIS_STORAGE_KEY,
   GUEST_ANALYSIS_OWNER,
+  GUEST_UNSAVED_FILENAME_KEY,
+  GUEST_UNSAVED_KEY,
   clearAccountLocalData,
   clearStoredAnalysis,
   ownerVisibleTo,
@@ -86,6 +88,10 @@ describe("accountLocalData", () => {
     localStorage.setItem("optionstaxhub-packet-checkout-started", "10");
     localStorage.setItem("appWasInstalled", "true");
     sessionStorage.setItem("oth-load-sample", "1");
+    sessionStorage.setItem(GUEST_UNSAVED_KEY, "1");
+    sessionStorage.setItem(GUEST_UNSAVED_FILENAME_KEY, "guest.csv");
+    localStorage.setItem(GUEST_UNSAVED_KEY, "1");
+    localStorage.setItem(GUEST_UNSAVED_FILENAME_KEY, "guest.csv");
 
     clearAccountLocalData();
 
@@ -98,6 +104,33 @@ describe("accountLocalData", () => {
     expect(localStorage.getItem("optionstaxhub-packet-checkout-started")).toBeNull();
     expect(localStorage.getItem("appWasInstalled")).toBe("true");
     expect(sessionStorage.getItem("oth-load-sample")).toBe("1");
+    expect(sessionStorage.getItem(GUEST_UNSAVED_KEY)).toBeNull();
+    expect(sessionStorage.getItem(GUEST_UNSAVED_FILENAME_KEY)).toBeNull();
+    expect(localStorage.getItem(GUEST_UNSAVED_KEY)).toBeNull();
+    expect(localStorage.getItem(GUEST_UNSAVED_FILENAME_KEY)).toBeNull();
+  });
+
+  it("still clears the other unsaved-guest key when one removal throws", () => {
+    sessionStorage.setItem(GUEST_UNSAVED_KEY, "1");
+    sessionStorage.setItem(GUEST_UNSAVED_FILENAME_KEY, "guest.csv");
+    localStorage.setItem(GUEST_UNSAVED_KEY, "1");
+    localStorage.setItem(GUEST_UNSAVED_FILENAME_KEY, "guest.csv");
+    const storage = sessionStorage as Storage;
+    const originalRemove = storage.removeItem.bind(storage);
+    storage.removeItem = (key: string) => {
+      if (key === GUEST_UNSAVED_KEY) {
+        throw new DOMException("The operation is insecure.", "SecurityError");
+      }
+      originalRemove(key);
+    };
+    try {
+      clearAccountLocalData();
+      expect(sessionStorage.getItem(GUEST_UNSAVED_FILENAME_KEY)).toBeNull();
+      expect(localStorage.getItem(GUEST_UNSAVED_KEY)).toBeNull();
+      expect(localStorage.getItem(GUEST_UNSAVED_FILENAME_KEY)).toBeNull();
+    } finally {
+      storage.removeItem = originalRemove;
+    }
   });
 
   it("still removes known keys when storage cannot be enumerated", () => {

@@ -11,6 +11,8 @@ export const ANALYSIS_STORAGE_KEY = "optionstaxhub-analysis";
 export const ANALYSIS_OWNER_STORAGE_KEY = "optionstaxhub-analysis-owner";
 /** Stored owner for a run created while signed out. */
 export const GUEST_ANALYSIS_OWNER = "guest";
+export const GUEST_UNSAVED_KEY = "oth-guest-unsaved";
+export const GUEST_UNSAVED_FILENAME_KEY = "oth-guest-unsaved-filename";
 
 const PACKET_CHECKOUT_INFLIGHT_KEY = "optionstaxhub-packet-checkout-inflight";
 const OWNER_TOKEN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -66,11 +68,28 @@ function scrubGlobalStorage(readStorage: () => Storage): void {
   }
 }
 
+function removeStoredKey(readStorage: () => Storage, key: string): void {
+  try {
+    readStorage().removeItem(key);
+  } catch {
+    // ignore quota / private-mode failures
+  }
+}
+
+export function clearGuestUnsavedRun(): void {
+  removeStoredKey(() => sessionStorage, GUEST_UNSAVED_KEY);
+  removeStoredKey(() => sessionStorage, GUEST_UNSAVED_FILENAME_KEY);
+  removeStoredKey(() => localStorage, GUEST_UNSAVED_KEY);
+  removeStoredKey(() => localStorage, GUEST_UNSAVED_FILENAME_KEY);
+}
+
 /**
- * Drop every locally stored run, analysis, and packet-resume claim.
- * Safe to call more than once, and before or after a failed logout.
+ * Drop every locally stored run, analysis, packet-resume claim, and
+ * unsaved guest handoff. Safe to call more than once, and before or
+ * after a failed logout.
  */
 export function clearAccountLocalData(): void {
+  clearGuestUnsavedRun();
   scrubGlobalStorage(() => sessionStorage);
   scrubGlobalStorage(() => localStorage);
 }

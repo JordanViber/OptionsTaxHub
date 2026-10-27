@@ -169,6 +169,8 @@ jest.mock("../../app/components/TipJar", () => ({
 }));
 
 import DashboardPage from "../../app/dashboard/page";
+import { persistGuestAnalysis } from "../../lib/api";
+import { resetGuestPersistInFlight } from "../../lib/guest-persist-lock";
 import {
   rememberFreshUploadOrigin,
   resetAnalysisOriginForTests,
@@ -296,6 +298,8 @@ describe("DashboardPage", () => {
     resetPacketResumeCheckoutLock();
     resetAutomaticSampleRerunForTests();
     resetAnalysisOriginForTests();
+    resetGuestPersistInFlight();
+    (persistGuestAnalysis as jest.Mock).mockResolvedValue(true);
     localStorage.removeItem(PACKET_RESUME_LOCAL_KEY);
     localStorage.removeItem(PACKET_CHECKOUT_STARTED_KEY);
     window.history.replaceState(null, "", "/dashboard");
@@ -2782,6 +2786,65 @@ describe("DashboardPage", () => {
     ).not.toBeInTheDocument();
     await waitFor(() => {
       expect(store.get("optionstaxhub-analysis-owner")).toBe("test-user");
+    });
+  });
+
+  it("does not save account A's leftover run into account B's history", async () => {
+    const previousUser = mockAuthState.user;
+    const store = installSessionStore();
+    store.set(
+      "optionstaxhub-analysis",
+      JSON.stringify({ ...baseAnalysis, analysis_id: "account-a-run" }),
+    );
+    store.set("optionstaxhub-analysis-owner", "account-a");
+    store.set("oth-guest-unsaved", "1");
+    store.set("oth-guest-unsaved-filename", "account-a.csv");
+    mockAuthState.user = {
+      id: "account-a",
+      email: "a@example.com",
+      email_confirmed_at: null,
+    };
+
+    try {
+      const view = render(<DashboardPage />, { wrapper: createWrapper() });
+      expect(store.get("oth-guest-unsaved")).toBe("1");
+      expect(persistGuestAnalysis).not.toHaveBeenCalled();
+
+      mockAuthState.user = {
+        id: "account-b",
+        email: "b@example.com",
+        email_confirmed_at: "2025-01-01T00:00:00Z",
+      };
+      view.rerender(<DashboardPage />);
+
+      await waitFor(() => {
+        expect(store.get("oth-guest-unsaved")).toBeUndefined();
+      });
+      expect(store.get("oth-guest-unsaved-filename")).toBeUndefined();
+      expect(persistGuestAnalysis).not.toHaveBeenCalled();
+      expect(store.get("optionstaxhub-analysis")).toContain("account-a-run");
+    } finally {
+      mockAuthState.user = previousUser;
+    }
+  });
+
+  it("saves a guest-owned run from this session after sign-in", async () => {
+    const store = installSessionStore();
+    store.set(
+      "optionstaxhub-analysis",
+      JSON.stringify({ ...baseAnalysis, analysis_id: "guest-session-run" }),
+    );
+    store.set("optionstaxhub-analysis-owner", "guest");
+    store.set("oth-guest-unsaved", "1");
+    store.set("oth-guest-unsaved-filename", "guest.csv");
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(persistGuestAnalysis).toHaveBeenCalledWith(
+        expect.objectContaining({ analysis_id: "guest-session-run" }),
+        "guest.csv",
+      );
     });
   });
 
