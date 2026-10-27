@@ -87,9 +87,11 @@ import {
 } from "@/lib/supplemental1099";
 import YearClosePacketPanel, {
   isYearClosePacketPaid,
+  PACKET_CHECKOUT_OTHER_TAB_COPY,
   rememberYearClosePacketPaid,
   yearClosePacketStorageId,
 } from "../components/YearClosePacketPanel";
+import LatestRunBar from "../components/LatestRunBar";
 import {
   buildHarvestTeasers,
   formatUsd,
@@ -107,14 +109,23 @@ import type {
 } from "@/lib/types";
 import { consumeAutomaticSampleRerun } from "@/lib/automaticSampleRerun";
 import {
+  clearPacketResumeLocal,
   clearPacketResumeSessionMarkers,
   clearYearClosePacketClientState,
   consumePacketResumeLocalHandoff,
   PACKET_RESUME_REUPLOAD_COPY,
+  packetCheckoutStartedRecently,
   readPacketResumeExpected,
   resumeAnalysisMatches,
 } from "@/lib/packetResumeLocal";
-import { SAMPLE_FETCH_TIMEOUT_MS } from "@/lib/constants";
+import {
+  SAMPLE_FETCH_TIMEOUT_MS,
+  SIGNED_OUT_RESUME_TIMEOUT_MS,
+} from "@/lib/constants";
+import {
+  rememberFreshUploadOrigin,
+  sourceForStoredAnalysis,
+} from "@/lib/analysisOrigin";
 import {
   DASHBOARD_RESUME_CHECKOUT_PATH,
   LOAD_SAMPLE_KEY,
@@ -1341,6 +1352,11 @@ export default function DashboardPage() {
     severity: "success" | "error" | "info";
   } | null>(null);
   const [forceEmpty, setForceEmpty] = useState(false);
+  const [latestRunBanner, setLatestRunBanner] = useState<{
+    filename: string;
+    uploadedAt: string;
+    sampleRun: boolean;
+  } | null>(null);
   const [heldAnalysis, setHeldAnalysis] = useState<PortfolioAnalysis | null>(
     null,
   );
@@ -1358,6 +1374,7 @@ export default function DashboardPage() {
   const resumeBareLoadStarted = useRef(false);
   const blockHistoryAutoload = useRef(false);
   const [resumeReuploadNotice, setResumeReuploadNotice] = useState(false);
+  const [signedOutOtherTabNotice, setSignedOutOtherTabNotice] = useState(false);
   const [resumeOriginLoading, setResumeOriginLoading] = useState(false);
   const queryClient = useQueryClient();
 
@@ -1429,7 +1446,7 @@ export default function DashboardPage() {
     }
     if (saved) {
       setLoadedAnalysis(saved);
-      setAnalysisSource("restored-session");
+      setAnalysisSource(sourceForStoredAnalysis(saved));
     }
   }, []);
 
@@ -1565,6 +1582,18 @@ export default function DashboardPage() {
     setForceEmpty(false);
   };
 
+  const handleUploadNew = () => {
+    blockHistoryAutoload.current = true;
+    setLatestRunBanner(null);
+    setHeldAnalysis(null);
+    setForceEmpty(true);
+    setUploadOpen(true);
+    clearCurrentAnalysisView({
+      setLoadedAnalysis,
+      setAnalysisSource,
+    });
+  };
+
   const runPortfolioAnalysis = (
     csvFile: File,
     supplementalFile: File | null = supplemental1099File,
@@ -1589,9 +1618,11 @@ export default function DashboardPage() {
       {
         onSuccess: (data) => {
           const normalized = normalizeAnalysis(data);
+          rememberFreshUploadOrigin(normalized.analysis_id);
           saveAnalysisToStorage(normalized);
           setLoadedAnalysis(normalized);
           setAnalysisSource("fresh-upload");
+          setLatestRunBanner(null);
           setForceEmpty(false);
           setSampleLoading(false);
           if (sample) {
@@ -1649,6 +1680,7 @@ export default function DashboardPage() {
   };
 
   const handleLoadSample = () => {
+    setLatestRunBanner(null);
     const abort = new AbortController();
     void (async () => {
       try {
@@ -1877,6 +1909,7 @@ export default function DashboardPage() {
    * the load (or reports an error).
    */
   const handleHistoryItemClick = async (itemId: string, filename: string) => {
+    setLatestRunBanner(null);
     await loadHistoryAnalysis({
       userId: user?.id,
       itemId,
@@ -1913,6 +1946,12 @@ export default function DashboardPage() {
     if (user && !emailConfirmed) {
       return;
     }
+    // A signed-out second tab must not start the sample re-run. That path
+    // is the ~40s spinner during sign-in. Guests still open the sample
+    // through LOAD_SAMPLE_KEY.
+    if (!user) {
+      return;
+    }
     if (sampleAnalyzeStartedRef.current) {
       return;
     }
@@ -1947,6 +1986,39 @@ export default function DashboardPage() {
     // The sample loader is stable for this mount; auth gates the start.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading, user, emailConfirmed]);
+
+  useEffect(() => {
+    if (authLoading || user) {
+      return;
+    }
+    if (displayedAnalysis && !forceEmpty) {
+      return;
+    }
+    let checkoutMarker = false;
+    try {
+      checkoutMarker = sessionStorage.getItem(PACKET_RESUME_CHECKOUT_KEY) === "1";
+    } catch {
+      return;
+    }
+    if (!checkoutMarker) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      const otherTab = packetCheckoutStartedRecently();
+      clearPacketResumeSessionMarkers();
+      clearPacketResumeLocal();
+      setSampleLoading(false);
+      setResumeOriginLoading(false);
+      if (otherTab) {
+        setSignedOutOtherTabNotice(true);
+      } else {
+        setResumeReuploadNotice(true);
+      }
+    }, SIGNED_OUT_RESUME_TIMEOUT_MS);
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [authLoading, user, displayedAnalysis, forceEmpty]);
 
   useEffect(() => {
     if (resumeOriginHandled.current) {
@@ -2225,11 +2297,18 @@ export default function DashboardPage() {
         } catch {
           return;
         }
-        setLoadedAnalysis((current) =>
-          current ? current : normalizeAnalysis(record.result),
-        );
+        if (displayedAnalysisRef.current) {
+          return;
+        }
+        const normalized = normalizeAnalysis(record.result);
+        setLoadedAnalysis((current) => (current ? current : normalized));
         setAnalysisSource((current) => current ?? "saved-history");
         setForceEmpty(false);
+        setLatestRunBanner({
+          filename: newest.filename,
+          uploadedAt: newest.uploaded_at,
+          sampleRun: Boolean(normalized.sample_run),
+        });
       })
       .catch(() => {
         // Leave the upload card. Do not fall back to the sample.
@@ -2318,6 +2397,9 @@ export default function DashboardPage() {
   // displayedAnalysis is computed above (near sessionStorage effects)
   const analyzing = isPending || sampleLoading;
   const hasResults = !!displayedAnalysis && !forceEmpty;
+  const showLatestRunBar = Boolean(
+    hasResults && analysisSource === "saved-history" && latestRunBanner,
+  );
   let resumeHandoffPending = false;
   if (!hasResults && !resumeReuploadNotice) {
     try {
@@ -2329,6 +2411,7 @@ export default function DashboardPage() {
       // The center spinner is only for a loader that is actually running.
       // A history error takes the give-up path instead of spinning forever.
       const uploadedResumeLoading =
+        Boolean(confirmedUserId) &&
         checkoutMarker &&
         !sampleMarker &&
         expected != null &&
@@ -2338,7 +2421,15 @@ export default function DashboardPage() {
       // Marker flags alone never end if the CSV fetch or analyze fails.
       const sampleResumeLoading =
         checkoutMarker && sampleMarker && (sampleLoading || isPending);
-      resumeHandoffPending = sampleResumeLoading || uploadedResumeLoading;
+      const hasAnalysisOnScreen = !!displayedAnalysis && !forceEmpty;
+      const signedOutResumeSpinning =
+        !user &&
+        checkoutMarker &&
+        !hasAnalysisOnScreen &&
+        !resumeReuploadNotice &&
+        !signedOutOtherTabNotice;
+      resumeHandoffPending =
+        sampleResumeLoading || uploadedResumeLoading || signedOutResumeSpinning;
     } catch {
       resumeHandoffPending = false;
     }
@@ -2642,6 +2733,15 @@ export default function DashboardPage() {
       {/* Main Content */}
       <Container maxWidth="lg" sx={{ py: 3 }}>
         <Stack spacing={3}>
+          {showLatestRunBar && latestRunBanner && (
+            <LatestRunBar
+              filename={latestRunBanner.filename}
+              uploadedAt={latestRunBanner.uploadedAt}
+              sampleRun={latestRunBanner.sampleRun}
+              onUploadNew={handleUploadNew}
+              onAllSavedRuns={() => setHistoryOpen(true)}
+            />
+          )}
           {!hasResults && !resumeHandoffPending && uploadSection}
           {!hasResults && resumeHandoffPending && !analyzing && (
             <Box sx={{ display: "flex", justifyContent: "center", py: 6 }}>
@@ -2660,6 +2760,12 @@ export default function DashboardPage() {
           {resumeReuploadNotice && (
             <Alert severity="info" data-testid="packet-resume-reupload">
               {PACKET_RESUME_REUPLOAD_COPY}
+            </Alert>
+          )}
+
+          {signedOutOtherTabNotice && (
+            <Alert severity="info" data-testid="packet-checkout-other-tab">
+              {PACKET_CHECKOUT_OTHER_TAB_COPY}
             </Alert>
           )}
 
@@ -2782,6 +2888,8 @@ export default function DashboardPage() {
                       }
                 }
                 guest={!user}
+                restoredRun={analysisSource === "restored-session"}
+                freshUpload={analysisSource === "fresh-upload"}
                 onPaidChange={setPacketPaid}
                 onSampleRerunForCheckout={handleSampleRerunForCheckout}
               />

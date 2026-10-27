@@ -425,7 +425,16 @@ test.describe("Guest packet checkout", () => {
       .toMatch(/^\d+$/);
 
     await armSavedRunResume(otherTab, saved, checkoutBodies);
-    await otherTab.goto(RESUME_PATH);
+    // The sign-in page replaces to /dashboard once the shared session
+    // arrives. Firefox aborts a goto that overlaps that replacement.
+    try {
+      await otherTab.goto(RESUME_PATH);
+    } catch (error) {
+      if (!/NS_BINDING_ABORTED|frame was detached/i.test(String(error))) {
+        throw error;
+      }
+      await otherTab.goto(RESUME_PATH);
+    }
     await expect(otherTab.getByText("ZZSAVED")).toBeVisible({ timeout: 20000 });
     await expect(otherTab.getByTestId("packet-checkout-other-tab")).toHaveText(
       "Checkout opened in your other tab",
@@ -624,6 +633,62 @@ test.describe("Guest packet checkout", () => {
     ).toHaveCount(0);
     await tab2.close();
   });
+
+  const signedOutViewports = [
+    { name: "desktop", width: 1280, height: 800 },
+    { name: "phone-390", width: 390, height: 844 },
+  ] as const;
+
+  for (const viewport of signedOutViewports) {
+    test(`signed-out second tab times out instead of spinning at ${viewport.name}`, async ({
+      page,
+      browserName,
+    }) => {
+      test.skip(browserName === "webkit", "WebKit auth mocking limitation");
+      test.setTimeout(60_000);
+      await page.setViewportSize({
+        width: viewport.width,
+        height: viewport.height,
+      });
+
+      const sample = guestSample();
+      await armGuestLanding(page, sample);
+      await page.goto("/");
+      await page.getByTestId("landing-try-sample").click();
+      await expect(page).toHaveURL(/\/dashboard/, { timeout: 30000 });
+      const pay = page.getByRole("button", { name: "Pay $49" });
+      await expect(pay).toBeEnabled({ timeout: 20000 });
+      await pay.click();
+      await expect(page).toHaveURL(/\/auth\/signin/, { timeout: 15000 });
+
+      const tab2 = await page.context().newPage();
+      await tab2.setViewportSize({
+        width: viewport.width,
+        height: viewport.height,
+      });
+      await armGuestLanding(tab2, sample);
+      await tab2.route("**/api/portfolio/analyze*", async () => {
+        await new Promise(() => {
+          /* a regression that re-analyzes must not finish inside the timeout */
+        });
+      });
+      await tab2.route("**/sample-robinhood*", async () => {
+        await new Promise(() => {
+          /* same for the sample CSV fetch */
+        });
+      });
+      await tab2.goto("/dashboard");
+      await expect(
+        tab2.getByText(/Get started with your first analysis/i),
+      ).toHaveCount(0);
+      await expect(
+        tab2
+          .getByTestId("packet-resume-reupload")
+          .or(tab2.getByTestId("packet-checkout-other-tab")),
+      ).toBeVisible({ timeout: 15000 });
+      await tab2.close();
+    });
+  }
 });
 
 async function armFreshResumePage(

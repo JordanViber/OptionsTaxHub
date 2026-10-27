@@ -230,9 +230,9 @@ function analyzePortfolioPath(params: AnalyzePortfolioParams): string {
  * Authentication is optional. With a session, POST /api/portfolio/analyze includes
  * a JWT so the run is saved to history. Guests still get a full analysis.
  */
-export const ANALYZE_TIMEOUT_MS = 30_000;
+export const ANALYZE_TIMEOUT_MS = 60_000;
 export const ANALYZE_TIMEOUT_MESSAGE =
-  "Analysis timed out. Please try again in a few minutes.";
+  "The first upload can take up to a minute while the analysis service starts. Analysis timed out. Please try again in a few minutes.";
 
 function isAbortError(error: unknown): boolean {
   return (

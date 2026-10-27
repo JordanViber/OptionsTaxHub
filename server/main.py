@@ -61,7 +61,9 @@ from year_close_packet import (
     packet_analysis_id_from_session,
     packet_checkout_custom_text,
     packet_checkout_line_items,
+    has_season_unlock,
     packet_requires_test_stripe,
+    season_unlock_enabled,
     packet_user_id_from_session,
     packet_session_id,
     packet_store_owner,
@@ -150,11 +152,13 @@ from db import (
     PacketSnapshotYearConflict,
     ALREADY_GRANTED_ENTITLEMENT,
     PACKET_GRANT_SAME_YEAR_DUPLICATE,
+    PACKET_YEAR_CLAIM_HELD,
     STICKY_CONFLICT_RECEIPT,
     canonical_history_embedded_on_other_row,
     lookup_packet_session_entitlement,
     save_packet_conflict_receipt,
     save_packet_entitlement,
+    release_packet_snapshot_paid_stamp,
     _is_conflict_analysis_id,
     save_packet_snapshot,
     get_packet_snapshot,
@@ -3748,6 +3752,38 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
             )
         return False
 
+    def _save_grant_entitlement():
+        """Insert this session's receipt, or the duplicate result if the year is taken.
+
+        The partial unique index rejects a second non-conflict receipt.
+        ``PACKET_YEAR_CLAIM_HELD`` means this ``cs_`` has no row. Clear a
+        paid stamp this request may have just written, then store the
+        ``conflict:`` receipt. A same-``cs_`` replay rereads its own row
+        and is not this sentinel.
+        """
+        saved = save_packet_entitlement(
+            session_analysis_id,
+            session_user_id,
+            tax_year,
+            session_id,
+        )
+        if saved is not PACKET_YEAR_CLAIM_HELD:
+            return saved
+        released = release_packet_snapshot_paid_stamp(
+            session_analysis_id,
+            session_user_id,
+            tax_year,
+            session_id,
+        )
+        if released is None:
+            return None
+        return _same_year_duplicate_grant(
+            session_analysis_id,
+            session_user_id,
+            tax_year,
+            session_id,
+        )
+
     if not isinstance(packet_payload, dict):
         # Keep the settled session as a same-year entitlement, but do not tell
         # confirm/webhook that a downloadable packet exists without its private
@@ -3764,16 +3800,11 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
             return None
         if same_year_other_session:
             return same_year_other_session
-        saved_entitlement = save_packet_entitlement(
-            session_analysis_id,
-            session_user_id,
-            tax_year,
-            session_id,
-        )
+        saved_entitlement = _save_grant_entitlement()
         if saved_entitlement is STICKY_CONFLICT_RECEIPT:
             return PACKET_GRANT_CONFLICT_RECEIPT
-        if saved_entitlement is None:
-            return None
+        if not isinstance(saved_entitlement, dict):
+            return saved_entitlement
         logger.error(
             "Persisted paid packet entitlement without its source document: %s",
             session_analysis_id,
@@ -3819,16 +3850,11 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
             return None
         if same_year_other_session:
             return same_year_other_session
-        saved_entitlement = save_packet_entitlement(
-            session_analysis_id,
-            session_user_id,
-            tax_year,
-            session_id,
-        )
+        saved_entitlement = _save_grant_entitlement()
         if saved_entitlement is STICKY_CONFLICT_RECEIPT:
             return PACKET_GRANT_CONFLICT_RECEIPT
-        if saved_entitlement is None:
-            return None
+        if not isinstance(saved_entitlement, dict):
+            return saved_entitlement
         return PACKET_GRANT_MISSING_SOURCE
     # Another analysis may already hold this year under a different cs_.
     # Refuse before mark_packet_snapshot_paid stamps this run paid.
@@ -3902,16 +3928,11 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
         if not history_ok:
             return None
         if not latest_snapshot or not history_row:
-            saved_entitlement = save_packet_entitlement(
-                session_analysis_id,
-                session_user_id,
-                tax_year,
-                session_id,
-            )
+            saved_entitlement = _save_grant_entitlement()
             if saved_entitlement is STICKY_CONFLICT_RECEIPT:
                 return PACKET_GRANT_CONFLICT_RECEIPT
-            if saved_entitlement is None:
-                return None
+            if not isinstance(saved_entitlement, dict):
+                return saved_entitlement
             return PACKET_GRANT_MISSING_SOURCE
         repaired = _save_grant_snapshot(packet_payload, paid=True)
         if repaired is True or repaired == PACKET_GRANT_YEAR_CONFLICT:
@@ -3924,16 +3945,11 @@ def _persist_packet_grant(session, analysis_id: str, user_id: str) -> Optional[b
             )
         if not repaired:
             return None
-    saved_entitlement = save_packet_entitlement(
-        session_analysis_id,
-        session_user_id,
-        tax_year,
-        session_id,
-    )
+    saved_entitlement = _save_grant_entitlement()
     if saved_entitlement is STICKY_CONFLICT_RECEIPT:
         return PACKET_GRANT_CONFLICT_RECEIPT
-    if not saved_entitlement:
-        return None
+    if not isinstance(saved_entitlement, dict):
+        return saved_entitlement
     # Success is a paid full snapshot. A teaser or unpaid row is not one,
     # even when the entitlement row was saved.
     stored_snapshot, stored_ok = get_packet_snapshot(
@@ -4507,6 +4523,29 @@ def _paid_entitlement_analysis_id(entitlement: object) -> str | None:
     return cleaned or None
 
 
+def _analysis_id_for_same_payment(
+    user_id: str,
+    tax_year: int,
+    session_id: str,
+) -> str | None:
+    """Analysis id only when this Checkout Session's own receipt names one.
+
+    The newest year receipt can belong to a different payment. A miss or
+    outage omits the id. The grant already proved payment, so this lookup
+    must not fail the entitlement response.
+    """
+    entitlement, entitlement_ok = lookup_packet_session_entitlement(
+        user_id,
+        tax_year,
+        session_id,
+    )
+    if not entitlement_ok or not isinstance(entitlement, dict):
+        return None
+    if entitlement.get("packet_session_id") != session_id:
+        return None
+    return _paid_entitlement_analysis_id(entitlement)
+
+
 def _paid_year_entitlement_body(
     tax_year: int,
     session_id: str,
@@ -4518,6 +4557,19 @@ def _paid_year_entitlement_body(
     if analysis_id:
         body["analysis_id"] = analysis_id
     return body
+
+
+def _with_season_unlock(body: dict, user_id: str, tax_year: int) -> dict:
+    """Add season_unlocked only while SEASON_UNLOCK is on."""
+    if not season_unlock_enabled():
+        return body
+    unlocked, lookup_ok = has_season_unlock(user_id, tax_year)
+    if not lookup_ok:
+        raise HTTPException(
+            status_code=503,
+            detail="Could not verify existing packet access. Please retry.",
+        )
+    return {**body, "season_unlocked": unlocked}
 
 
 @app.get(
@@ -4533,9 +4585,13 @@ async def get_year_close_packet_entitlement(
     """Whether this signed-in user already paid for the tax year.
 
     Reads the durable grant, then the entitlement row. Never calls Stripe,
-    so a paid year cannot create a Checkout Session here. When a receipt
-    row names an analysis, that id is included so a later run in the same
-    year can be promoted without a second charge.
+    so a paid year cannot create a Checkout Session here. When the grant
+    names a session, the analysis id is included only if that same payment's
+    receipt names one. A different payment's receipt is not paired in.
+
+    When SEASON_UNLOCK is on, the body includes season_unlocked from
+    has_season_unlock. The flag is off by default, and then this body
+    stays paid, tax_year, and session_id.
     """
     session_id, grant_ok = lookup_packet_grant_for_tax_year(user_id, tax_year)
     if not grant_ok:
@@ -4547,13 +4603,13 @@ async def get_year_close_packet_entitlement(
     entitled_analysis_id = None
     if session_id:
         # The grant already proved payment. Naming the receipt's analysis is
-        # optional. A lookup failure must not turn this response into 503.
-        entitlement, entitlement_ok = lookup_packet_entitlement_for_tax_year(
+        # optional, and only the receipt for this session counts. A lookup
+        # failure must not turn this response into 503.
+        entitled_analysis_id = _analysis_id_for_same_payment(
             user_id,
             tax_year,
+            session_id,
         )
-        if entitlement_ok:
-            entitled_analysis_id = _paid_entitlement_analysis_id(entitlement)
     else:
         entitlement, entitlement_ok = lookup_packet_entitlement_for_tax_year(
             user_id,
@@ -4568,12 +4624,20 @@ async def get_year_close_packet_entitlement(
             session_id = _checkout_session_id(entitlement.get("packet_session_id"))
             entitled_analysis_id = _paid_entitlement_analysis_id(entitlement)
     if session_id:
-        return _paid_year_entitlement_body(
+        return _with_season_unlock(
+            _paid_year_entitlement_body(
+                int(tax_year),
+                session_id,
+                entitled_analysis_id,
+            ),
+            user_id,
             int(tax_year),
-            session_id,
-            entitled_analysis_id,
         )
-    return {"paid": False, "tax_year": int(tax_year)}
+    return _with_season_unlock(
+        {"paid": False, "tax_year": int(tax_year)},
+        user_id,
+        int(tax_year),
+    )
 
 
 @app.post(
