@@ -164,6 +164,28 @@ describe("lib/supabase", () => {
 
       await expect(signOut()).rejects.toThrow("Sign out failed");
     });
+
+    it("clears local runs when logout returns 403 or throws", async () => {
+      sessionStorage.setItem(
+        "optionstaxhub-analysis",
+        "{\"analysis_id\":\"run-1\"}",
+      );
+      localStorage.setItem("optionstaxhub-packet-resume", "{\"analysisId\":\"run-1\"}");
+      const forbidden = Object.assign(new Error("Forbidden"), { status: 403 });
+      mockAuth.signOut.mockResolvedValue({ error: forbidden });
+
+      await expect(signOut()).rejects.toThrow("Forbidden");
+      expect(sessionStorage.getItem("optionstaxhub-analysis")).toBeNull();
+      expect(localStorage.getItem("optionstaxhub-packet-resume")).toBeNull();
+
+      sessionStorage.setItem(
+        "optionstaxhub-analysis",
+        "{\"analysis_id\":\"run-2\"}",
+      );
+      mockAuth.signOut.mockRejectedValue(new Error("network down"));
+      await expect(signOut()).rejects.toThrow("network down");
+      expect(sessionStorage.getItem("optionstaxhub-analysis")).toBeNull();
+    });
   });
 
   describe("getSession", () => {

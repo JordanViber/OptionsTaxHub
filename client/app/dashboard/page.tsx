@@ -107,6 +107,14 @@ import type {
   AnalysisHistoryItem,
   Position,
 } from "@/lib/types";
+import {
+  clearStoredAnalysis,
+  ownerVisibleTo,
+  readStoredAnalysisJson,
+  readStoredAnalysisOwner,
+  storedAnalysisVisibleTo,
+  writeStoredAnalysis,
+} from "@/lib/accountLocalData";
 import { consumeAutomaticSampleRerun } from "@/lib/automaticSampleRerun";
 import {
   clearPacketResumeLocal,
@@ -324,24 +332,84 @@ function getDisplayedAnalysis(
   return null;
 }
 
-// Helper function: restore analysis from session storage
-function restoreAnalysisFromStorage(): PortfolioAnalysis | null {
+function analysisFromStoredJson(): PortfolioAnalysis | null {
   try {
-    const saved = sessionStorage.getItem("optionstaxhub-analysis");
-    return saved
-      ? normalizeAnalysis(JSON.parse(saved) as PortfolioAnalysis)
-      : null;
+    const parsed = readStoredAnalysisJson();
+    if (!parsed || typeof parsed !== "object") {
+      return null;
+    }
+    return normalizeAnalysis(parsed as PortfolioAnalysis);
   } catch {
     return null;
   }
 }
 
-// Helper function: save analysis to session storage
-function saveAnalysisToStorage(analysis: PortfolioAnalysis): void {
+function adoptAnalysisOwner(viewerId: string | null): string | null {
   try {
-    sessionStorage.setItem(
-      "optionstaxhub-analysis",
+    const stored = readStoredAnalysisOwner();
+    if (stored !== undefined && ownerVisibleTo(stored, viewerId)) {
+      return stored;
+    }
+  } catch {
+    // ignore
+  }
+  return viewerId;
+}
+
+/**
+ * A guest run stays hidden from a signed-in viewer, except the run this
+ * tab already handed to Pay. Same-tab checkout still needs that JSON.
+ */
+function guestCheckoutClaimVisible(viewerId: string | null): boolean {
+  if (!viewerId) {
+    return false;
+  }
+  try {
+    const owner = readStoredAnalysisOwner();
+    if (owner !== null && owner !== undefined) {
+      return false;
+    }
+    if (sessionStorage.getItem(PACKET_RESUME_CHECKOUT_KEY) !== "1") {
+      return false;
+    }
+    const expected = readPacketResumeExpected();
+    if (!expected) {
+      return false;
+    }
+    const analysis = analysisFromStoredJson();
+    return (
+      analysis?.analysis_id === expected.analysisId &&
+      analysis.tax_profile?.tax_year === expected.taxYear
+    );
+  } catch {
+    return false;
+  }
+}
+
+function restoreAnalysisFromStorage(
+  viewerId: string | null,
+): PortfolioAnalysis | null {
+  try {
+    if (
+      !storedAnalysisVisibleTo(viewerId) &&
+      !guestCheckoutClaimVisible(viewerId)
+    ) {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+  return analysisFromStoredJson();
+}
+
+function saveAnalysisToStorage(
+  analysis: PortfolioAnalysis,
+  ownerId: string | null,
+): void {
+  try {
+    writeStoredAnalysis(
       JSON.stringify(redactUnpaidLotMatch(analysis)),
+      ownerId,
     );
   } catch {
     // Storage full — ignore
@@ -1169,7 +1237,7 @@ function clearCurrentAnalysisView({
 }) {
   setLoadedAnalysis(null);
   setAnalysisSource(null);
-  sessionStorage.removeItem("optionstaxhub-analysis");
+  clearStoredAnalysis();
 }
 
 function rerunPortfolioAnalysisWithSupplement({
@@ -1334,6 +1402,7 @@ export default function DashboardPage() {
   const { user, loading: authLoading } = useAuth();
   const emailConfirmed = isEmailConfirmed(user);
   const confirmedUserId = emailConfirmed ? user?.id : undefined;
+  const viewerId = user?.id ?? null;
   const [activeTab, setActiveTab] = useState(0);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [lastUploadedCsv, setLastUploadedCsv] = useState<File | null>(null);
@@ -1369,6 +1438,9 @@ export default function DashboardPage() {
   const [uploadOpen, setUploadOpen] = useState(false);
   const [sampleLoadError, setSampleLoadError] = useState<string | null>(null);
   const sampleAnalyzeStartedRef = useRef(false);
+  const analysisOwnerRef = useRef<string | null | undefined>(undefined);
+  const bootViewer = useRef<string | null>(null);
+  const [suppressResults, setSuppressResults] = useState(false);
   const resumeReuploadArmed = useRef(false);
   const resumeOriginHandled = useRef(false);
   const resumeBareLoadStarted = useRef(false);
@@ -1406,27 +1478,44 @@ export default function DashboardPage() {
     data: analysis,
   } = useAnalyzePortfolio();
 
-  // --- State persistence: restore analysis from sessionStorage on mount ---
+  // Restore a stored run only after auth resolves, and only for its owner.
   useEffect(() => {
+    if (authLoading) {
+      return;
+    }
+    const viewerKey = viewerId ?? "guest";
+    if (bootViewer.current === viewerKey) {
+      return;
+    }
+    const first = bootViewer.current === null;
+    bootViewer.current = viewerKey;
+
     let wantsUpload = false;
     let wantsSample = false;
-    try {
-      wantsUpload = sessionStorage.getItem(UPLOAD_INTENT_KEY) === "1";
-      wantsSample = sessionStorage.getItem(LOAD_SAMPLE_KEY) === "1";
-      if (wantsUpload) {
-        sessionStorage.removeItem(UPLOAD_INTENT_KEY);
+    if (first) {
+      try {
+        wantsUpload = sessionStorage.getItem(UPLOAD_INTENT_KEY) === "1";
+        wantsSample = sessionStorage.getItem(LOAD_SAMPLE_KEY) === "1";
+        if (wantsUpload) {
+          sessionStorage.removeItem(UPLOAD_INTENT_KEY);
+        }
+      } catch {
+        wantsUpload = false;
+        wantsSample = false;
       }
-    } catch {
-      wantsUpload = false;
-      wantsSample = false;
+      if (wantsUpload || wantsSample) {
+        blockHistoryAutoload.current = true;
+      }
     }
 
-    if (wantsUpload || wantsSample) {
-      blockHistoryAutoload.current = true;
-    }
-    const saved = restoreAnalysisFromStorage();
-    if (wantsSample) {
+    const saved = restoreAnalysisFromStorage(viewerId);
+    const acceptOwner = () => {
+      analysisOwnerRef.current = adoptAnalysisOwner(viewerId);
+    };
+    if (first && wantsSample) {
       if (saved?.sample_run) {
+        acceptOwner();
+        setSuppressResults(false);
         setLoadedAnalysis(saved);
         setAnalysisSource("fresh-upload");
         try {
@@ -1437,21 +1526,40 @@ export default function DashboardPage() {
       }
       return;
     }
-    if (wantsUpload) {
+    if (first && wantsUpload) {
       setForceEmpty(true);
       if (saved) {
+        acceptOwner();
         setHeldAnalysis(saved);
       }
       return;
     }
     if (saved) {
+      acceptOwner();
+      setSuppressResults(false);
       setLoadedAnalysis(saved);
       setAnalysisSource(sourceForStoredAnalysis(saved));
     }
-  }, []);
+  }, [authLoading, viewerId]);
 
-  // --- State persistence: save displayedAnalysis whenever it changes ---
-  const displayedAnalysis = getDisplayedAnalysis(loadedAnalysis, analysis);
+  const foreignRun =
+    !authLoading &&
+    analysisOwnerRef.current !== undefined &&
+    !ownerVisibleTo(analysisOwnerRef.current, viewerId);
+  const displayedAnalysis =
+    foreignRun || suppressResults
+      ? null
+      : getDisplayedAnalysis(loadedAnalysis, analysis);
+
+  useEffect(() => {
+    if (!foreignRun) {
+      return;
+    }
+    analysisOwnerRef.current = undefined;
+    setSuppressResults(true);
+    setLoadedAnalysis(null);
+    setAnalysisSource(null);
+  }, [foreignRun]);
   const skippedSuggestionSymbols =
     getSkippedSuggestionSymbolsForAnalysis(displayedAnalysis);
 
@@ -1543,16 +1651,26 @@ export default function DashboardPage() {
   }, [packetPaid, washChainAnalysisId, washChainIsSample, washChainCount]);
 
   useEffect(() => {
-    if (!displayedAnalysis || authLoading) {
+    if (!displayedAnalysis || authLoading || foreignRun) {
+      return;
+    }
+    if (analysisOwnerRef.current === undefined) {
+      analysisOwnerRef.current = adoptAnalysisOwner(viewerId);
+    }
+    const owner =
+      analysisOwnerRef.current === undefined
+        ? viewerId
+        : analysisOwnerRef.current;
+    if (!ownerVisibleTo(owner, viewerId)) {
       return;
     }
     if (!user) {
       const { packet_session_id: _ignored, ...rest } = displayedAnalysis;
-      saveAnalysisToStorage({ ...rest, packet_unlocked: false });
+      saveAnalysisToStorage({ ...rest, packet_unlocked: false }, owner);
       return;
     }
-    saveAnalysisToStorage(displayedAnalysis);
-  }, [displayedAnalysis, authLoading, user]);
+    saveAnalysisToStorage(displayedAnalysis, owner);
+  }, [displayedAnalysis, authLoading, user, foreignRun, viewerId]);
 
   useEffect(() => {
     if (analysis && !loadedAnalysis) {
@@ -1618,8 +1736,11 @@ export default function DashboardPage() {
       {
         onSuccess: (data) => {
           const normalized = normalizeAnalysis(data);
+          const owner = user?.id ?? null;
+          analysisOwnerRef.current = owner;
+          setSuppressResults(false);
           rememberFreshUploadOrigin(normalized.analysis_id);
-          saveAnalysisToStorage(normalized);
+          saveAnalysisToStorage(normalized, owner);
           setLoadedAnalysis(normalized);
           setAnalysisSource("fresh-upload");
           setLatestRunBanner(null);
@@ -1790,7 +1911,7 @@ export default function DashboardPage() {
       return undefined;
     }
 
-    const analysis = restoreAnalysisFromStorage();
+    const analysis = analysisFromStoredJson();
     if (!analysis) {
       return undefined;
     }
@@ -1910,6 +2031,8 @@ export default function DashboardPage() {
    */
   const handleHistoryItemClick = async (itemId: string, filename: string) => {
     setLatestRunBanner(null);
+    analysisOwnerRef.current = user?.id ?? null;
+    setSuppressResults(false);
     await loadHistoryAnalysis({
       userId: user?.id,
       itemId,
@@ -1967,7 +2090,7 @@ export default function DashboardPage() {
       wantsResume =
         params.get(RESUME_CHECKOUT_PARAM) === "1" ||
         sessionStorage.getItem(PACKET_RESUME_CHECKOUT_KEY) === "1";
-      stored = restoreAnalysisFromStorage();
+      stored = restoreAnalysisFromStorage(user?.id ?? null);
     } catch {
       return;
     }
@@ -2053,7 +2176,7 @@ export default function DashboardPage() {
     if (!expected) {
       return;
     }
-    const stored = restoreAnalysisFromStorage();
+    const stored = restoreAnalysisFromStorage(confirmedUserId ?? null);
     if (
       stored?.analysis_id === expected.analysisId &&
       stored.tax_profile?.tax_year === expected.taxYear
@@ -2082,7 +2205,8 @@ export default function DashboardPage() {
       // in this same commit, before the ref updates.
       const awaited = readPacketResumeExpected();
       const mounted =
-        displayedAnalysisRef.current ?? restoreAnalysisFromStorage();
+        displayedAnalysisRef.current ??
+        restoreAnalysisFromStorage(confirmedUserId ?? null);
       const mountedMismatches =
         !!awaited &&
         !!mounted &&
@@ -2195,7 +2319,7 @@ export default function DashboardPage() {
     let hasSample = false;
     let wantsUrl = false;
     try {
-      hasAnalysis = Boolean(sessionStorage.getItem("optionstaxhub-analysis"));
+      hasAnalysis = storedAnalysisVisibleTo(confirmedUserId ?? null);
       hasCheckout =
         sessionStorage.getItem(PACKET_RESUME_CHECKOUT_KEY) === "1";
       hasSample = sessionStorage.getItem(PACKET_RESUME_SAMPLE_KEY) === "1";
@@ -2260,7 +2384,7 @@ export default function DashboardPage() {
     let blocked = false;
     try {
       blocked =
-        Boolean(sessionStorage.getItem("optionstaxhub-analysis")) ||
+        storedAnalysisVisibleTo(confirmedUserId ?? null) ||
         sessionStorage.getItem(PACKET_RESUME_CHECKOUT_KEY) === "1" ||
         sessionStorage.getItem(PACKET_RESUME_SAMPLE_KEY) === "1" ||
         sessionStorage.getItem(UPLOAD_INTENT_KEY) === "1" ||
@@ -2286,7 +2410,7 @@ export default function DashboardPage() {
         }
         try {
           if (
-            sessionStorage.getItem("optionstaxhub-analysis") ||
+            storedAnalysisVisibleTo(confirmedUserId ?? null) ||
             sessionStorage.getItem(PACKET_RESUME_CHECKOUT_KEY) === "1" ||
             new URLSearchParams(window.location.search).get(
               RESUME_CHECKOUT_PARAM,

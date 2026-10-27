@@ -26,12 +26,7 @@ import { useAuth } from "@/app/context/auth";
 import InstallPrompt from "./InstallPrompt";
 import TipJar from "./TipJar";
 import Wordmark from "./Wordmark";
-import {
-  clearPacketCheckoutStarted,
-  clearPacketResumeLocal,
-  clearPacketResumeSessionMarkers,
-  clearYearClosePacketClientState,
-} from "@/lib/packetResumeLocal";
+import { clearAccountLocalData } from "@/lib/accountLocalData";
 import {
   OPTIONS_PATH,
   TAX_PATH,
@@ -48,8 +43,6 @@ const NAV_ITEMS = [
 
 /** Desktop actions stay in the toolbar only above 900px. 600–900px uses the menu. */
 export const COMPACT_HEADER_QUERY = "(max-width:900px)";
-
-const ANALYSIS_STORAGE_KEY = "optionstaxhub-analysis";
 
 type ShellVariant = "app" | "landing" | "auth";
 
@@ -172,15 +165,7 @@ export default function AppShell({
   const goSignOut = async () => {
     closeMenus();
     const userId = user?.id;
-    try {
-      sessionStorage.removeItem(ANALYSIS_STORAGE_KEY);
-    } catch {
-      // ignore
-    }
-    clearPacketResumeSessionMarkers();
-    clearPacketResumeLocal();
-    clearPacketCheckoutStarted();
-    clearYearClosePacketClientState();
+    clearAccountLocalData();
     // Drop this account's cached runs, tax profile, and packet entitlement
     // before the next sign-in. Prefix matches cover every user id.
     queryClient.removeQueries({ queryKey: ["portfolio-history", userId] });
@@ -196,7 +181,12 @@ export default function AppShell({
     } catch {
       // ignore
     }
-    await signOut();
+    try {
+      await signOut();
+    } catch {
+      clearAccountLocalData();
+      return;
+    }
     router.push("/auth/signin");
   };
 

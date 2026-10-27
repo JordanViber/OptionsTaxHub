@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Box, CircularProgress, Container, Typography } from "@mui/material";
 import { useAuth } from "@/app/context/auth";
+import { storedAnalysisVisibleTo } from "@/lib/accountLocalData";
 import { isEmailConfirmed } from "@/lib/supabase";
 import { TAX_PATH, nextParam, safeNextPath } from "@/lib/safeNextPath";
 import AppShell from "../components/AppShell";
@@ -12,8 +13,11 @@ import type { PortfolioAnalysis, Position } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
-function readStoredPositions(): Position[] {
+function readStoredPositions(viewerId: string | null): Position[] {
   try {
+    if (!storedAnalysisVisibleTo(viewerId)) {
+      return [];
+    }
     const saved = sessionStorage.getItem("optionstaxhub-analysis");
     if (!saved) {
       return [];
@@ -32,8 +36,11 @@ export default function OptionsPage() {
   const [positions, setPositions] = useState<Position[]>([]);
 
   useEffect(() => {
-    setPositions(readStoredPositions());
-  }, []);
+    if (authLoading) {
+      return;
+    }
+    setPositions(readStoredPositions(user?.id ?? null));
+  }, [authLoading, user]);
 
   useEffect(() => {
     if (authLoading) {

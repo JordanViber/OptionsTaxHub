@@ -9,6 +9,7 @@ import {
   ReactNode,
 } from "react";
 import { User } from "@supabase/supabase-js";
+import { clearAccountLocalData } from "@/lib/accountLocalData";
 import {
   getEmailConfirmRedirectTo,
   getSupabaseClient,
@@ -109,8 +110,13 @@ export function AuthProvider({ children }: Readonly<{ children: ReactNode }>) {
   };
 
   const signOut = async () => {
-    const { error } = await getSupabaseClient().auth.signOut();
-    if (error) throw error;
+    clearAccountLocalData();
+    try {
+      const { error } = await getSupabaseClient().auth.signOut();
+      if (error) throw error;
+    } finally {
+      clearAccountLocalData();
+    }
   };
 
   const value = useMemo(
