@@ -108,7 +108,10 @@ import type {
   Position,
 } from "@/lib/types";
 import {
+  clearGuestUnsavedRun,
   clearStoredAnalysis,
+  GUEST_UNSAVED_FILENAME_KEY,
+  GUEST_UNSAVED_KEY,
   ownerVisibleTo,
   readStoredAnalysisJson,
   readStoredAnalysisOwner,
@@ -148,9 +151,6 @@ import {
 } from "@/lib/safeNextPath";
 
 export const dynamic = "force-dynamic";
-
-const GUEST_UNSAVED_KEY = "oth-guest-unsaved";
-const GUEST_UNSAVED_FILENAME_KEY = "oth-guest-unsaved-filename";
 
 function rearmResumeCheckout(): void {
   try {
@@ -1896,6 +1896,19 @@ export default function DashboardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading, user, emailConfirmed]);
 
+  const signedInUserIdRef = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    if (authLoading) {
+      return;
+    }
+    const nextId = user?.id ?? null;
+    const previousId = signedInUserIdRef.current;
+    signedInUserIdRef.current = nextId;
+    if (typeof previousId === "string" && previousId !== nextId) {
+      clearGuestUnsavedRun();
+    }
+  }, [authLoading, user]);
+
   useEffect(() => {
     if (!confirmedUserId) {
       return undefined;
@@ -1908,6 +1921,17 @@ export default function DashboardPage() {
       filename =
         sessionStorage.getItem(GUEST_UNSAVED_FILENAME_KEY) || "guest-run.csv";
     } catch {
+      return undefined;
+    }
+
+    let guestOwned = false;
+    try {
+      guestOwned = readStoredAnalysisOwner() === null;
+    } catch {
+      guestOwned = false;
+    }
+    if (!guestOwned) {
+      clearGuestUnsavedRun();
       return undefined;
     }
 
