@@ -19,6 +19,7 @@ from pypdf import PdfReader
 
 import db
 import main
+import year_close_packet
 from auth import get_current_user, get_current_user_with_token
 from stripe import StripeObject
 
@@ -1263,6 +1264,196 @@ def test_entitlement_endpoint_reports_unpaid_without_creating_a_session(monkeypa
     assert response.status_code == 200, response.text
     assert response.json() == {"paid": False, "tax_year": 2026}
     assert created == []
+
+
+def test_has_season_unlock_honors_cs_test_receipt(monkeypatch):
+    monkeypatch.setattr(year_close_packet, "packet_requires_test_stripe", lambda: True)
+    monkeypatch.setattr(
+        year_close_packet,
+        "lookup_packet_entitlement_for_tax_year",
+        lambda *_args, **_kwargs: (
+            {"analysis_id": "aid", "packet_session_id": "cs_test_kept"},
+            True,
+        ),
+    )
+    assert year_close_packet.has_season_unlock("user-1", 2026) == (True, True)
+
+
+def test_has_season_unlock_skips_conflict_and_live_receipt_in_test_mode(monkeypatch):
+    monkeypatch.setattr(year_close_packet, "packet_requires_test_stripe", lambda: True)
+    monkeypatch.setattr(
+        year_close_packet,
+        "lookup_packet_entitlement_for_tax_year",
+        lambda *_args, **_kwargs: (
+            {"analysis_id": "conflict:aid", "packet_session_id": "cs_test_refund"},
+            True,
+        ),
+    )
+    assert year_close_packet.has_season_unlock("user-1", 2026) == (False, True)
+
+    monkeypatch.setattr(
+        year_close_packet,
+        "lookup_packet_entitlement_for_tax_year",
+        lambda *_args, **_kwargs: (
+            {"analysis_id": "aid", "packet_session_id": "cs_live_prod"},
+            True,
+        ),
+    )
+    assert year_close_packet.has_season_unlock("user-1", 2026) == (False, True)
+
+
+def test_has_season_unlock_honors_cs_live_only_in_live_mode(monkeypatch):
+    monkeypatch.setattr(year_close_packet, "packet_requires_test_stripe", lambda: False)
+    monkeypatch.setattr(
+        year_close_packet,
+        "lookup_packet_entitlement_for_tax_year",
+        lambda *_args, **_kwargs: (
+            {"analysis_id": "aid", "packet_session_id": "cs_live_kept"},
+            True,
+        ),
+    )
+    assert year_close_packet.has_season_unlock("user-1", 2026) == (True, True)
+
+    monkeypatch.setattr(
+        year_close_packet,
+        "lookup_packet_entitlement_for_tax_year",
+        lambda *_args, **_kwargs: (
+            {"analysis_id": "aid", "packet_session_id": "cs_test_staging"},
+            True,
+        ),
+    )
+    assert year_close_packet.has_season_unlock("user-1", 2026) == (False, True)
+
+
+def test_has_season_unlock_miss_and_outage(monkeypatch):
+    monkeypatch.setattr(
+        year_close_packet,
+        "lookup_packet_entitlement_for_tax_year",
+        lambda *_args, **_kwargs: (None, True),
+    )
+    assert year_close_packet.has_season_unlock("user-1", 2026) == (False, True)
+    assert year_close_packet.has_season_unlock("", 2026) == (False, False)
+
+    monkeypatch.setattr(
+        year_close_packet,
+        "lookup_packet_entitlement_for_tax_year",
+        lambda *_args, **_kwargs: (None, False),
+    )
+    assert year_close_packet.has_season_unlock("user-1", 2026) == (False, False)
+
+
+def test_entitlement_omits_season_unlocked_when_flag_off(monkeypatch):
+    monkeypatch.delenv("SEASON_UNLOCK", raising=False)
+    monkeypatch.setattr(
+        main,
+        "lookup_packet_grant_for_tax_year",
+        lambda *_args, **_kwargs: (None, True),
+    )
+    monkeypatch.setattr(
+        main,
+        "lookup_packet_entitlement_for_tax_year",
+        lambda *_args, **_kwargs: (
+            {"packet_session_id": "cs_test_year", "analysis_id": "aid"},
+            True,
+        ),
+    )
+    called = []
+    monkeypatch.setattr(
+        main,
+        "has_season_unlock",
+        lambda *_args, **_kwargs: called.append("called") or (True, True),
+    )
+
+    response = client.get(
+        "/api/year-close-packet/entitlement",
+        params={"tax_year": 2026},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["paid"] is True
+    assert body["session_id"] == "cs_test_year"
+    assert "season_unlocked" not in body
+    assert called == []
+
+
+def test_entitlement_reports_season_unlocked_when_flag_on(monkeypatch):
+    monkeypatch.setenv("SEASON_UNLOCK", "1")
+    monkeypatch.setattr(
+        main,
+        "lookup_packet_grant_for_tax_year",
+        lambda *_args, **_kwargs: (None, True),
+    )
+    monkeypatch.setattr(
+        main,
+        "lookup_packet_entitlement_for_tax_year",
+        lambda *_args, **_kwargs: (
+            {"packet_session_id": "cs_test_year", "analysis_id": "aid"},
+            True,
+        ),
+    )
+    monkeypatch.setattr(main, "has_season_unlock", lambda *_args, **_kwargs: (True, True))
+
+    response = client.get(
+        "/api/year-close-packet/entitlement",
+        params={"tax_year": 2026},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["paid"] is True
+    assert body["season_unlocked"] is True
+    assert body["analysis_id"] == "aid"
+
+
+def test_entitlement_season_unlocked_false_when_unpaid(monkeypatch):
+    monkeypatch.setenv("SEASON_UNLOCK", "1")
+    monkeypatch.setattr(
+        main,
+        "lookup_packet_grant_for_tax_year",
+        lambda *_args, **_kwargs: (None, True),
+    )
+    monkeypatch.setattr(
+        main,
+        "lookup_packet_entitlement_for_tax_year",
+        lambda *_args, **_kwargs: (None, True),
+    )
+    monkeypatch.setattr(main, "has_season_unlock", lambda *_args, **_kwargs: (False, True))
+
+    response = client.get(
+        "/api/year-close-packet/entitlement",
+        params={"tax_year": 2026},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "paid": False,
+        "tax_year": 2026,
+        "season_unlocked": False,
+    }
+
+
+def test_entitlement_season_unlock_outage_is_503(monkeypatch):
+    monkeypatch.setenv("SEASON_UNLOCK", "1")
+    monkeypatch.setattr(
+        main,
+        "lookup_packet_grant_for_tax_year",
+        lambda *_args, **_kwargs: (None, True),
+    )
+    monkeypatch.setattr(
+        main,
+        "lookup_packet_entitlement_for_tax_year",
+        lambda *_args, **_kwargs: (None, True),
+    )
+    monkeypatch.setattr(main, "has_season_unlock", lambda *_args, **_kwargs: (False, False))
+
+    response = client.get(
+        "/api/year-close-packet/entitlement",
+        params={"tax_year": 2026},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Could not verify existing packet access. Please retry."
 
 
 def test_entitlement_get_ignores_memory_when_grant_and_row_are_empty(monkeypatch):
@@ -6369,6 +6560,161 @@ def test_same_year_second_payment_on_a_different_run_is_duplicate(monkeypatch, c
     )
     assert downloaded.status_code == 403, downloaded.text
     assert not downloaded.content.startswith(b"%PDF")
+
+
+def test_same_year_unique_violation_on_insert_is_duplicate(monkeypatch, caplog):
+    """The year claim loses on insert after the read-before-write check missed.
+
+    S1 already holds the year. S2's lookups miss, so mark stamps run B, then
+    the entitlement insert raises the partial unique index. S2 must end as
+    the duplicate: the stamp is cleared, one conflict receipt, one refund
+    log, confirm 409, and B stays unpaid. A's receipt is untouched.
+    """
+    _test_stripe_env(monkeypatch)
+    user = "test-user-123"
+    year = 2025
+    run_a = "analysis-run-a"
+    run_b = "analysis-run-b"
+    session_a = "cs_run_a"
+    session_b = "cs_run_b"
+    payload_a = {
+        "analysis_id": run_a,
+        "analysis_tax_year": year,
+        "tax_profile": {"tax_year": year, "filing_status": "single"},
+        "marker": "RUN-A",
+    }
+    payload_b = {
+        "analysis_id": run_b,
+        "analysis_tax_year": year,
+        "tax_profile": {"tax_year": year, "filing_status": "single"},
+        "marker": "RUN-B",
+    }
+    assert packet_payload_rows_match_counts(payload_b) is True
+    _seed_raw_history(run_a, user, payload_a)
+    _seed_raw_history(run_b, user, payload_b)
+    snapshot_client = _wire_real_snapshot_client(
+        monkeypatch,
+        [
+            _snapshot_row(
+                run_a, user, year, payload_a,
+                session_id=session_a, paid_at="2026-01-01T00:00:00+00:00",
+            ),
+            _snapshot_row(
+                run_b, user, year, payload_b,
+                session_id=None, paid_at=None, expires_at="2099-01-01T00:00:00+00:00",
+            ),
+        ],
+    )
+    snapshot_client.entitlements.append({
+        "analysis_id": run_a,
+        "user_id": user,
+        "tax_year": year,
+        "packet_session_id": session_a,
+        "created_at": "2026-01-01T00:00:00+00:00",
+    })
+    monkeypatch.setattr(main, "save_packet_entitlement", db.save_packet_entitlement)
+    monkeypatch.setattr(
+        main, "release_packet_snapshot_paid_stamp", db.release_packet_snapshot_paid_stamp
+    )
+    # The race window: both lookups miss, then the insert hits the index.
+    miss = {"on": True}
+
+    def _grant_lookup(*args, **kwargs):
+        if miss["on"]:
+            return None, True
+        return db.lookup_packet_grant_for_tax_year(*args, **kwargs)
+
+    def _entitlement_lookup(*args, **kwargs):
+        if miss["on"]:
+            return None, True
+        return db.lookup_packet_entitlement_for_tax_year(*args, **kwargs)
+
+    monkeypatch.setattr(main, "lookup_packet_grant_for_tax_year", _grant_lookup)
+    monkeypatch.setattr(
+        main, "lookup_packet_entitlement_for_tax_year", _entitlement_lookup
+    )
+    original_execute = _YearScopedSnapshotQuery.execute
+
+    def _claim_execute(self):
+        if (
+            self.op == "insert"
+            and self.rows is snapshot_client.entitlements
+            and isinstance(self.payload, dict)
+            and not str(self.payload.get("analysis_id") or "").startswith("conflict:")
+        ):
+            for row in snapshot_client.entitlements:
+                if (
+                    row.get("user_id") == self.payload.get("user_id")
+                    and row.get("tax_year") == self.payload.get("tax_year")
+                    and not str(row.get("analysis_id") or "").startswith("conflict:")
+                    and row.get("packet_session_id") != self.payload.get("packet_session_id")
+                ):
+                    error = Exception(
+                        "duplicate key value violates unique constraint "
+                        '"idx_packet_entitlements_one_nonconflict_per_year"'
+                    )
+                    error.code = "23505"
+                    raise error
+        return original_execute(self)
+
+    monkeypatch.setattr(_YearScopedSnapshotQuery, "execute", _claim_execute)
+    session_s2 = _stripe_object_session(
+        id=session_b,
+        metadata={
+            "product": PACKET_METADATA_PRODUCT,
+            "analysis_id": run_b,
+            "user_id": user,
+            "tax_year": str(year),
+        },
+    )
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "retrieve",
+        lambda *_args, **_kwargs: session_s2,
+    )
+    with caplog.at_level(logging.ERROR):
+        granted_b = main._persist_packet_grant(session_s2, run_b, user)
+        row_b = next(row for row in snapshot_client.rows if row["analysis_id"] == run_b)
+        assert row_b["paid_at"] is None
+        assert row_b["packet_session_id"] is None
+        miss["on"] = False
+        confirm = client.post(
+            "/api/year-close-packet/confirm",
+            json={"session_id": session_b, "analysis_id": run_b},
+        )
+        refund_lines = [
+            record.message
+            for record in caplog.records
+            if record.levelno >= logging.ERROR
+            and "PACKET_GRANT_SAME_YEAR_DUPLICATE" in record.message
+        ]
+
+    assert granted_b == main.PACKET_GRANT_SAME_YEAR_DUPLICATE
+    assert row_b["paid_at"] is None
+    assert row_b["packet_session_id"] is None
+    normal_receipts = [
+        row for row in snapshot_client.entitlements
+        if not str(row.get("analysis_id") or "").startswith("conflict:")
+    ]
+    conflict_receipts = [
+        row for row in snapshot_client.entitlements
+        if str(row.get("analysis_id") or "").startswith("conflict:")
+    ]
+    assert [row["analysis_id"] for row in normal_receipts] == [run_a]
+    assert [row["packet_session_id"] for row in normal_receipts] == [session_a]
+    assert len(conflict_receipts) == 1
+    assert conflict_receipts[0]["analysis_id"] == f"conflict:{run_b}"
+    assert conflict_receipts[0]["packet_session_id"] == session_b
+    assert len(refund_lines) == 1
+    assert session_b in refund_lines[0]
+    assert confirm.status_code == 409, confirm.text
+    assert confirm.json()["detail"] == main.PACKET_SAME_YEAR_DUPLICATE_DETAIL
+    assert confirm.json().get("paid") is not True
+    row_a = next(row for row in snapshot_client.rows if row["analysis_id"] == run_a)
+    assert row_a["paid_at"] == "2026-01-01T00:00:00+00:00"
+    assert row_a["packet_session_id"] == session_a
+    assert row_b["paid_at"] is None
+    assert row_b["packet_session_id"] is None
 
 
 def _bind_real_year_holders(monkeypatch):

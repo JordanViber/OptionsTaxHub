@@ -1480,6 +1480,87 @@ def test_migration_012_leaves_conflict_entitlement_intact(postgres):
         conn.close()
 
 
+def test_migration_014_one_nonconflict_receipt_per_user_year(postgres):
+    """The partial index allows one non-conflict receipt per user and tax year.
+
+    A second cs_ for that year is unique_violation. A conflict: analysis id
+    for another session is allowed, and so is the same session's primary key
+    replay. Different years and different users are separate claims.
+    """
+    url, conn = postgres("oth_jor131_year_claim")
+    try:
+        applied = _apply_migrations(url)
+        assert "Applying 014_packet_entitlement_one_grant_per_year.sql" in applied
+        index = conn.execute(
+            """
+            SELECT indexdef
+            FROM pg_indexes
+            WHERE schemaname = 'public'
+              AND indexname = 'idx_packet_entitlements_one_nonconflict_per_year'
+            """
+        ).fetchone()
+        assert index is not None
+        indexdef = index[0]
+        assert "UNIQUE" in indexdef.upper()
+        assert "(user_id, tax_year)" in indexdef
+        assert "conflict:" in indexdef
+
+        conn.execute(
+            """
+            INSERT INTO year_close_packet_entitlements (
+              user_id, tax_year, packet_session_id, analysis_id
+            ) VALUES
+              ('user-a', 2026, 'cs_live', 'analysis-a'),
+              ('user-b', 2026, 'cs_test_one', 'analysis-b'),
+              ('user-a', 2025, 'cs_other_year', 'analysis-a-2025'),
+              ('user-a', 2026, 'cs_refund', 'conflict:analysis-loser')
+            """
+        )
+        import psycopg
+
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            conn.execute(
+                """
+                INSERT INTO year_close_packet_entitlements (
+                  user_id, tax_year, packet_session_id, analysis_id
+                ) VALUES ('user-a', 2026, 'cs_second', 'analysis-c')
+                """
+            )
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            conn.execute(
+                """
+                INSERT INTO year_close_packet_entitlements (
+                  user_id, tax_year, packet_session_id, analysis_id
+                ) VALUES ('user-a', 2026, 'cs_live', 'analysis-a-replay')
+                """
+            )
+        rows = conn.execute(
+            """
+            SELECT user_id, tax_year, packet_session_id, analysis_id
+            FROM year_close_packet_entitlements
+            ORDER BY user_id, tax_year, packet_session_id
+            """
+        ).fetchall()
+        assert rows == [
+            ("user-a", 2025, "cs_other_year", "analysis-a-2025"),
+            ("user-a", 2026, "cs_live", "analysis-a"),
+            ("user-a", 2026, "cs_refund", "conflict:analysis-loser"),
+            ("user-b", 2026, "cs_test_one", "analysis-b"),
+        ]
+        duplicates = conn.execute(
+            """
+            SELECT user_id, tax_year, count(*)
+            FROM year_close_packet_entitlements
+            WHERE left(analysis_id, 9) <> 'conflict:'
+            GROUP BY user_id, tax_year
+            HAVING count(*) > 1
+            """
+        ).fetchall()
+        assert duplicates == []
+    finally:
+        conn.close()
+
+
 def _resolve_migrated_analysis(conn, user_id: str, analysis_id: str):
     """Primary key, then embedded analysis_id, then alias. Same order as the app."""
     by_pk = conn.execute(

@@ -352,7 +352,8 @@ def test_save_packet_entitlement_reraises_non_unique_into_handler(monkeypatch):
     _assert_consumed(client)
 
 
-def test_save_packet_entitlement_unique_reread_misses(monkeypatch):
+def test_save_packet_entitlement_unique_reread_miss_is_year_claim(monkeypatch):
+    """A normal insert whose 23505 reread misses lost the per-year claim."""
     client = _install(
         monkeypatch,
         [],
@@ -365,7 +366,10 @@ def test_save_packet_entitlement_unique_reread_misses(monkeypatch):
         ),
         [],
     )
-    assert db.save_packet_entitlement(ANALYSIS_ID, USER_ID, TAX_YEAR, "cs_entitlement") is None
+    assert (
+        db.save_packet_entitlement(ANALYSIS_ID, USER_ID, TAX_YEAR, "cs_entitlement")
+        is db.PACKET_YEAR_CLAIM_HELD
+    )
     _assert_consumed(client)
 
 

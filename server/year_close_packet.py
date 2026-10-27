@@ -17,7 +17,11 @@ from datetime import date, datetime
 from io import BytesIO
 from typing import Any, Optional
 
-from db import _canonical_analysis_id, _canonical_analysis_uuid
+from db import (
+    _canonical_analysis_id,
+    _canonical_analysis_uuid,
+    lookup_packet_entitlement_for_tax_year,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1325,6 +1329,50 @@ def forget_packet_payload(analysis_id: str, user_id: str) -> bool:
 
 def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in ("1", "true", "yes")
+
+
+def season_unlock_enabled() -> bool:
+    """SEASON_UNLOCK is off unless the env var is 1, true, or yes."""
+    return _env_flag("SEASON_UNLOCK")
+
+
+def _season_unlock_session_prefix() -> str:
+    """cs_test_ on staging and local; cs_live_ only on the production service."""
+    if packet_requires_test_stripe():
+        return "cs_test_"
+    return "cs_live_"
+
+
+def has_season_unlock(
+    user_id: str,
+    tax_year: int,
+    client=None,
+) -> tuple[bool, bool]:
+    """Whether a non-conflict receipt unlocks this user for the tax year.
+
+    Uses lookup_packet_entitlement_for_tax_year, which skips conflict: rows
+    and is not tied to the current analysis. The session prefix must match
+    this server's Stripe mode. Returns (unlocked, lookup_ok).
+    """
+    if not user_id or tax_year is None:
+        return False, False
+    row, ok = lookup_packet_entitlement_for_tax_year(
+        user_id,
+        int(tax_year),
+        client=client,
+    )
+    if not ok:
+        return False, False
+    if not isinstance(row, dict):
+        return False, True
+    analysis_id = row.get("analysis_id")
+    if isinstance(analysis_id, str) and analysis_id.startswith("conflict:"):
+        return False, True
+    session_id = row.get("packet_session_id")
+    prefix = _season_unlock_session_prefix()
+    if not isinstance(session_id, str) or not session_id.startswith(prefix):
+        return False, True
+    return True, True
 
 
 def packet_requires_test_stripe() -> bool:
