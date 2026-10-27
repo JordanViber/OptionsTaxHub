@@ -5,6 +5,7 @@ import {
   type SupabaseClient,
   type User,
 } from "@supabase/supabase-js";
+import { clearAccountLocalData } from "@/lib/accountLocalData";
 import { nextParam, safeNextPath } from "@/lib/safeNextPath";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
@@ -125,8 +126,13 @@ export async function signIn(email: string, password: string) {
  * Sign out the current user
  */
 export async function signOut() {
-  const { error } = await getSupabaseClient().auth.signOut();
-  if (error) throw error;
+  clearAccountLocalData();
+  try {
+    const { error } = await getSupabaseClient().auth.signOut();
+    if (error) throw error;
+  } finally {
+    clearAccountLocalData();
+  }
 }
 
 /**
