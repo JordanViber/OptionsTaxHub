@@ -168,11 +168,12 @@ jest.mock("../../app/components/TipJar", () => ({
   default: () => <div data-testid="tip-jar-dialog" />,
 }));
 
-import DashboardPage, {
+import DashboardPage from "../../app/dashboard/page";
+import {
   rememberFreshUploadOrigin,
   resetAnalysisOriginForTests,
-  SIGNED_OUT_RESUME_TIMEOUT_MS,
-} from "../../app/dashboard/page";
+} from "../../lib/analysisOrigin";
+import { SIGNED_OUT_RESUME_TIMEOUT_MS } from "../../lib/constants";
 import { resetAutomaticSampleRerunForTests } from "../../lib/automaticSampleRerun";
 import { resetPacketResumeCheckoutLock } from "../../app/components/YearClosePacketPanel";
 import { resetPacketResumeLocalForTests } from "../../lib/packetResumeLocal";

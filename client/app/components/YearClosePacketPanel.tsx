@@ -70,6 +70,8 @@ export const PACKET_ENTITLEMENT_UNCONFIRMED_COPY =
   "Couldn't confirm your purchase status. Pay or refresh.";
 export const PACKET_PROMOTION_UNCONFIRMED_COPY =
   "Couldn't confirm your purchase status. Refresh to try again.";
+export const PACKET_PAID_OTHER_ANALYSIS_COPY =
+  "This tax year is already paid on another analysis. This CSV is not included in that packet.";
 
 function isPacketMissingSourceDetail(detail: string): boolean {
   return /payment was received/i.test(detail) && /no source document/i.test(detail);
@@ -580,16 +582,16 @@ function YearClosePacketPanelForAnalysis({
     setBusy(null);
   };
 
-  const refetchPaidYear = async (): Promise<boolean> => {
+  const refetchPaidYear = async (): Promise<"match" | "other-run" | "miss"> => {
     const year = analysisRef.current.tax_profile?.tax_year;
     if (typeof year !== "number" || !Number.isFinite(year)) {
-      return false;
+      return "miss";
     }
     let headers: Record<string, string>;
     try {
       headers = await authHeaders();
     } catch {
-      return false;
+      return "miss";
     }
     const response = await fetch(
       `${API_URL}/api/year-close-packet/entitlement?tax_year=${encodeURIComponent(String(year))}`,
@@ -599,24 +601,30 @@ function YearClosePacketPanelForAnalysis({
       },
     );
     if (!response.ok) {
-      return false;
+      return "miss";
     }
     const data = await response.json().catch(() => null);
     if (!data || data.paid !== true) {
-      return false;
+      return "miss";
     }
     const sid =
       typeof data.session_id === "string" && data.session_id.startsWith("cs_")
         ? data.session_id
         : null;
     if (!sid) {
-      return false;
+      return "miss";
     }
     const entitled =
       typeof data.analysis_id === "string" ? data.analysis_id.trim() : "";
     const currentId = (analysisRef.current.analysis_id || "").trim();
-    applyAlreadyPaidRef.current(sid, entitled || currentId || canonicalAnalysisId);
-    return true;
+    if (!entitled || !currentId) {
+      return "miss";
+    }
+    if (!analysisIdsMatch(entitled, currentId)) {
+      return "other-run";
+    }
+    applyAlreadyPaidRef.current(sid, entitled);
+    return "match";
   };
   const refetchPaidYearRef = useRef(refetchPaidYear);
   refetchPaidYearRef.current = refetchPaidYear;
@@ -909,8 +917,12 @@ function YearClosePacketPanelForAnalysis({
             if (cancelled) {
               return "hold";
             }
-            if (recovered) {
+            if (recovered === "match") {
               return "paid";
+            }
+            if (recovered === "other-run") {
+              showPromotionClientError(PACKET_PAID_OTHER_ANALYSIS_COPY);
+              return "client";
             }
           }
           if (!cancelled) {
@@ -1190,11 +1202,16 @@ function YearClosePacketPanelForAnalysis({
         const errData = await response.json().catch(() => null);
         const detail = String(errData?.detail || "");
         if (response.status === 409 && isPacketMissingSourceDetail(detail)) {
-          if (await refetchPaidYearRef.current()) {
+          const recovered = await refetchPaidYearRef.current();
+          if (recovered === "match") {
             releaseCheckoutClaim(options?.claim);
             clearSessionItem(PACKET_CHECKOUT_INFLIGHT_KEY);
             setBusy(null);
             return;
+          }
+          if (recovered === "other-run") {
+            releaseCheckoutClaim(options?.claim);
+            throw new Error(PACKET_PAID_OTHER_ANALYSIS_COPY);
           }
         }
         if (

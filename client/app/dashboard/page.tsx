@@ -118,7 +118,14 @@ import {
   readPacketResumeExpected,
   resumeAnalysisMatches,
 } from "@/lib/packetResumeLocal";
-import { SAMPLE_FETCH_TIMEOUT_MS } from "@/lib/constants";
+import {
+  SAMPLE_FETCH_TIMEOUT_MS,
+  SIGNED_OUT_RESUME_TIMEOUT_MS,
+} from "@/lib/constants";
+import {
+  rememberFreshUploadOrigin,
+  sourceForStoredAnalysis,
+} from "@/lib/analysisOrigin";
 import {
   DASHBOARD_RESUME_CHECKOUT_PATH,
   LOAD_SAMPLE_KEY,
@@ -156,32 +163,6 @@ const SAMPLE_1099_FILENAME = "sample-robinhood-1099-2026.pdf";
 const SAMPLE_FETCH_TIMEOUT_MESSAGE = "Could not load the 2026 sample.";
 const ORIGIN_RESUME_WAIT_MS = 12_000;
 const ORIGIN_RESUME_RETRY_MS = 3_000;
-/** Signed-out second tab during sign-in. Shorter than a sample re-analyze. */
-export const SIGNED_OUT_RESUME_TIMEOUT_MS = 8_000;
-
-let freshUploadAnalysisId: string | null = null;
-
-/** Tests only. A full reload already starts with no fresh-upload id. */
-export function resetAnalysisOriginForTests(): void {
-  freshUploadAnalysisId = null;
-}
-
-export function rememberFreshUploadOrigin(analysisId: string | undefined): void {
-  freshUploadAnalysisId = analysisId || null;
-}
-
-function sourceForStoredAnalysis(
-  saved: PortfolioAnalysis,
-): "fresh-upload" | "restored-session" {
-  if (
-    freshUploadAnalysisId &&
-    saved.analysis_id &&
-    saved.analysis_id === freshUploadAnalysisId
-  ) {
-    return "fresh-upload";
-  }
-  return "restored-session";
-}
 
 function isAbortError(error: unknown): boolean {
   return (

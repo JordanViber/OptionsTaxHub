@@ -9,6 +9,7 @@ import YearClosePacketPanel, {
   isYearClosePacketPaid,
   resetPacketResumeCheckoutLock,
   PACKET_ENTITLEMENT_UNCONFIRMED_COPY,
+  PACKET_PAID_OTHER_ANALYSIS_COPY,
   PACKET_PROMOTION_UNCONFIRMED_COPY,
   YEAR_CLOSE_PACKET_TITLE,
   yearClosePacketStorageId,
@@ -2793,6 +2794,146 @@ describe("YearClosePacketPanel", () => {
     expect(store["optionstaxhub-packet-paid:analysis-1"]).toBe(
       "cs_test_restored_year",
     );
+  });
+
+  it("says the year is paid on another analysis when a fresh-upload 409 names a different run", async () => {
+    const detail =
+      "Payment was received, but this analysis has no source document. Run a new analysis for this tax year.";
+    mockFetch.mockImplementation(async (url: RequestInfo | URL) => {
+      const target = String(url);
+      if (target.includes("/api/year-close-packet/entitlement")) {
+        return paidYearEntitlement("analysis-other");
+      }
+      if (target.includes("/api/year-close-packet/checkout")) {
+        return {
+          ok: false,
+          status: 409,
+          json: async () => ({ detail }),
+        };
+      }
+      return checkoutOk();
+    });
+
+    render(<YearClosePacketPanel analysis={restoredAnalysis} freshUpload />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        PACKET_PAID_OTHER_ANALYSIS_COPY,
+      );
+    });
+    expect(screen.queryByText(/no source document/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Later CSV updates stay included/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Payment confirmed for tax year/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
+    expect(store["optionstaxhub-packet-paid:analysis-1"]).toBeUndefined();
+    expect(store["optionstaxhub-packet-paid:analysis-other"]).toBeUndefined();
+    expect(checkoutPosts()).toHaveLength(1);
+  });
+
+  it("keeps the missing-source alert when a fresh-upload 409 omits analysis_id", async () => {
+    const detail =
+      "Payment was received, but this analysis has no source document. Run a new analysis for this tax year.";
+    let entitlementCalls = 0;
+    mockFetch.mockImplementation(async (url: RequestInfo | URL) => {
+      const target = String(url);
+      if (target.includes("/api/year-close-packet/entitlement")) {
+        entitlementCalls += 1;
+        if (entitlementCalls === 1) {
+          return paidYearEntitlement("analysis-other");
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            paid: true,
+            tax_year: 2025,
+            session_id: "cs_test_restored_year",
+          }),
+        };
+      }
+      if (target.includes("/api/year-close-packet/checkout")) {
+        return {
+          ok: false,
+          status: 409,
+          json: async () => ({ detail }),
+        };
+      }
+      return checkoutOk();
+    });
+
+    render(<YearClosePacketPanel analysis={restoredAnalysis} freshUpload />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(detail);
+    });
+    expect(screen.queryByText(PACKET_PAID_OTHER_ANALYSIS_COPY)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Later CSV updates stay included/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
+    expect(store["optionstaxhub-packet-paid:analysis-1"]).toBeUndefined();
+  });
+
+  it("shows paid and Download after a Pay click 409 only when the refetch names this run", async () => {
+    const detail =
+      "Payment was received, but this analysis has no source document. Run a new analysis for this tax year.";
+    mockFetch.mockImplementation(async (url: RequestInfo | URL) => {
+      const target = String(url);
+      if (target.includes("/api/year-close-packet/entitlement")) {
+        return paidYearEntitlement("analysis-1");
+      }
+      if (target.includes("/api/year-close-packet/checkout")) {
+        return {
+          ok: false,
+          status: 409,
+          json: async () => ({ detail }),
+        };
+      }
+      return checkoutOk();
+    });
+
+    render(<YearClosePacketPanel analysis={restoredAnalysis} />);
+    fireEvent.click(screen.getByRole("button", { name: /Pay \$49/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Paid for this tax year/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/no source document/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Download/i })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: /Pay \$49/i })).not.toBeInTheDocument();
+    expect(store["optionstaxhub-packet-paid:analysis-1"]).toBe(
+      "cs_test_restored_year",
+    );
+  });
+
+  it("does not mark this run paid when a Pay click 409 names another analysis", async () => {
+    const detail =
+      "Payment was received, but this analysis has no source document. Run a new analysis for this tax year.";
+    mockFetch.mockImplementation(async (url: RequestInfo | URL) => {
+      const target = String(url);
+      if (target.includes("/api/year-close-packet/entitlement")) {
+        return paidYearEntitlement("analysis-other");
+      }
+      if (target.includes("/api/year-close-packet/checkout")) {
+        return {
+          ok: false,
+          status: 409,
+          json: async () => ({ detail }),
+        };
+      }
+      return checkoutOk();
+    });
+
+    render(<YearClosePacketPanel analysis={restoredAnalysis} />);
+    fireEvent.click(screen.getByRole("button", { name: /Pay \$49/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        PACKET_PAID_OTHER_ANALYSIS_COPY,
+      );
+    });
+    expect(screen.queryByText(/Later CSV updates stay included/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
+    expect(store["optionstaxhub-packet-paid:analysis-1"]).toBeUndefined();
+    expect(store["optionstaxhub-packet-canonical:analysis-1"]).toBeUndefined();
   });
 
   it("shows a matching fresh upload as paid without a Pay click", async () => {
