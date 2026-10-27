@@ -17,8 +17,8 @@ describe("accountLocalData", () => {
   });
 
   it("treats a guest run as different from a signed-in run", () => {
-    expect(ownerVisibleTo(undefined, null)).toBe(true);
-    expect(ownerVisibleTo(undefined, "user-a")).toBe(true);
+    expect(ownerVisibleTo(undefined, null)).toBe(false);
+    expect(ownerVisibleTo(undefined, "user-a")).toBe(false);
     expect(ownerVisibleTo(null, null)).toBe(true);
     expect(ownerVisibleTo(null, "user-a")).toBe(false);
     expect(ownerVisibleTo("user-a", null)).toBe(false);
@@ -43,15 +43,37 @@ describe("accountLocalData", () => {
     expect(storedAnalysisVisibleTo("user-a")).toBe(false);
   });
 
-  it("keeps an untagged run readable and ignores a junk owner token", () => {
+  it("drops an untagged run on read, including a junk owner token", () => {
     sessionStorage.setItem(ANALYSIS_STORAGE_KEY, "{\"analysis_id\":\"legacy\"}");
     expect(readStoredAnalysisOwner()).toBeUndefined();
-    expect(storedAnalysisVisibleTo(null)).toBe(true);
-    expect(storedAnalysisVisibleTo("user-a")).toBe(true);
+    expect(storedAnalysisVisibleTo(null)).toBe(false);
+    expect(sessionStorage.getItem(ANALYSIS_STORAGE_KEY)).toBeNull();
 
+    sessionStorage.setItem(ANALYSIS_STORAGE_KEY, "{\"analysis_id\":\"legacy\"}");
     sessionStorage.setItem(ANALYSIS_OWNER_STORAGE_KEY, "{\"not\":\"an id\"}");
     expect(readStoredAnalysisOwner()).toBeUndefined();
-    expect(storedAnalysisVisibleTo("user-a")).toBe(true);
+    expect(storedAnalysisVisibleTo("user-a")).toBe(false);
+    expect(sessionStorage.getItem(ANALYSIS_STORAGE_KEY)).toBeNull();
+    expect(sessionStorage.getItem(ANALYSIS_OWNER_STORAGE_KEY)).toBeNull();
+  });
+
+  it("keeps an untagged run when this tab is claiming it at checkout", () => {
+    sessionStorage.setItem(
+      ANALYSIS_STORAGE_KEY,
+      JSON.stringify({
+        analysis_id: "legacy-claim",
+        tax_profile: { tax_year: 2025 },
+      }),
+    );
+    sessionStorage.setItem("optionstaxhub-packet-resume-checkout", "1");
+    sessionStorage.setItem(
+      "optionstaxhub-packet-resume-analysis",
+      JSON.stringify({ analysisId: "legacy-claim", taxYear: 2025 }),
+    );
+
+    expect(storedAnalysisVisibleTo("user-a")).toBe(false);
+    expect(storedAnalysisVisibleTo(null)).toBe(false);
+    expect(sessionStorage.getItem(ANALYSIS_STORAGE_KEY)).toContain("legacy-claim");
   });
 
   it("clears analysis and packet-resume keys from both storages", () => {

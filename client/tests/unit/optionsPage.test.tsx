@@ -124,6 +124,7 @@ describe("Options page", () => {
       "optionstaxhub-analysis",
       JSON.stringify({ positions: [nvdaStock] }),
     );
+    sessionStorage.setItem("optionstaxhub-analysis-owner", "guest");
     render(<OptionsPage />);
 
     await waitFor(() => {

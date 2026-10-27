@@ -914,6 +914,7 @@ describe("Home page", () => {
         },
       }),
     );
+    sessionStorage.setItem("optionstaxhub-analysis-owner", "guest");
 
     renderWithClient(<Home />);
 
@@ -1001,6 +1002,7 @@ describe("Home page", () => {
       "optionstaxhub-analysis",
       JSON.stringify(sampleAnalysis),
     );
+    sessionStorage.setItem("optionstaxhub-analysis-owner", "guest");
     sessionStorage.setItem("oth-guest-unsaved", "1");
     sessionStorage.setItem(
       "oth-guest-unsaved-filename",
@@ -1032,6 +1034,7 @@ describe("Home page", () => {
       "optionstaxhub-analysis",
       JSON.stringify(sampleAnalysis),
     );
+    sessionStorage.setItem("optionstaxhub-analysis-owner", "guest");
     sessionStorage.setItem("oth-guest-unsaved", "1");
     sessionStorage.setItem(
       "oth-guest-unsaved-filename",

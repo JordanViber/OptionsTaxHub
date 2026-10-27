@@ -1,3 +1,4 @@
+import { readPacketResumeExpected } from "@/lib/packetResumeLocal";
 import {
   PACKET_CHECKOUT_STARTED_KEY,
   PACKET_RESUME_ANALYSIS_KEY,
@@ -57,23 +58,74 @@ function scrubStorage(storage: Storage): void {
   }
 }
 
+function scrubGlobalStorage(readStorage: () => Storage): void {
+  try {
+    scrubStorage(readStorage());
+  } catch {
+    // The storage getter itself can throw SecurityError.
+  }
+}
+
 /**
  * Drop every locally stored run, analysis, and packet-resume claim.
  * Safe to call more than once, and before or after a failed logout.
  */
 export function clearAccountLocalData(): void {
-  if (typeof sessionStorage !== "undefined") {
-    scrubStorage(sessionStorage);
-  }
-  if (typeof localStorage !== "undefined") {
-    scrubStorage(localStorage);
-  }
+  scrubGlobalStorage(() => sessionStorage);
+  scrubGlobalStorage(() => localStorage);
 }
 
 export function clearStoredAnalysis(): void {
   try {
     sessionStorage.removeItem(ANALYSIS_STORAGE_KEY);
+  } catch {
+    // ignore quota / private-mode failures
+  }
+  try {
     sessionStorage.removeItem(ANALYSIS_OWNER_STORAGE_KEY);
+  } catch {
+    // ignore quota / private-mode failures
+  }
+}
+
+function untaggedCheckoutClaim(): boolean {
+  try {
+    if (sessionStorage.getItem(PACKET_RESUME_CHECKOUT_KEY) !== "1") {
+      return false;
+    }
+    const expected = readPacketResumeExpected();
+    if (!expected) {
+      return false;
+    }
+    const raw = sessionStorage.getItem(ANALYSIS_STORAGE_KEY);
+    if (!raw) {
+      return false;
+    }
+    const analysis = JSON.parse(raw) as {
+      analysis_id?: unknown;
+      tax_profile?: { tax_year?: unknown };
+    };
+    return (
+      analysis.analysis_id === expected.analysisId &&
+      analysis.tax_profile?.tax_year === expected.taxYear
+    );
+  } catch {
+    return false;
+  }
+}
+
+function discardUntaggedStoredAnalysis(): void {
+  try {
+    if (!sessionStorage.getItem(ANALYSIS_STORAGE_KEY)) {
+      return;
+    }
+    if (readStoredAnalysisOwner() !== undefined) {
+      return;
+    }
+    if (untaggedCheckoutClaim()) {
+      return;
+    }
+    clearStoredAnalysis();
   } catch {
     // ignore quota / private-mode failures
   }
@@ -91,7 +143,7 @@ export function writeStoredAnalysis(
 }
 
 /**
- * `undefined` means the run was stored before owners existed.
+ * `undefined` means the run has no usable owner.
  * `null` means a guest created it.
  */
 export function readStoredAnalysisOwner(): string | null | undefined {
@@ -113,7 +165,7 @@ export function ownerVisibleTo(
   viewerId: string | null,
 ): boolean {
   if (owner === undefined) {
-    return true;
+    return false;
   }
   if (owner === null) {
     return viewerId === null;
@@ -122,14 +174,20 @@ export function ownerVisibleTo(
 }
 
 export function storedAnalysisVisibleTo(viewerId: string | null): boolean {
-  const raw = sessionStorage.getItem(ANALYSIS_STORAGE_KEY);
-  if (!raw) {
+  discardUntaggedStoredAnalysis();
+  try {
+    const raw = sessionStorage.getItem(ANALYSIS_STORAGE_KEY);
+    if (!raw) {
+      return false;
+    }
+    return ownerVisibleTo(readStoredAnalysisOwner(), viewerId);
+  } catch {
     return false;
   }
-  return ownerVisibleTo(readStoredAnalysisOwner(), viewerId);
 }
 
 export function readStoredAnalysisJson(): unknown | null {
+  discardUntaggedStoredAnalysis();
   const raw = sessionStorage.getItem(ANALYSIS_STORAGE_KEY);
   if (!raw) {
     return null;

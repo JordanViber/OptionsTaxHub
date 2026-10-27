@@ -309,6 +309,9 @@ describe("DashboardPage", () => {
           ) {
             return "cs_test_dashboard";
           }
+          if (key === "optionstaxhub-analysis-owner") {
+            return mockSessionValue ? "test-user" : null;
+          }
           return mockSessionValue;
         }),
         setItem: jest.fn(),
@@ -1236,6 +1239,9 @@ describe("DashboardPage", () => {
           }
           if (key === "optionstaxhub-analysis") {
             return saved;
+          }
+          if (key === "optionstaxhub-analysis-owner") {
+            return "guest";
           }
           return null;
         }),
@@ -2704,6 +2710,7 @@ describe("DashboardPage", () => {
         packet_session_id: "cs_test_other_account",
       }),
     );
+    store.set("optionstaxhub-analysis-owner", "guest");
     store.set("optionstaxhub-packet-paid:analysis-test-1", "cs_test_other_account");
     store.set("optionstaxhub-packet-canonical:analysis-test-1", "analysis-test-1");
     store.set("optionstaxhub-packet-pending:analysis-test-1", "cs_test_open");
@@ -2776,6 +2783,39 @@ describe("DashboardPage", () => {
     await waitFor(() => {
       expect(store.get("optionstaxhub-analysis-owner")).toBe("test-user");
     });
+  });
+
+  it("does not show an untagged run to a guest or a signed-in user", async () => {
+    const previousUser = mockAuthState.user;
+    const store = installSessionStore();
+    const legacy = JSON.stringify({
+      ...baseAnalysis,
+      analysis_id: "legacy-run",
+    });
+    store.set("optionstaxhub-analysis", legacy);
+
+    try {
+      mockAuthState.user = null;
+      const guestView = render(<DashboardPage />, { wrapper: createWrapper() });
+      expect(
+        await screen.findByText(/Get started with your first analysis/i),
+      ).toBeInTheDocument();
+      expect(screen.queryByText("Tax Year: 2025")).not.toBeInTheDocument();
+      expect(screen.queryByText("This run lives on this device")).not.toBeInTheDocument();
+      expect(store.get("optionstaxhub-analysis")).toBeUndefined();
+      guestView.unmount();
+
+      store.set("optionstaxhub-analysis", legacy);
+      mockAuthState.user = previousUser;
+      render(<DashboardPage />, { wrapper: createWrapper() });
+      expect(
+        await screen.findByText(/Get started with your first analysis/i),
+      ).toBeInTheDocument();
+      expect(screen.queryByText("Tax Year: 2025")).not.toBeInTheDocument();
+      expect(store.get("optionstaxhub-analysis")).toBeUndefined();
+    } finally {
+      mockAuthState.user = previousUser;
+    }
   });
 
   it("does not restore a guest run onto a signed-in dashboard", async () => {
@@ -2876,6 +2916,7 @@ describe("DashboardPage", () => {
         tax_profile: { ...baseAnalysis.tax_profile, tax_year: 2024 },
       }),
     );
+    store.set("optionstaxhub-analysis-owner", "test-user");
     localStorage.setItem(
       PACKET_RESUME_LOCAL_KEY,
       JSON.stringify({
@@ -2940,6 +2981,7 @@ describe("DashboardPage", () => {
         packet_unlocked: false,
       }),
     );
+    store.set("optionstaxhub-analysis-owner", "test-user");
     localStorage.setItem(
       PACKET_RESUME_LOCAL_KEY,
       JSON.stringify({
@@ -3013,6 +3055,7 @@ describe("DashboardPage", () => {
         tax_profile: { ...baseAnalysis.tax_profile, tax_year: 2024 },
       }),
     );
+    store.set("optionstaxhub-analysis-owner", "test-user");
     localStorage.setItem(
       PACKET_RESUME_LOCAL_KEY,
       JSON.stringify({
@@ -3078,6 +3121,7 @@ describe("DashboardPage", () => {
         tax_profile: { ...baseAnalysis.tax_profile, tax_year: 2024 },
       }),
     );
+    store.set("optionstaxhub-analysis-owner", "test-user");
     localStorage.setItem(
       PACKET_RESUME_LOCAL_KEY,
       JSON.stringify({
@@ -3251,6 +3295,7 @@ describe("DashboardPage", () => {
         tax_profile: { ...baseAnalysis.tax_profile, tax_year: 2024 },
       }),
     );
+    store.set("optionstaxhub-analysis-owner", "test-user");
     store.set(PACKET_RESUME_CHECKOUT_KEY, "1");
     store.set(
       PACKET_RESUME_ANALYSIS_KEY,
@@ -3322,6 +3367,7 @@ describe("DashboardPage", () => {
     rememberFreshUploadOrigin(baseAnalysis.analysis_id);
     const store = installSessionStore();
     store.set("optionstaxhub-analysis", JSON.stringify(baseAnalysis));
+    store.set("optionstaxhub-analysis-owner", "test-user");
 
     const first = render(<DashboardPage />, { wrapper: createWrapper() });
     await waitFor(() => {
@@ -3347,6 +3393,7 @@ describe("DashboardPage", () => {
       "optionstaxhub-analysis",
       JSON.stringify({ ...baseAnalysis, packet_unlocked: false }),
     );
+    store.set("optionstaxhub-analysis-owner", "test-user");
     const originalFetch = globalThis.fetch;
     const calls: string[] = [];
     globalThis.fetch = jest.fn(async (input: RequestInfo | URL) => {

@@ -371,6 +371,38 @@ describe("Auth Context", () => {
     expect(localStorage.getItem("custom-packet-resume")).toBeNull();
   });
 
+  it("still signs out when sessionStorage access throws", async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(window, "sessionStorage");
+    Object.defineProperty(window, "sessionStorage", {
+      configurable: true,
+      get() {
+        throw new DOMException("The operation is insecure.", "SecurityError");
+      },
+    });
+    localStorage.setItem("optionstaxhub-analysis", "{\"analysis_id\":\"run-1\"}");
+    localStorage.setItem("optionstaxhub-packet-resume", "{\"analysisId\":\"run-1\"}");
+    mockSignOut.mockResolvedValue({ error: null });
+
+    try {
+      const { result } = renderHook(() => useAuth(), { wrapper: createWrapper });
+      await waitFor(() => {
+        expect(result.current.loading).toBe(false);
+      });
+      await act(async () => {
+        await result.current.signOut();
+      });
+      expect(mockSignOut).toHaveBeenCalledTimes(1);
+      expect(localStorage.getItem("optionstaxhub-analysis")).toBeNull();
+      expect(localStorage.getItem("optionstaxhub-packet-resume")).toBeNull();
+    } finally {
+      if (descriptor) {
+        Object.defineProperty(window, "sessionStorage", descriptor);
+      }
+      localStorage.removeItem("optionstaxhub-analysis");
+      localStorage.removeItem("optionstaxhub-packet-resume");
+    }
+  });
+
   it("useAuth throws if used outside AuthProvider", () => {
     // Suppress console.error for expected error
     const spy = jest.spyOn(console, "error").mockImplementation(() => {});

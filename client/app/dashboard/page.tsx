@@ -365,7 +365,8 @@ function guestCheckoutClaimVisible(viewerId: string | null): boolean {
     return false;
   }
   try {
-    if (readStoredAnalysisOwner() !== null) {
+    const owner = readStoredAnalysisOwner();
+    if (owner !== null && owner !== undefined) {
       return false;
     }
     if (sessionStorage.getItem(PACKET_RESUME_CHECKOUT_KEY) !== "1") {
