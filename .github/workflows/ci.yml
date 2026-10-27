@@ -9,7 +9,7 @@ jobs:
   # Backend Tests and Analysis
   backend-tests:
     name: Backend Tests & Quality
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     services:
       postgres:
@@ -118,7 +118,7 @@ jobs:
   # Frontend Tests and Analysis
   frontend-tests:
     name: Frontend Tests & Quality
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@a5ac7e51b41094c92402da3b24376905380afc29  # v6
@@ -241,7 +241,7 @@ jobs:
   # E2E Tests
   e2e-tests:
     name: E2E Tests (Playwright)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: github.event_name == 'push' || github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     needs: [backend-tests, frontend-tests]
 
@@ -359,7 +359,7 @@ jobs:
   # Security Scanning
   security-scan:
     name: Security Scanning
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     continue-on-error: true
     permissions:
       contents: read
