@@ -2752,6 +2752,42 @@ describe("YearClosePacketPanel", () => {
     expect(window.location.href).not.toContain("checkout.stripe.com");
   });
 
+  it("does not promote or check out a restored sample on an already-paid year", async () => {
+    mockFetch.mockImplementation(async (url: RequestInfo | URL) => {
+      const target = String(url);
+      if (target.includes("/api/year-close-packet/entitlement")) {
+        return paidYearEntitlement("analysis-other");
+      }
+      if (target.includes("/api/year-close-packet/checkout")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            checkout_url: "https://checkout.stripe.com/c/pay/cs_test_sample",
+            session_id: "cs_test_sample",
+          }),
+        };
+      }
+      return checkoutOk();
+    });
+
+    render(
+      <YearClosePacketPanel
+        analysis={{ ...restoredAnalysis, sample_run: true }}
+        restoredRun
+      />,
+    );
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(checkoutPosts()).toHaveLength(0);
+    expect(screen.getByRole("button", { name: /Pay \$49/i })).toBeEnabled();
+    expect(screen.queryByText(/Paid for this tax year/i)).not.toBeInTheDocument();
+    expect(window.location.href).not.toContain("checkout.stripe.com");
+    expect(store["optionstaxhub-packet-paid:analysis-1"]).toBeUndefined();
+  });
+
   it("holds Pay on a fresh upload and shows the paid year after a same-year 409", async () => {
     const detail =
       "Payment was received, but this analysis has no source document. Run a new analysis for this tax year.";
