@@ -122,8 +122,12 @@ def price_basis_from_quotes(
     csv_as_of: str | None,
     fill_fallback: bool = False,
 ) -> dict[str, Any]:
-    """Portfolio provenance. ``live`` is true only when every quote succeeded."""
-    live = bool(quotes) and all(
+    """Portfolio provenance. ``live`` is true only when every quote succeeded.
+
+    An unquoted purchase-fill lot is not in ``quotes``. ``fill_fallback``
+    keeps that book off the live label.
+    """
+    live = bool(quotes) and not fill_fallback and all(
         quote.source == "live" and quote.provider and quote.as_of for quote in quotes
     )
     provider: str | None = None

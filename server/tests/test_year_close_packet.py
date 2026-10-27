@@ -1697,6 +1697,75 @@ def test_checkout_promotes_a2_when_grant_names_a1_and_receipt_lookup_fails(monke
     assert after.headers["content-type"].startswith("application/pdf")
 
 
+def test_entitlement_pairs_grant_session_with_that_payments_analysis_only(monkeypatch):
+    """Grant session S1 must not borrow analysis B from a newer S2 receipt.
+
+    The analysis id is included only when the receipt for S1 itself names it.
+    A later miss omits the id and still returns paid. Stripe is not called.
+    """
+    grant_session = "cs_s1"
+    other_session = "cs_s2"
+    analysis_a = "analysis-a"
+    analysis_b = "analysis-b"
+    holder = {
+        "session_row": {
+            "packet_session_id": grant_session,
+            "analysis_id": analysis_a,
+            "tax_year": 2026,
+        }
+    }
+    monkeypatch.setattr(
+        main,
+        "lookup_packet_grant_for_tax_year",
+        lambda *_args: (grant_session, True),
+    )
+    monkeypatch.setattr(
+        main,
+        "lookup_packet_entitlement_for_tax_year",
+        lambda *_args: (
+            {"packet_session_id": other_session, "analysis_id": analysis_b},
+            True,
+        ),
+    )
+
+    def session_lookup(_user_id, _tax_year, session_id):
+        row = holder["session_row"]
+        if row is None or session_id != grant_session:
+            return None, True
+        return dict(row), True
+
+    monkeypatch.setattr(main, "lookup_packet_session_entitlement", session_lookup)
+    created = []
+    monkeypatch.setattr(
+        main.stripe.checkout.Session,
+        "create",
+        lambda **kwargs: created.append(kwargs),
+    )
+
+    first = client.get(
+        "/api/year-close-packet/entitlement",
+        params={"tax_year": 2026},
+    )
+    assert first.status_code == 200, first.text
+    body = first.json()
+    assert body["paid"] is True
+    assert body["session_id"] == grant_session
+    assert body["analysis_id"] == analysis_a
+    assert body["analysis_id"] != analysis_b
+
+    holder["session_row"] = None
+    second = client.get(
+        "/api/year-close-packet/entitlement",
+        params={"tax_year": 2026},
+    )
+    assert second.status_code == 200, second.text
+    second_body = second.json()
+    assert second_body["paid"] is True
+    assert second_body["session_id"] == grant_session
+    assert "analysis_id" not in second_body
+    assert created == []
+
+
 def test_checkout_restores_private_snapshot_after_worker_restart(monkeypatch):
     _test_stripe_env(monkeypatch)
     analysis_id = "analysis-cold-checkout"

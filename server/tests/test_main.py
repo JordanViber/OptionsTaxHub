@@ -3379,6 +3379,40 @@ def test_analyze_survives_yahoo_no_quote(monkeypatch):
     clear_cache()
 
 
+def test_mixed_book_with_one_unquoted_fill_lot_is_not_live():
+    """Live quotes for some lots must not mark the book live when one lot is a purchase fill."""
+    from datetime import date
+
+    from models import TaxLot
+    from price_service import PURCHASE_PRICE_LABEL, Quote
+
+    def lot(symbol: str, price: float, kind: str | None) -> TaxLot:
+        return TaxLot(
+            symbol=symbol,
+            quantity=1,
+            cost_basis_per_share=price,
+            total_cost_basis=price,
+            purchase_date=date(2024, 1, 15),
+            current_price=price,
+            price_kind=kind,
+        )
+
+    lots = [
+        lot("AAPL", 190.0, None),
+        lot("MSFT", 420.0, None),
+        lot("NVDA", 100.0, "fill"),
+    ]
+    quotes = [
+        Quote("AAPL", 190.0, "live", "yahoo", "2026-10-20T15:00:00+00:00"),
+        Quote("MSFT", 420.0, "live", "yahoo", "2026-10-20T15:00:00+00:00"),
+    ]
+    basis = main._stamp_price_provenance(lots, [], [], quotes, "2026-08-12")
+    assert basis.live is False
+    assert basis.label == PURCHASE_PRICE_LABEL
+    assert basis.provider is None
+    assert basis.as_of is None
+
+
 def test_two_fills_of_one_symbol_stay_fill_when_yahoo_fails(monkeypatch):
     """One lot's purchase price must not price the other lot as a stated loss."""
     from price_service import clear_cache

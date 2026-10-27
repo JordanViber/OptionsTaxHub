@@ -4523,6 +4523,29 @@ def _paid_entitlement_analysis_id(entitlement: object) -> str | None:
     return cleaned or None
 
 
+def _analysis_id_for_same_payment(
+    user_id: str,
+    tax_year: int,
+    session_id: str,
+) -> str | None:
+    """Analysis id only when this Checkout Session's own receipt names one.
+
+    The newest year receipt can belong to a different payment. A miss or
+    outage omits the id. The grant already proved payment, so this lookup
+    must not fail the entitlement response.
+    """
+    entitlement, entitlement_ok = lookup_packet_session_entitlement(
+        user_id,
+        tax_year,
+        session_id,
+    )
+    if not entitlement_ok or not isinstance(entitlement, dict):
+        return None
+    if entitlement.get("packet_session_id") != session_id:
+        return None
+    return _paid_entitlement_analysis_id(entitlement)
+
+
 def _paid_year_entitlement_body(
     tax_year: int,
     session_id: str,
@@ -4562,9 +4585,9 @@ async def get_year_close_packet_entitlement(
     """Whether this signed-in user already paid for the tax year.
 
     Reads the durable grant, then the entitlement row. Never calls Stripe,
-    so a paid year cannot create a Checkout Session here. When a receipt
-    row names an analysis, that id is included so a later run in the same
-    year can be promoted without a second charge.
+    so a paid year cannot create a Checkout Session here. When the grant
+    names a session, the analysis id is included only if that same payment's
+    receipt names one. A different payment's receipt is not paired in.
 
     When SEASON_UNLOCK is on, the body includes season_unlocked from
     has_season_unlock. The flag is off by default, and then this body
@@ -4580,13 +4603,13 @@ async def get_year_close_packet_entitlement(
     entitled_analysis_id = None
     if session_id:
         # The grant already proved payment. Naming the receipt's analysis is
-        # optional. A lookup failure must not turn this response into 503.
-        entitlement, entitlement_ok = lookup_packet_entitlement_for_tax_year(
+        # optional, and only the receipt for this session counts. A lookup
+        # failure must not turn this response into 503.
+        entitled_analysis_id = _analysis_id_for_same_payment(
             user_id,
             tax_year,
+            session_id,
         )
-        if entitlement_ok:
-            entitled_analysis_id = _paid_entitlement_analysis_id(entitlement)
     else:
         entitlement, entitlement_ok = lookup_packet_entitlement_for_tax_year(
             user_id,

@@ -590,9 +590,30 @@ describe("Home page", () => {
     });
   });
 
-  it("re-runs the sample once when resume checkout has no stored analysis", async () => {
+  it("times out a signed-out resume tab instead of re-analyzing the sample", async () => {
+    jest.useFakeTimers();
     const mutate = jest.fn();
     setupMocks(createAuthMock(null, false), createAnalyzeMock({ mutate }));
+    sessionStorage.setItem("optionstaxhub-packet-resume-sample", "1");
+    sessionStorage.setItem("optionstaxhub-packet-resume-checkout", "1");
+    window.history.pushState({}, "", "/dashboard?resume_checkout=1");
+
+    renderWithClient(<Home />);
+
+    expect(mutate).not.toHaveBeenCalled();
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(8_000);
+    });
+    expect(screen.getByTestId("packet-resume-reupload")).toBeInTheDocument();
+    expect(mutate).not.toHaveBeenCalled();
+  });
+
+  it("re-runs the sample once when a signed-in resume checkout has no stored analysis", async () => {
+    const mutate = jest.fn();
+    setupMocks(
+      createAuthMock({ id: "user-1", email: "test@example.com" }, false),
+      createAnalyzeMock({ mutate }),
+    );
     sessionStorage.setItem("optionstaxhub-packet-resume-sample", "1");
     sessionStorage.setItem("optionstaxhub-packet-resume-checkout", "1");
     window.history.pushState({}, "", "/dashboard?resume_checkout=1");
