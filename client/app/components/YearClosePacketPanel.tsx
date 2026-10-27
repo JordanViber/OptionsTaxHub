@@ -288,13 +288,16 @@ function resumeEntitlementPending(analysis: PortfolioAnalysis): boolean {
  * A restored guest or local run has no resume markers, but the year may
  * already be paid. Check entitlement before Pay $49 can be pressed.
  * The recent-checkout claim stays on the resume path only.
- * A sample reload is not this path.
+ * A sample reload and a mismatched resume handoff are not this path.
  */
 function restoredEntitlementPending(
   analysis: PortfolioAnalysis,
   restoredRun: boolean,
 ): boolean {
   if (!restoredRun || analysis.sample_run === true) {
+    return false;
+  }
+  if (payHeldForDifferentResume(analysis)) {
     return false;
   }
   if (
@@ -1031,6 +1034,7 @@ function YearClosePacketPanelForAnalysis({
         // cannot open a second Checkout.
         const promoteThisRun =
           analysisRef.current.sample_run !== true &&
+          !payHeldForDifferentResume(analysisRef.current) &&
           analysisRef.current.packet_unlocked !== true &&
           currentAnalysisId.length > 0 &&
           !idsMatch;
