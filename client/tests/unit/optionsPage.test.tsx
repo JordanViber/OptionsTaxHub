@@ -151,6 +151,37 @@ describe("Options page", () => {
     );
   });
 
+  it("does not use a run stored for a signed-in account", async () => {
+    sessionStorage.setItem(
+      "optionstaxhub-analysis",
+      JSON.stringify({ positions: [nvdaStock] }),
+    );
+    sessionStorage.setItem("optionstaxhub-analysis-owner", "account-user");
+    render(<OptionsPage />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("entry-analysis-panel")).toBeInTheDocument();
+    });
+
+    const future = new Date();
+    future.setFullYear(future.getFullYear() + 1);
+    const expiration = `${future.getFullYear()}-${String(future.getMonth() + 1).padStart(2, "0")}-${String(future.getDate()).padStart(2, "0")}`;
+    fireEvent.change(screen.getByTestId("entry-symbol"), {
+      target: { value: "NVDA" },
+    });
+    fireEvent.change(screen.getByTestId("entry-strike"), {
+      target: { value: "250" },
+    });
+    fireEvent.change(screen.getByTestId("entry-expiration"), {
+      target: { value: expiration },
+    });
+    fireEvent.change(screen.getByTestId("entry-premium"), {
+      target: { value: "4.20" },
+    });
+
+    expect(screen.queryByText(/52 sh/)).not.toBeInTheDocument();
+  });
+
   it("sends unconfirmed users to confirm-email", async () => {
     mockAuth.user = { id: "user-1", email_confirmed_at: null };
     render(<OptionsPage />);

@@ -2726,6 +2726,89 @@ describe("DashboardPage", () => {
     }
   });
 
+  it("shows a guest-owned run and hides an account-owned run", async () => {
+    const previousUser = mockAuthState.user;
+    mockAuthState.user = null;
+    const store = installSessionStore();
+    store.set(
+      "optionstaxhub-analysis",
+      JSON.stringify({ ...baseAnalysis, analysis_id: "guest-run" }),
+    );
+    store.set("optionstaxhub-analysis-owner", "guest");
+    try {
+      const { unmount } = render(<DashboardPage />, { wrapper: createWrapper() });
+      expect(
+        await screen.findByText("This run lives on this device"),
+      ).toBeInTheDocument();
+      expect(screen.getByText("Tax Year: 2025")).toBeInTheDocument();
+      unmount();
+
+      store.set("optionstaxhub-analysis-owner", "account-user");
+      render(<DashboardPage />, { wrapper: createWrapper() });
+      expect(
+        await screen.findByText(/Get started with your first analysis/i),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText("This run lives on this device"),
+      ).not.toBeInTheDocument();
+      expect(screen.queryByText("Tax Year: 2025")).not.toBeInTheDocument();
+    } finally {
+      mockAuthState.user = previousUser;
+    }
+  });
+
+  it("restores a guest run when this tab is claiming it at checkout", async () => {
+    const store = installSessionStore();
+    store.set("optionstaxhub-analysis", JSON.stringify(baseAnalysis));
+    store.set("optionstaxhub-analysis-owner", "guest");
+    store.set(PACKET_RESUME_CHECKOUT_KEY, "1");
+    store.set(
+      PACKET_RESUME_ANALYSIS_KEY,
+      JSON.stringify({ analysisId: baseAnalysis.analysis_id, taxYear: 2025 }),
+    );
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    expect(await screen.findByText("Tax Year: 2025")).toBeInTheDocument();
+    expect(
+      screen.queryByText("This run lives on this device"),
+    ).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(store.get("optionstaxhub-analysis-owner")).toBe("test-user");
+    });
+  });
+
+  it("does not restore a guest run onto a signed-in dashboard", async () => {
+    const store = installSessionStore();
+    store.set(
+      "optionstaxhub-analysis",
+      JSON.stringify({ ...baseAnalysis, analysis_id: "guest-run" }),
+    );
+    store.set("optionstaxhub-analysis-owner", "guest");
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    expect(
+      await screen.findByText(/Get started with your first analysis/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Restored from browser")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("This run lives on this device"),
+    ).not.toBeInTheDocument();
+    expect(store.get("optionstaxhub-analysis")).toContain("guest-run");
+  });
+
+  it("restores a run only for the account that stored it", async () => {
+    const store = installSessionStore();
+    store.set("optionstaxhub-analysis", JSON.stringify(baseAnalysis));
+    store.set("optionstaxhub-analysis-owner", "test-user");
+
+    render(<DashboardPage />, { wrapper: createWrapper() });
+
+    expect(await screen.findByText("Restored from browser")).toBeInTheDocument();
+    expect(screen.getByText("Tax Year: 2025")).toBeInTheDocument();
+  });
+
   it("keeps the re-upload alert instead of history when an uploaded handoff has no stored analysis", async () => {
     const store = installSessionStore();
     mockHistoryData = [

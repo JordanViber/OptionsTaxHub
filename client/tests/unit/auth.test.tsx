@@ -324,6 +324,53 @@ describe("Auth Context", () => {
     ).rejects.toThrow("Sign out failed");
   });
 
+  it("clears local runs when logout returns 403", async () => {
+    const forbidden = Object.assign(new Error("Forbidden"), { status: 403 });
+    mockSignOut.mockResolvedValue({ error: forbidden });
+    sessionStorage.setItem("optionstaxhub-analysis", "{\"analysis_id\":\"run-1\"}");
+    sessionStorage.setItem("optionstaxhub-analysis-owner", "user-a");
+    localStorage.setItem("optionstaxhub-packet-resume", "{\"analysisId\":\"run-1\"}");
+    localStorage.setItem("appWasInstalled", "true");
+
+    const { result } = renderHook(() => useAuth(), { wrapper: createWrapper });
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    await expect(
+      act(async () => {
+        await result.current.signOut();
+      }),
+    ).rejects.toThrow("Forbidden");
+
+    expect(sessionStorage.getItem("optionstaxhub-analysis")).toBeNull();
+    expect(sessionStorage.getItem("optionstaxhub-analysis-owner")).toBeNull();
+    expect(localStorage.getItem("optionstaxhub-packet-resume")).toBeNull();
+    expect(localStorage.getItem("appWasInstalled")).toBe("true");
+  });
+
+  it("clears local runs when logout throws", async () => {
+    mockSignOut.mockRejectedValue(new Error("network down"));
+    sessionStorage.setItem("optionstaxhub-analysis", "{\"analysis_id\":\"run-1\"}");
+    localStorage.setItem("custom-packet-resume", "1");
+
+    const { result } = renderHook(() => useAuth(), { wrapper: createWrapper });
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    await expect(
+      act(async () => {
+        await result.current.signOut();
+      }),
+    ).rejects.toThrow("network down");
+
+    expect(sessionStorage.getItem("optionstaxhub-analysis")).toBeNull();
+    expect(localStorage.getItem("custom-packet-resume")).toBeNull();
+  });
+
   it("useAuth throws if used outside AuthProvider", () => {
     // Suppress console.error for expected error
     const spy = jest.spyOn(console, "error").mockImplementation(() => {});
