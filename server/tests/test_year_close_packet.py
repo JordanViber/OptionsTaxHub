@@ -19,6 +19,7 @@ from pypdf import PdfReader
 
 import db
 import main
+import year_close_packet
 from auth import get_current_user, get_current_user_with_token
 from stripe import StripeObject
 
@@ -1263,6 +1264,196 @@ def test_entitlement_endpoint_reports_unpaid_without_creating_a_session(monkeypa
     assert response.status_code == 200, response.text
     assert response.json() == {"paid": False, "tax_year": 2026}
     assert created == []
+
+
+def test_has_season_unlock_honors_cs_test_receipt(monkeypatch):
+    monkeypatch.setattr(year_close_packet, "packet_requires_test_stripe", lambda: True)
+    monkeypatch.setattr(
+        year_close_packet,
+        "lookup_packet_entitlement_for_tax_year",
+        lambda *_args, **_kwargs: (
+            {"analysis_id": "aid", "packet_session_id": "cs_test_kept"},
+            True,
+        ),
+    )
+    assert year_close_packet.has_season_unlock("user-1", 2026) == (True, True)
+
+
+def test_has_season_unlock_skips_conflict_and_live_receipt_in_test_mode(monkeypatch):
+    monkeypatch.setattr(year_close_packet, "packet_requires_test_stripe", lambda: True)
+    monkeypatch.setattr(
+        year_close_packet,
+        "lookup_packet_entitlement_for_tax_year",
+        lambda *_args, **_kwargs: (
+            {"analysis_id": "conflict:aid", "packet_session_id": "cs_test_refund"},
+            True,
+        ),
+    )
+    assert year_close_packet.has_season_unlock("user-1", 2026) == (False, True)
+
+    monkeypatch.setattr(
+        year_close_packet,
+        "lookup_packet_entitlement_for_tax_year",
+        lambda *_args, **_kwargs: (
+            {"analysis_id": "aid", "packet_session_id": "cs_live_prod"},
+            True,
+        ),
+    )
+    assert year_close_packet.has_season_unlock("user-1", 2026) == (False, True)
+
+
+def test_has_season_unlock_honors_cs_live_only_in_live_mode(monkeypatch):
+    monkeypatch.setattr(year_close_packet, "packet_requires_test_stripe", lambda: False)
+    monkeypatch.setattr(
+        year_close_packet,
+        "lookup_packet_entitlement_for_tax_year",
+        lambda *_args, **_kwargs: (
+            {"analysis_id": "aid", "packet_session_id": "cs_live_kept"},
+            True,
+        ),
+    )
+    assert year_close_packet.has_season_unlock("user-1", 2026) == (True, True)
+
+    monkeypatch.setattr(
+        year_close_packet,
+        "lookup_packet_entitlement_for_tax_year",
+        lambda *_args, **_kwargs: (
+            {"analysis_id": "aid", "packet_session_id": "cs_test_staging"},
+            True,
+        ),
+    )
+    assert year_close_packet.has_season_unlock("user-1", 2026) == (False, True)
+
+
+def test_has_season_unlock_miss_and_outage(monkeypatch):
+    monkeypatch.setattr(
+        year_close_packet,
+        "lookup_packet_entitlement_for_tax_year",
+        lambda *_args, **_kwargs: (None, True),
+    )
+    assert year_close_packet.has_season_unlock("user-1", 2026) == (False, True)
+    assert year_close_packet.has_season_unlock("", 2026) == (False, False)
+
+    monkeypatch.setattr(
+        year_close_packet,
+        "lookup_packet_entitlement_for_tax_year",
+        lambda *_args, **_kwargs: (None, False),
+    )
+    assert year_close_packet.has_season_unlock("user-1", 2026) == (False, False)
+
+
+def test_entitlement_omits_season_unlocked_when_flag_off(monkeypatch):
+    monkeypatch.delenv("SEASON_UNLOCK", raising=False)
+    monkeypatch.setattr(
+        main,
+        "lookup_packet_grant_for_tax_year",
+        lambda *_args, **_kwargs: (None, True),
+    )
+    monkeypatch.setattr(
+        main,
+        "lookup_packet_entitlement_for_tax_year",
+        lambda *_args, **_kwargs: (
+            {"packet_session_id": "cs_test_year", "analysis_id": "aid"},
+            True,
+        ),
+    )
+    called = []
+    monkeypatch.setattr(
+        main,
+        "has_season_unlock",
+        lambda *_args, **_kwargs: called.append("called") or (True, True),
+    )
+
+    response = client.get(
+        "/api/year-close-packet/entitlement",
+        params={"tax_year": 2026},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["paid"] is True
+    assert body["session_id"] == "cs_test_year"
+    assert "season_unlocked" not in body
+    assert called == []
+
+
+def test_entitlement_reports_season_unlocked_when_flag_on(monkeypatch):
+    monkeypatch.setenv("SEASON_UNLOCK", "1")
+    monkeypatch.setattr(
+        main,
+        "lookup_packet_grant_for_tax_year",
+        lambda *_args, **_kwargs: (None, True),
+    )
+    monkeypatch.setattr(
+        main,
+        "lookup_packet_entitlement_for_tax_year",
+        lambda *_args, **_kwargs: (
+            {"packet_session_id": "cs_test_year", "analysis_id": "aid"},
+            True,
+        ),
+    )
+    monkeypatch.setattr(main, "has_season_unlock", lambda *_args, **_kwargs: (True, True))
+
+    response = client.get(
+        "/api/year-close-packet/entitlement",
+        params={"tax_year": 2026},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["paid"] is True
+    assert body["season_unlocked"] is True
+    assert body["analysis_id"] == "aid"
+
+
+def test_entitlement_season_unlocked_false_when_unpaid(monkeypatch):
+    monkeypatch.setenv("SEASON_UNLOCK", "1")
+    monkeypatch.setattr(
+        main,
+        "lookup_packet_grant_for_tax_year",
+        lambda *_args, **_kwargs: (None, True),
+    )
+    monkeypatch.setattr(
+        main,
+        "lookup_packet_entitlement_for_tax_year",
+        lambda *_args, **_kwargs: (None, True),
+    )
+    monkeypatch.setattr(main, "has_season_unlock", lambda *_args, **_kwargs: (False, True))
+
+    response = client.get(
+        "/api/year-close-packet/entitlement",
+        params={"tax_year": 2026},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "paid": False,
+        "tax_year": 2026,
+        "season_unlocked": False,
+    }
+
+
+def test_entitlement_season_unlock_outage_is_503(monkeypatch):
+    monkeypatch.setenv("SEASON_UNLOCK", "1")
+    monkeypatch.setattr(
+        main,
+        "lookup_packet_grant_for_tax_year",
+        lambda *_args, **_kwargs: (None, True),
+    )
+    monkeypatch.setattr(
+        main,
+        "lookup_packet_entitlement_for_tax_year",
+        lambda *_args, **_kwargs: (None, True),
+    )
+    monkeypatch.setattr(main, "has_season_unlock", lambda *_args, **_kwargs: (False, False))
+
+    response = client.get(
+        "/api/year-close-packet/entitlement",
+        params={"tax_year": 2026},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Could not verify existing packet access. Please retry."
 
 
 def test_entitlement_get_ignores_memory_when_grant_and_row_are_empty(monkeypatch):

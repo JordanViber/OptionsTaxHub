@@ -2675,4 +2675,121 @@ describe("YearClosePacketPanel", () => {
     );
     expect(window.location.href).not.toContain("checkout.stripe.com");
   });
+
+  describe("season unlock flag", () => {
+    const previousFlag = process.env.NEXT_PUBLIC_SEASON_UNLOCK;
+
+    beforeEach(() => {
+      process.env.NEXT_PUBLIC_SEASON_UNLOCK = "1";
+    });
+
+    afterEach(() => {
+      if (previousFlag === undefined) {
+        delete process.env.NEXT_PUBLIC_SEASON_UNLOCK;
+      } else {
+        process.env.NEXT_PUBLIC_SEASON_UNLOCK = previousFlag;
+      }
+    });
+
+    function sales2026(): PortfolioAnalysis {
+      return {
+        ...analysis,
+        sample_run: false,
+        tax_profile: {
+          filing_status: "single",
+          estimated_annual_income: 75000,
+          state: "",
+          tax_year: 2026,
+        },
+        summary: {
+          ...analysis.summary,
+          realized_summary: {
+            tax_year: 2026,
+            st_gains: 10,
+            st_losses: 0,
+            lt_gains: 0,
+            lt_losses: 0,
+            net_st: 10,
+            net_lt: 0,
+            total_net: 10,
+            transactions_count: 1,
+          },
+        },
+      };
+    }
+
+    it("hides Pay on the sample and keeps Download", () => {
+      render(
+        <YearClosePacketPanel analysis={{ ...sales2026(), sample_run: true }} />,
+      );
+      expect(screen.queryByRole("button", { name: "Unlock 2026" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Pay $49" })).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Download" })).toBeInTheDocument();
+      expect(screen.queryByTestId("season-unlock-price")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("season-pay-gate")).not.toBeInTheDocument();
+    });
+
+    it("disables Unlock 2026 and names the hinted year when nothing sold in 2026", () => {
+      render(<YearClosePacketPanel analysis={analysis} />);
+      const pay = screen.getByRole("button", { name: "Unlock 2026" });
+      expect(pay).toBeDisabled();
+      expect(screen.getByTestId("season-unlock-price")).toHaveTextContent(
+        "$49 one-time, 2026 tax season",
+      );
+      const gate = screen.getByTestId("season-pay-gate");
+      expect(gate).toHaveTextContent("Nothing to report for 2026 yet.");
+      expect(gate).toHaveTextContent("This run points to 2025.");
+      fireEvent.click(pay);
+      expect(checkoutPosts()).toHaveLength(0);
+    });
+
+    it("enables Unlock 2026 when the run has 2026 sales", async () => {
+      mockFetch.mockImplementation(async (url: RequestInfo | URL) => {
+        if (String(url).includes("/api/year-close-packet/entitlement")) {
+          return unpaidEntitlement();
+        }
+        return checkoutOk();
+      });
+      render(<YearClosePacketPanel analysis={sales2026()} />);
+      const pay = screen.getByRole("button", { name: "Unlock 2026" });
+      expect(pay).toBeEnabled();
+      expect(screen.getByTestId("season-unlock-price")).toHaveTextContent(
+        "$49 one-time, 2026 tax season",
+      );
+      expect(screen.queryByTestId("season-pay-gate")).not.toBeInTheDocument();
+      fireEvent.click(pay);
+      await waitFor(() => expect(checkoutPosts()).toHaveLength(1));
+    });
+
+    it("hides Pay on a new 2026 run when season_unlocked is true", async () => {
+      mockFetch.mockImplementation(async (url: RequestInfo | URL) => {
+        if (String(url).includes("/api/year-close-packet/entitlement")) {
+          return {
+            ok: true,
+            status: 200,
+            json: () =>
+              Promise.resolve({
+                paid: true,
+                tax_year: 2026,
+                session_id: "cs_test_year",
+                analysis_id: "older-run",
+                season_unlocked: true,
+              }),
+          };
+        }
+        return checkoutOk();
+      });
+      render(
+        <YearClosePacketPanel
+          analysis={{ ...sales2026(), analysis_id: "new-run-2026" }}
+        />,
+      );
+      expect(await screen.findByTestId("season-unlocked")).toHaveTextContent(
+        "Unlocked for this tax year. Re-uploads and new runs stay included.",
+      );
+      expect(screen.queryByRole("button", { name: "Unlock 2026" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Pay $49" })).not.toBeInTheDocument();
+      expect(checkoutPosts()).toHaveLength(0);
+    });
+  });
 });

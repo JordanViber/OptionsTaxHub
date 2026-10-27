@@ -36,6 +36,12 @@ import {
   RESUME_CHECKOUT_PARAM,
   signInHref,
 } from "@/lib/safeNextPath";
+import {
+  SEASON_UNLOCK_PAY_LABEL,
+  SEASON_UNLOCK_PRICE_COPY,
+  seasonPayGate,
+  seasonUnlockEnabled,
+} from "@/lib/seasonUnlock";
 import type { PortfolioAnalysis } from "@/lib/types";
 
 let packetResumeCheckoutLocked = false;
@@ -441,6 +447,7 @@ function YearClosePacketPanelForAnalysis({
   );
   const [existingPacketDownload, setExistingPacketDownload] = useState(false);
   const [extraChargeRefund, setExtraChargeRefund] = useState(false);
+  const [seasonUnlocked, setSeasonUnlocked] = useState(false);
   const confirmAttempt = useRef(0);
   const missingAnalysisId = canonicalAnalysisId === "local-analysis";
 
@@ -720,6 +727,45 @@ function YearClosePacketPanelForAnalysis({
   }, [paid]);
 
   useEffect(() => {
+    if (!seasonUnlockEnabled() || guest) {
+      return;
+    }
+    const year = analysis.tax_profile?.tax_year;
+    if (typeof year !== "number" || !Number.isFinite(year)) {
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const session = await getSession();
+        const accessToken = session?.access_token || "";
+        if (!accessToken || cancelled) {
+          return;
+        }
+        const response = await fetch(
+          `${API_URL}/api/year-close-packet/entitlement?tax_year=${encodeURIComponent(String(year))}`,
+          {
+            method: "GET",
+            headers: { Authorization: `Bearer ${accessToken}` },
+          },
+        );
+        if (!response.ok || cancelled) {
+          return;
+        }
+        const data = await response.json();
+        if (!cancelled && data?.season_unlocked === true) {
+          setSeasonUnlocked(true);
+        }
+      } catch {
+        // ignore
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [guest, analysis.tax_profile?.tax_year]);
+
+  useEffect(() => {
     const current = analysisRef.current;
     if (guest) {
       setPaid(false);
@@ -928,11 +974,17 @@ function YearClosePacketPanelForAnalysis({
     canonicalAnalysisId,
   ]);
 
+  const payGate = seasonPayGate(analysis);
+  const hideSeasonPay = seasonUnlocked || Boolean(payGate?.hidePay);
+
   const handlePay = async (options?: {
     guestRedirect?: boolean;
     claim?: string;
   }) => {
     if (payHeldForDifferentResume(analysis)) {
+      return;
+    }
+    if (hideSeasonPay || payGate?.disabled) {
       return;
     }
     const guestRedirect = options?.guestRedirect !== false;
@@ -1278,7 +1330,7 @@ function YearClosePacketPanelForAnalysis({
           </Typography>
         </Box>
         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-          {!paid && (
+          {!paid && !hideSeasonPay && (
             <Button
               variant="contained"
               startIcon={
@@ -1298,10 +1350,11 @@ function YearClosePacketPanelForAnalysis({
                 extraChargeRefund ||
                 entitlementGate === "unknown" ||
                 holdUnconfirmedPay ||
-                payHeldForDifferentResume(analysis)
+                payHeldForDifferentResume(analysis) ||
+                Boolean(payGate?.disabled)
               }
             >
-              Pay $49
+              {payGate ? SEASON_UNLOCK_PAY_LABEL : "Pay $49"}
             </Button>
           )}
           {!extraChargeRefund && !holdUnconfirmedPay && (
@@ -1322,6 +1375,32 @@ function YearClosePacketPanelForAnalysis({
             </Button>
           )}
         </Stack>
+        {payGate && !paid && !hideSeasonPay && (
+          <Typography variant="caption" data-testid="season-unlock-price">
+            {SEASON_UNLOCK_PRICE_COPY}
+          </Typography>
+        )}
+        {payGate && !paid && !seasonUnlocked && payGate.lines.length > 0 && (
+          <Typography role="status" variant="body2" data-testid="season-pay-gate">
+            {payGate.lines[0]}
+            {payGate.lines[1] ? (
+              <>
+                <br />
+                {payGate.lines[1]}
+              </>
+            ) : null}
+          </Typography>
+        )}
+        {seasonUnlocked && !paid && (
+          <Typography
+            role="status"
+            variant="caption"
+            color="success.main"
+            data-testid="season-unlocked"
+          >
+            Unlocked for this tax year. Re-uploads and new runs stay included.
+          </Typography>
+        )}
         {missingAnalysisId && (
           <Typography role="status" variant="caption" color="text.secondary">
             Re-run this analysis to access its packet.
