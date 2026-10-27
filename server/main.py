@@ -61,7 +61,9 @@ from year_close_packet import (
     packet_analysis_id_from_session,
     packet_checkout_custom_text,
     packet_checkout_line_items,
+    has_season_unlock,
     packet_requires_test_stripe,
+    season_unlock_enabled,
     packet_user_id_from_session,
     packet_session_id,
     packet_store_owner,
@@ -4520,6 +4522,19 @@ def _paid_year_entitlement_body(
     return body
 
 
+def _with_season_unlock(body: dict, user_id: str, tax_year: int) -> dict:
+    """Add season_unlocked only while SEASON_UNLOCK is on."""
+    if not season_unlock_enabled():
+        return body
+    unlocked, lookup_ok = has_season_unlock(user_id, tax_year)
+    if not lookup_ok:
+        raise HTTPException(
+            status_code=503,
+            detail="Could not verify existing packet access. Please retry.",
+        )
+    return {**body, "season_unlocked": unlocked}
+
+
 @app.get(
     "/api/year-close-packet/entitlement",
     responses={
@@ -4536,6 +4551,10 @@ async def get_year_close_packet_entitlement(
     so a paid year cannot create a Checkout Session here. When a receipt
     row names an analysis, that id is included so a later run in the same
     year can be promoted without a second charge.
+
+    When SEASON_UNLOCK is on, the body includes season_unlocked from
+    has_season_unlock. The flag is off by default, and then this body
+    stays paid, tax_year, and session_id.
     """
     session_id, grant_ok = lookup_packet_grant_for_tax_year(user_id, tax_year)
     if not grant_ok:
@@ -4568,12 +4587,20 @@ async def get_year_close_packet_entitlement(
             session_id = _checkout_session_id(entitlement.get("packet_session_id"))
             entitled_analysis_id = _paid_entitlement_analysis_id(entitlement)
     if session_id:
-        return _paid_year_entitlement_body(
+        return _with_season_unlock(
+            _paid_year_entitlement_body(
+                int(tax_year),
+                session_id,
+                entitled_analysis_id,
+            ),
+            user_id,
             int(tax_year),
-            session_id,
-            entitled_analysis_id,
         )
-    return {"paid": False, "tax_year": int(tax_year)}
+    return _with_season_unlock(
+        {"paid": False, "tax_year": int(tax_year)},
+        user_id,
+        int(tax_year),
+    )
 
 
 @app.post(
