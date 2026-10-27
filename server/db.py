@@ -1429,6 +1429,24 @@ STICKY_CONFLICT_RECEIPT = _StickyConflictReceipt()
 PACKET_GRANT_SAME_YEAR_DUPLICATE = "PACKET_GRANT_SAME_YEAR_DUPLICATE"
 
 
+class _PacketYearClaimHeld:
+    """This session lost the one non-conflict receipt for the tax year.
+
+    Callers must test this sentinel by identity. It is not a saved grant and
+    not an outage (None). Bool is false so a caller that only checks
+    ``if not saved`` retries instead of treating the lost claim as success.
+    """
+
+    def __repr__(self) -> str:
+        return "PACKET_YEAR_CLAIM_HELD"
+
+    def __bool__(self) -> bool:
+        return False
+
+
+PACKET_YEAR_CLAIM_HELD = _PacketYearClaimHeld()
+
+
 class _AlreadyGrantedEntitlement:
     """The charged session already has a real entitlement, not a conflict receipt.
 
@@ -1597,8 +1615,15 @@ def save_packet_entitlement(
         except Exception as insert_error:
             if not _is_unique_violation(insert_error):
                 raise
-            # Stored row, not a sentinel. The receipt helper classifies it.
-            return read_existing()
+            # Same cs_ replay: the primary key is already this session's row.
+            # A miss is the partial unique index — another cs_ holds the year.
+            # A conflict insert is outside that index, so a miss stays an outage.
+            current = read_existing()
+            if current is STICKY_CONFLICT_RECEIPT or isinstance(current, dict):
+                return current
+            if not conflict_receipt:
+                return PACKET_YEAR_CLAIM_HELD
+            return None
         current = read_existing()
         if current is STICKY_CONFLICT_RECEIPT or isinstance(current, dict):
             if conflict_receipt and isinstance(current, dict):
@@ -2268,6 +2293,82 @@ def lookup_packet_entitlements_for_analysis(
         if isinstance(session_id, str) and session_id.startswith("cs_"):
             kept.append(row)
     return kept, True
+
+
+def release_packet_snapshot_paid_stamp(
+    analysis_id: str,
+    user_id: str,
+    tax_year: int,
+    session_id: str,
+    client=None,
+) -> Optional[bool]:
+    """Clear this session's paid stamp after it lost the year claim.
+
+    True when the row is not paid by this session, including when it never
+    was. None is a read or update outage. The conditional update matches
+    only this analysis, year, and session, and puts the unpaid TTL back.
+    """
+    analysis_id = _canonical_analysis_id(analysis_id) or ""
+    if not analysis_id or not user_id or tax_year is None or not session_id:
+        return None
+    if client is None:
+        client = get_supabase()
+    if client is None:
+        return None
+    stored, stored_ok = get_packet_snapshot(
+        analysis_id,
+        user_id,
+        client=client,
+        tax_year=int(tax_year),
+    )
+    if not stored_ok:
+        return None
+    if (
+        not isinstance(stored, dict)
+        or not stored.get("paid_at")
+        or stored.get("packet_session_id") != session_id
+    ):
+        return True
+    stored_analysis_id = stored.get("analysis_id") or analysis_id
+    now = datetime.now(timezone.utc)
+    try:
+        (
+            client.table("year_close_packet_snapshots")
+            .update({
+                "paid_at": None,
+                "packet_session_id": None,
+                "expires_at": (now + UNPAID_PACKET_SNAPSHOT_TTL).isoformat(),
+                "updated_at": now.isoformat(),
+            })
+            .eq("analysis_id", stored_analysis_id)
+            .eq("user_id", user_id)
+            .eq("tax_year", int(tax_year))
+            .eq("packet_session_id", session_id)
+            .select("analysis_id")
+            .execute()
+        )
+    except Exception as exc:
+        logger.error(
+            "Failed to release packet paid stamp for %s: %s",
+            analysis_id,
+            exc,
+        )
+        return None
+    reread, reread_ok = get_packet_snapshot(
+        analysis_id,
+        user_id,
+        client=client,
+        tax_year=int(tax_year),
+    )
+    if not reread_ok:
+        return None
+    if (
+        isinstance(reread, dict)
+        and reread.get("paid_at")
+        and reread.get("packet_session_id") == session_id
+    ):
+        return None
+    return True
 
 
 def mark_packet_snapshot_paid(
