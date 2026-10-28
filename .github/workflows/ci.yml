@@ -104,7 +104,7 @@ jobs:
       - name: SonarQube Cloud Scan (Backend)
         if: github.ref == 'refs/heads/main'
         continue-on-error: true  # Sonar JRE/auth 403 must not block tests that already passed
-        uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f  # v8.2.1
+        uses: SonarSource/sonarqube-scan-action@d209202bc7d53ff1cc128f7f907dac145c9d6ae9  # v8.3.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -128,7 +128,7 @@ jobs:
           fetch-depth: 0  # For SonarCloud
 
       - name: Set up Node.js
-        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af  # v6
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v6
         with:
           node-version: '22'
           cache: 'npm'
@@ -212,7 +212,7 @@ jobs:
         id: sonar-frontend
         if: github.ref == 'refs/heads/main'
         continue-on-error: true  # Sonar JRE/auth 403 must not block tests that already passed
-        uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f  # v8.2.1
+        uses: SonarSource/sonarqube-scan-action@d209202bc7d53ff1cc128f7f907dac145c9d6ae9  # v8.3.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -251,7 +251,7 @@ jobs:
       - uses: actions/checkout@a5ac7e51b41094c92402da3b24376905380afc29  # v6
 
       - name: Set up Node.js
-        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af  # v6
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v6
         with:
           node-version: '22'
           cache: 'npm'
@@ -335,7 +335,7 @@ jobs:
           npm run test:e2e
 
       - name: Upload test results
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f  # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v4
         if: always()
         with:
           name: playwright-report
@@ -344,7 +344,7 @@ jobs:
 
       - name: Upload backend logs
         if: always()
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f  # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v4
         continue-on-error: true
         with:
           name: backend-logs
@@ -352,7 +352,7 @@ jobs:
 
       - name: Upload frontend logs
         if: always()
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f  # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v4
         continue-on-error: true
         with:
           name: frontend-logs
