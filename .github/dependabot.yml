@@ -3,6 +3,7 @@ updates:
   # Frontend dependencies (npm)
   - package-ecosystem: "npm"
     directory: "/client"
+    target-branch: "staging"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -23,6 +24,7 @@ updates:
   # Backend dependencies (pip)
   - package-ecosystem: "pip"
     directory: "/server"
+    target-branch: "staging"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -42,13 +44,16 @@ updates:
   # GitHub Actions
   - package-ecosystem: "github-actions"
     directory: "/"
+    target-branch: "staging"
     schedule:
       interval: "monthly"
-      day: "monday"
     open-pull-requests-limit: 3
     labels:
       - "dependencies"
       - "ci-cd"
     commit-message:
       prefix: "chore(ci)"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
 
