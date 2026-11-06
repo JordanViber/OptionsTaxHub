@@ -335,6 +335,8 @@ export interface PortfolioAnalysis {
   packet_unlocked?: boolean;
   packet_session_id?: string | null;
   sample_run?: boolean;
+  /** Present only while the season-unlock flag is on. True includes lots and chains. */
+  season_detail?: boolean;
   disclaimer: string;
   errors: string[];
   warnings: string[];

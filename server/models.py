@@ -13,7 +13,7 @@ from datetime import date, datetime
 from enum import Enum
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_serializer
 
 
 # --- Enums ---
@@ -544,6 +544,11 @@ class PortfolioAnalysis(BaseModel):
     # In-app 2026 sample: lot rows stay on the public payload for desk preview.
     # Download still requires packet_unlocked / $49.
     sample_run: bool = False
+    # Set only while SEASON_UNLOCK is on, and only on a non-sample public body.
+    # True: this response includes the lot table and wash chains.
+    # False: those rows were stripped even if packet_unlocked is true.
+    # Omitted when the flag is off.
+    season_detail: Optional[bool] = None
     disclaimer: str = (
         "This analysis is for educational and simulation purposes only. "
         "It does not constitute financial, tax, or investment advice. "
@@ -552,3 +557,10 @@ class PortfolioAnalysis(BaseModel):
     errors: list[str] = []
     warnings: list[str] = []
     price_basis: PriceBasis = PriceBasis()
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_season_detail(self, handler):
+        data = handler(self)
+        if isinstance(data, dict) and data.get("season_detail") is None:
+            data.pop("season_detail", None)
+        return data

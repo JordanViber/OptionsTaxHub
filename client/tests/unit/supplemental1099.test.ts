@@ -376,4 +376,63 @@ describe("supplemental1099 helpers", () => {
     expect(keptSample.lot_match_report?.gap).toHaveLength(1);
     expect(keptSample.supplemental_1099?.lots).toHaveLength(1);
   });
+
+  it("keeps season lot rows only while the flag is on and season_detail is true", () => {
+    const previous = process.env.NEXT_PUBLIC_SEASON_UNLOCK;
+    const chain = {
+      chain_id: "AMD:2026-07-15:10:e0",
+      symbol: "AMD",
+      hops: [],
+    };
+    const analysis = {
+      packet_unlocked: false,
+      sample_run: false,
+      season_detail: true,
+      positions: [],
+      tax_lots: [],
+      suggestions: [],
+      wash_sale_flags: [],
+      wash_sale_chains: [chain],
+      summary: {},
+      tax_profile: null,
+      disclaimer: "",
+      errors: [],
+      warnings: [],
+      lot_match_report: {
+        matched: [],
+        gap: [
+          {
+            status: "matched_settlement_gap",
+            symbol: "AMD",
+            quantity: 10,
+            proceeds_1099: 1200,
+            proceeds_export: 1200,
+          },
+        ],
+        unmatched: [],
+        matched_count: 0,
+        gap_count: 1,
+        unmatched_count: 0,
+      },
+    } as unknown as PortfolioAnalysis;
+    try {
+      process.env.NEXT_PUBLIC_SEASON_UNLOCK = "1";
+      const kept = redactUnpaidLotMatch(analysis);
+      expect(kept.wash_sale_chains).toEqual([chain]);
+      expect(kept.lot_match_report?.gap).toHaveLength(1);
+      const packetOnly = redactUnpaidLotMatch({
+        ...analysis,
+        season_detail: false,
+        packet_unlocked: true,
+      });
+      expect(packetOnly.wash_sale_chains).toBeUndefined();
+      expect(packetOnly.lot_match_report?.gap).toEqual([]);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.NEXT_PUBLIC_SEASON_UNLOCK;
+      } else {
+        process.env.NEXT_PUBLIC_SEASON_UNLOCK = previous;
+      }
+    }
+  });
 });

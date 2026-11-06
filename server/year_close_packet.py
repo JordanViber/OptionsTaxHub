@@ -1375,6 +1375,31 @@ def has_season_unlock(
     return True, True
 
 
+def season_filing_detail_open(
+    user_id: str,
+    tax_year: int | None,
+) -> bool | None:
+    """None while SEASON_UNLOCK is off, so lots and chains stay on the packet gate.
+
+    True when the flag is on and has_season_unlock is true. False when the
+    flag is on and this user has no matching receipt, including a lookup
+    outage, a guest, or a missing year. The in-app sample does not call this.
+    """
+    if not season_unlock_enabled():
+        return None
+    if not user_id or tax_year is None:
+        return False
+    unlocked, lookup_ok = has_season_unlock(user_id, int(tax_year))
+    if not lookup_ok:
+        logger.warning(
+            "Season unlock lookup failed for user=%s year=%s",
+            user_id,
+            tax_year,
+        )
+        return False
+    return unlocked
+
+
 def packet_requires_test_stripe() -> bool:
     """True when live Stripe keys must not be used for this accept path.
 

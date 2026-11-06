@@ -61,6 +61,7 @@ import {
   usePortfolioHistory,
   useBackendHealth,
   fetchAnalysisById,
+  fetchSeasonUnlocked,
   fetchWashSaleChains,
   WASH_SALE_CHAIN_REANALYZE_HINT,
   cleanupOrphanHistory,
@@ -85,6 +86,7 @@ import {
   isUnknown1099Year,
   redactUnpaidLotMatch,
 } from "@/lib/supplemental1099";
+import { filingDetailOpen, seasonUnlockEnabled } from "@/lib/seasonUnlock";
 import YearClosePacketPanel, {
   isYearClosePacketPaid,
   PACKET_CHECKOUT_OTHER_TAB_COPY,
@@ -105,6 +107,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import type {
   PortfolioAnalysis,
   AnalysisHistoryItem,
+  LotMatchReport,
   Position,
 } from "@/lib/types";
 import {
@@ -400,6 +403,17 @@ function restoreAnalysisFromStorage(
     return null;
   }
   return analysisFromStoredJson();
+}
+
+function lotMatchRowsMissing(
+  report: LotMatchReport | null | undefined,
+): boolean {
+  if (!report) return false;
+  const rows =
+    report.matched.length + report.gap.length + report.unmatched.length;
+  const counts =
+    report.matched_count + report.gap_count + report.unmatched_count;
+  return rows === 0 && counts > 0;
 }
 
 function saveAnalysisToStorage(
@@ -906,6 +920,7 @@ function ResultsSection({
   shouldPrompt1099Supplement,
   guest,
   packetUnlocked,
+  seasonUnlocked,
   washChainHint,
 }: Readonly<{
   displayedAnalysis: PortfolioAnalysis;
@@ -919,6 +934,7 @@ function ResultsSection({
   shouldPrompt1099Supplement: boolean;
   guest?: boolean;
   packetUnlocked: boolean;
+  seasonUnlocked: boolean;
   washChainHint?: string | null;
 }>) {
   const harvestTeasers = buildHarvestTeasers(
@@ -933,9 +949,14 @@ function ResultsSection({
     ? realSuggestionCount
     : harvestTotals.count;
   const washSaleChains = displayedAnalysis.wash_sale_chains ?? [];
+  const filingOpen = filingDetailOpen(
+    displayedAnalysis,
+    packetUnlocked,
+    seasonUnlocked,
+  );
   const showChainHint =
     Boolean(washChainHint) &&
-    !washChainsVisible(displayedAnalysis, packetUnlocked);
+    !washChainsVisible(displayedAnalysis, packetUnlocked, seasonUnlocked);
 
   return (
     <>
@@ -1014,7 +1035,7 @@ function ResultsSection({
             )}
             csvWashSaleFlags={displayedAnalysis.wash_sale_flags}
             lotMatchReport={displayedAnalysis.lot_match_report ?? null}
-            locked={!packetUnlocked}
+            locked={!filingOpen}
           />
         )}
 
@@ -1035,7 +1056,7 @@ function ResultsSection({
           />
         )}
 
-        {washChainsVisible(displayedAnalysis, packetUnlocked) && (
+        {washChainsVisible(displayedAnalysis, packetUnlocked, seasonUnlocked) && (
           <WashSaleChainPanel chains={washSaleChains} />
         )}
 
@@ -1086,7 +1107,7 @@ function ResultsSection({
             <PositionsTable
               positions={displayedAnalysis.positions}
               washSaleFlags={displayedAnalysis.wash_sale_flags}
-              lotDetailsUnlocked={packetUnlocked}
+              lotDetailsUnlocked={filingOpen}
               priceBasis={displayedAnalysis.price_basis}
             />
           )}
@@ -1431,6 +1452,7 @@ export default function DashboardPage() {
   );
   const [isSampleRun, setIsSampleRun] = useState(false);
   const [packetPaid, setPacketPaid] = useState(false);
+  const [seasonUnlocked, setSeasonUnlocked] = useState(false);
   const [washChainHint, setWashChainHint] = useState<string | null>(null);
   const washChainFetchedFor = useRef<string | null>(null);
   const [replaceBook, setReplaceBook] = useState(false);
@@ -1596,21 +1618,44 @@ export default function DashboardPage() {
     setPacketPaid(isYearClosePacketPaid(analysisId));
   }, [displayedAnalysis?.analysis_id, displayedAnalysis, authLoading, user]);
 
-  // Unpaid analyze strips chains. After the packet is paid, load them once
-  // for this analysis id. packetPaid stays a dependency so checkout can start
-  // that single fetch; the ref ignores a later render of the same id.
+  useEffect(() => {
+    if (!seasonUnlockEnabled() || !user) {
+      setSeasonUnlocked(false);
+      return;
+    }
+    const year = displayedAnalysis?.tax_profile?.tax_year;
+    if (typeof year !== "number" || !Number.isFinite(year)) {
+      setSeasonUnlocked(false);
+      return;
+    }
+    let cancelled = false;
+    setSeasonUnlocked(false);
+    void fetchSeasonUnlocked(year).then((open) => {
+      if (!cancelled) setSeasonUnlocked(open);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [user, displayedAnalysis?.analysis_id, displayedAnalysis?.tax_profile?.tax_year]);
+
+  // Unpaid analyze strips chains. After the packet is paid, or after a
+  // season receipt while the flag is on, load them once for this analysis
+  // id. The ref ignores a later render of the same id.
   const washChainAnalysisId = displayedAnalysis?.analysis_id ?? "";
   const washChainIsSample = Boolean(displayedAnalysis?.sample_run);
   const washChainCount = displayedAnalysis?.wash_sale_chains?.length ?? 0;
+  const seasonGateOn = seasonUnlockEnabled();
+  const lotRowsMissing = lotMatchRowsMissing(displayedAnalysis?.lot_match_report);
+  const filingFetch =
+    Boolean(washChainAnalysisId) &&
+    !washChainIsSample &&
+    (seasonGateOn ? seasonUnlocked : packetPaid);
+  const needsFilingDetail =
+    washChainCount === 0 || (seasonGateOn && seasonUnlocked && lotRowsMissing);
   const displayedAnalysisRef = useRef(displayedAnalysis);
   displayedAnalysisRef.current = displayedAnalysis;
   useEffect(() => {
-    if (
-      !packetPaid ||
-      !washChainAnalysisId ||
-      washChainIsSample ||
-      washChainCount > 0
-    ) {
+    if (!filingFetch || !needsFilingDetail) {
       setWashChainHint(null);
       return;
     }
@@ -1626,14 +1671,30 @@ export default function DashboardPage() {
         const chains = result.chains;
         if (chains.length === 0) {
           setWashChainHint(result.hint);
-          return;
+        } else {
+          setWashChainHint(null);
         }
-        setWashChainHint(null);
         setLoadedAnalysis((current) => {
           const base = current ?? displayedAnalysisRef.current;
           if (!base || base.analysis_id !== requestedId) return current;
-          if ((base.wash_sale_chains?.length ?? 0) > 0) return current;
-          return { ...base, wash_sale_chains: chains };
+          let next = base;
+          let changed = false;
+          if ((base.wash_sale_chains?.length ?? 0) === 0 && chains.length > 0) {
+            next = { ...next, wash_sale_chains: chains };
+            changed = true;
+          }
+          if (
+            result.lotMatchReport &&
+            lotMatchRowsMissing(base.lot_match_report)
+          ) {
+            next = { ...next, lot_match_report: result.lotMatchReport };
+            changed = true;
+          }
+          if (!changed) return current;
+          if (seasonUnlockEnabled()) {
+            return { ...next, season_detail: true };
+          }
+          return next;
         });
       })
       .catch(() => {
@@ -1648,7 +1709,11 @@ export default function DashboardPage() {
         washChainFetchedFor.current = null;
       }
     };
-  }, [packetPaid, washChainAnalysisId, washChainIsSample, washChainCount]);
+  }, [
+    filingFetch,
+    needsFilingDetail,
+    washChainAnalysisId,
+  ]);
 
   useEffect(() => {
     if (!displayedAnalysis || authLoading || foreignRun) {
@@ -1665,12 +1730,20 @@ export default function DashboardPage() {
       return;
     }
     if (!user) {
-      const { packet_session_id: _ignored, ...rest } = displayedAnalysis;
+      const {
+        packet_session_id: _ignored,
+        season_detail: _season,
+        ...rest
+      } = displayedAnalysis;
       saveAnalysisToStorage({ ...rest, packet_unlocked: false }, owner);
       return;
     }
-    saveAnalysisToStorage(displayedAnalysis, owner);
-  }, [displayedAnalysis, authLoading, user, foreignRun, viewerId]);
+    const toStore =
+      seasonUnlockEnabled() && seasonUnlocked
+        ? { ...displayedAnalysis, season_detail: true }
+        : displayedAnalysis;
+    saveAnalysisToStorage(toStore, owner);
+  }, [displayedAnalysis, authLoading, user, foreignRun, viewerId, seasonUnlocked]);
 
   useEffect(() => {
     if (analysis && !loadedAnalysis) {
@@ -2974,6 +3047,7 @@ export default function DashboardPage() {
               shouldPrompt1099Supplement={shouldPrompt1099Supplement}
               guest={!user}
               packetUnlocked={packetUnlocked}
+              seasonUnlocked={seasonUnlocked}
               washChainHint={washChainHint}
             />
           )}

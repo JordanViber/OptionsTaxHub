@@ -11,6 +11,7 @@ import type {
   RhChainResponse,
   RhStatusResponse,
   WashSaleChain,
+  LotMatchReport,
 } from "@/lib/types";
 import { getSession } from "./supabase";
 
@@ -610,18 +611,29 @@ export async function fetchAnalysisById(
 export type WashSaleChainsResult = {
   chains: WashSaleChain[];
   hint: string | null;
+  lotMatchReport?: LotMatchReport | null;
 };
+
+function isLotMatchReport(value: unknown): value is LotMatchReport {
+  if (!value || typeof value !== "object") return false;
+  const report = value as LotMatchReport;
+  return (
+    Array.isArray(report.matched) &&
+    Array.isArray(report.gap) &&
+    Array.isArray(report.unmatched)
+  );
+}
 
 export const WASH_SALE_CHAIN_REANALYZE_HINT = "Re-analyze to see wash-sale chains";
 
 /**
  * Load display wash-sale chains after the year-close packet is paid.
  *
- * The dashboard calls this only after the packet is paid, so a 403 asks
- * the user to re-analyze. Unpaid history never reaches this fetch. Any
- * other failure (non-OK, or a body that is not JSON) asks the user to
+ * The dashboard calls this after the packet is paid, or after a season
+ * receipt while SEASON_UNLOCK is on. A 403 asks the user to re-analyze.
+ * Any other failure (non-OK, or a body that is not JSON) asks the user to
  * re-analyze. A paid legacy snapshot returns no chains and that same
- * hint from the server.
+ * hint from the server. A season receipt may also include lot_match_report.
  */
 export async function fetchWashSaleChains(
   analysisId: string,
@@ -634,7 +646,11 @@ export async function fetchWashSaleChains(
   if (!response.ok) {
     return { chains: [], hint: WASH_SALE_CHAIN_REANALYZE_HINT };
   }
-  let body: { wash_sale_chains?: unknown; hint?: unknown };
+  let body: {
+    wash_sale_chains?: unknown;
+    hint?: unknown;
+    lot_match_report?: unknown;
+  };
   try {
     body = await response.json();
   } catch {
@@ -647,7 +663,31 @@ export async function fetchWashSaleChains(
     typeof body?.hint === "string" && body.hint.trim() !== ""
       ? body.hint
       : null;
-  return { chains, hint };
+  const lotMatchReport = isLotMatchReport(body?.lot_match_report)
+    ? body.lot_match_report
+    : null;
+  if (!lotMatchReport) {
+    return { chains, hint };
+  }
+  return { chains, hint, lotMatchReport };
+}
+
+/** Year receipt while SEASON_UNLOCK is on. False on a miss, a guest, or an error. */
+export async function fetchSeasonUnlocked(taxYear: number): Promise<boolean> {
+  try {
+    const headers = await getAuthHeaders();
+    const response = await fetch(
+      apiPath(
+        `/api/year-close-packet/entitlement?tax_year=${encodeURIComponent(String(taxYear))}`,
+      ),
+      { headers },
+    );
+    if (!response.ok) return false;
+    const data = await response.json();
+    return data?.season_unlocked === true;
+  } catch {
+    return false;
+  }
 }
 
 /**

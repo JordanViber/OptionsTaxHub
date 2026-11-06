@@ -1,5 +1,7 @@
 import {
   SEASON_NOTHING_TO_REPORT,
+  filingDetailOpen,
+  keepStoredFilingDetail,
   seasonPayGate,
   seasonUnlockEnabled,
   seasonYearHintLine,
@@ -128,6 +130,26 @@ describe("season unlock gate", () => {
       }),
     );
     expect(gate?.lines).toEqual([SEASON_NOTHING_TO_REPORT]);
+  });
+
+  it("keeps the packet gate for lots and chains while the flag is off", () => {
+    delete process.env.NEXT_PUBLIC_SEASON_UNLOCK;
+    expect(filingDetailOpen({ sample_run: true }, false)).toBe(true);
+    expect(filingDetailOpen({ sample_run: false }, true)).toBe(true);
+    expect(filingDetailOpen({ sample_run: false }, false, true)).toBe(false);
+    expect(keepStoredFilingDetail({ packet_unlocked: true })).toBe(true);
+    expect(keepStoredFilingDetail({ season_detail: true })).toBe(false);
+  });
+
+  it("opens lots and chains from the year receipt while the flag is on", () => {
+    process.env.NEXT_PUBLIC_SEASON_UNLOCK = "1";
+    expect(filingDetailOpen({ sample_run: true }, false)).toBe(true);
+    expect(filingDetailOpen({ season_detail: true }, false)).toBe(true);
+    expect(filingDetailOpen({}, true, true)).toBe(true);
+    expect(filingDetailOpen({ season_detail: false }, true)).toBe(false);
+    expect(keepStoredFilingDetail({ season_detail: true })).toBe(true);
+    expect(keepStoredFilingDetail({ packet_unlocked: true })).toBe(false);
+    expect(keepStoredFilingDetail({ sample_run: true })).toBe(true);
   });
 
   it("leaves Pay enabled when the run has 2026 sales", () => {

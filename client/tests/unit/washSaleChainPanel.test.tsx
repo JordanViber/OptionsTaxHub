@@ -101,6 +101,40 @@ describe("washChainsVisible", () => {
     ).toBe(false);
     expect(washChainsVisible({ wash_sale_chains: null }, true)).toBe(false);
   });
+
+  it("follows the year receipt while the season flag is on", () => {
+    const previous = process.env.NEXT_PUBLIC_SEASON_UNLOCK;
+    process.env.NEXT_PUBLIC_SEASON_UNLOCK = "1";
+    try {
+      expect(
+        washChainsVisible(
+          { sample_run: true, wash_sale_chains: [sample] },
+          false,
+        ),
+      ).toBe(true);
+      expect(
+        washChainsVisible(
+          { season_detail: true, wash_sale_chains: [sample] },
+          false,
+        ),
+      ).toBe(true);
+      expect(
+        washChainsVisible(
+          { season_detail: false, wash_sale_chains: [sample] },
+          true,
+        ),
+      ).toBe(false);
+      expect(
+        washChainsVisible({ wash_sale_chains: [sample] }, false, true),
+      ).toBe(true);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.NEXT_PUBLIC_SEASON_UNLOCK;
+      } else {
+        process.env.NEXT_PUBLIC_SEASON_UNLOCK = previous;
+      }
+    }
+  });
 });
 
 describe("washChainStatusLabel", () => {
@@ -117,6 +151,38 @@ describe("washChainStatusLabel", () => {
 });
 
 describe("WashSaleChainPanel", () => {
+  it("filters chains when the season flag is on", () => {
+    const previous = process.env.NEXT_PUBLIC_SEASON_UNLOCK;
+    process.env.NEXT_PUBLIC_SEASON_UNLOCK = "1";
+    const nvda = chain({
+      chain_id: "NVDA:2026-02-18:12:e0",
+      symbol: "NVDA",
+      plain_english: "NVDA wash stayed in this file.",
+      reconcile_status: "differs",
+      hops: [hop({ hop_id: "NVDA:2026-02-18:12:e0", symbol: "NVDA" })],
+    });
+    try {
+      render(<WashSaleChainPanel chains={[chain(), nvda]} />);
+      expect(screen.getByTestId("wash-chain-search")).toBeInTheDocument();
+      expect(screen.getByText(/You sold 10 AMD/)).toBeInTheDocument();
+      fireEvent.change(screen.getByTestId("wash-chain-search"), {
+        target: { value: "NVDA" },
+      });
+      expect(screen.queryByText(/You sold 10 AMD/)).not.toBeInTheDocument();
+      expect(screen.getByText(/NVDA wash stayed/)).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId("wash-chain-filter-matches"));
+      expect(screen.getByTestId("wash-chain-empty")).toHaveTextContent(
+        "No chains match that search.",
+      );
+    } finally {
+      if (previous === undefined) {
+        delete process.env.NEXT_PUBLIC_SEASON_UNLOCK;
+      } else {
+        process.env.NEXT_PUBLIC_SEASON_UNLOCK = previous;
+      }
+    }
+  });
+
   afterEach(() => {
     stubMatchMedia(false);
   });

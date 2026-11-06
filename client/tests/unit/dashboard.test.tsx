@@ -73,6 +73,7 @@ let mockHistoryError: Error | null = null;
 const mockFetchWashSaleChains = jest.fn(() =>
   Promise.resolve({ chains: [], hint: null }),
 );
+const mockFetchSeasonUnlocked = jest.fn(() => Promise.resolve(false));
 const mockCleanupOrphanHistory = jest.fn(() => Promise.resolve());
 const mockDeleteAnalysis = jest.fn(() => Promise.resolve(true));
 
@@ -100,6 +101,7 @@ jest.mock("../../lib/api", () => ({
     isFetched: true,
   }),
   fetchAnalysisById: mockFetchAnalysisById,
+  fetchSeasonUnlocked: (...args: unknown[]) => mockFetchSeasonUnlocked(...args),
   fetchWashSaleChains: mockFetchWashSaleChains,
   WASH_SALE_CHAIN_REANALYZE_HINT: "Re-analyze to see wash-sale chains",
   cleanupOrphanHistory: mockCleanupOrphanHistory,
@@ -291,6 +293,8 @@ describe("DashboardPage", () => {
     mockFetchAnalysisById.mockReset();
     mockFetchWashSaleChains.mockReset();
     mockFetchWashSaleChains.mockResolvedValue({ chains: [], hint: null });
+    mockFetchSeasonUnlocked.mockReset();
+    mockFetchSeasonUnlocked.mockResolvedValue(false);
     mockCleanupOrphanHistory.mockClear();
     mockDeleteAnalysis.mockClear();
     mockSessionValue = null;
@@ -1512,6 +1516,131 @@ describe("DashboardPage", () => {
         "$49",
       );
     });
+  });
+
+  it("shows the full lot table and AMD chain when season_detail is true", async () => {
+    const previous = process.env.NEXT_PUBLIC_SEASON_UNLOCK;
+    process.env.NEXT_PUBLIC_SEASON_UNLOCK = "1";
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      sample_run: false,
+      packet_unlocked: false,
+      season_detail: true,
+      tax_profile: { ...baseAnalysis.tax_profile, tax_year: 2026 },
+      wash_sale_chains: [
+        {
+          chain_id: "AMD:2026-07-15:10:e0",
+          symbol: "AMD",
+          reconcile_status: "matches",
+          difference: null,
+          plain_english:
+            "You sold 10 AMD at a $300 loss on Jul 15 and bought 10 back on Jul 24, so $300 moved into the new lot's basis.",
+          hops: [],
+        },
+      ],
+      supplemental_1099: {
+        ...baseSupplemental1099,
+        tax_year: 2026,
+        source_filename: "c15f7458-e9d5-4dfb-a985-351df5a36cde.pdf",
+      },
+      lot_match_report: {
+        matched: [
+          {
+            status: "matched",
+            symbol: "AMD",
+            quantity: 10,
+            date_sold_1099: "2026-07-15",
+            export_trade_date: "2026-07-15",
+            proceeds_1099: 1200,
+            proceeds_export: 1200,
+          },
+        ],
+        gap: [],
+        unmatched: [],
+        matched_count: 1,
+        gap_count: 0,
+        unmatched_count: 0,
+      },
+    };
+    try {
+      render(<DashboardPage />, { wrapper: createWrapper() });
+      await waitFor(() => {
+        expect(screen.getByTestId("lot-match-row-AMD")).toBeInTheDocument();
+      });
+      expect(screen.getByTestId("wash-sale-chain-card")).toHaveTextContent("AMD");
+      expect(screen.getByTestId("lot-table-search")).toBeInTheDocument();
+      expect(
+        screen.queryByText(/Pay \$49 for lot-matched 1099-B/i),
+      ).not.toBeInTheDocument();
+      expect(screen.queryByText(/Unlock 2026 for the full lot table/i)).not.toBeInTheDocument();
+    } finally {
+      if (previous === undefined) {
+        delete process.env.NEXT_PUBLIC_SEASON_UNLOCK;
+      } else {
+        process.env.NEXT_PUBLIC_SEASON_UNLOCK = previous;
+      }
+    }
+  });
+
+  it("hides lot rows and chains on an unpaid run while the season flag is on", async () => {
+    const previous = process.env.NEXT_PUBLIC_SEASON_UNLOCK;
+    process.env.NEXT_PUBLIC_SEASON_UNLOCK = "1";
+    mockFetchSeasonUnlocked.mockResolvedValue(false);
+    mockAnalyzeData = {
+      ...baseAnalysis,
+      sample_run: false,
+      packet_unlocked: false,
+      season_detail: false,
+      tax_profile: { ...baseAnalysis.tax_profile, tax_year: 2026 },
+      wash_sale_chains: [
+        {
+          chain_id: "AMD:2026-07-15:10:e0",
+          symbol: "AMD",
+          reconcile_status: "matches",
+          difference: null,
+          plain_english: "You sold 10 AMD at a $300 loss.",
+          hops: [],
+        },
+      ],
+      supplemental_1099: {
+        ...baseSupplemental1099,
+        tax_year: 2026,
+        source_filename: "c15f7458-e9d5-4dfb-a985-351df5a36cde.pdf",
+      },
+      lot_match_report: {
+        matched: [
+          {
+            status: "matched",
+            symbol: "AMD",
+            quantity: 10,
+            date_sold_1099: "2026-07-15",
+            export_trade_date: "2026-07-15",
+            proceeds_1099: 1200,
+            proceeds_export: 1200,
+          },
+        ],
+        gap: [],
+        unmatched: [],
+        matched_count: 1,
+        gap_count: 0,
+        unmatched_count: 0,
+      },
+    };
+    try {
+      render(<DashboardPage />, { wrapper: createWrapper() });
+      await waitFor(() => {
+        expect(screen.getByText("1099 vs your export")).toBeInTheDocument();
+      });
+      expect(screen.getByText(/Unlock 2026 for the full lot table/i)).toBeInTheDocument();
+      expect(screen.queryByTestId("lot-match-row-AMD")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("wash-sale-chain-card")).not.toBeInTheDocument();
+    } finally {
+      if (previous === undefined) {
+        delete process.env.NEXT_PUBLIC_SEASON_UNLOCK;
+      } else {
+        process.env.NEXT_PUBLIC_SEASON_UNLOCK = previous;
+      }
+    }
   });
 
   it("keeps unpaid non-sample lot-match as counts teaser without a lot table", async () => {

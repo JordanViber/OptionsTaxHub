@@ -63,6 +63,7 @@ from year_close_packet import (
     packet_checkout_line_items,
     has_season_unlock,
     packet_requires_test_stripe,
+    season_filing_detail_open,
     season_unlock_enabled,
     packet_user_id_from_session,
     packet_session_id,
@@ -1403,6 +1404,7 @@ def _public_analysis(
     *,
     keep_lot_rows: bool = False,
     keep_wash_chains: Optional[bool] = None,
+    filing_detail: Optional[bool] = None,
 ) -> PortfolioAnalysis:
     """Hide raw trades, unpaid lot rows, and unpaid wash-sale chains.
 
@@ -1414,14 +1416,27 @@ def _public_analysis(
     rows stay out. Sample history may keep chains. A year-grant row is written
     with keep_wash_chains false; chains are patched on only after the paid
     snapshot commits.
+
+    filing_detail is set only while SEASON_UNLOCK is on for a non-sample run.
+    True keeps the lot table and wash chains for a year receipt. False strips
+    them even when packet_unlocked is true. None leaves the packet gate.
     """
+    if filing_detail is True:
+        keep_lot_rows = True
+        keep_wash_chains = True
+    elif filing_detail is False:
+        keep_lot_rows = False
+        keep_wash_chains = False
     if keep_wash_chains is None:
         keep_wash_chains = bool(result.packet_unlocked) or keep_lot_rows
     updates: dict = {}
     book = result.activity_book
     if book and book.transactions:
         updates["activity_book"] = book.model_copy(update={"transactions": []})
-    if not result.packet_unlocked and not keep_lot_rows:
+    hide_lots = filing_detail is False or (
+        not result.packet_unlocked and not keep_lot_rows
+    )
+    if hide_lots:
         if result.lot_match_report is not None:
             updates["lot_match_report"] = _counts_only_lot_match_report(
                 result.lot_match_report
@@ -1433,6 +1448,8 @@ def _public_analysis(
             )
     if not keep_wash_chains:
         updates["wash_sale_chains"] = []
+    if filing_detail is not None:
+        updates["season_detail"] = filing_detail
     if not updates:
         return result
     return result.model_copy(update=updates)
@@ -1941,6 +1958,12 @@ async def _run_portfolio_analysis(
     keep_lot_rows = trusted_sample
     if keep_lot_rows:
         result = result.model_copy(update={"sample_run": True})
+    # Sample stays on keep_lot_rows. A real run uses the year receipt only
+    # while SEASON_UNLOCK is on. Flag off leaves filing_detail None.
+    filing_detail = None
+    if not trusted_sample:
+        tax_year = result.tax_profile.tax_year if result.tax_profile else None
+        filing_detail = season_filing_detail_open(user_id, tax_year)
     full_dump = (
         result.model_dump(mode="json")
         if hasattr(result, "model_dump")
@@ -1951,7 +1974,11 @@ async def _run_portfolio_analysis(
     # A guest keeps them on the in-memory payload so sign-in can persist
     # them. PDF rendering ignores the key.
     durable_chains = full_dump.get("wash_sale_chains") or []
-    public_result = _public_analysis(result, keep_lot_rows=keep_lot_rows)
+    public_result = _public_analysis(
+        result,
+        keep_lot_rows=keep_lot_rows,
+        filing_detail=filing_detail,
+    )
 
     # History is always redacted. Lot rows stay in PACKET_STORE and the paid
     # snapshot. Grant flags and wash chains are patched on only after that
@@ -1985,7 +2012,11 @@ async def _run_portfolio_analysis(
         result = result.model_copy(
             update={"packet_unlocked": False, "packet_session_id": None}
         )
-        public_result = _public_analysis(result, keep_lot_rows=keep_lot_rows)
+        public_result = _public_analysis(
+            result,
+            keep_lot_rows=keep_lot_rows,
+            filing_detail=filing_detail,
+        )
         return public_result
     if user_id and not (result.packet_unlocked and result.packet_session_id):
         packet_payload = get_payload(result.analysis_id)
@@ -2078,7 +2109,11 @@ async def _run_portfolio_analysis(
         result = result.model_copy(
             update={"packet_unlocked": False, "packet_session_id": None}
         )
-        public_result = _public_analysis(result, keep_lot_rows=keep_lot_rows)
+        public_result = _public_analysis(
+            result,
+            keep_lot_rows=keep_lot_rows,
+            filing_detail=filing_detail,
+        )
 
     return public_result
 
@@ -2303,6 +2338,68 @@ async def get_portfolio_analysis(
     return record
 
 
+def _lot_report_has_row_dicts(report: Any) -> bool:
+    if not isinstance(report, dict):
+        return False
+    for key in ("matched", "gap", "unmatched"):
+        rows = report.get(key) or []
+        if isinstance(rows, list) and any(isinstance(row, dict) for row in rows):
+            return True
+    return False
+
+
+def _season_filing_chains(analysis_id: str, user_id: str) -> dict[str, Any]:
+    """Lots and chains for a season receipt, including an unpaid snapshot.
+
+    SEASON_UNLOCK is on. Ownership is the snapshot row. has_season_unlock
+    replaces the paid-download check. Flag-off callers never reach this.
+    """
+    rows, lookup_ok = list_packet_snapshots_for_identity(analysis_id, user_id)
+    if not lookup_ok:
+        _packet_download_entitlement_unavailable()
+    row = next((item for item in rows if isinstance(item, dict)), None)
+    if row is None:
+        raise HTTPException(
+            status_code=403,
+            detail="Wash-sale chains are available after the year-close packet is paid.",
+        )
+    try:
+        tax_year = int(row.get("tax_year"))
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=403,
+            detail="Wash-sale chains are available after the year-close packet is paid.",
+        ) from None
+    unlocked, unlock_ok = has_season_unlock(user_id, tax_year)
+    if not unlock_ok:
+        raise HTTPException(
+            status_code=503,
+            detail="Could not verify existing packet access. Please retry.",
+        )
+    if not unlocked:
+        raise HTTPException(
+            status_code=403,
+            detail="Wash-sale chains are available after the year-close packet is paid.",
+        )
+    snapshot, snapshot_ok = get_packet_snapshot(
+        analysis_id,
+        user_id,
+        tax_year=tax_year,
+    )
+    if not snapshot_ok or not isinstance(snapshot, dict):
+        _packet_download_entitlement_unavailable()
+    payload = snapshot.get("packet_payload")
+    chains, hint = wash_sale_chains_from_snapshot_payload(payload)
+    body: dict[str, Any] = {"wash_sale_chains": chains}
+    if hint:
+        body["hint"] = hint
+    if isinstance(payload, dict):
+        report = payload.get("lot_match_report")
+        if _lot_report_has_row_dicts(report):
+            body["lot_match_report"] = report
+    return body
+
+
 @app.get(
     "/api/portfolio/analysis/{analysis_id}/wash-sale-chains",
     responses={
@@ -2318,8 +2415,13 @@ async def get_wash_sale_chains(
     History JSON stays redacted. This read does not rebuild tax figures.
     Process memory is not the source. A snapshot saved before chains were
     stored returns an empty list and a re-analyze hint.
+
+    While SEASON_UNLOCK is on, a year receipt returns chains and lot rows
+    from the owned snapshot even when that snapshot is unpaid.
     """
     analysis_id = _require_canonical_analysis_id(analysis_id)
+    if season_unlock_enabled():
+        return _season_filing_chains(analysis_id, user_id)
     rows, lookup_ok = list_packet_snapshots_for_identity(analysis_id, user_id)
     if not lookup_ok:
         _packet_download_entitlement_unavailable()
