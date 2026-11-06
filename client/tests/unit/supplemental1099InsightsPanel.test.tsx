@@ -493,4 +493,62 @@ describe("Supplemental1099InsightsPanel", () => {
       screen.queryByText(/Pay \$49 for lot-matched 1099-B/i),
     ).not.toBeInTheDocument();
   });
+
+  it("shows every lot and filters them when the season flag is on", () => {
+    const previous = process.env.NEXT_PUBLIC_SEASON_UNLOCK;
+    process.env.NEXT_PUBLIC_SEASON_UNLOCK = "1";
+    const matched = Array.from({ length: 51 }, (_, index) => ({
+      status: "matched",
+      symbol: `L${String(index).padStart(2, "0")}`,
+      quantity: 1,
+      date_sold_1099: "2026-07-15",
+      export_trade_date: "2026-07-15",
+      proceeds_1099: 10,
+      proceeds_export: 10,
+    }));
+    matched.push({
+      status: "matched_settlement_gap",
+      symbol: "AMD",
+      quantity: 10,
+      date_sold_1099: "2026-07-17",
+      export_trade_date: "2026-07-15",
+      proceeds_1099: 1200,
+      proceeds_export: 1200,
+    });
+    try {
+      render(
+        <Supplemental1099InsightsPanel
+          summary={{ ...fixtureSummary, tax_year: 2026 }}
+          analysisTaxYear={2026}
+          lotMatchReport={{
+            matched: matched.slice(0, 51),
+            gap: [matched[51]],
+            unmatched: [],
+            matched_count: 51,
+            gap_count: 1,
+            unmatched_count: 0,
+          }}
+          locked={false}
+        />,
+      );
+      expect(screen.getByTestId("lot-match-row-L50")).toBeInTheDocument();
+      expect(screen.getByTestId("lot-table-search")).toBeInTheDocument();
+      expect(screen.queryByText(/Full list is in the/i)).not.toBeInTheDocument();
+      fireEvent.click(screen.getByTestId("lot-table-filter-gap"));
+      expect(screen.getByTestId("lot-match-row-AMD")).toBeInTheDocument();
+      expect(screen.queryByTestId("lot-match-row-L50")).not.toBeInTheDocument();
+      fireEvent.change(screen.getByTestId("lot-table-search"), {
+        target: { value: "nope" },
+      });
+      expect(screen.getByTestId("lot-table-empty")).toHaveTextContent(
+        "No lots match that search.",
+      );
+    } finally {
+      if (previous === undefined) {
+        delete process.env.NEXT_PUBLIC_SEASON_UNLOCK;
+      } else {
+        process.env.NEXT_PUBLIC_SEASON_UNLOCK = previous;
+      }
+    }
+  });
 });

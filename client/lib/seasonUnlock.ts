@@ -67,3 +67,39 @@ export function seasonPayGate(analysis: PortfolioAnalysis): SeasonPayGate | null
   }
   return { hidePay: false, disabled: true, lines };
 }
+
+export const SEASON_LOT_TABLE_LOCKED_COPY =
+  "Unlock 2026 for the full lot table — matched, gap, and unmatched lots.";
+
+/**
+ * Lot table and wash chains. The sample is always open.
+ * Flag off follows the packet. Flag on follows the year receipt.
+ */
+export function filingDetailOpen(
+  analysis: { sample_run?: boolean; season_detail?: boolean | null },
+  packetUnlocked: boolean,
+  seasonUnlocked = false,
+): boolean {
+  if (analysis.sample_run) {
+    return true;
+  }
+  if (!seasonUnlockEnabled()) {
+    return packetUnlocked;
+  }
+  return seasonUnlocked || analysis.season_detail === true;
+}
+
+/** Whether browser storage may keep lot rows and chains. */
+export function keepStoredFilingDetail(analysis: {
+  sample_run?: boolean;
+  packet_unlocked?: boolean;
+  season_detail?: boolean | null;
+}): boolean {
+  if (analysis.sample_run) {
+    return true;
+  }
+  if (seasonUnlockEnabled()) {
+    return analysis.season_detail === true;
+  }
+  return Boolean(analysis.packet_unlocked);
+}

@@ -2436,6 +2436,40 @@ def test_sample_2026_wash_total_stays_924_and_amd_chain(monkeypatch):
     assert amd_direct.plain_english == AMD_LINE
     assert round(sum(flag.disallowed_loss for flag in direct_flags), 2) == 924
 
+    # Flag on, no receipt: the sample stays fully open.
+    monkeypatch.setenv("SEASON_UNLOCK", "1")
+    monkeypatch.setattr(
+        "year_close_packet.has_season_unlock",
+        lambda *_args, **_kwargs: (False, True),
+    )
+    flagged = client.post(
+        "/api/portfolio/analyze?filing_status=single&estimated_income=75000&tax_year=2026",
+        files={
+            "file": (
+                "sample-robinhood-transactions.csv",
+                SAMPLE_CSV_PATH.read_bytes(),
+                "text/csv",
+            ),
+            "supplemental_1099": (
+                "sample-robinhood-1099-2026.pdf",
+                SAMPLE_1099_PATH.read_bytes(),
+                "application/pdf",
+            ),
+        },
+    )
+    assert flagged.status_code == 200, flagged.text
+    flagged_body = flagged.json()
+    assert "season_detail" not in flagged_body
+    assert flagged_body["sample_run"] is True
+    assert flagged_body["packet_unlocked"] is False
+    flagged_flags = flagged_body["wash_sale_flags"]
+    assert round(sum(float(flag["disallowed_loss"]) for flag in flagged_flags), 2) == 924
+    assert any(chain["symbol"] == "AMD" for chain in flagged_body["wash_sale_chains"])
+    flagged_gap = {
+        row["symbol"] for row in (flagged_body.get("lot_match_report") or {}).get("gap") or []
+    }
+    assert "AMD" in flagged_gap
+
 
 def test_ambiguous_candidate_rows_are_not_leftover_on_1099_only():
     """60+40 and 10+50+40 both fill 100 shares. Do not invent a 160-share chain."""

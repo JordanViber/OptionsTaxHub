@@ -1,6 +1,7 @@
 "use client";
 
-import { Box, Chip, Stack, Typography } from "@mui/material";
+import { useState } from "react";
+import { Box, Chip, Stack, TextField, Typography } from "@mui/material";
 import type {
   LotMatchReport,
   LotMatchRow,
@@ -34,6 +35,10 @@ import {
   type ClassifiedWashInput,
   type WashSaleFlagLike,
 } from "@/lib/supplemental1099";
+import {
+  SEASON_LOT_TABLE_LOCKED_COPY,
+  seasonUnlockEnabled,
+} from "@/lib/seasonUnlock";
 
 const insightPanelSx = {
   borderRadius: 2,
@@ -45,6 +50,21 @@ const insightPanelSx = {
 } as const;
 
 const LOT_TABLE_LIMIT = 50;
+
+const LOT_FILTERS = [
+  { id: "all", label: "All" },
+  { id: "matched", label: "Matched" },
+  { id: "gap", label: "Gap" },
+  { id: "unmatched", label: "Unmatched" },
+] as const;
+
+type LotFilterId = (typeof LOT_FILTERS)[number]["id"];
+
+function lotFilterId(status: string): Exclude<LotFilterId, "all"> {
+  if (status === "matched") return "matched";
+  if (status === "matched_settlement_gap") return "gap";
+  return "unmatched";
+}
 
 function formatLotDate(value: string | null | undefined): string {
   if (!value) {
@@ -91,13 +111,24 @@ function LotMatchSection({
   report: LotMatchReport;
   locked: boolean;
 }>) {
-  const previewRows = [
-    ...report.matched,
-    ...report.gap,
-    ...report.unmatched,
-  ].slice(0, LOT_TABLE_LIMIT);
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<LotFilterId>("all");
+  const full = !locked && seasonUnlockEnabled();
+  const allRows = [...report.matched, ...report.gap, ...report.unmatched];
+  const previewRows = allRows.slice(0, LOT_TABLE_LIMIT);
   const totalRows =
     report.matched_count + report.gap_count + report.unmatched_count;
+  const needle = query.trim().toLowerCase();
+  const visibleRows = full
+    ? allRows.filter((row) => {
+        if (filter !== "all" && lotFilterId(String(row.status)) !== filter) {
+          return false;
+        }
+        if (!needle) return true;
+        const haystack = `${row.symbol} ${row.status} ${row.description ?? ""}`.toLowerCase();
+        return haystack.includes(needle);
+      })
+    : previewRows;
 
   return (
     <Box data-testid="lot-matched-1099b">
@@ -114,20 +145,51 @@ function LotMatchSection({
       </Typography>
       {locked ? (
         <Typography variant="body2" sx={{ mt: 0.75 }}>
-          {LOT_MATCHED_1099B_LOCKED_COPY}
+          {seasonUnlockEnabled()
+            ? SEASON_LOT_TABLE_LOCKED_COPY
+            : LOT_MATCHED_1099B_LOCKED_COPY}
         </Typography>
       ) : (
         <Stack spacing={1} sx={{ mt: 0.75 }}>
           <Typography variant="body2">
             {LOT_MATCHED_1099B_UNLOCKED_COPY}
           </Typography>
-          {previewRows.map((row, index) => (
+          {full && (
+            <Stack spacing={1}>
+              <TextField
+                size="small"
+                label="Search lots"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                inputProps={{ "data-testid": "lot-table-search" }}
+              />
+              <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+                {LOT_FILTERS.map((item) => (
+                  <Chip
+                    key={item.id}
+                    size="small"
+                    label={item.label}
+                    color={filter === item.id ? "primary" : "default"}
+                    variant={filter === item.id ? "filled" : "outlined"}
+                    onClick={() => setFilter(item.id)}
+                    data-testid={`lot-table-filter-${item.id}`}
+                  />
+                ))}
+              </Stack>
+            </Stack>
+          )}
+          {visibleRows.map((row, index) => (
             <LotRowCard
               key={`${row.status}-${row.symbol}-${row.date_sold_1099}-${index}`}
               row={row}
             />
           ))}
-          {totalRows > LOT_TABLE_LIMIT && (
+          {full && allRows.length > 0 && visibleRows.length === 0 && (
+            <Typography variant="body2" data-testid="lot-table-empty">
+              No lots match that search.
+            </Typography>
+          )}
+          {!full && totalRows > LOT_TABLE_LIMIT && (
             <Typography variant="caption" sx={{ color: "text.primary" }}>
               Showing {LOT_TABLE_LIMIT} of {totalRows} lots. Full list is in the
               PDF.

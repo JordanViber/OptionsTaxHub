@@ -10,6 +10,7 @@ import {
   DialogTitle,
   IconButton,
   Stack,
+  TextField,
   Typography,
   useMediaQuery,
   useTheme,
@@ -17,20 +18,34 @@ import {
 import { Close as CloseIcon } from "@mui/icons-material";
 import type { WashClosedLot, WashSaleChain, WashSaleHop } from "@/lib/types";
 import { formatUsd } from "@/lib/supplemental1099";
+import { filingDetailOpen, seasonUnlockEnabled } from "@/lib/seasonUnlock";
 
 export const WASH_SALE_CHAIN_DISCLAIMER =
   "Educational only — not tax advice. This explains wash sales in this Robinhood export and the 1099-B you imported for this portfolio. It does not see other brokers, other accounts, or IRAs. A wash outside this file will not show up here.";
 
+const CHAIN_FILTERS = [
+  { id: "all", label: "All" },
+  { id: "matches", label: "Matches" },
+  { id: "differs", label: "Differs" },
+  { id: "not_on_1099", label: "Not on your 1099" },
+  { id: "on_1099_only", label: "On your 1099 only" },
+  { id: "not_compared", label: "Not compared" },
+] as const;
+
+type ChainFilterId = (typeof CHAIN_FILTERS)[number]["id"];
+
 export function washChainsVisible(
   analysis: {
     sample_run?: boolean;
+    season_detail?: boolean | null;
     wash_sale_chains?: readonly unknown[] | null;
   },
   packetUnlocked: boolean,
+  seasonUnlocked = false,
 ): boolean {
   const count = analysis.wash_sale_chains?.length ?? 0;
   if (count === 0) return false;
-  return Boolean(analysis.sample_run) || packetUnlocked;
+  return filingDetailOpen(analysis, packetUnlocked, seasonUnlocked);
 }
 
 export function formatChainDollars(value: number): string {
@@ -428,7 +443,18 @@ export default function WashSaleChainPanel({
   const theme = useTheme();
   const compact = useMediaQuery(theme.breakpoints.down("sm"), { noSsr: true });
   const [openId, setOpenId] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<ChainFilterId>("all");
   const openChain = chains.find((chain) => chain.chain_id === openId) ?? null;
+  const searchable = seasonUnlockEnabled();
+  const needle = query.trim().toLowerCase();
+  const visibleChains = searchable
+    ? chains.filter((chain) => {
+        if (filter !== "all" && chain.reconcile_status !== filter) return false;
+        if (!needle) return true;
+        return `${chain.symbol} ${chain.plain_english}`.toLowerCase().includes(needle);
+      })
+    : chains;
 
   if (chains.length === 0) return null;
 
@@ -455,7 +481,36 @@ export default function WashSaleChainPanel({
             From this Robinhood export and the 1099-B uploaded with it.
           </Typography>
         </Box>
-        {chains.map((chain) => (
+        {searchable && (
+          <Stack spacing={1}>
+            <TextField
+              size="small"
+              label="Search chains"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              inputProps={{ "data-testid": "wash-chain-search" }}
+            />
+            <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+              {CHAIN_FILTERS.map((item) => (
+                <Chip
+                  key={item.id}
+                  size="small"
+                  label={item.label}
+                  color={filter === item.id ? "primary" : "default"}
+                  variant={filter === item.id ? "filled" : "outlined"}
+                  onClick={() => setFilter(item.id)}
+                  data-testid={`wash-chain-filter-${item.id}`}
+                />
+              ))}
+            </Stack>
+          </Stack>
+        )}
+        {searchable && visibleChains.length === 0 && (
+          <Typography variant="body2" data-testid="wash-chain-empty">
+            No chains match that search.
+          </Typography>
+        )}
+        {visibleChains.map((chain) => (
           <Box
             key={chain.chain_id}
             sx={{
