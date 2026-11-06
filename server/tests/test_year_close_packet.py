@@ -60,6 +60,7 @@ from year_close_packet import (
     upsert_payload,
     resolve_packet_stripe_secret_key,
     same_year_compare_plain_text,
+    snapshot_payload_with_wash_sale_chains,
     session_grants_packet,
     paid_session_for_user_year,
     mark_paid,
@@ -1454,6 +1455,42 @@ def test_entitlement_season_unlock_outage_is_503(monkeypatch):
 
     assert response.status_code == 503
     assert response.json()["detail"] == "Could not verify existing packet access. Please retry."
+
+
+def test_season_filing_detail_open_is_none_when_flag_off(monkeypatch):
+    monkeypatch.delenv("SEASON_UNLOCK", raising=False)
+    called = []
+    monkeypatch.setattr(
+        year_close_packet,
+        "has_season_unlock",
+        lambda *_args, **_kwargs: called.append("called") or (True, True),
+    )
+    assert year_close_packet.season_filing_detail_open("user-1", 2026) is None
+    assert called == []
+
+
+def test_season_filing_detail_open_follows_the_receipt(monkeypatch):
+    monkeypatch.setenv("SEASON_UNLOCK", "1")
+    monkeypatch.setattr(
+        year_close_packet,
+        "has_season_unlock",
+        lambda *_args, **_kwargs: (True, True),
+    )
+    assert year_close_packet.season_filing_detail_open("user-1", 2026) is True
+    monkeypatch.setattr(
+        year_close_packet,
+        "has_season_unlock",
+        lambda *_args, **_kwargs: (False, True),
+    )
+    assert year_close_packet.season_filing_detail_open("user-1", 2026) is False
+    assert year_close_packet.season_filing_detail_open("", 2026) is False
+    assert year_close_packet.season_filing_detail_open("user-1", None) is False
+    monkeypatch.setattr(
+        year_close_packet,
+        "has_season_unlock",
+        lambda *_args, **_kwargs: (False, False),
+    )
+    assert year_close_packet.season_filing_detail_open("user-1", 2026) is False
 
 
 def test_entitlement_get_ignores_memory_when_grant_and_row_are_empty(monkeypatch):
@@ -13249,6 +13286,78 @@ def test_unpaid_snapshot_wash_sale_chains_stay_forbidden(monkeypatch):
     )
     assert "AMD" not in denied.text
     assert "hint" not in denied.json()
+
+
+def test_season_unlock_chain_read_includes_unpaid_snapshot(monkeypatch):
+    """A year receipt returns chains and lot rows without a paid snapshot."""
+    monkeypatch.setenv("SEASON_UNLOCK", "1")
+    monkeypatch.setattr(main, "has_season_unlock", lambda *_args, **_kwargs: (True, True))
+    user = "test-user-123"
+    aid = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeef"
+    source = _wash_chain_source(aid)
+    payload = build_packet_payload(source, analysis_id=aid)
+    payload["lot_match_report"] = {
+        "matched": [{"symbol": "AMD", "quantity": 10, "status": "matched"}],
+        "gap": [],
+        "unmatched": [],
+        "matched_count": 1,
+        "gap_count": 0,
+        "unmatched_count": 0,
+    }
+    durable = snapshot_payload_with_wash_sale_chains(payload, _amd_chain_payload())
+    _wire_real_snapshot_client(
+        monkeypatch,
+        [_snapshot_row(
+            aid, user, 2026, durable,
+            session_id=None, paid_at=None, expires_at="2099-01-01T00:00:00+00:00",
+        )],
+    )
+    got = client.get(f"/api/portfolio/analysis/{aid}/wash-sale-chains")
+    assert got.status_code == 200, got.text
+    body = got.json()
+    assert body["wash_sale_chains"][0]["symbol"] == "AMD"
+    assert body["lot_match_report"]["matched"][0]["symbol"] == "AMD"
+
+
+def test_season_unlock_chain_read_refuses_a_paid_snapshot_without_a_receipt(monkeypatch):
+    monkeypatch.setenv("SEASON_UNLOCK", "1")
+    monkeypatch.setattr(main, "has_season_unlock", lambda *_args, **_kwargs: (False, True))
+    user = "test-user-123"
+    aid = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee1"
+    source = _wash_chain_source(aid)
+    payload = build_packet_payload(source, analysis_id=aid)
+    durable = snapshot_payload_with_wash_sale_chains(payload, _amd_chain_payload())
+    _wire_real_snapshot_client(
+        monkeypatch,
+        [_snapshot_row(
+            aid, user, 2026, durable,
+            session_id="cs_test_paid", paid_at="2026-01-01T00:00:00+00:00",
+        )],
+    )
+    denied = client.get(f"/api/portfolio/analysis/{aid}/wash-sale-chains")
+    assert denied.status_code == 403
+    assert "AMD" not in denied.text
+
+
+def test_season_unlock_chain_read_outage_is_503(monkeypatch):
+    monkeypatch.setenv("SEASON_UNLOCK", "1")
+    monkeypatch.setattr(main, "has_season_unlock", lambda *_args, **_kwargs: (False, False))
+    user = "test-user-123"
+    aid = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee2"
+    source = _wash_chain_source(aid)
+    payload = build_packet_payload(source, analysis_id=aid)
+    durable = snapshot_payload_with_wash_sale_chains(payload, _amd_chain_payload())
+    _wire_real_snapshot_client(
+        monkeypatch,
+        [_snapshot_row(
+            aid, user, 2026, durable,
+            session_id=None, paid_at=None, expires_at="2099-01-01T00:00:00+00:00",
+        )],
+    )
+    denied = client.get(f"/api/portfolio/analysis/{aid}/wash-sale-chains")
+    assert denied.status_code == 503
+    assert denied.json()["detail"] == "Could not verify existing packet access. Please retry."
+    assert "AMD" not in denied.text
 
 
 def test_guest_remember_keeps_wash_sale_chains_for_claim():

@@ -3,6 +3,7 @@ import type {
   RealizedSummary,
   Supplemental1099Summary,
 } from "@/lib/types";
+import { keepStoredFilingDetail } from "@/lib/seasonUnlock";
 
 export const SUPPLEMENTAL_1099_UPLOAD_TITLE =
   "Robinhood 1099 for the tax year you are closing";
@@ -100,11 +101,7 @@ export function isInAppSampleAnalysis(
 }
 
 export function redactUnpaidLotMatch(analysis: PortfolioAnalysis): PortfolioAnalysis {
-  if (
-    analysis.packet_unlocked ||
-    analysis.sample_run ||
-    isInAppSampleAnalysis(analysis)
-  ) {
+  if (isInAppSampleAnalysis(analysis) || keepStoredFilingDetail(analysis)) {
     return analysis;
   }
   const report = analysis.lot_match_report;

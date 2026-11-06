@@ -2939,6 +2939,87 @@ def test_unpaid_analyze_lot_match_report_is_counts_only(monkeypatch):
     )
 
 
+def test_season_unlock_analyze_keeps_lot_rows_for_a_receipt(monkeypatch):
+    """Flag on: a year receipt keeps the lot table. History stays redacted."""
+    captured = {}
+    real_history = main._save_history_best_effort
+
+    def fake_save_analysis_history(*, user_id, filename, summary, result_data=None):
+        captured["result_data"] = result_data
+        return {"id": "hist-season"}
+
+    _stub_analyze_network(monkeypatch)
+    monkeypatch.setenv("SEASON_UNLOCK", "1")
+    monkeypatch.setattr(
+        "year_close_packet.has_season_unlock",
+        lambda *_args, **_kwargs: (True, True),
+    )
+    monkeypatch.setattr("main.save_analysis_history", fake_save_analysis_history)
+    monkeypatch.setattr("main._save_history_best_effort", real_history)
+    csv_2024 = (
+        Path(__file__).resolve().parent / "fixtures" / "year_close_2024.csv"
+    ).read_bytes()
+    response = client.post(
+        "/api/portfolio/analyze?tax_year=2024",
+        files={
+            "file": ("year_close_2024.csv", csv_2024, "text/csv"),
+            "supplemental_1099": _make_supplemental_1099_upload(),
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["season_detail"] is True
+    assert body["packet_unlocked"] is False
+    report = body["lot_match_report"]
+    assert any(report.get(section) for section in ("matched", "gap", "unmatched"))
+    assert "date_sold_1099" in response.text or "1099_only" in response.text or "matched_settlement_gap" in response.text
+    stored = captured["result_data"]
+    assert stored.get("season_detail") in (None, False)
+    stored_report = stored.get("lot_match_report") or {}
+    assert stored_report.get("matched") in ([], None)
+    assert stored_report.get("gap") in ([], None)
+    assert stored_report.get("unmatched") in ([], None)
+    assert stored.get("wash_sale_chains") in ([], None)
+
+
+def test_season_unlock_analyze_strips_lots_without_a_receipt(monkeypatch):
+    """Flag on: packet_unlocked alone does not keep lots or chains."""
+    _stub_analyze_network(monkeypatch)
+    monkeypatch.setenv("SEASON_UNLOCK", "1")
+    monkeypatch.setattr(
+        "year_close_packet.has_season_unlock",
+        lambda *_args, **_kwargs: (False, True),
+    )
+
+    def grant(result, user_id):
+        return result.model_copy(
+            update={"packet_unlocked": True, "packet_session_id": "cs_test_year"}
+        )
+
+    monkeypatch.setattr(main, "_apply_packet_year_grant", grant)
+    csv_2024 = (
+        Path(__file__).resolve().parent / "fixtures" / "year_close_2024.csv"
+    ).read_bytes()
+    response = client.post(
+        "/api/portfolio/analyze?tax_year=2024",
+        files={
+            "file": ("year_close_2024.csv", csv_2024, "text/csv"),
+            "supplemental_1099": _make_supplemental_1099_upload(),
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["season_detail"] is False
+    assert body["packet_unlocked"] is True
+    report = body["lot_match_report"]
+    assert report["matched"] == []
+    assert report["gap"] == []
+    assert report["unmatched"] == []
+    assert body["wash_sale_chains"] == []
+    assert "date_sold_1099" not in response.text
+    assert "matched_settlement_gap" not in response.text
+
+
 def test_unpaid_analyze_strips_wash_chains_from_response_and_history(monkeypatch):
     """Unpaid non-sample analyze drops chains. Sample and paid runs keep them."""
     import json
@@ -3021,6 +3102,18 @@ def test_unpaid_analyze_strips_wash_chains_from_response_and_history(monkeypatch
     unpaid_json = unpaid.model_dump_json()
     assert "1099_only" not in unpaid_json
     assert "Your 1099 reports" not in unpaid_json
+    assert "season_detail" not in unpaid.model_dump()
+    opened = main._public_analysis(analysis, filing_detail=True)
+    assert opened.season_detail is True
+    assert opened.packet_unlocked is True
+    assert opened.wash_sale_chains
+    assert opened.lot_match_report.unmatched
+    closed = main._public_analysis(analysis, filing_detail=False)
+    assert closed.season_detail is False
+    assert closed.packet_unlocked is True
+    assert closed.wash_sale_chains == []
+    assert closed.lot_match_report.unmatched == []
+    assert "1099_only" not in closed.model_dump_json()
 
     captured = {}
     real_history = main._save_history_best_effort
@@ -3063,6 +3156,7 @@ def test_unpaid_analyze_strips_wash_chains_from_response_and_history(monkeypatch
     body = response.json()
     assert body["packet_unlocked"] is False
     assert body.get("sample_run") is False
+    assert "season_detail" not in body
     assert body["wash_sale_chains"] == []
     assert "1099_only" not in response.text
     assert "Your 1099 reports" not in response.text
