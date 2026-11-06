@@ -1453,6 +1453,9 @@ export default function DashboardPage() {
   const [isSampleRun, setIsSampleRun] = useState(false);
   const [packetPaid, setPacketPaid] = useState(false);
   const [seasonUnlocked, setSeasonUnlocked] = useState(false);
+  // Blanks the year receipt only when the viewer or the run changes.
+  // A packetPaid flip refetches without closing a receipt that is already open.
+  const seasonEntitlementKey = useRef<string | null>(null);
   const [washChainHint, setWashChainHint] = useState<string | null>(null);
   const washChainFetchedFor = useRef<string | null>(null);
   const [replaceBook, setReplaceBook] = useState(false);
@@ -1620,23 +1623,36 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (!seasonUnlockEnabled() || !user) {
+      seasonEntitlementKey.current = null;
       setSeasonUnlocked(false);
       return;
     }
     const year = displayedAnalysis?.tax_profile?.tax_year;
     if (typeof year !== "number" || !Number.isFinite(year)) {
+      seasonEntitlementKey.current = null;
       setSeasonUnlocked(false);
       return;
     }
+    // Checkout confirm only flips packetPaid. Refetch the year receipt so an
+    // earlier false cannot leave the lot table and wash chains locked.
+    const entitlementKey = `${user.id}:${displayedAnalysis?.analysis_id ?? ""}:${year}`;
+    if (seasonEntitlementKey.current !== entitlementKey) {
+      seasonEntitlementKey.current = entitlementKey;
+      setSeasonUnlocked(false);
+    }
     let cancelled = false;
-    setSeasonUnlocked(false);
     void fetchSeasonUnlocked(year).then((open) => {
       if (!cancelled) setSeasonUnlocked(open);
     });
     return () => {
       cancelled = true;
     };
-  }, [user, displayedAnalysis?.analysis_id, displayedAnalysis?.tax_profile?.tax_year]);
+  }, [
+    user,
+    displayedAnalysis?.analysis_id,
+    displayedAnalysis?.tax_profile?.tax_year,
+    packetPaid,
+  ]);
 
   // Unpaid analyze strips chains. After the packet is paid, or after a
   // season receipt while the flag is on, load them once for this analysis
