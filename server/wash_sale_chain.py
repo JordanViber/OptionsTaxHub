@@ -144,6 +144,20 @@ def _buys_sorted(transactions: list[Transaction]) -> list[Transaction]:
     return sorted(buys, key=lambda txn: (txn.activity_date, _symbol(txn.instrument)))
 
 
+def _account_key(value: object) -> str:
+    raw = getattr(value, "account_label", None)
+    if not raw:
+        return ""
+    return str(raw).strip()
+
+
+def _in_flag_account(txn: Transaction, account_label: str | None) -> bool:
+    """None skips the check. A label, including blank, keeps that account only."""
+    if account_label is None:
+        return True
+    return _account_key(txn) == account_label
+
+
 def _attach_flag_sale(
     transactions: list[Transaction],
     events: list[RealizedEvent],
@@ -154,6 +168,7 @@ def _attach_flag_sale(
     sale_date: date,
     quantity: float,
     sale_loss: float,
+    account_label: str | None = None,
 ) -> tuple[int | None, Transaction | None, list[tuple[int, RealizedEvent]], bool]:
     """Attach one sell only when quantity, proceeds, and loss agree.
 
@@ -170,6 +185,8 @@ def _attach_flag_sale(
     candidates: list[tuple[int, Transaction]] = []
     for index, txn in enumerate(transactions):
         if index in used_txns:
+            continue
+        if not _in_flag_account(txn, account_label):
             continue
         if txn.trans_code not in _SELL_CODES:
             continue
@@ -849,7 +866,10 @@ def _option_touches_flag(
     end = max(flag.sale_date, flag.repurchase_date) + timedelta(
         days=WASH_SALE_WINDOW_DAYS
     )
+    account = _account_key(flag)
     for txn in transactions:
+        if _account_key(txn) != account:
+            continue
         if _symbol(txn.instrument) != symbol:
             continue
         if not start <= txn.activity_date <= end:
@@ -884,7 +904,10 @@ def _quiet_unit_target(
     quantity = float(flag.sale_quantity)
     stock_prices: list[float | None] = []
     option_price: float | None = None
+    account = _account_key(flag)
     for txn in transactions:
+        if _account_key(txn) != account:
+            continue
         if _symbol(txn.instrument) != symbol or txn.activity_date != sale_date:
             continue
         if float(txn.quantity) <= QTY_EPS or not _qty_close(txn.quantity, quantity):
@@ -1217,6 +1240,7 @@ def _hop_from_flag(
     same_year: bool,
 ) -> _HopDraft:
     symbol = _symbol(flag.symbol)
+    account_label = _account_key(flag)
     sell_index, sell, event_set, unresolved = _attach_flag_sale(
         transactions,
         events,
@@ -1226,6 +1250,7 @@ def _hop_from_flag(
         sale_date=flag.sale_date,
         quantity=float(flag.sale_quantity),
         sale_loss=float(flag.sale_loss),
+        account_label=account_label,
     )
     event_index = min((index for index, _event in event_set), default=None)
     asset = _asset_type(sell)
@@ -1264,8 +1289,11 @@ def _hop_from_flag(
         # loss never reaches this line.
         proceeds = _cents(float(sell.quantity) * float(sell.price))
         cost_basis = _cents(proceeds + float(flag.sale_loss))
+    account_buys = [
+        txn for txn in transactions if _in_flag_account(txn, account_label)
+    ]
     raw_buys = (
-        [buy for _, buy in _find_qualifying_repurchases(sell, _buys_sorted(transactions))]
+        [buy for _, buy in _find_qualifying_repurchases(sell, _buys_sorted(account_buys))]
         if sell is not None
         else []
     )

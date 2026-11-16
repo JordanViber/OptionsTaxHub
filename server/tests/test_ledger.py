@@ -97,6 +97,32 @@ class TestMerge:
         assert warning is not None
         assert "missing" in warning.lower()
 
+    def test_unlabeled_saved_rows_adopt_one_reuploaded_label(self):
+        buy = _txn("2026-01-06", qty=4, price=500)
+        sell = _txn("2026-02-10", code="Sell", qty=4, price=470)
+        prior = [buy, sell]
+        incoming = [
+            buy.model_copy(update={"account_label": "individual"}),
+            sell.model_copy(update={"account_label": "individual"}),
+            _txn("2026-02-20", qty=4, price=480).model_copy(
+                update={"account_label": "ira_traditional"}
+            ),
+        ]
+        merged = merge_transaction_books(prior, incoming)
+        assert merged.added == 1
+        assert merged.already_in_book == 2
+        assert len(merged.transactions) == 3
+        labels = [txn.account_label for txn in merged.transactions]
+        assert labels[:2] == ["individual", "individual"]
+        assert labels[2] == "ira_traditional"
+
+    def test_labeled_book_absorbs_a_later_unlabeled_copy(self):
+        labeled = _txn("2026-01-06").model_copy(update={"account_label": "individual"})
+        merged = merge_transaction_books([labeled], [_txn("2026-01-06")])
+        assert merged.added == 0
+        assert len(merged.transactions) == 1
+        assert merged.transactions[0].account_label == "individual"
+
     def test_empty_prior_is_just_the_new_file(self):
         incoming = [_txn("2026-03-01")]
         merged = merge_transaction_books([], incoming)

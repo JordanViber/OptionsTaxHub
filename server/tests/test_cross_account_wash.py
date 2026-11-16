@@ -15,9 +15,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import main
 from cross_account_wash import build_cross_account_chains
 from csv_parser import parse_labeled_exports, transactions_to_tax_lots
+from harvesting import generate_suggestions
 from ledger import SAMPLE_FIXTURE_PRICES
-from models import AssetType, TransCode, Transaction
+from models import AssetType, TaxLot, TaxProfile, TransCode, Transaction
 from wash_sale import adjust_lots_for_wash_sales, detect_wash_sales
+from wash_sale_chain import build_wash_sale_chains
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SAMPLE_CSV = REPO_ROOT / "client" / "public" / "sample-robinhood-transactions.csv"
@@ -96,6 +98,74 @@ def test_ira_replacement_is_estimated_and_does_not_change_basis():
     assert ira_lots[0].wash_sale_disallowed == 0
     assert ira_lots[0].total_cost_basis == pytest.approx(1920)
     assert ira_lots[0].account_name == "IRA (traditional)"
+
+
+def test_same_day_buy_in_another_account_is_flagged():
+    transactions = [
+        _txn("QQQ", TransCode.BUY, date(2026, 1, 6), 4, 500, "individual"),
+        _txn("QQQ", TransCode.SELL, date(2026, 2, 10), 4, 470, "individual"),
+        _txn("QQQ", TransCode.BUY, date(2026, 2, 10), 4, 480, "ira_roth"),
+    ]
+    chains = build_cross_account_chains(transactions, [], tax_year=2026)
+    assert len(chains) == 1
+    assert chains[0].permanent_disallowance is True
+    assert chains[0].hops[0].disallowed_loss == pytest.approx(120)
+    assert chains[0].hops[0].replacement_buys[0].activity_date == date(2026, 2, 10)
+
+
+def test_ordinary_chain_ignores_a_buy_in_another_account():
+    transactions = [
+        _txn("QQQ", TransCode.BUY, date(2026, 1, 6), 4, 500, "individual"),
+        _txn("QQQ", TransCode.SELL, date(2026, 2, 10), 4, 470, "individual"),
+        _txn("QQQ", TransCode.BUY, date(2026, 2, 15), 4, 480, "ira_roth"),
+        _txn("QQQ", TransCode.BUY, date(2026, 2, 20), 4, 490, "individual"),
+    ]
+    flags = detect_wash_sales(transactions, tax_year=2026)
+    assert len(flags) == 1
+    assert flags[0].account_label == "individual"
+    chains = build_wash_sale_chains(
+        transactions=transactions,
+        wash_sale_flags=flags,
+        realized_events=[],
+        tax_lots=[],
+        supplemental=None,
+        lot_match_report=None,
+        tax_year=2026,
+    )
+    ordinary = [chain for chain in chains if not chain.cross_account]
+    assert len(ordinary) == 1
+    buys = ordinary[0].hops[0].replacement_buys
+    assert [buy.activity_date for buy in buys] == [date(2026, 2, 20)]
+
+
+def test_ira_lot_is_not_a_harvest_candidate():
+    ira = TaxLot(
+        symbol="QQQ",
+        quantity=4,
+        cost_basis_per_share=500,
+        total_cost_basis=2000,
+        purchase_date=date(2026, 1, 6),
+        current_price=400,
+        unrealized_pnl=-400,
+        account_label="ira_roth",
+    )
+    taxable = TaxLot(
+        symbol="AAPL",
+        quantity=1,
+        cost_basis_per_share=100,
+        total_cost_basis=100,
+        purchase_date=date(2026, 1, 6),
+        current_price=80,
+        unrealized_pnl=-20,
+        account_label="individual",
+    )
+    kept, warnings = main._filter_suggestion_tax_lots([ira, taxable], [_txn(
+        "AAPL", TransCode.BUY, date(2026, 1, 6), 1, 100, "individual",
+    )])
+    assert [lot.symbol for lot in kept] == ["AAPL"]
+    assert any("IRA" in warning for warning in warnings)
+    suggestions = generate_suggestions(kept, [], TaxProfile(), None)
+    assert all(item.symbol != "QQQ" for item in suggestions)
 
 
 def test_buy_outside_the_61_day_window_is_not_flagged():
@@ -199,6 +269,36 @@ def test_sample_keeps_924_and_amd_and_adds_one_ira_example(monkeypatch):
     assert ira["total_cost_basis"] == pytest.approx(1920)
     individual = next(lot for lot in body["tax_lots"] if lot["symbol"] == "AAPL")
     assert individual["account_name"] == "Individual"
+
+
+def test_custom_export_beside_the_sample_does_not_unlock_chains(monkeypatch):
+    monkeypatch.setattr("main.fetch_current_prices", lambda symbols, fb=None, allow_network=True: ({}, []))
+    monkeypatch.setattr("main.fetch_option_prices", lambda labels, fb=None, allow_network=True: ({}, []))
+    monkeypatch.setattr("main.prepare_positions_for_ai", lambda lots: [])
+    monkeypatch.setattr("main._save_history_best_effort", lambda *args, **kwargs: None)
+    main.reset_guest_analyze_quota()
+    custom = (
+        "Activity Date,Process Date,Settle Date,Instrument,Description,Trans Code,Quantity,Price,Amount\n"
+        "01/06/2026,01/06/2026,01/08/2026,XYZ,Custom,Buy,4,100.00,-400.00\n"
+        "02/10/2026,02/10/2026,02/12/2026,XYZ,Custom,Sell,4,70.00,280.00\n"
+        "02/20/2026,02/20/2026,02/24/2026,XYZ,Custom,Buy,4,80.00,-320.00\n"
+    )
+    client = TestClient(main.app)
+    response = client.post(
+        "/api/portfolio/analyze?filing_status=single&estimated_income=75000&tax_year=2026",
+        files=[
+            ("file", ("sample-robinhood-transactions.csv", SAMPLE_CSV.read_bytes(), "text/csv")),
+            ("extra_files", ("custom.csv", custom.encode(), "text/csv")),
+            ("supplemental_1099", ("sample-robinhood-1099-2026.pdf", SAMPLE_1099.read_bytes(), "application/pdf")),
+            ("account_labels", (None, "individual")),
+            ("account_labels", (None, "other")),
+        ],
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body.get("sample_run") is not True
+    assert body["wash_sale_chains"] == []
+    assert any(flag["symbol"] == "XYZ" for flag in body["wash_sale_flags"])
 
 
 def test_labeled_parse_matches_the_public_sample_files():

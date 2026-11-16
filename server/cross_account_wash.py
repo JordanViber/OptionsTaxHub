@@ -158,8 +158,8 @@ def build_cross_account_chains(
                         continue
                     if _symbol(txn.instrument) != _symbol(sell.instrument):
                         continue
-                    if txn.activity_date == sell.activity_date:
-                        continue
+                    # A same-day buy in another account cannot be the lot this
+                    # sale closed. It stays inside the replacement window.
                     if not window_start <= txn.activity_date <= window_end:
                         continue
                     replacements.append(txn)

@@ -81,7 +81,7 @@ from year_close_packet import (
     session_is_settled_packet,
     upsert_packet_payload,
 )
-from account_labels import normalize_account_label
+from account_labels import is_ira_account, normalize_account_label
 from csv_parser import parse_csv, parse_labeled_exports, RealizedEvent, transactions_to_tax_lots
 from lot_matcher import match_1099b_lots
 from ledger import (
@@ -1357,9 +1357,25 @@ def _filter_suggestion_tax_lots(
     tax_lots: list,
     transactions: list,
 ) -> tuple[list, list[str]]:
-    """Exclude stock lots with split/corporate-action drift from harvesting suggestions."""
-    if not tax_lots or not transactions:
-        return tax_lots, []
+    """Drop IRA lots and stock lots with split or corporate-action drift.
+
+    IRA shares stay in the book for cross-account wash detection. A loss
+    inside an IRA is not a deductible loss, so it is not a harvest candidate.
+    """
+    warnings: list[str] = []
+    lots = list(tax_lots or [])
+    if any(is_ira_account(getattr(lot, "account_label", None)) for lot in lots):
+        lots = [
+            lot
+            for lot in lots
+            if not is_ira_account(getattr(lot, "account_label", None))
+        ]
+        warnings.append(
+            "IRA lots are left out of tax-loss estimates. "
+            "A loss inside an IRA is not deducted on the return."
+        )
+    if not lots or not transactions:
+        return lots, warnings
 
     affected_symbols = {
         txn.instrument
@@ -1368,24 +1384,24 @@ def _filter_suggestion_tax_lots(
         and txn.trans_code in (TransCode.SPR, TransCode.OCA)
     }
     if not affected_symbols:
-        return tax_lots, []
+        return lots, warnings
 
     filtered_lots = []
     skipped_symbols: set[str] = set()
-    for lot in tax_lots:
+    for lot in lots:
         if lot.asset_type == AssetType.STOCK and lot.symbol in affected_symbols:
             skipped_symbols.add(lot.symbol)
             continue
         filtered_lots.append(lot)
 
-    warnings = [
+    warnings.extend(
         (
             f"Skipped automated harvesting suggestions for {symbol} stock lots because "
             f"a stock split or corporate action changed the share count. Verify {symbol} "
             f"manually before acting on any loss estimate."
         )
         for symbol in sorted(skipped_symbols)
-    ]
+    )
     return filtered_lots, warnings
 
 
@@ -1913,7 +1929,12 @@ async def _run_portfolio_analysis(
     )
     all_warnings.extend(supplemental_1099_warnings)
 
-    trusted_sample = is_trusted_in_app_sample(contents, supplemental_bytes)
+    extra_csvs = [raw for raw, _label in (labeled_parts or [])[1:]]
+    trusted_sample = is_trusted_in_app_sample(
+        contents,
+        supplemental_bytes,
+        extra_csvs,
+    )
     csv_as_of = _csv_price_as_of(transactions, tax_lots)
     price_quotes: list[Quote] = []
     tax_lots = _apply_live_prices_to_tax_lots(
