@@ -33,6 +33,8 @@ SAMPLE_FIXTURE_PRICES = {
     "NVDA": 228.0,
     "SPY": 771.0,
     "TSLA": 355.0,
+    # Open lot on the sample IRA replacement. Unused by the single-file sample.
+    "QQQ": 510.0,
 }
 
 
@@ -95,6 +97,7 @@ def transaction_fingerprint(txn: Transaction) -> tuple:
         description,
         bool(txn.is_quantity_out),
         asset_type,
+        (txn.account_label or ""),
     )
 
 

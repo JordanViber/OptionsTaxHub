@@ -412,6 +412,43 @@ describe("api hooks", () => {
       expect(body.get("supplemental_1099")).toBe(supplemental1099File);
     });
 
+    it("sends extra Robinhood exports with account labels", async () => {
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          positions: [],
+          suggestions: [],
+          wash_sale_flags: [],
+          summary: {},
+        }),
+      } as Response);
+
+      const file = new File(["one"], "individual.csv", { type: "text/csv" });
+      const ira = new File(["two"], "ira.csv", { type: "text/csv" });
+      const wrapper = createWrapper();
+      const { result } = renderHook(() => useAnalyzePortfolio(), { wrapper });
+
+      await act(async () => {
+        result.current.mutate({
+          file,
+          extraFiles: [ira],
+          accountLabels: ["individual", "ira_traditional"],
+        });
+      });
+
+      await waitFor(() => {
+        expect(result.current.isSuccess).toBe(true);
+      });
+
+      const body = (globalThis.fetch as jest.Mock).mock.calls[0][1].body as FormData;
+      expect(body.get("file")).toBe(file);
+      expect(body.getAll("extra_files")).toEqual([ira]);
+      expect(body.getAll("account_labels")).toEqual([
+        "individual",
+        "ira_traditional",
+      ]);
+    });
+
     it("handles analyze errors with detail message", async () => {
       const file = new File(["content"], "test.csv", { type: "text/csv" });
 

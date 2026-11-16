@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 from datetime import date, timedelta
 
+from account_labels import group_by_account
 from models import TaxLot, Transaction, TransCode, WashSaleFlag
 
 logger = logging.getLogger(__name__)
@@ -107,6 +108,24 @@ def detect_wash_sales(
     transactions: list[Transaction],
     tax_year: int | None = None,
 ) -> list[WashSaleFlag]:
+    """Detect washes inside each labeled account.
+
+    One label, or no labels, is the historical single book. A buy in another
+    account is not a same-account wash and does not change these totals.
+    """
+    groups = group_by_account(transactions)
+    if len(groups) <= 1:
+        return _detect_wash_sales_one(transactions, tax_year)
+    flags: list[WashSaleFlag] = []
+    for group in groups:
+        flags.extend(_detect_wash_sales_one(group, tax_year))
+    return flags
+
+
+def _detect_wash_sales_one(
+    transactions: list[Transaction],
+    tax_year: int | None = None,
+) -> list[WashSaleFlag]:
     """
     Detect wash sales in a list of realized transactions.
 
@@ -181,6 +200,7 @@ def detect_wash_sales(
                 disallowed_loss=rounded_disallowed_loss,
                 adjusted_cost_basis=round(adjusted_cost, 2),
                 explanation=explanation,
+                account_label=sell.account_label or None,
             )
         )
 
@@ -256,6 +276,8 @@ def adjust_lots_for_wash_sales(
     for flag in wash_sale_flags:
         # Find the replacement lot (the repurchase)
         for lot in tax_lots:
+            if (lot.account_label or "") != (flag.account_label or ""):
+                continue
             if (
                 lot.symbol == flag.symbol
                 and lot.purchase_date == flag.repurchase_date
