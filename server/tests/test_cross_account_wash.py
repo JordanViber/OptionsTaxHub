@@ -14,10 +14,18 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import main
 from cross_account_wash import build_cross_account_chains
-from csv_parser import parse_labeled_exports, transactions_to_tax_lots
-from harvesting import generate_suggestions
+from csv_parser import RealizedEvent, parse_labeled_exports, transactions_to_tax_lots
+from harvesting import _compute_realized_gains, generate_suggestions
 from ledger import SAMPLE_FIXTURE_PRICES
-from models import AssetType, TaxLot, TaxProfile, TransCode, Transaction
+from lot_matcher import match_1099b_lots
+from models import (
+    AssetType,
+    Form1099BLot,
+    TaxLot,
+    TaxProfile,
+    TransCode,
+    Transaction,
+)
 from wash_sale import adjust_lots_for_wash_sales, detect_wash_sales
 from wash_sale_chain import build_wash_sale_chains
 
@@ -349,6 +357,158 @@ def test_exports_past_the_cap_are_rejected_before_they_are_read(monkeypatch):
     assert response.status_code == 400
     assert "at most 6" in response.json()["detail"]["message"].lower()
     assert reads == ["primary.csv"]
+
+
+def test_ira_loss_sale_does_not_become_a_cross_account_chain():
+    transactions = [
+        _txn("QQQ", TransCode.BUY, date(2026, 1, 6), 4, 500, "ira_roth"),
+        _txn("QQQ", TransCode.SELL, date(2026, 2, 10), 4, 470, "ira_roth"),
+        _txn("QQQ", TransCode.BUY, date(2026, 2, 20), 4, 480, "individual"),
+    ]
+    assert build_cross_account_chains(transactions, [], tax_year=2026) == []
+
+
+def test_mixed_replacement_keeps_basis_on_the_taxable_buy():
+    transactions = [
+        _txn("QQQ", TransCode.BUY, date(2026, 1, 6), 4, 500, "individual"),
+        _txn("QQQ", TransCode.SELL, date(2026, 2, 10), 4, 470, "individual"),
+        _txn("QQQ", TransCode.BUY, date(2026, 2, 12), 2, 480, "other"),
+        _txn("QQQ", TransCode.BUY, date(2026, 2, 18), 2, 470, "ira_traditional"),
+    ]
+    chains = build_cross_account_chains(transactions, [], tax_year=2026)
+    assert len(chains) == 1
+    hop = chains[0].hops[0]
+    by_account = {buy.account_label: buy for buy in hop.replacement_buys}
+    assert by_account["other"].explained_basis == pytest.approx(1020)
+    assert by_account["ira_traditional"].explained_basis == pytest.approx(940)
+    assert chains[0].permanent_disallowance is True
+    assert "may apply to $60" in chains[0].plain_english
+    assert "No basis carryover on that amount" in chains[0].plain_english
+    assert "$60 is added to the taxable replacement's basis" in chains[0].plain_english
+
+
+def test_identical_sales_do_not_each_consume_every_same_account_flag():
+    transactions = [
+        _txn("QQQ", TransCode.BUY, date(2026, 1, 6), 8, 500, "individual"),
+        _txn("QQQ", TransCode.SELL, date(2026, 2, 10), 4, 470, "individual"),
+        _txn("QQQ", TransCode.SELL, date(2026, 2, 10), 4, 470, "individual"),
+        _txn("QQQ", TransCode.BUY, date(2026, 2, 20), 2, 480, "individual"),
+        _txn("QQQ", TransCode.BUY, date(2026, 2, 20), 8, 480, "ira_roth"),
+    ]
+    flags = detect_wash_sales(transactions, tax_year=2026)
+    assert len(flags) == 2
+    assert [flag.disallowed_loss for flag in flags] == pytest.approx([60, 60])
+    chains = build_cross_account_chains(transactions, flags, tax_year=2026)
+    assert len(chains) == 2
+    assert sum(chain.hops[0].disallowed_loss for chain in chains) == pytest.approx(120)
+
+
+def test_chain_closed_lot_stays_in_the_flag_account():
+    transactions = [
+        _txn("QQQ", TransCode.BUY, date(2026, 1, 6), 4, 500, "individual"),
+        _txn("QQQ", TransCode.SELL, date(2026, 2, 10), 4, 470, "individual"),
+        _txn("QQQ", TransCode.BUY, date(2026, 2, 20), 4, 480, "individual"),
+    ]
+    flags = detect_wash_sales(transactions, tax_year=2026)
+    events = [
+        RealizedEvent(
+            sale_date=date(2026, 2, 10),
+            symbol="QQQ",
+            quantity=4,
+            cost_basis=2000,
+            sale_proceeds=1880,
+            pnl=-120,
+            is_long_term=False,
+            purchase_date=date(2026, 1, 6),
+            account_label="individual",
+        ),
+        RealizedEvent(
+            sale_date=date(2026, 2, 10),
+            symbol="QQQ",
+            quantity=4,
+            cost_basis=2000,
+            sale_proceeds=1880,
+            pnl=-120,
+            is_long_term=False,
+            purchase_date=date(2026, 1, 7),
+            account_label="ira_traditional",
+        ),
+    ]
+    chains = build_wash_sale_chains(
+        transactions=transactions,
+        wash_sale_flags=flags,
+        realized_events=events,
+        tax_lots=[],
+        supplemental=None,
+        lot_match_report=None,
+        tax_year=2026,
+    )
+    hop = chains[0].hops[0]
+    assert [lot.purchase_date for lot in hop.closed_lots] == [date(2026, 1, 6)]
+
+
+def test_ira_realized_loss_stays_out_of_taxable_totals_and_1099():
+    transactions = [
+        _txn("AAPL", TransCode.BUY, date(2026, 1, 6), 1, 10, "individual"),
+        _txn("AAPL", TransCode.SELL, date(2026, 2, 10), 1, 20, "individual"),
+        _txn("QQQ", TransCode.BUY, date(2026, 1, 6), 1, 50, "ira_roth"),
+        _txn("QQQ", TransCode.SELL, date(2026, 2, 10), 1, 40, "ira_roth"),
+    ]
+    _lots, _warnings, realized = transactions_to_tax_lots(transactions)
+    assert {event.account_label for event in realized} == {"individual", "ira_roth"}
+    summary = main._compute_realized_summary(realized, 2026)
+    assert summary.total_net == pytest.approx(10)
+    assert summary.st_losses == pytest.approx(0)
+    report = match_1099b_lots(
+        [
+            Form1099BLot(
+                symbol="QQQ",
+                quantity=1,
+                date_sold=date(2026, 2, 10),
+                proceeds=40,
+                cost_basis=50,
+                term="short",
+            )
+        ],
+        realized,
+        form_1099_tax_year=2026,
+        analysis_tax_year=2026,
+        short_term_proceeds=40,
+        short_term_cost_basis=50,
+    )
+    assert report is not None
+    assert report.matched_count == 0
+    assert not any(
+        row.symbol == "QQQ" and row.status == "csv_only" for row in report.unmatched
+    )
+
+
+def test_harvest_gains_do_not_consume_another_accounts_shares():
+    transactions = [
+        _txn("QQQ", TransCode.BUY, date(2026, 1, 2), 100, 100, "other"),
+        _txn("QQQ", TransCode.BUY, date(2026, 6, 1), 100, 10, "individual"),
+        _txn("QQQ", TransCode.SELL, date(2026, 6, 2), 100, 20, "individual"),
+    ]
+    assert _compute_realized_gains(transactions, tax_year=2026) == pytest.approx(1000)
+    lots = [
+        TaxLot(
+            symbol=symbol,
+            quantity=10,
+            cost_basis_per_share=200,
+            total_cost_basis=2000,
+            purchase_date=date(2026, 1, 6),
+            current_price=50,
+            unrealized_pnl=-1500,
+            account_label="individual",
+        )
+        for symbol in ("AAPL", "MSFT", "NVDA")
+    ]
+    suggestions = generate_suggestions(lots, transactions, TaxProfile(), None)
+    assert [item.symbol for item in suggestions if item.action == "SELL"] == [
+        "AAPL",
+        "MSFT",
+        "NVDA",
+    ]
 
 
 def test_labeled_parse_matches_the_public_sample_files():

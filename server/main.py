@@ -607,7 +607,12 @@ def _compute_realized_summary(realized: list[RealizedEvent], tax_year: int) -> R
     Filters realized events by sale_date.year == tax_year, then sums short-term
     and long-term gains/losses separately.
     """
-    year_events = [e for e in realized if e.sale_date.year == tax_year]
+    year_events = [
+        event
+        for event in realized
+        if event.sale_date.year == tax_year
+        and not is_ira_account(getattr(event, "account_label", None))
+    ]
 
     st_gains = sum(e.pnl for e in year_events if not e.is_long_term and e.pnl > 0)
     st_losses = sum(e.pnl for e in year_events if not e.is_long_term and e.pnl < 0)

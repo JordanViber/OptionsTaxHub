@@ -123,6 +123,48 @@ class TestMerge:
         assert len(merged.transactions) == 1
         assert merged.transactions[0].account_label == "individual"
 
+    def test_older_unlabeled_history_adopts_the_only_taxable_label(self):
+        older = _txn("2025-06-01", qty=4, price=400)
+        overlap = _txn("2026-01-06", qty=4, price=500)
+        incoming = [
+            overlap.model_copy(update={"account_label": "individual"}),
+            _txn("2026-02-20", qty=4, price=480).model_copy(
+                update={"account_label": "ira_traditional"}
+            ),
+        ]
+        merged = merge_transaction_books([older, overlap], incoming)
+        assert [txn.account_label for txn in merged.transactions[:2]] == [
+            "individual",
+            "individual",
+        ]
+        assert merged.transactions[2].account_label == "ira_traditional"
+        assert len(merged.transactions) == 3
+
+    def test_ambiguous_reupload_drops_the_unlabeled_leftover(self):
+        prior = _txn("2026-01-06", qty=4, price=500)
+        incoming = [
+            prior.model_copy(update={"account_label": "individual"}),
+            prior.model_copy(update={"account_label": "other"}),
+        ]
+        merged = merge_transaction_books([prior], incoming)
+        assert len(merged.transactions) == 2
+        assert {txn.account_label for txn in merged.transactions} == {
+            "individual",
+            "other",
+        }
+
+    def test_partial_same_day_upgrade_labels_the_sibling_copy(self):
+        fill = _txn("2026-02-04", qty=1, price=400)
+        merged = merge_transaction_books(
+            [fill, fill],
+            [fill.model_copy(update={"account_label": "individual"})],
+        )
+        assert len(merged.transactions) == 2
+        assert [txn.account_label for txn in merged.transactions] == [
+            "individual",
+            "individual",
+        ]
+
     def test_empty_prior_is_just_the_new_file(self):
         incoming = [_txn("2026-03-01")]
         merged = merge_transaction_books([], incoming)

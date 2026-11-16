@@ -66,24 +66,88 @@ def _stock_buys(transactions: list[Transaction]) -> list[Transaction]:
     )
 
 
-def _same_account_disallowed(
-    sell: Transaction,
-    flags: list[WashSaleFlag],
-) -> float:
-    total = 0.0
+def _flag_matches_sale(flag: WashSaleFlag, sell: Transaction) -> bool:
+    if _symbol(flag.symbol) != _symbol(sell.instrument):
+        return False
+    if flag.sale_date != sell.activity_date:
+        return False
+    if not _qty_close(flag.sale_quantity, sell.quantity):
+        return False
+    flag_label = getattr(flag, "account_label", None) or ""
     sell_label = sell.account_label or ""
-    for flag in flags:
-        if _symbol(flag.symbol) != _symbol(sell.instrument):
+    if flag_label and sell_label and flag_label != sell_label:
+        return False
+    return True
+
+
+def _assign_same_account_disallowed(
+    sells: list[Transaction],
+    losses: list[float],
+    flags: list[WashSaleFlag],
+) -> list[float]:
+    """Give each same-account flag to one sale.
+
+    Two sales that share a date and quantity used to each receive the sum of
+    every matching flag. That treated both as fully disallowed and dropped
+    the uncovered cross-account remainder. Identical sales take flags one
+    at a time. A single sale still takes every flag up to its own loss.
+    """
+    assigned = [0.0] * len(sells)
+    used: set[int] = set()
+    buckets: dict[tuple, list[int]] = {}
+    for index, sell in enumerate(sells):
+        key = (
+            _symbol(sell.instrument),
+            sell.activity_date,
+            round(float(sell.quantity), 4),
+            sell.account_label or "",
+        )
+        buckets.setdefault(key, []).append(index)
+
+    def matching_flags(sell: Transaction) -> list[int]:
+        return [
+            flag_index
+            for flag_index, flag in enumerate(flags)
+            if _flag_matches_sale(flag, sell)
+        ]
+
+    for indexes in buckets.values():
+        matching = matching_flags(sells[indexes[0]])
+        if len(indexes) == 1:
+            sell_index = indexes[0]
+            room = losses[sell_index]
+            total = 0.0
+            for flag_index in matching:
+                if total >= room - 0.01:
+                    break
+                amount = float(flags[flag_index].disallowed_loss)
+                used.add(flag_index)
+                total += amount
+            assigned[sell_index] = _cents(min(total, room))
             continue
-        if flag.sale_date != sell.activity_date:
-            continue
-        if not _qty_close(flag.sale_quantity, sell.quantity):
-            continue
-        flag_label = getattr(flag, "account_label", None) or ""
-        if flag_label and sell_label and flag_label != sell_label:
-            continue
-        total += float(flag.disallowed_loss)
-    return _cents(total)
+        while True:
+            progressed = False
+            for sell_index in indexes:
+                room = losses[sell_index] - assigned[sell_index]
+                if room <= 0.01:
+                    continue
+                choice = next(
+                    (
+                        flag_index
+                        for flag_index in matching
+                        if flag_index not in used
+                    ),
+                    None,
+                )
+                if choice is None:
+                    continue
+                amount = min(float(flags[choice].disallowed_loss), room)
+                used.add(choice)
+                assigned[sell_index] = _cents(assigned[sell_index] + amount)
+                progressed = True
+            if not progressed:
+                break
+    return assigned
 
 
 def _plain_english(
@@ -94,7 +158,8 @@ def _plain_english(
     estimated: float,
     sale_name: str,
     buy_names: str,
-    permanent: bool,
+    permanent_amount: float,
+    deferred_amount: float,
 ) -> str:
     text = (
         f"Not on your 1099: cross-account. "
@@ -105,7 +170,13 @@ def _plain_english(
         f"covers {_fmt_qty(covered)} shares. "
         f"Estimated disallowed amount {_fmt_money(estimated)}."
     )
-    if permanent:
+    if permanent_amount > 0 and deferred_amount > 0:
+        text += (
+            f" An IRA replacement may apply to {_fmt_money(permanent_amount)}, "
+            f"ask a tax pro. No basis carryover on that amount. "
+            f"{_fmt_money(deferred_amount)} is added to the taxable replacement's basis."
+        )
+    elif permanent_amount > 0:
         text += (
             " An IRA replacement may apply, ask a tax pro. No basis carryover."
         )
@@ -129,6 +200,10 @@ def build_cross_account_chains(
     consumed: dict[int, float] = {}
     planned: list[tuple[Transaction, list[Transaction], float, float, float]] = []
     for group in groups:
+        # A loss inside an IRA is not deducted, so it is not a wash to disallow.
+        # IRA buys still replace taxable sales further down.
+        if group and is_ira_account(group[0].account_label):
+            continue
         buys = _stock_buys(group)
         sells = [
             txn
@@ -139,12 +214,18 @@ def build_cross_account_chains(
             sells = [txn for txn in sells if txn.activity_date.year == tax_year]
         sells.sort(key=lambda txn: txn.activity_date)
         used: dict[int, float] = {}
+        priced: list[tuple[Transaction, float]] = []
         for sell in sells:
             loss = _compute_sale_loss(sell, buys, used)
             if loss <= _QTY_EPS:
                 continue
-            loss = _cents(loss)
-            already = _same_account_disallowed(sell, flags)
+            priced.append((sell, _cents(loss)))
+        allowances = _assign_same_account_disallowed(
+            [sell for sell, _loss in priced],
+            [loss for _sell, loss in priced],
+            flags,
+        )
+        for (sell, loss), already in zip(priced, allowances):
             remaining_loss = _cents(max(0.0, loss - already))
             if remaining_loss <= 0:
                 continue
@@ -199,7 +280,6 @@ def build_cross_account_chains(
         estimated = _cents(min(remaining_loss, loss * (covered / sell.quantity)))
         if estimated <= 0:
             continue
-        permanent = any(is_ira_account(buy.account_label) for buy, _take in allocated)
         sale_label = sell.account_label or None
         sale_name = account_display_name(sale_label) or "this account"
         buy_names = ", ".join(
@@ -210,14 +290,18 @@ def build_cross_account_chains(
         )
         buy_rows: list[WashReplacementBuy] = []
         remaining_dollars = estimated
+        permanent_amount = 0.0
         for index, (buy, take) in enumerate(allocated):
             if index == len(allocated) - 1:
                 portion = remaining_dollars
             else:
                 portion = _cents(estimated * (take / covered))
                 remaining_dollars = _cents(remaining_dollars - portion)
+            buy_permanent = is_ira_account(buy.account_label)
+            if buy_permanent:
+                permanent_amount += portion
             cash = _cents(buy.price * take)
-            explained = cash if permanent else _cents(cash + portion)
+            explained = cash if buy_permanent else _cents(cash + portion)
             buy_rows.append(
                 WashReplacementBuy(
                     activity_date=buy.activity_date,
@@ -231,6 +315,9 @@ def build_cross_account_chains(
                     account_name=account_display_name(buy.account_label),
                 )
             )
+        permanent_amount = _cents(permanent_amount)
+        deferred_amount = _cents(max(0.0, estimated - permanent_amount))
+        permanent = permanent_amount > 0
         symbol = _symbol(sell.instrument)
         chain_id = (
             f"cross-{symbol}-{sell.activity_date.isoformat()}-"
@@ -243,7 +330,8 @@ def build_cross_account_chains(
             estimated=estimated,
             sale_name=sale_name,
             buy_names=buy_names,
-            permanent=permanent,
+            permanent_amount=permanent_amount,
+            deferred_amount=deferred_amount,
         )
         hop = WashSaleHop(
             hop_id=f"{chain_id}:h0",

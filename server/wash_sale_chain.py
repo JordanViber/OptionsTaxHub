@@ -22,6 +22,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
+from account_labels import is_ira_account
 from csv_parser import RealizedEvent
 from lot_matcher import CENTS, QTY_EPS
 from models import (
@@ -210,6 +211,7 @@ def _attach_flag_sale(
             quantity,
             sale_loss=sale_loss,
             sell=txn,
+            account_label=account_label,
         )
         if event_set:
             confirmed.append((index, txn, event_set))
@@ -234,6 +236,7 @@ def _attach_flag_sale(
             sale_date,
             quantity,
             sale_loss,
+            account_label=account_label,
         ):
             return None, None, [], True
         index, txn = candidates[0]
@@ -248,6 +251,7 @@ def _attach_flag_sale(
             quantity,
             sale_loss=sale_loss,
             sell=None,
+            account_label=account_label,
         )
         return None, None, event_set, False
     return None, None, [], True
@@ -258,11 +262,23 @@ def _attach_flag_sale(
 _MAX_MATCH_CANDIDATES = 12
 
 
+def _event_in_account(event: RealizedEvent, account_label: str | None) -> bool:
+    """None is the 1099 path: IRA closes are not taxable lots.
+
+    A flag account, including a blank label, keeps only that account's lots.
+    """
+    label = getattr(event, "account_label", None) or ""
+    if account_label is None:
+        return not is_ira_account(label)
+    return label == account_label
+
+
 def _event_candidates(
     events: list[RealizedEvent],
     used: set[int],
     symbol: str,
     sale_date: date | None,
+    account_label: str | None = None,
 ) -> list[tuple[int, RealizedEvent]]:
     if sale_date is None:
         return []
@@ -270,6 +286,7 @@ def _event_candidates(
         (index, event)
         for index, event in enumerate(events)
         if index not in used
+        and _event_in_account(event, account_label)
         and _symbol(event.symbol) == symbol
         and event.sale_date == sale_date
         and float(event.quantity) > QTY_EPS
@@ -308,6 +325,7 @@ def _claim_event_set(
     *,
     sale_loss: float,
     sell: Transaction | None,
+    account_label: str | None = None,
 ) -> list[tuple[int, RealizedEvent]]:
     """Lots closed by one sale.
 
@@ -317,7 +335,7 @@ def _claim_event_set(
     must also match that sell, so two same-day sales do not take each other's
     lots. More than 12 candidate lots are left unattached.
     """
-    candidates = _event_candidates(events, used, symbol, sale_date)
+    candidates = _event_candidates(events, used, symbol, sale_date, account_label)
     if not candidates or len(candidates) > _MAX_MATCH_CANDIDATES:
         return []
     subsets = _qty_subsets(candidates, quantity, lambda item: item[1].quantity)
@@ -348,6 +366,7 @@ def _same_day_stock_lots_miss_flag_loss(
     sale_date: date,
     quantity: float,
     sale_loss: float,
+    account_label: str | None = None,
 ) -> bool:
     """True when same-day stock lots exist and none imply the flag loss.
 
@@ -357,7 +376,7 @@ def _same_day_stock_lots_miss_flag_loss(
     sell. Lots that do not match are not that sale: the caller must leave
     the hop unidentified instead of building basis from the flag loss.
     """
-    candidates = _event_candidates(events, used, symbol, sale_date)
+    candidates = _event_candidates(events, used, symbol, sale_date, account_label)
     if not candidates:
         return False
     subsets = _qty_subsets(candidates, quantity, lambda item: item[1].quantity)
@@ -877,6 +896,8 @@ def _option_touches_flag(
         if _is_option_event(txn):
             return True
     for event in events:
+        if not _event_in_account(event, account):
+            continue
         if _symbol(event.symbol) != symbol:
             continue
         if not start <= event.sale_date <= end:
@@ -923,6 +944,8 @@ def _quiet_unit_target(
     if option_price is not None:
         return [option_price]
     for event in events:
+        if not _event_in_account(event, account):
+            continue
         if _symbol(event.symbol) != symbol or event.sale_date != sale_date:
             continue
         if _is_option_asset(event.asset_type):
@@ -1532,6 +1555,8 @@ def _row_involves_option(
         ):
             return True
     for event in events:
+        if is_ira_account(getattr(event, "account_label", None)):
+            continue
         if not _is_option_asset(event.asset_type):
             continue
         if _sale_matches_event(
@@ -1556,6 +1581,8 @@ def _symbol_has_option(
         if _symbol(txn.instrument) == symbol and _named_asset(txn.asset_type) == AssetType.OPTION.value:
             return True
     for event in events:
+        if is_ira_account(getattr(event, "account_label", None)):
+            continue
         if _symbol(event.symbol) == symbol and _named_asset(event.asset_type) == AssetType.OPTION.value:
             return True
     for lot in tax_lots:
@@ -1598,6 +1625,8 @@ def _infer_sale_asset(
         sells.append(txn)
         kinds.add(_named_asset(txn.asset_type))
     for event in events:
+        if is_ira_account(getattr(event, "account_label", None)):
+            continue
         if not _sale_matches_event(
             event,
             symbol=symbol,

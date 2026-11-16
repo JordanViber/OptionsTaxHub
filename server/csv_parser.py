@@ -39,6 +39,8 @@ class RealizedEvent:
     purchase_date: Optional[date] = None
     settle_date: Optional[date] = None
     asset_type: AssetType = AssetType.STOCK
+    # Empty on a single unlabeled upload. IRA closes stay out of taxable totals.
+    account_label: Optional[str] = None
 
 
 # Column name constants (avoid duplication)
@@ -512,6 +514,7 @@ def _close_lots_fifo(
             purchase_date=oldest_lot.purchase_date,
             settle_date=txn.settle_date,
             asset_type=oldest_lot.asset_type,
+            account_label=txn.account_label or oldest_lot.account_label or None,
         ))
 
         if oldest_lot.quantity <= remaining_to_sell:

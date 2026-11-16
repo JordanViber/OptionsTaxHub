@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any, Optional
 
+from account_labels import is_ira_account
 from models import Transaction
 
 SAMPLE_CSV_FILENAMES = frozenset({"sample-robinhood-transactions.csv"})
@@ -277,6 +278,7 @@ def merge_transaction_books(
 
     merged = [upgraded.get(index, txn) for index, txn in enumerate(prior_list)]
     merged.extend(added_txns)
+    merged = _settle_unlabeled_leftovers(merged)
     first, last = _date_bounds(merged)
     return MergeResult(
         transactions=merged,
@@ -286,6 +288,43 @@ def merge_transaction_books(
         first_activity_date=first,
         last_activity_date=last,
     )
+
+
+def _settle_unlabeled_leftovers(merged: list[Transaction]) -> list[Transaction]:
+    """Keep a legacy unlabeled row from becoming a second account.
+
+    A blank row whose fill was re-uploaded under one label takes that label.
+    The same fill under two labels drops the blank copy. Older unlabeled
+    rows adopt the only taxable label in the book, so a continuation plus
+    an IRA file stays one taxable account. Two taxable labels are not guessed.
+    """
+    taxable_labels: list[str] = []
+    labeled_bases: dict[tuple, set[str]] = {}
+    for txn in merged:
+        label = txn.account_label or ""
+        if not label:
+            continue
+        if not is_ira_account(label) and label not in taxable_labels:
+            taxable_labels.append(label)
+        labeled_bases.setdefault(_fingerprint_without_account(txn), set()).add(label)
+    sole = taxable_labels[0] if len(taxable_labels) == 1 else None
+    kept: list[Transaction] = []
+    for txn in merged:
+        label = txn.account_label or ""
+        if label:
+            kept.append(txn)
+            continue
+        labels = labeled_bases.get(_fingerprint_without_account(txn), set())
+        if len(labels) > 1:
+            continue
+        if len(labels) == 1:
+            kept.append(txn.model_copy(update={"account_label": next(iter(labels))}))
+            continue
+        if sole:
+            kept.append(txn.model_copy(update={"account_label": sole}))
+            continue
+        kept.append(txn)
+    return kept
 
 
 HISTORICAL_BOOK_UNRECOVERABLE_WARNING = (
