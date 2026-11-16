@@ -197,6 +197,7 @@ SUPABASE_JWT_SECRET = os.environ.get("SUPABASE_JWT_SECRET", "")
 STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY")
 _MAX_SUPPLEMENTAL_PDF_BYTES = 20 * 1024 * 1024  # 20 MB: max size for supplemental 1099 PDF uploads
 _MAX_GUEST_CSV_BYTES = 5 * 1024 * 1024  # 5 MB: unauthenticated analyze must not file.read() unbounded
+_MAX_ACCOUNT_EXPORTS = 6
 _GUEST_ANALYZE_WINDOW_SECONDS = 60 * 60
 _GUEST_ANALYZE_MAX_PER_WINDOW = 10
 _GUEST_ANALYZE_MAX_BUCKETS = 4096
@@ -1426,7 +1427,7 @@ def _account_labels_for_uploads(upload_count: int, raw_labels: list[str]) -> lis
             status_code=400,
             detail={"message": "Upload a Robinhood CSV export.", "errors": []},
         )
-    if upload_count > 6:
+    if upload_count > _MAX_ACCOUNT_EXPORTS:
         raise HTTPException(
             status_code=400,
             detail={
@@ -1824,10 +1825,23 @@ async def analyze_portfolio(
         _enforce_guest_analyze_quota(request)
 
     contents = await _read_csv_upload(file, guest=guest)
+    named_extras = [
+        extra
+        for extra in (extra_files or [])
+        if extra and (extra.filename or "").strip()
+    ]
+    # Reject before reading the surplus bodies. One guest POST must not
+    # materialize more than the export cap in this process.
+    if 1 + len(named_extras) > _MAX_ACCOUNT_EXPORTS:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Add at most 6 Robinhood CSV exports in one analysis.",
+                "errors": [],
+            },
+        )
     uploads: list[bytes] = [contents]
-    for extra in extra_files or []:
-        if not extra or not (extra.filename or "").strip():
-            continue
+    for extra in named_extras:
         extra_bytes = await _read_csv_upload(extra, guest=guest)
         if not extra_bytes:
             continue

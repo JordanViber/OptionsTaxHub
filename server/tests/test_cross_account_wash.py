@@ -331,6 +331,26 @@ def test_custom_export_beside_the_sample_does_not_unlock_chains(monkeypatch):
     assert any(flag["symbol"] == "XYZ" for flag in body["wash_sale_flags"])
 
 
+def test_exports_past_the_cap_are_rejected_before_they_are_read(monkeypatch):
+    reads: list[str] = []
+
+    async def _spy(file, guest=False):
+        reads.append(file.filename or "")
+        return b"Activity Date,Process Date,Settle Date,Instrument,Description,Trans Code,Quantity,Price,Amount\n"
+
+    monkeypatch.setattr(main, "_read_csv_upload", _spy)
+    main.reset_guest_analyze_quota()
+    files = [("file", ("primary.csv", b"x", "text/csv"))]
+    files.extend(
+        ("extra_files", (f"extra-{index}.csv", b"x", "text/csv"))
+        for index in range(6)
+    )
+    response = TestClient(main.app).post("/api/portfolio/analyze", files=files)
+    assert response.status_code == 400
+    assert "at most 6" in response.json()["detail"]["message"].lower()
+    assert reads == ["primary.csv"]
+
+
 def test_labeled_parse_matches_the_public_sample_files():
     parts = [
         (SAMPLE_CSV.read_text(encoding="utf-8"), "individual"),
