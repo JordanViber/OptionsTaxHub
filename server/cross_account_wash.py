@@ -125,6 +125,9 @@ def build_cross_account_chains(
 
     flags = list(wash_sale_flags or [])
     chains: list[WashSaleChain] = []
+    # One replacement buy can cover only its own shares, across every loss sale.
+    consumed: dict[int, float] = {}
+    planned: list[tuple[Transaction, list[Transaction], float, float, float]] = []
     for group in groups:
         buys = _stock_buys(group)
         sells = [
@@ -145,126 +148,136 @@ def build_cross_account_chains(
             remaining_loss = _cents(max(0.0, loss - already))
             if remaining_loss <= 0:
                 continue
-            window_start = sell.activity_date - timedelta(days=WASH_SALE_WINDOW_DAYS)
-            window_end = sell.activity_date + timedelta(days=WASH_SALE_WINDOW_DAYS)
-            replacements: list[Transaction] = []
-            for other in groups:
-                if other is group:
-                    continue
-                for txn in other:
-                    if txn.trans_code not in _BUY_CODES:
-                        continue
-                    if txn.asset_type != AssetType.STOCK:
-                        continue
-                    if _symbol(txn.instrument) != _symbol(sell.instrument):
-                        continue
-                    # A same-day buy in another account cannot be the lot this
-                    # sale closed. It stays inside the replacement window.
-                    if not window_start <= txn.activity_date <= window_end:
-                        continue
-                    replacements.append(txn)
-            if not replacements:
-                continue
-            replacements.sort(key=lambda txn: (txn.activity_date, txn.account_label or ""))
             replaced_shares = sell.quantity * min(1.0, already / loss) if loss else 0.0
             shares_left = max(0.0, sell.quantity - replaced_shares)
             if shares_left <= _QTY_EPS:
                 continue
-            allocated: list[tuple[Transaction, float]] = []
-            still = shares_left
-            for txn in replacements:
-                if still <= _QTY_EPS:
-                    break
-                take = min(still, txn.quantity)
-                if take <= _QTY_EPS:
+            planned.append((sell, group, loss, remaining_loss, shares_left))
+    planned.sort(
+        key=lambda item: (item[0].activity_date, item[0].account_label or "", _symbol(item[0].instrument))
+    )
+    for sell, group, loss, remaining_loss, shares_left in planned:
+        window_start = sell.activity_date - timedelta(days=WASH_SALE_WINDOW_DAYS)
+        window_end = sell.activity_date + timedelta(days=WASH_SALE_WINDOW_DAYS)
+        replacements: list[Transaction] = []
+        for other in groups:
+            if other is group:
+                continue
+            for txn in other:
+                if txn.trans_code not in _BUY_CODES:
                     continue
-                allocated.append((txn, take))
-                still -= take
-            covered = shares_left - still
-            if covered <= _QTY_EPS:
+                if txn.asset_type != AssetType.STOCK:
+                    continue
+                if _symbol(txn.instrument) != _symbol(sell.instrument):
+                    continue
+                # A same-day buy in another account cannot be the lot this
+                # sale closed. It stays inside the replacement window.
+                if not window_start <= txn.activity_date <= window_end:
+                    continue
+                remaining_qty = txn.quantity - consumed.get(id(txn), 0.0)
+                if remaining_qty <= _QTY_EPS:
+                    continue
+                replacements.append(txn)
+        if not replacements:
+            continue
+        replacements.sort(key=lambda txn: (txn.activity_date, txn.account_label or ""))
+        allocated: list[tuple[Transaction, float]] = []
+        still = shares_left
+        for txn in replacements:
+            if still <= _QTY_EPS:
+                break
+            remaining_qty = txn.quantity - consumed.get(id(txn), 0.0)
+            take = min(still, remaining_qty)
+            if take <= _QTY_EPS:
                 continue
-            estimated = _cents(min(remaining_loss, loss * (covered / sell.quantity)))
-            if estimated <= 0:
-                continue
-            permanent = any(is_ira_account(txn.account_label) for txn, _take in allocated)
-            sale_label = sell.account_label or None
-            sale_name = account_display_name(sale_label) or "this account"
-            buy_names = ", ".join(
-                dict.fromkeys(
-                    account_display_name(txn.account_label) or "another account"
-                    for txn, _take in allocated
+            allocated.append((txn, take))
+            consumed[id(txn)] = consumed.get(id(txn), 0.0) + take
+            still -= take
+        covered = shares_left - still
+        if covered <= _QTY_EPS:
+            continue
+        estimated = _cents(min(remaining_loss, loss * (covered / sell.quantity)))
+        if estimated <= 0:
+            continue
+        permanent = any(is_ira_account(buy.account_label) for buy, _take in allocated)
+        sale_label = sell.account_label or None
+        sale_name = account_display_name(sale_label) or "this account"
+        buy_names = ", ".join(
+            dict.fromkeys(
+                account_display_name(buy.account_label) or "another account"
+                for buy, _take in allocated
+            )
+        )
+        buy_rows: list[WashReplacementBuy] = []
+        remaining_dollars = estimated
+        for index, (buy, take) in enumerate(allocated):
+            if index == len(allocated) - 1:
+                portion = remaining_dollars
+            else:
+                portion = _cents(estimated * (take / covered))
+                remaining_dollars = _cents(remaining_dollars - portion)
+            cash = _cents(buy.price * take)
+            explained = cash if permanent else _cents(cash + portion)
+            buy_rows.append(
+                WashReplacementBuy(
+                    activity_date=buy.activity_date,
+                    quantity=buy.quantity,
+                    price=buy.price,
+                    cash_cost=_cents(buy.price * buy.quantity),
+                    allocated_quantity=round(take, 4),
+                    allocated_disallowed=portion,
+                    explained_basis=explained,
+                    account_label=buy.account_label or None,
+                    account_name=account_display_name(buy.account_label),
                 )
             )
-            buy_rows: list[WashReplacementBuy] = []
-            remaining_dollars = estimated
-            for index, (txn, take) in enumerate(allocated):
-                if index == len(allocated) - 1:
-                    portion = remaining_dollars
-                else:
-                    portion = _cents(estimated * (take / covered))
-                    remaining_dollars = _cents(remaining_dollars - portion)
-                cash = _cents(txn.price * take)
-                explained = cash if permanent else _cents(cash + portion)
-                buy_rows.append(
-                    WashReplacementBuy(
-                        activity_date=txn.activity_date,
-                        quantity=txn.quantity,
-                        price=txn.price,
-                        cash_cost=_cents(txn.price * txn.quantity),
-                        allocated_quantity=round(take, 4),
-                        allocated_disallowed=portion,
-                        explained_basis=explained,
-                        account_label=txn.account_label or None,
-                        account_name=account_display_name(txn.account_label),
-                    )
-                )
-            symbol = _symbol(sell.instrument)
-            chain_id = (
-                f"cross-{symbol}-{sell.activity_date.isoformat()}-"
-                f"{sale_label or 'account'}-{len(chains)}"
-            )
-            english = _plain_english(
-                sell=sell,
-                loss=loss,
-                covered=covered,
-                estimated=estimated,
-                sale_name=sale_name,
-                buy_names=buy_names,
-                permanent=permanent,
-            )
-            hop = WashSaleHop(
-                hop_id=f"{chain_id}:h0",
-                hop_index=0,
+        symbol = _symbol(sell.instrument)
+        chain_id = (
+            f"cross-{symbol}-{sell.activity_date.isoformat()}-"
+            f"{sale_label or 'account'}-{len(chains)}"
+        )
+        english = _plain_english(
+            sell=sell,
+            loss=loss,
+            covered=covered,
+            estimated=estimated,
+            sale_name=sale_name,
+            buy_names=buy_names,
+            permanent=permanent,
+        )
+        hop = WashSaleHop(
+            hop_id=f"{chain_id}:h0",
+            hop_index=0,
+            symbol=symbol,
+            asset_type="stock",
+            sale_date=sell.activity_date,
+            sale_quantity=sell.quantity,
+            proceeds=_cents(sell.quantity * sell.price),
+            cost_basis=_cents(sell.quantity * sell.price + loss),
+            loss=loss,
+            replacement_buys=buy_rows,
+            disallowed_loss=estimated,
+            engine_disallowed_loss=None,
+            form_1099_wash=None,
+            engine_adjusted_cost_basis=None,
+            plain_english=english,
+            reconcile_status="not_on_1099",
+            account_label=sale_label,
+            account_name=sale_name if sale_label else None,
+            cross_account=True,
+            permanent_disallowance=permanent,
+        )
+        chains.append(
+            WashSaleChain(
+                chain_id=chain_id,
                 symbol=symbol,
-                asset_type="stock",
-                sale_date=sell.activity_date,
-                sale_quantity=sell.quantity,
-                proceeds=_cents(sell.quantity * sell.price),
-                cost_basis=_cents(sell.quantity * sell.price + loss),
-                loss=loss,
-                replacement_buys=buy_rows,
-                disallowed_loss=estimated,
-                engine_disallowed_loss=None,
-                form_1099_wash=None,
-                engine_adjusted_cost_basis=None,
-                plain_english=english,
                 reconcile_status="not_on_1099",
-                account_label=sale_label,
-                account_name=sale_name if sale_label else None,
+                plain_english=english,
+                hops=[hop],
                 cross_account=True,
                 permanent_disallowance=permanent,
             )
-            chains.append(
-                WashSaleChain(
-                    chain_id=chain_id,
-                    symbol=symbol,
-                    reconcile_status="not_on_1099",
-                    plain_english=english,
-                    hops=[hop],
-                    cross_account=True,
-                    permanent_disallowance=permanent,
-                )
-            )
+        )
     return chains
 
 

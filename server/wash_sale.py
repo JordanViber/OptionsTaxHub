@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 from datetime import date, timedelta
 
-from account_labels import group_by_account
+from account_labels import group_by_account, is_ira_account
 from models import TaxLot, Transaction, TransCode, WashSaleFlag
 
 logger = logging.getLogger(__name__)
@@ -114,10 +114,19 @@ def detect_wash_sales(
     account is not a same-account wash and does not change these totals.
     """
     groups = group_by_account(transactions)
+    taxable = [
+        group
+        for group in groups
+        if not (group and is_ira_account(group[0].account_label))
+    ]
+    if not taxable:
+        return []
+    # One taxable book, with or without labels, stays on the historical pass.
+    # An IRA-only book is not a deductible wash and was dropped above.
     if len(groups) <= 1:
         return _detect_wash_sales_one(transactions, tax_year)
     flags: list[WashSaleFlag] = []
-    for group in groups:
+    for group in taxable:
         flags.extend(_detect_wash_sales_one(group, tax_year))
     return flags
 

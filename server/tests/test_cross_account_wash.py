@@ -113,6 +113,36 @@ def test_same_day_buy_in_another_account_is_flagged():
     assert chains[0].hops[0].replacement_buys[0].activity_date == date(2026, 2, 10)
 
 
+def test_one_replacement_buy_is_not_reused_by_a_later_sale():
+    transactions = [
+        _txn("QQQ", TransCode.BUY, date(2026, 1, 6), 8, 500, "individual"),
+        _txn("QQQ", TransCode.SELL, date(2026, 2, 10), 4, 470, "individual"),
+        _txn("QQQ", TransCode.SELL, date(2026, 2, 11), 4, 470, "individual"),
+        _txn("QQQ", TransCode.BUY, date(2026, 2, 20), 4, 480, "ira_traditional"),
+    ]
+    flags = detect_wash_sales(transactions, tax_year=2026)
+    chains = build_cross_account_chains(transactions, flags, tax_year=2026)
+    assert len(chains) == 1
+    assert chains[0].hops[0].sale_date == date(2026, 2, 10)
+    assert chains[0].hops[0].disallowed_loss == pytest.approx(120)
+    assert sum(chain.hops[0].disallowed_loss for chain in chains) == pytest.approx(120)
+
+
+def test_ira_internal_wash_does_not_enter_flags_or_basis():
+    transactions = [
+        _txn("QQQ", TransCode.BUY, date(2026, 1, 6), 4, 500, "ira_roth"),
+        _txn("QQQ", TransCode.SELL, date(2026, 2, 10), 4, 470, "ira_roth"),
+        _txn("QQQ", TransCode.BUY, date(2026, 2, 20), 4, 480, "ira_roth"),
+    ]
+    flags = detect_wash_sales(transactions, tax_year=2026)
+    assert flags == []
+    lots = transactions_to_tax_lots(transactions)[0]
+    adjusted = adjust_lots_for_wash_sales(lots, flags)
+    ira = next(lot for lot in adjusted if lot.symbol == "QQQ")
+    assert ira.wash_sale_disallowed == 0
+    assert ira.total_cost_basis == pytest.approx(1920)
+
+
 def test_ordinary_chain_ignores_a_buy_in_another_account():
     transactions = [
         _txn("QQQ", TransCode.BUY, date(2026, 1, 6), 4, 500, "individual"),
