@@ -150,6 +150,46 @@ def _assign_same_account_disallowed(
     return assigned
 
 
+def _consumed_by_same_account_flags(
+    groups: list[list[Transaction]],
+    flags: list[WashSaleFlag],
+) -> dict[int, float]:
+    """Shares a same-account wash flag already uses as its replacement.
+
+    Cross-account rows share that quantity. A later loss in another account
+    can take only the shares the flag did not already claim.
+    """
+    consumed: dict[int, float] = {}
+    for flag in flags:
+        need = float(flag.repurchase_quantity or 0)
+        if need <= _QTY_EPS:
+            continue
+        label = getattr(flag, "account_label", None) or ""
+        symbol = _symbol(flag.symbol)
+        for group in groups:
+            if not group or (group[0].account_label or "") != label:
+                continue
+            buys = [
+                txn
+                for txn in group
+                if txn.trans_code in _BUY_CODES
+                and txn.asset_type == AssetType.STOCK
+                and _symbol(txn.instrument) == symbol
+                and txn.activity_date == flag.repurchase_date
+            ]
+            for txn in buys:
+                if need <= _QTY_EPS:
+                    break
+                already = consumed.get(id(txn), 0.0)
+                room = txn.quantity - already
+                take = min(room, need)
+                if take <= _QTY_EPS:
+                    continue
+                consumed[id(txn)] = already + take
+                need -= take
+    return consumed
+
+
 def _plain_english(
     *,
     sell: Transaction,
@@ -196,8 +236,9 @@ def build_cross_account_chains(
 
     flags = list(wash_sale_flags or [])
     chains: list[WashSaleChain] = []
-    # One replacement buy can cover only its own shares, across every loss sale.
-    consumed: dict[int, float] = {}
+    # Same-account flags already claim their replacement shares. What remains
+    # can cover a loss in another account, and only once.
+    consumed = _consumed_by_same_account_flags(groups, flags)
     planned: list[tuple[Transaction, list[Transaction], float, float, float]] = []
     for group in groups:
         # A loss inside an IRA is not deducted, so it is not a wash to disallow.
@@ -210,13 +251,15 @@ def build_cross_account_chains(
             for txn in group
             if txn.trans_code in _SELL_CODES and txn.asset_type == AssetType.STOCK
         ]
-        if tax_year is not None:
-            sells = [txn for txn in sells if txn.activity_date.year == tax_year]
         sells.sort(key=lambda txn: txn.activity_date)
         used: dict[int, float] = {}
         priced: list[tuple[Transaction, float]] = []
         for sell in sells:
+            # Replay every sale so an earlier close consumes its lot. Only a
+            # loss in the requested tax year becomes a cross-account candidate.
             loss = _compute_sale_loss(sell, buys, used)
+            if tax_year is not None and sell.activity_date.year != tax_year:
+                continue
             if loss <= _QTY_EPS:
                 continue
             priced.append((sell, _cents(loss)))
