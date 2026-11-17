@@ -156,8 +156,10 @@ def _consumed_by_same_account_flags(
 ) -> dict[int, float]:
     """Shares a same-account wash flag already uses as its replacement.
 
-    Cross-account rows share that quantity. A later loss in another account
-    can take only the shares the flag did not already claim.
+    ``repurchase_quantity`` is every same-account buy in the 61-day window,
+    while ``repurchase_date`` is only the earliest of those fills. Walk the
+    window buys in date order and reserve up to that quantity. A later loss
+    in another account can take only the shares the flag did not already claim.
     """
     consumed: dict[int, float] = {}
     for flag in flags:
@@ -166,6 +168,8 @@ def _consumed_by_same_account_flags(
             continue
         label = getattr(flag, "account_label", None) or ""
         symbol = _symbol(flag.symbol)
+        window_start = flag.sale_date - timedelta(days=WASH_SALE_WINDOW_DAYS)
+        window_end = flag.sale_date + timedelta(days=WASH_SALE_WINDOW_DAYS)
         for group in groups:
             if not group or (group[0].account_label or "") != label:
                 continue
@@ -175,8 +179,10 @@ def _consumed_by_same_account_flags(
                 if txn.trans_code in _BUY_CODES
                 and txn.asset_type == AssetType.STOCK
                 and _symbol(txn.instrument) == symbol
-                and txn.activity_date == flag.repurchase_date
+                and window_start <= txn.activity_date <= window_end
+                and txn.activity_date != flag.sale_date
             ]
+            buys.sort(key=lambda txn: txn.activity_date)
             for txn in buys:
                 if need <= _QTY_EPS:
                     break

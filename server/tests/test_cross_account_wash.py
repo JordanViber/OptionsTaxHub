@@ -389,6 +389,28 @@ def test_same_account_replacement_is_not_reused_across_accounts():
     assert chains[0].hops[0].replacement_buys[0].allocated_quantity == pytest.approx(2)
 
 
+def test_later_same_account_window_buy_is_not_reused_across_accounts():
+    transactions = [
+        _txn("QQQ", TransCode.BUY, date(2026, 1, 1), 4, 500, "individual"),
+        _txn("QQQ", TransCode.BUY, date(2026, 1, 1), 4, 500, "other"),
+        _txn("QQQ", TransCode.SELL, date(2026, 2, 10), 4, 470, "other"),
+        _txn("QQQ", TransCode.BUY, date(2026, 2, 12), 2, 480, "other"),
+        _txn("QQQ", TransCode.SELL, date(2026, 2, 15), 4, 470, "individual"),
+        _txn("QQQ", TransCode.BUY, date(2026, 2, 20), 4, 480, "other"),
+    ]
+    flags = detect_wash_sales(transactions, tax_year=2026)
+    assert len(flags) == 1
+    assert flags[0].account_label == "other"
+    assert flags[0].repurchase_date == date(2026, 2, 12)
+    assert flags[0].repurchase_quantity == pytest.approx(4)
+    chains = build_cross_account_chains(transactions, flags, tax_year=2026)
+    assert len(chains) == 1
+    assert chains[0].hops[0].account_label == "individual"
+    assert chains[0].hops[0].disallowed_loss == pytest.approx(60)
+    assert chains[0].hops[0].replacement_buys[0].activity_date == date(2026, 2, 20)
+    assert chains[0].hops[0].replacement_buys[0].allocated_quantity == pytest.approx(2)
+
+
 def test_ira_loss_sale_does_not_become_a_cross_account_chain():
     transactions = [
         _txn("QQQ", TransCode.BUY, date(2026, 1, 6), 4, 500, "ira_roth"),
