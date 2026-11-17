@@ -35,6 +35,8 @@ export interface TaxLot {
   holding_period_days: number | null;
   is_long_term: boolean | null;
   wash_sale_disallowed: number;
+  account_label?: string | null;
+  account_name?: string | null;
 }
 
 export interface Position {
@@ -92,6 +94,8 @@ export interface WashReplacementBuy {
   allocated_quantity: number;
   allocated_disallowed: number;
   explained_basis: number;
+  account_label?: string | null;
+  account_name?: string | null;
 }
 
 export interface WashClosedLot {
@@ -129,6 +133,10 @@ export interface WashSaleHop {
   difference?: number | null;
   // Display only. "" when the hop was compared.
   not_compared_reason?: string;
+  account_label?: string | null;
+  account_name?: string | null;
+  cross_account?: boolean;
+  permanent_disallowance?: boolean;
 }
 
 export interface WashSaleChain {
@@ -138,6 +146,8 @@ export interface WashSaleChain {
   difference?: number | null;
   plain_english: string;
   hops: WashSaleHop[];
+  cross_account?: boolean;
+  permanent_disallowance?: boolean;
 }
 
 // --- Tax Profile ---
@@ -337,6 +347,8 @@ export interface PortfolioAnalysis {
   sample_run?: boolean;
   /** Present only while the season-unlock flag is on. True includes lots and chains. */
   season_detail?: boolean;
+  /** Free teaser. Per-event rows stay on wash_sale_chains and use the same gate. */
+  cross_account_wash_count?: number;
   disclaimer: string;
   errors: string[];
   warnings: string[];

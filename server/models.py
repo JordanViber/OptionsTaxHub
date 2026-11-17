@@ -90,6 +90,8 @@ class Transaction(BaseModel):
         default=False,
         description="True when Robinhood Quantity ends in S (shares/contracts out)",
     )
+    # Empty on a single unlabeled upload so today's book stays one account.
+    account_label: Optional[str] = None
 
 
 class TaxLot(BaseModel):
@@ -124,6 +126,8 @@ class TaxLot(BaseModel):
     # fill: seeded from the purchase. stated: a CSV current_price column.
     # fixture: the pinned sample price. Cleared when a live quote replaces it.
     price_kind: Optional[Literal["fill", "stated", "fixture"]] = None
+    account_label: Optional[str] = None
+    account_name: Optional[str] = None
 
 
 class Position(BaseModel):
@@ -181,6 +185,7 @@ class WashSaleFlag(BaseModel):
     # Original lot acquisition when present. Optional so wash_sale.py can stay
     # unchanged; 1099 vs export classifies term from this vs sale/repurchase.
     purchase_date: Optional[date] = None
+    account_label: Optional[str] = None
 
 
 # Worst-first rollup used by the chain chip: differs, then on_1099_only,
@@ -204,6 +209,8 @@ class WashReplacementBuy(BaseModel):
     allocated_quantity: float
     allocated_disallowed: float
     explained_basis: float
+    account_label: Optional[str] = None
+    account_name: Optional[str] = None
 
 
 class WashClosedLot(BaseModel):
@@ -250,6 +257,10 @@ class WashSaleHop(BaseModel):
     # | "unknown".
     # Not a tax field.
     not_compared_reason: str = ""
+    account_label: Optional[str] = None
+    account_name: Optional[str] = None
+    cross_account: bool = False
+    permanent_disallowance: bool = False
 
 
 class WashSaleChain(BaseModel):
@@ -267,6 +278,8 @@ class WashSaleChain(BaseModel):
     difference: Optional[float] = None
     plain_english: str = ""
     hops: list[WashSaleHop] = []
+    cross_account: bool = False
+    permanent_disallowance: bool = False
 
 
 # --- Tax Profile Models ---
@@ -549,6 +562,9 @@ class PortfolioAnalysis(BaseModel):
     # False: those rows were stripped even if packet_unlocked is true.
     # Omitted when the flag is off.
     season_detail: Optional[bool] = None
+    # Count stays on the free payload. Per-event rows live on wash_sale_chains
+    # and follow the same season-unlock / sample gate as the JOR-50 chains.
+    cross_account_wash_count: int = 0
     disclaimer: str = (
         "This analysis is for educational and simulation purposes only. "
         "It does not constitute financial, tax, or investment advice. "

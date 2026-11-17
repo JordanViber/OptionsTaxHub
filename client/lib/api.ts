@@ -123,6 +123,8 @@ export function useUploadPortfolio() {
 interface AnalyzePortfolioParams {
   file: File;
   supplemental1099File?: File;
+  extraFiles?: File[];
+  accountLabels?: string[];
   filingStatus?: FilingStatus;
   estimatedIncome?: number;
   taxYear?: number;
@@ -249,6 +251,12 @@ async function analyzePortfolio(
   formData.append("file", params.file);
   if (params.supplemental1099File) {
     formData.append("supplemental_1099", params.supplemental1099File);
+  }
+  for (const extra of params.extraFiles ?? []) {
+    formData.append("extra_files", extra);
+  }
+  for (const label of params.accountLabels ?? []) {
+    formData.append("account_labels", label);
   }
 
   const url = apiPath(analyzePortfolioPath(params));

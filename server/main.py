@@ -21,7 +21,7 @@ SERVER_DIR = Path(__file__).resolve().parent
 load_dotenv(SERVER_DIR / ".env.local")
 load_dotenv(SERVER_DIR / ".env")
 
-from fastapi import FastAPI, File, UploadFile, Query, HTTPException, Depends, Request
+from fastapi import FastAPI, File, Form, UploadFile, Query, HTTPException, Depends, Request
 from fastapi.responses import JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
@@ -81,7 +81,8 @@ from year_close_packet import (
     session_is_settled_packet,
     upsert_packet_payload,
 )
-from csv_parser import parse_csv, RealizedEvent, transactions_to_tax_lots
+from account_labels import is_ira_account, normalize_account_label
+from csv_parser import parse_csv, parse_labeled_exports, RealizedEvent, transactions_to_tax_lots
 from lot_matcher import match_1099b_lots
 from ledger import (
     ACTIVITY_BOOK_LOAD_FAILED_WARNING,
@@ -106,6 +107,7 @@ from harvesting import (
 )
 from wash_sale import detect_wash_sales, adjust_lots_for_wash_sales
 from wash_sale_chain import build_wash_sale_chains
+from cross_account_wash import build_cross_account_chains, stamp_chain_accounts
 from price_service import (
     QUOTE_FETCH_BUDGET_SECONDS,
     Quote,
@@ -195,6 +197,7 @@ SUPABASE_JWT_SECRET = os.environ.get("SUPABASE_JWT_SECRET", "")
 STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY")
 _MAX_SUPPLEMENTAL_PDF_BYTES = 20 * 1024 * 1024  # 20 MB: max size for supplemental 1099 PDF uploads
 _MAX_GUEST_CSV_BYTES = 5 * 1024 * 1024  # 5 MB: unauthenticated analyze must not file.read() unbounded
+_MAX_ACCOUNT_EXPORTS = 6
 _GUEST_ANALYZE_WINDOW_SECONDS = 60 * 60
 _GUEST_ANALYZE_MAX_PER_WINDOW = 10
 _GUEST_ANALYZE_MAX_BUCKETS = 4096
@@ -604,7 +607,12 @@ def _compute_realized_summary(realized: list[RealizedEvent], tax_year: int) -> R
     Filters realized events by sale_date.year == tax_year, then sums short-term
     and long-term gains/losses separately.
     """
-    year_events = [e for e in realized if e.sale_date.year == tax_year]
+    year_events = [
+        event
+        for event in realized
+        if event.sale_date.year == tax_year
+        and not is_ira_account(getattr(event, "account_label", None))
+    ]
 
     st_gains = sum(e.pnl for e in year_events if not e.is_long_term and e.pnl > 0)
     st_losses = sum(e.pnl for e in year_events if not e.is_long_term and e.pnl < 0)
@@ -1355,9 +1363,25 @@ def _filter_suggestion_tax_lots(
     tax_lots: list,
     transactions: list,
 ) -> tuple[list, list[str]]:
-    """Exclude stock lots with split/corporate-action drift from harvesting suggestions."""
-    if not tax_lots or not transactions:
-        return tax_lots, []
+    """Drop IRA lots and stock lots with split or corporate-action drift.
+
+    IRA shares stay in the book for cross-account wash detection. A loss
+    inside an IRA is not a deductible loss, so it is not a harvest candidate.
+    """
+    warnings: list[str] = []
+    lots = list(tax_lots or [])
+    if any(is_ira_account(getattr(lot, "account_label", None)) for lot in lots):
+        lots = [
+            lot
+            for lot in lots
+            if not is_ira_account(getattr(lot, "account_label", None))
+        ]
+        warnings.append(
+            "IRA lots are left out of tax-loss estimates. "
+            "A loss inside an IRA is not deducted on the return."
+        )
+    if not lots or not transactions:
+        return lots, warnings
 
     affected_symbols = {
         txn.instrument
@@ -1366,25 +1390,89 @@ def _filter_suggestion_tax_lots(
         and txn.trans_code in (TransCode.SPR, TransCode.OCA)
     }
     if not affected_symbols:
-        return tax_lots, []
+        return lots, warnings
 
     filtered_lots = []
     skipped_symbols: set[str] = set()
-    for lot in tax_lots:
+    for lot in lots:
         if lot.asset_type == AssetType.STOCK and lot.symbol in affected_symbols:
             skipped_symbols.add(lot.symbol)
             continue
         filtered_lots.append(lot)
 
-    warnings = [
+    warnings.extend(
         (
             f"Skipped automated harvesting suggestions for {symbol} stock lots because "
             f"a stock split or corporate action changed the share count. Verify {symbol} "
             f"manually before acting on any loss estimate."
         )
         for symbol in sorted(skipped_symbols)
-    ]
+    )
     return filtered_lots, warnings
+
+
+def _form_str_list(value: object) -> list[str]:
+    """Form fields may arrive as one string or a list of strings."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        items = [value]
+    else:
+        try:
+            items = list(value)
+        except TypeError:
+            return []
+    return [str(item).strip() for item in items if str(item).strip()]
+
+
+def _account_labels_for_uploads(upload_count: int, raw_labels: list[str]) -> list[str | None] | None:
+    """None keeps a single unlabeled file on the historical parse path."""
+    if upload_count < 1:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "Upload a Robinhood CSV export.", "errors": []},
+        )
+    if upload_count > _MAX_ACCOUNT_EXPORTS:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Add at most 6 Robinhood CSV exports in one analysis.",
+                "errors": [],
+            },
+        )
+    if not raw_labels and upload_count == 1:
+        return None
+    if len(raw_labels) != upload_count:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Each Robinhood export needs an account label.",
+                "errors": [
+                    "Choose Individual, IRA (traditional), IRA (Roth), or Other/agentic for every file."
+                ],
+            },
+        )
+    labels: list[str | None] = []
+    for raw in raw_labels:
+        try:
+            labels.append(normalize_account_label(raw))
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "Choose Individual, IRA (traditional), IRA (Roth), or Other/agentic.",
+                    "errors": [raw],
+                },
+            ) from None
+    if any(label is None for label in labels):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Each Robinhood export needs an account label.",
+                "errors": [],
+            },
+        )
+    return labels
 
 
 def _normalize_merge_mode(value: object) -> str:
@@ -1717,6 +1805,8 @@ async def analyze_portfolio(
     estimated_income: Annotated[Optional[str], Query()] = None,
     tax_year: Annotated[Optional[str], Query()] = None,
     merge_mode: Annotated[Optional[str], Query()] = "auto",
+    extra_files: Annotated[list[UploadFile] | None, File()] = None,
+    account_labels: Annotated[list[str] | None, Form()] = None,
     user_id: Annotated[str, Depends(get_optional_user)] = "",
 ):
     """
@@ -1740,6 +1830,31 @@ async def analyze_portfolio(
         _enforce_guest_analyze_quota(request)
 
     contents = await _read_csv_upload(file, guest=guest)
+    named_extras = [
+        extra
+        for extra in (extra_files or [])
+        if extra and (extra.filename or "").strip()
+    ]
+    # Reject before reading the surplus bodies. One guest POST must not
+    # materialize more than the export cap in this process.
+    if 1 + len(named_extras) > _MAX_ACCOUNT_EXPORTS:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Add at most 6 Robinhood CSV exports in one analysis.",
+                "errors": [],
+            },
+        )
+    uploads: list[bytes] = [contents]
+    for extra in named_extras:
+        extra_bytes = await _read_csv_upload(extra, guest=guest)
+        if not extra_bytes:
+            continue
+        uploads.append(extra_bytes)
+    labels = _account_labels_for_uploads(len(uploads), _form_str_list(account_labels))
+    labeled_parts = None
+    if labels is not None:
+        labeled_parts = list(zip(uploads, labels, strict=True))
     try:
         return await _run_portfolio_analysis(
             contents,
@@ -1750,6 +1865,7 @@ async def analyze_portfolio(
             tax_year=tax_year,
             user_id=user_id,
             merge_mode=merge_mode,
+            labeled_parts=labeled_parts,
         )
     except AnalysisSchemaError as exc:
         logger.error("Cannot save portfolio analysis history: %s", exc)
@@ -1777,10 +1893,19 @@ async def _run_portfolio_analysis(
     tax_year: object,
     user_id: str,
     merge_mode: object = "auto",
+    labeled_parts: list[tuple[bytes, str | None]] | None = None,
 ) -> PortfolioAnalysis:
     """Parse the CSV and run tax, wash-sale, and harvesting analysis."""
-    csv_text = _decode_csv_upload(contents)
-    tax_lots, transactions, parse_errors, realized_events = parse_csv(csv_text)
+    if labeled_parts:
+        decoded = [
+            (_decode_csv_upload(raw), label) for raw, label in labeled_parts
+        ]
+        tax_lots, transactions, parse_errors, realized_events = parse_labeled_exports(
+            decoded
+        )
+    else:
+        csv_text = _decode_csv_upload(contents)
+        tax_lots, transactions, parse_errors, realized_events = parse_csv(csv_text)
 
     if not tax_lots and not transactions:
         raise HTTPException(
@@ -1823,7 +1948,12 @@ async def _run_portfolio_analysis(
     )
     all_warnings.extend(supplemental_1099_warnings)
 
-    trusted_sample = is_trusted_in_app_sample(contents, supplemental_bytes)
+    extra_csvs = [raw for raw, _label in (labeled_parts or [])[1:]]
+    trusted_sample = is_trusted_in_app_sample(
+        contents,
+        supplemental_bytes,
+        extra_csvs,
+    )
     csv_as_of = _csv_price_as_of(transactions, tax_lots)
     price_quotes: list[Quote] = []
     tax_lots = _apply_live_prices_to_tax_lots(
@@ -1924,6 +2054,14 @@ async def _run_portfolio_analysis(
         lot_match_report=lot_match_report,
         tax_year=tax_profile.tax_year,
     )
+    wash_sale_chains = stamp_chain_accounts(wash_sale_chains, transactions)
+    cross_account_chains = build_cross_account_chains(
+        transactions,
+        wash_sale_flags,
+        tax_year=tax_profile.tax_year,
+    )
+    if cross_account_chains:
+        wash_sale_chains = list(wash_sale_chains) + cross_account_chains
 
     analysis_id = str(uuid.uuid4())
     result = PortfolioAnalysis(
@@ -1932,6 +2070,7 @@ async def _run_portfolio_analysis(
         suggestions=suggestions,
         wash_sale_flags=wash_sale_flags,
         wash_sale_chains=wash_sale_chains,
+        cross_account_wash_count=len(cross_account_chains),
         summary=summary,
         tax_profile=tax_profile,
         supplemental_1099=supplemental_1099_summary,
