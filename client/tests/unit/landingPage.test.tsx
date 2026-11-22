@@ -372,6 +372,26 @@ describe("LandingPage", () => {
     );
   });
 
+  it("links 1099 release dates from the marketing footer", () => {
+    mockUseAuth.mockReturnValue({ user: null, loading: false });
+    renderWithClient(<LandingPage />);
+    const footer = screen.getByRole("contentinfo");
+    const link = within(footer).getByRole("link", { name: "1099 release dates" });
+    expect(link).toHaveAttribute(
+      "href",
+      "https://forms.optionstaxhub.com/?utm_source=optionstaxhub",
+    );
+    expect(link.tagName).toBe("A");
+    expect(link).not.toHaveAttribute("rel");
+    expect(link).not.toHaveAttribute("target");
+    expect(
+      within(screen.getByRole("navigation", { name: "Primary" })).queryByRole(
+        "link",
+        { name: "1099 release dates" },
+      ),
+    ).not.toBeInTheDocument();
+  });
+
   it("has no card field on the marketing home page", () => {
     mockUseAuth.mockReturnValue({ user: null, loading: false });
     const { container } = renderWithClient(<LandingPage />);
