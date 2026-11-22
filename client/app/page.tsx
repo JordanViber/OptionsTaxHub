@@ -392,6 +392,7 @@ export default function LandingPage() {
           <Stack
             direction="row"
             spacing={3}
+            useFlexGap
             sx={{ color: "text.secondary", flexWrap: "wrap" }}
           >
             <Link href="/privacy" style={{ color: "inherit" }}>
