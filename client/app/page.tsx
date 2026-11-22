@@ -389,7 +389,11 @@ export default function LandingPage() {
               <TaxDisclaimer />
             </Box>
           </Box>
-          <Stack direction="row" spacing={3} sx={{ color: "text.secondary" }}>
+          <Stack
+            direction="row"
+            spacing={3}
+            sx={{ color: "text.secondary", flexWrap: "wrap" }}
+          >
             <Link href="/privacy" style={{ color: "inherit" }}>
               Privacy
             </Link>
@@ -401,6 +405,12 @@ export default function LandingPage() {
             <Link href="/dashboard" style={{ color: "inherit" }}>
               Tax
             </Link>
+            <a
+              href="https://forms.optionstaxhub.com/?utm_source=optionstaxhub"
+              style={{ color: "inherit" }}
+            >
+              1099 release dates
+            </a>
           </Stack>
         </Container>
       </Box>
