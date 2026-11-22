@@ -491,6 +491,16 @@ test.describe("nav matrix", () => {
       "href",
       "/privacy",
     );
+    const releaseDates = footer.getByRole("link", { name: "1099 release dates" });
+    await expect(releaseDates).toHaveAttribute(
+      "href",
+      "https://forms.optionstaxhub.com/?utm_source=optionstaxhub",
+    );
+    await expect(releaseDates).not.toHaveAttribute("rel");
+    await expect(releaseDates).not.toHaveAttribute("target");
+    await expect(
+      nav.getByRole("link", { name: "1099 release dates" }),
+    ).toHaveCount(0);
 
     await header.getByTestId("header-try-sample").click();
     await expect(page).toHaveURL(/\/dashboard/, { timeout: 15000 });
