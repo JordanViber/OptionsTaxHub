@@ -496,8 +496,8 @@ test.describe("nav matrix", () => {
       "href",
       "https://forms.optionstaxhub.com/?utm_source=optionstaxhub",
     );
-    await expect(releaseDates).not.toHaveAttribute("rel", /.+/);
-    await expect(releaseDates).not.toHaveAttribute("target", /.+/);
+    await expect(releaseDates).not.toHaveAttribute("rel");
+    await expect(releaseDates).not.toHaveAttribute("target");
     await expect(
       nav.getByRole("link", { name: "1099 release dates" }),
     ).toHaveCount(0);
