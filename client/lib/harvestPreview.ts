@@ -1,3 +1,4 @@
+import { harvestPromptBlocked } from "./harvestCheck";
 import type { HarvestingSuggestion, Position, TaxLot } from "./types";
 
 export const PACKET_PANEL_ID = "year-close-packet";
@@ -92,13 +93,17 @@ export function buildHarvestTeasers(
   positions: Position[] = [],
 ): HarvestTeaser[] {
   if (suggestions.length > 0) {
-    return [...suggestions]
+    return suggestions
+      .filter((suggestion) => !harvestPromptBlocked(suggestion.symbol))
       .map(teaserFromSuggestion)
       .sort((left, right) => right.estimatedLoss - left.estimatedLoss);
   }
 
   const teasers: HarvestTeaser[] = [];
   for (const position of positions) {
+    if (harvestPromptBlocked(position.symbol)) {
+      continue;
+    }
     const lots = losingLots(position);
     if (lots.length > 0) {
       lots.forEach((lot, index) => {

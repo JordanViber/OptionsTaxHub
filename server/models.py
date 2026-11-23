@@ -282,6 +282,49 @@ class WashSaleChain(BaseModel):
     permanent_disallowance: bool = False
 
 
+HarvestBuyKind = Literal[
+    "regular_buy",
+    "recurring_buy",
+    "fractional_buy",
+    "dividend_reinvestment",
+    "bought_call",
+    "short_put",
+]
+
+
+class HarvestTriggerBuy(BaseModel):
+    """One replacement acquisition inside the 30-day window. Display only."""
+
+    activity_date: date
+    kind: HarvestBuyKind
+    quantity: float
+    share_equivalent: float
+    disallowed_loss: float
+    account_label: Optional[str] = None
+    account_name: Optional[str] = None
+    permanent_disallowance: bool = False
+
+
+class HarvestCheck(BaseModel):
+    """One ticker with an open losing stock lot.
+
+    The free payload keeps the symbol and ``trigger_count``. Dollars, dates,
+    and ``triggers`` are filled only for the sample or a season unlock.
+    """
+
+    symbol: str
+    trigger_count: int = 0
+    clean: bool = True
+    open_loss: Optional[float] = None
+    disallowed_loss: Optional[float] = None
+    earliest_clean_sell_date: Optional[date] = None
+    safe_rebuy_date: Optional[date] = None
+    triggers: list[HarvestTriggerBuy] = []
+    permanent_disallowance: bool = False
+    line: str = ""
+    as_of: date
+
+
 # --- Tax Profile Models ---
 
 
@@ -565,6 +608,9 @@ class PortfolioAnalysis(BaseModel):
     # Count stays on the free payload. Per-event rows live on wash_sale_chains
     # and follow the same season-unlock / sample gate as the JOR-50 chains.
     cross_account_wash_count: int = 0
+    # Per-ticker replacement-buy check. Counts stay on the free payload.
+    # Dollars, dates, and trigger rows follow the sample / season-unlock gate.
+    harvest_checks: list[HarvestCheck] = []
     disclaimer: str = (
         "This analysis is for educational and simulation purposes only. "
         "It does not constitute financial, tax, or investment advice. "

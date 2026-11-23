@@ -165,8 +165,8 @@ describe("HarvestingSuggestions", () => {
         locked
         positions={[
           {
-            symbol: "TSLA",
-            display_label: "TSLA",
+            symbol: "NVDA",
+            display_label: "NVDA",
             quantity: 16,
             avg_cost_basis: 350,
             total_cost_basis: 5600,
@@ -185,11 +185,62 @@ describe("HarvestingSuggestions", () => {
       />,
     );
 
-    expect(screen.getByText("TSLA")).toBeInTheDocument();
+    expect(screen.getByText("NVDA")).toBeInTheDocument();
     expect(screen.getByText("31-day wait")).toBeInTheDocument();
     expect(
       screen.queryByText(/No tax-loss harvesting opportunities found/),
     ).not.toBeInTheDocument();
+  });
+
+  it("does not preview a TSLA or SPCX loss as a harvest prompt", () => {
+    render(
+      <HarvestingSuggestions
+        suggestions={[]}
+        positions={[
+          {
+            symbol: "TSLA",
+            display_label: "TSLA",
+            quantity: 4,
+            avg_cost_basis: 365,
+            total_cost_basis: 1460,
+            current_price: 355,
+            market_value: 1420,
+            unrealized_pnl: -40,
+            unrealized_pnl_pct: -2.7,
+            earliest_purchase_date: "2026-04-08",
+            holding_period_days: 100,
+            is_long_term: false,
+            asset_type: "stock",
+            tax_lots: [],
+            wash_sale_risk: false,
+          },
+          {
+            symbol: "SPCX",
+            display_label: "SPCX",
+            quantity: 2,
+            avg_cost_basis: 20,
+            total_cost_basis: 40,
+            current_price: 10,
+            market_value: 20,
+            unrealized_pnl: -20,
+            unrealized_pnl_pct: -50,
+            earliest_purchase_date: "2026-01-02",
+            holding_period_days: 200,
+            is_long_term: false,
+            asset_type: "stock",
+            tax_lots: [],
+            wash_sale_risk: false,
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.queryByText("TSLA")).not.toBeInTheDocument();
+    expect(screen.queryByText("SPCX")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Sell/)).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/No tax-loss harvesting opportunities found/),
+    ).toBeInTheDocument();
   });
 
   it("renders suggestion cards for each suggestion", () => {
@@ -325,6 +376,35 @@ describe("HarvestingSuggestions", () => {
     expect(
       screen.queryByText("VanEck Semiconductor ETF"),
     ).not.toBeVisible();
+  });
+
+  it("does not tell the reader to sell TSLA or SPCX", () => {
+    const tsla = getRecommendedActionCopy({
+      ...baseSuggestion,
+      symbol: "TSLA",
+      display_label: "TSLA",
+    });
+    expect(tsla.headline).toBe("A wash-sale rule may apply, ask a tax pro.");
+    expect(tsla.headline.toLowerCase()).not.toContain("sell");
+    expect(tsla.detail.toLowerCase()).not.toContain("sell");
+
+    render(
+      <HarvestingSuggestions
+        suggestions={[
+          {
+            ...baseSuggestion,
+            symbol: "SPCX",
+            display_label: "SPCX",
+            suggestion_id: "SPCX-1",
+          },
+        ]}
+      />,
+    );
+    expect(screen.queryByText("Sell to harvest")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Sell \d+ SPCX/)).not.toBeInTheDocument();
+    expect(
+      screen.getByText("A wash-sale rule may apply, ask a tax pro."),
+    ).toBeInTheDocument();
   });
 
   it("builds wash-sale-aware action copy", () => {

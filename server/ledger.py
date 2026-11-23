@@ -19,7 +19,7 @@ SAMPLE_CSV_FILENAMES = frozenset({"sample-robinhood-transactions.csv"})
 SAMPLE_1099_FILENAMES = frozenset({"sample-robinhood-1099-2026.pdf"})
 # SHA-256 of client/public sample fixtures. Filenames are not trusted.
 SAMPLE_CSV_SHA256 = (
-    "b7928619296c9f38d26f770f6a08a473dea4ae6c045d0dd05aff7c79aaace146"
+    "19e099efe5d478750d3dab4f5d3cbf5e25763bac538bba399dfe36e7c5a43f79"
 )
 SAMPLE_1099_SHA256 = (
     "16a2d2af4b80c4fed6febf6e798489911f27a0acbb17d0733a77f0baf0096ba8"
@@ -38,6 +38,7 @@ SAMPLE_FIXTURE_PRICES = {
     "MSFT": 505.0,
     "NVDA": 228.0,
     "SPY": 771.0,
+    "SOFI": 10.0,
     "TSLA": 355.0,
     # Open lot on the sample IRA replacement. Unused by the single-file sample.
     "QQQ": 510.0,

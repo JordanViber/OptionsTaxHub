@@ -456,7 +456,7 @@ describe("Home page", () => {
   it("renders analysis results when data is available", () => {
     const mockAnalysis = {
       positions: [{ symbol: "AAPL" }],
-      suggestions: [{ symbol: "TSLA" }],
+      suggestions: [{ symbol: "NVDA" }],
       wash_sale_flags: [],
       summary: { total_market_value: 1000, positions_count: 1 },
       warnings: [],

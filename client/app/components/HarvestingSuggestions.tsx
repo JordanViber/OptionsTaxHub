@@ -27,6 +27,7 @@ import { useState } from "react";
 import type { HarvestingSuggestion, Position, PriceBasis } from "@/lib/types";
 import { pricedNumbersVisible } from "@/lib/priceBasis";
 import PriceAsOfNote from "./PriceAsOfNote";
+import { harvestPromptBlocked } from "@/lib/harvestCheck";
 import {
   buildHarvestTeasers,
   formatUsd,
@@ -85,6 +86,12 @@ export function getRecommendedActionCopy(suggestion: HarvestingSuggestion): {
 } {
   const qty = formatShareCount(suggestion.quantity);
   const symbol = suggestion.symbol;
+  if (harvestPromptBlocked(symbol)) {
+    return {
+      headline: "A wash-sale rule may apply, ask a tax pro.",
+      detail: "This note is informational. It is not a recommendation to trade.",
+    };
+  }
   const term = suggestion.is_long_term ? "long-term" : "short-term";
   const loss = formatCurrency(Math.abs(suggestion.estimated_loss));
   const savings = formatCurrency(Math.abs(suggestion.tax_savings_estimate));
@@ -168,7 +175,9 @@ function SuggestionCard({
   const detailText = getSuggestionDetailText(suggestion, lotIndex, lotCount);
   const unknownLoss =
     Boolean(suggestion.price_note) || suggestion.action === "REVIEW";
-  const recommended = unknownLoss ? null : getRecommendedActionCopy(suggestion);
+  const blockedPrompt = harvestPromptBlocked(suggestion.symbol);
+  const recommended =
+    unknownLoss && !blockedPrompt ? null : getRecommendedActionCopy(suggestion);
 
   return (
     <Card
@@ -213,7 +222,7 @@ function SuggestionCard({
                     sx={{ height: 20, fontSize: "0.65rem" }}
                   />
                 )}
-              {unknownLoss ? null : (
+              {unknownLoss || blockedPrompt ? null : (
                 <Chip
                   label="Sell to harvest"
                   size="small"
@@ -410,7 +419,7 @@ function SuggestionCard({
         </Box>
 
         {/* Wash-sale warning */}
-        {suggestion.wash_sale_risk && (
+        {suggestion.wash_sale_risk && !blockedPrompt && (
           <Box
             sx={{
               mt: 1.5,

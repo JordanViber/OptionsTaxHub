@@ -22,6 +22,7 @@ import {
   ExpandMore as ExpandIcon,
   Warning as WarnIcon,
 } from "@mui/icons-material";
+import { harvestPromptBlocked } from "@/lib/harvestCheck";
 import type { Position, PriceBasis, TaxLot, WashSaleFlag } from "@/lib/types";
 import { pricedNumbersVisible } from "@/lib/priceBasis";
 import PriceAsOfNote from "./PriceAsOfNote";
@@ -136,6 +137,9 @@ function LotLedgerLegend() {
 export function getPositionHarvestLabel(
   position: Position,
 ): "Candidate" | "Wait" | null {
+  if (harvestPromptBlocked(position.symbol)) {
+    return null;
+  }
   const lots = position.tax_lots ?? [];
   const lotLoss = lots.some(
     (lot) => lot.unrealized_pnl != null && lot.unrealized_pnl < 0,

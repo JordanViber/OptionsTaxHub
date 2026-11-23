@@ -195,9 +195,9 @@ const baseAnalysis: PortfolioAnalysis = {
   tax_lots: [],
   suggestions: [
     {
-      symbol: "TSLA",
-      suggestion_id: "TSLA::stock::2025-01-01",
-      display_label: "TSLA",
+      symbol: "NVDA",
+      suggestion_id: "NVDA::stock::2025-01-01",
+      display_label: "NVDA",
       lot_details: "Tax lot opened Jan 01, 2025 at $250.00/share",
       manual_review_required: false,
       manual_review_reason: "",

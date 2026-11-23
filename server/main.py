@@ -105,6 +105,11 @@ from harvesting import (
     build_portfolio_summary,
     suppress_fractional_residual_positions,
 )
+from harvest_check import (
+    build_harvest_checks,
+    harvest_as_of,
+    redact_harvest_checks,
+)
 from wash_sale import detect_wash_sales, adjust_lots_for_wash_sales
 from wash_sale_chain import build_wash_sale_chains
 from cross_account_wash import build_cross_account_chains, stamp_chain_accounts
@@ -1301,6 +1306,17 @@ def _apply_live_prices_to_tax_lots(
                 lot, option_prices[lot.contract_label], lot.contract_label
             )
 
+    # The in-app sample prices stocks from the fixture. An open option still
+    # holds its CSV premium, which is not a missing stock quote. Leaving that
+    # premium marked as a fill would relabel the whole sample book.
+    if fixture_prices is not None:
+        for lot in tax_lots:
+            if (
+                lot.asset_type == AssetType.OPTION
+                and getattr(lot, "price_kind", None) == "fill"
+            ):
+                lot.price_kind = "fixture"
+
     if price_quotes is not None:
         price_quotes.extend(quotes)
     return tax_lots
@@ -1487,12 +1503,26 @@ def _counts_only_lot_match_report(report: LotMatchReport) -> LotMatchReport:
     )
 
 
+def _harvest_detail_open(
+    result: PortfolioAnalysis,
+    filing_detail: Optional[bool],
+    keep_harvest_detail: Optional[bool],
+) -> bool:
+    """Sample and a season unlock show dollars and dates. Everyone else gets counts."""
+    if keep_harvest_detail is not None:
+        return keep_harvest_detail
+    if filing_detail is False:
+        return False
+    return bool(result.sample_run) or filing_detail is True
+
+
 def _public_analysis(
     result: PortfolioAnalysis,
     *,
     keep_lot_rows: bool = False,
     keep_wash_chains: Optional[bool] = None,
     filing_detail: Optional[bool] = None,
+    keep_harvest_detail: Optional[bool] = None,
 ) -> PortfolioAnalysis:
     """Hide raw trades, unpaid lot rows, and unpaid wash-sale chains.
 
@@ -1536,6 +1566,8 @@ def _public_analysis(
             )
     if not keep_wash_chains:
         updates["wash_sale_chains"] = []
+    if not _harvest_detail_open(result, filing_detail, keep_harvest_detail):
+        updates["harvest_checks"] = redact_harvest_checks(result.harvest_checks)
     if filing_detail is not None:
         updates["season_detail"] = filing_detail
     if not updates:
@@ -2002,6 +2034,11 @@ async def _run_portfolio_analysis(
         tax_profile=tax_profile,
         ai_suggestions=ai_suggestions,
     )
+    harvest_checks = build_harvest_checks(
+        tax_lots,
+        transactions,
+        as_of=harvest_as_of(trusted_sample),
+    )
 
     positions = aggregate_positions(tax_lots)
     manual_review_notes = _build_manual_review_notes_by_symbol(transactions)
@@ -2071,6 +2108,7 @@ async def _run_portfolio_analysis(
         wash_sale_flags=wash_sale_flags,
         wash_sale_chains=wash_sale_chains,
         cross_account_wash_count=len(cross_account_chains),
+        harvest_checks=harvest_checks,
         summary=summary,
         tax_profile=tax_profile,
         supplemental_1099=supplemental_1099_summary,
@@ -2127,6 +2165,7 @@ async def _run_portfolio_analysis(
         result.model_copy(update={"packet_unlocked": False, "packet_session_id": None}),
         keep_lot_rows=keep_lot_rows,
         keep_wash_chains=keep_lot_rows and not year_grant,
+        keep_harvest_detail=bool(keep_lot_rows) or filing_detail is True,
     )
     history_summary = summary
     sample_upload = is_sample_csv_filename(filename) or is_trusted_sample_csv_bytes(
@@ -2227,6 +2266,7 @@ async def _run_portfolio_analysis(
                 history_result,
                 keep_lot_rows=keep_lot_rows,
                 keep_wash_chains=False,
+                keep_harvest_detail=bool(keep_lot_rows) or filing_detail is True,
             )
             cleared_dump = (
                 cleared.model_dump(mode="json")
