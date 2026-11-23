@@ -50,6 +50,7 @@ import ServiceWorkerRegistration from "../components/ServiceWorkerRegistration";
 import TaxDisclaimer from "../components/TaxDisclaimer";
 import PortfolioSummaryCards from "../components/PortfolioSummaryCards";
 import PositionsTable from "../components/PositionsTable";
+import HarvestCheckPanel from "../components/HarvestCheckPanel";
 import HarvestingSuggestions from "../components/HarvestingSuggestions";
 import WashSaleWarning from "../components/WashSaleWarning";
 import WashSaleChainPanel, {
@@ -89,6 +90,7 @@ import {
   isUnknown1099Year,
   redactUnpaidLotMatch,
 } from "@/lib/supplemental1099";
+import { harvestDetailOpen, harvestPromptBlocked } from "@/lib/harvestCheck";
 import { filingDetailOpen, seasonUnlockEnabled } from "@/lib/seasonUnlock";
 import YearClosePacketPanel, {
   isYearClosePacketPaid,
@@ -623,10 +625,13 @@ function getRecommendedNextSteps(
     }
     return steps;
   }
-  const lossSuggestions = analysis.suggestions.filter(
+  const visibleSuggestions = analysis.suggestions.filter(
+    (suggestion) => !harvestPromptBlocked(suggestion.symbol),
+  );
+  const lossSuggestions = visibleSuggestions.filter(
     (suggestion) => suggestion.action !== "REVIEW" && !suggestion.price_note,
   );
-  const unknownLossCount = analysis.suggestions.length - lossSuggestions.length;
+  const unknownLossCount = visibleSuggestions.length - lossSuggestions.length;
   if (lossSuggestions.length > 0) {
     steps.push(
       `Start with the ${lossSuggestions.length} ${lossSuggestions.length === 1 ? "lot" : "lots"} in the harvest queue.`,
@@ -986,7 +991,10 @@ function ResultsSection({
   );
   const harvestTotals = harvestTeaserTotals(harvestTeasers);
   const realSuggestionCount = displayedAnalysis.suggestions.filter(
-    (suggestion) => suggestion.action !== "REVIEW" && !suggestion.price_note,
+    (suggestion) =>
+      !harvestPromptBlocked(suggestion.symbol) &&
+      suggestion.action !== "REVIEW" &&
+      !suggestion.price_note,
   ).length;
   const suggestionTabCount = packetUnlocked
     ? realSuggestionCount
@@ -1135,6 +1143,11 @@ function ResultsSection({
           </Alert>
         )}
       </Box>
+
+      <HarvestCheckPanel
+        checks={displayedAnalysis.harvest_checks ?? []}
+        detailOpen={harvestDetailOpen(displayedAnalysis, seasonUnlocked)}
+      />
 
       <Card
         data-testid="tax-section-harvest"
@@ -1738,8 +1751,14 @@ export default function DashboardPage() {
     Boolean(washChainAnalysisId) &&
     !washChainIsSample &&
     (seasonGateOn ? seasonUnlocked : packetPaid);
+  const harvestStillCounted =
+    seasonGateOn &&
+    seasonUnlocked &&
+    (displayedAnalysis?.harvest_checks ?? []).some((row) => !row.line);
   const needsFilingDetail =
-    washChainCount === 0 || (seasonGateOn && seasonUnlocked && lotRowsMissing);
+    washChainCount === 0 ||
+    (seasonGateOn && seasonUnlocked && lotRowsMissing) ||
+    harvestStillCounted;
   const displayedAnalysisRef = useRef(displayedAnalysis);
   displayedAnalysisRef.current = displayedAnalysis;
   useEffect(() => {
@@ -1776,6 +1795,14 @@ export default function DashboardPage() {
             lotMatchRowsMissing(base.lot_match_report)
           ) {
             next = { ...next, lot_match_report: result.lotMatchReport };
+            changed = true;
+          }
+          if (
+            result.harvestChecks &&
+            result.harvestChecks.length > 0 &&
+            (base.harvest_checks ?? []).some((row) => !row.line)
+          ) {
+            next = { ...next, harvest_checks: result.harvestChecks };
             changed = true;
           }
           if (!changed) return current;

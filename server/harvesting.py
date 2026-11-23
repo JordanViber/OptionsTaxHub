@@ -33,6 +33,7 @@ from models import (
     TransCode,
 )
 from tax_engine import calculate_tax_savings, get_capital_loss_limit
+from harvest_check import NO_HARVEST_PROMPT_SYMBOLS
 from wash_sale import check_prospective_wash_sale_risk, detect_wash_sales, adjust_lots_for_wash_sales
 
 logger = logging.getLogger(__name__)
@@ -526,6 +527,9 @@ def generate_suggestions(
     risky_candidates: list[HarvestingSuggestion] = []
 
     def _append_lot(lot: TaxLot, *, fill: bool) -> None:
+        # TSLA and SPCX never become a sell or harvest prompt.
+        if (lot.symbol or "").strip().upper() in NO_HARVEST_PROMPT_SYMBOLS:
+            return
         pnl = lot.unrealized_pnl or 0.0
         # A purchase fill is not a market price, so a negative number here
         # is another lot's fill, not a loss to harvest.

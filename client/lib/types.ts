@@ -139,6 +139,39 @@ export interface WashSaleHop {
   permanent_disallowance?: boolean;
 }
 
+export type HarvestBuyKind =
+  | "regular_buy"
+  | "recurring_buy"
+  | "fractional_buy"
+  | "dividend_reinvestment"
+  | "bought_call"
+  | "short_put";
+
+export interface HarvestTriggerBuy {
+  activity_date: string;
+  kind: HarvestBuyKind;
+  quantity: number;
+  share_equivalent: number;
+  disallowed_loss: number;
+  account_label?: string | null;
+  account_name?: string | null;
+  permanent_disallowance: boolean;
+}
+
+export interface HarvestCheck {
+  symbol: string;
+  trigger_count: number;
+  clean: boolean;
+  open_loss?: number | null;
+  disallowed_loss?: number | null;
+  earliest_clean_sell_date?: string | null;
+  safe_rebuy_date?: string | null;
+  triggers: HarvestTriggerBuy[];
+  permanent_disallowance: boolean;
+  line: string;
+  as_of: string;
+}
+
 export interface WashSaleChain {
   chain_id: string;
   symbol: string;
@@ -349,6 +382,8 @@ export interface PortfolioAnalysis {
   season_detail?: boolean;
   /** Free teaser. Per-event rows stay on wash_sale_chains and use the same gate. */
   cross_account_wash_count?: number;
+  /** Per-ticker replacement-buy check. Counts are free. Detail follows season unlock. */
+  harvest_checks?: HarvestCheck[];
   disclaimer: string;
   errors: string[];
   warnings: string[];
