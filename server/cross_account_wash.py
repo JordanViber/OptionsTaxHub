@@ -10,9 +10,10 @@ Same-account uploads, and any book with a single label, return no rows.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import date, timedelta
 
 from account_labels import account_display_name, group_by_account, is_ira_account
+from harvest_check import _shares_still_held
 from models import (
     AssetType,
     Transaction,
@@ -216,6 +217,31 @@ def _consumed_by_same_account_flags(
     return consumed
 
 
+def _unclaimed_replacement_qty(
+    txn: Transaction,
+    txn_index: int | None,
+    sale_date: date,
+    held: dict[int, float],
+    consumed: dict[int, float],
+) -> float:
+    """Shares of this fill not already reserved, and still open on the sale.
+
+    ``held`` is the per-account FIFO from ``_shares_still_held`` through
+    ``sale_date``. A stock buy on or before the sale counts only for the
+    shares of that fill the sale left open. A later buy counts in full,
+    because a sale after the loss does not unwind the replacement. Stock
+    BTO rows are not in that FIFO, so they stay at the fill quantity.
+    """
+    open_qty = float(txn.quantity)
+    if (
+        txn.trans_code == TransCode.BUY
+        and txn.activity_date <= sale_date
+        and txn_index is not None
+    ):
+        open_qty = min(open_qty, held.get(txn_index, 0.0))
+    return open_qty - consumed.get(id(txn), 0.0)
+
+
 def _plain_english(
     *,
     sell: Transaction,
@@ -262,6 +288,8 @@ def build_cross_account_chains(
     # Same-account flags already claim their replacement shares. What remains
     # can cover a loss in another account, and only once.
     consumed = _consumed_by_same_account_flags(groups, flags)
+    txn_index = {id(txn): index for index, txn in enumerate(transactions)}
+    held_on_date: dict[tuple[str, date], dict[int, float]] = {}
     planned: list[tuple[Transaction, list[Transaction], float, float, float]] = []
     for group in groups:
         # A loss inside an IRA is not deducted, so it is not a wash to disallow.
@@ -306,6 +334,12 @@ def build_cross_account_chains(
     for sell, group, loss, remaining_loss, shares_left in planned:
         window_start = sell.activity_date - timedelta(days=WASH_SALE_WINDOW_DAYS)
         window_end = sell.activity_date + timedelta(days=WASH_SALE_WINDOW_DAYS)
+        symbol = _symbol(sell.instrument)
+        held_key = (symbol, sell.activity_date)
+        held = held_on_date.get(held_key)
+        if held is None:
+            held = _shares_still_held(transactions, symbol, sell.activity_date)
+            held_on_date[held_key] = held
         replacements: list[Transaction] = []
         for other in groups:
             if other is group:
@@ -315,13 +349,19 @@ def build_cross_account_chains(
                     continue
                 if txn.asset_type != AssetType.STOCK:
                     continue
-                if _symbol(txn.instrument) != _symbol(sell.instrument):
+                if _symbol(txn.instrument) != symbol:
                     continue
                 # A same-day buy in another account cannot be the lot this
                 # sale closed. It stays inside the replacement window.
                 if not window_start <= txn.activity_date <= window_end:
                     continue
-                remaining_qty = txn.quantity - consumed.get(id(txn), 0.0)
+                remaining_qty = _unclaimed_replacement_qty(
+                    txn,
+                    txn_index.get(id(txn)),
+                    sell.activity_date,
+                    held,
+                    consumed,
+                )
                 if remaining_qty <= _QTY_EPS:
                     continue
                 replacements.append(txn)
@@ -333,7 +373,13 @@ def build_cross_account_chains(
         for txn in replacements:
             if still <= _QTY_EPS:
                 break
-            remaining_qty = txn.quantity - consumed.get(id(txn), 0.0)
+            remaining_qty = _unclaimed_replacement_qty(
+                txn,
+                txn_index.get(id(txn)),
+                sell.activity_date,
+                held,
+                consumed,
+            )
             take = min(still, remaining_qty)
             if take <= _QTY_EPS:
                 continue
@@ -386,7 +432,6 @@ def build_cross_account_chains(
         permanent_amount = _cents(permanent_amount)
         deferred_amount = _cents(max(0.0, estimated - permanent_amount))
         permanent = permanent_amount > 0
-        symbol = _symbol(sell.instrument)
         chain_id = (
             f"cross-{symbol}-{sell.activity_date.isoformat()}-"
             f"{sale_label or 'account'}-{len(chains)}"
