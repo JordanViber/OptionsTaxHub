@@ -17,8 +17,10 @@ from __future__ import annotations
 import re
 from datetime import date, timedelta
 from fractions import Fraction
+from itertools import groupby
 
-from account_labels import account_display_name, is_ira_account
+from account_labels import account_display_name, account_key, is_ira_account
+from csv_parser import _intraday_rank
 from models import (
     AssetType,
     HarvestBuyKind,
@@ -250,6 +252,95 @@ def _exclude_shares_being_sold(
     return left
 
 
+def _split_ratio(rows: list[Transaction]) -> float | None:
+    """Shares-in divided by shares-out for one Robinhood split pair."""
+    if not rows:
+        return None
+    qty_out = sum(txn.quantity for txn in rows if txn.is_quantity_out)
+    qty_in = sum(txn.quantity for txn in rows if not txn.is_quantity_out)
+    if qty_out <= 0 or qty_in <= 0:
+        return None
+    return qty_in / qty_out
+
+
+def _consume_fifo(open_buys: list[tuple[int, float]], quantity: float) -> None:
+    """Close oldest stock buys, same rounding as the lot builder."""
+    remaining_to_sell = round(float(quantity), 6)
+    while remaining_to_sell > 0 and open_buys:
+        index, lot_qty = open_buys[0]
+        if lot_qty <= remaining_to_sell:
+            remaining_to_sell = round(remaining_to_sell - lot_qty, 6)
+            open_buys.pop(0)
+            continue
+        open_buys[0] = (index, round(lot_qty - remaining_to_sell, 6))
+        remaining_to_sell = 0
+
+
+def _shares_still_held(
+    transactions: list[Transaction],
+    symbol: str,
+    as_of: date,
+) -> dict[int, float]:
+    """Stock-buy quantity still open at ``as_of``, keyed by transaction index.
+
+    Each account is FIFO in the lot builder's order, with splits applied.
+    Buys on or before ``as_of`` are included for the shares a sale on or
+    before that date has left open.
+    """
+    symbol = _symbol(symbol)
+    order: list[str] = []
+    buckets: dict[str, list[tuple[int, Transaction]]] = {}
+    for index, txn in enumerate(transactions):
+        key = account_key(txn)
+        if key not in buckets:
+            order.append(key)
+            buckets[key] = []
+        buckets[key].append((index, txn))
+
+    held: dict[int, float] = {}
+    for key in order:
+        ordered = [
+            item
+            for item in sorted(
+                buckets[key],
+                key=lambda item: (
+                    item[1].activity_date,
+                    item[1].process_date or item[1].activity_date,
+                    item[1].settle_date or item[1].activity_date,
+                    _intraday_rank(item[1]),
+                    -item[0],
+                ),
+            )
+            if item[1].activity_date <= as_of
+        ]
+        open_buys: list[tuple[int, float]] = []
+        for _day, day_items in groupby(ordered, key=lambda item: item[1].activity_date):
+            day_list = list(day_items)
+            ratio = _split_ratio(
+                [
+                    txn
+                    for _index, txn in day_list
+                    if txn.trans_code == TransCode.SPR
+                    and _symbol(txn.instrument) == symbol
+                ]
+            )
+            if ratio is not None:
+                open_buys = [
+                    (index, round(qty * ratio, 6)) for index, qty in open_buys
+                ]
+            for index, txn in day_list:
+                if _symbol(txn.instrument) != symbol or txn.asset_type != AssetType.STOCK:
+                    continue
+                if txn.trans_code == TransCode.BUY:
+                    open_buys.append((index, round(float(txn.quantity), 6)))
+                elif txn.trans_code == TransCode.SELL:
+                    _consume_fifo(open_buys, txn.quantity)
+        for index, qty in open_buys:
+            if qty > _QTY_EPS:
+                held[index] = qty
+    return held
+
+
 def _triggers_for(
     symbol: str,
     transactions: list[Transaction],
@@ -258,6 +349,7 @@ def _triggers_for(
 ) -> list[tuple[Transaction, HarvestBuyKind, float]]:
     sale_accounts = {_account(lot.account_label) for lot in harvested}
     own_fills, covered_lots = _own_fill_indexes(transactions, harvested, as_of)
+    still_held = _shares_still_held(transactions, symbol, as_of)
     remaining = {
         index: 0.0 if index in covered_lots else float(lot.quantity)
         for index, lot in enumerate(harvested)
@@ -289,6 +381,9 @@ def _triggers_for(
             shares = _share_equivalent(txn, kind)
         else:
             shares = _exclude_shares_being_sold(txn, harvested, remaining)
+            # This fill counts only for shares still open on the sale date.
+            if txn.activity_date <= as_of:
+                shares = min(shares, still_held.get(txn_index, 0.0))
         if other_qty is not None:
             shares = min(shares, other_qty)
         if shares <= _QTY_EPS:
