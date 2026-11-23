@@ -65,9 +65,11 @@ describe("HarvestingSuggestions", () => {
     expect(screen.getByTestId("harvest-unknown-loss-count")).toHaveTextContent(
       "1 lot uses your CSV purchase price, no live quote, loss unknown.",
     );
-    expect(screen.getAllByText("Sell to harvest")).toHaveLength(1);
+    expect(screen.getAllByText("Harvest candidate")).toHaveLength(1);
     expect(
-      screen.queryByText("Sell 10 AAPL to harvest this short-term loss"),
+      screen.queryByText(
+        "10 AAPL shares show a short-term loss you may be able to harvest.",
+      ),
     ).toBeInTheDocument();
     expect(screen.getAllByText("Unknown").length).toBeGreaterThan(0);
   });
@@ -90,7 +92,8 @@ describe("HarvestingSuggestions", () => {
       "1 lot uses your CSV purchase price, no live quote, loss unknown.",
     );
     expect(screen.queryByText(/2 lots with unrealized losses/)).not.toBeInTheDocument();
-    expect(screen.queryByText("Sell to harvest")).not.toBeInTheDocument();
+    expect(screen.queryByText("Harvest candidate")).not.toBeInTheDocument();
+    expect(screen.queryByText(/\bSell\b/)).not.toBeInTheDocument();
   });
 
   it("does not present a purchase-fill card as a sell recommendation", () => {
@@ -115,16 +118,11 @@ describe("HarvestingSuggestions", () => {
     expect(screen.getByTestId("harvest-unknown-loss-count")).toHaveTextContent(
       "1 lot uses your CSV purchase price, no live quote, loss unknown.",
     );
-    expect(screen.getAllByText("Sell to harvest")).toHaveLength(1);
+    expect(screen.getAllByText("Harvest candidate")).toHaveLength(1);
     expect(screen.getByText("#1")).toBeInTheDocument();
     expect(screen.queryByText("#4")).not.toBeInTheDocument();
     expect(screen.queryByText("AI")).not.toBeInTheDocument();
-
-    const expandButtons = screen.getAllByLabelText("Show more");
-    expect(expandButtons).toHaveLength(2);
-    for (const button of expandButtons) {
-      fireEvent.click(button);
-    }
+    expect(screen.queryByLabelText("Show more")).not.toBeInTheDocument();
 
     expect(screen.queryByText("Replacements")).not.toBeInTheDocument();
     expect(screen.queryByText("AI Analysis")).not.toBeInTheDocument();
@@ -148,10 +146,13 @@ describe("HarvestingSuggestions", () => {
     expect(screen.getByTestId("harvest-teaser-card")).toBeInTheDocument();
     expect(screen.getByText("AAPL")).toBeInTheDocument();
     expect(screen.getByText("Open loss")).toBeInTheDocument();
-    expect(screen.queryByText("Sell to harvest")).not.toBeInTheDocument();
+    expect(screen.queryByText("Harvest candidate")).not.toBeInTheDocument();
     expect(
-      screen.queryByText("Sell 10 AAPL to harvest this short-term loss"),
+      screen.queryByText(
+        "10 AAPL shares show a short-term loss you may be able to harvest.",
+      ),
     ).not.toBeInTheDocument();
+    expect(screen.queryByText(/\bSell\b/)).not.toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /Unlock harvest plan — \$49/ }),
     ).toBeInTheDocument();
@@ -344,7 +345,7 @@ describe("HarvestingSuggestions", () => {
     expect(screen.getByText("$25")).toBeInTheDocument();
   });
 
-  it("states the sell-to-harvest action without expanding the card", () => {
+  it("states the harvest note without a trade instruction or replacement ticker", () => {
     const withCandidates: HarvestingSuggestion = {
       ...baseSuggestion,
       quantity: 40,
@@ -365,17 +366,22 @@ describe("HarvestingSuggestions", () => {
     };
     render(<HarvestingSuggestions suggestions={[withCandidates]} />);
 
-    expect(screen.getByText("Sell to harvest")).toBeInTheDocument();
-    expect(screen.getByText("Recommended action")).toBeInTheDocument();
+    expect(screen.getByText("Harvest candidate")).toBeInTheDocument();
+    expect(screen.getByText("Harvest note")).toBeInTheDocument();
     expect(
-      screen.getByText("Sell 40 AAPL to harvest this short-term loss"),
+      screen.getByText(
+        "40 AAPL shares show a short-term loss you may be able to harvest.",
+      ),
     ).toBeInTheDocument();
+    expect(screen.getByText(/Estimated loss \$9,538/)).toBeInTheDocument();
+    expect(screen.getByText(/Estimated tax savings \$2,098/)).toBeInTheDocument();
     expect(
-      screen.getByText(/look at SMH or SOXX/i),
+      screen.getByText(/Buying the same stock or its options within 30 days/i),
     ).toBeInTheDocument();
-    expect(
-      screen.queryByText("VanEck Semiconductor ETF"),
-    ).not.toBeVisible();
+    expect(screen.getByText(/year-end harvest check/i)).toBeInTheDocument();
+    expect(screen.queryByText(/SMH|SOXX|VanEck/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/\bSell\b/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/\bBuy\b/)).not.toBeInTheDocument();
   });
 
   it("does not tell the reader to sell TSLA or SPCX", () => {
@@ -400,8 +406,11 @@ describe("HarvestingSuggestions", () => {
         ]}
       />,
     );
-    expect(screen.queryByText("Sell to harvest")).not.toBeInTheDocument();
+    expect(screen.queryByText("Harvest candidate")).not.toBeInTheDocument();
     expect(screen.queryByText(/Sell \d+ SPCX/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/SPCX shares show/),
+    ).not.toBeInTheDocument();
     expect(
       screen.getByText("A wash-sale rule may apply, ask a tax pro."),
     ).toBeInTheDocument();
@@ -414,9 +423,15 @@ describe("HarvestingSuggestions", () => {
       estimated_loss: 300,
       tax_savings_estimate: 66,
     });
-    expect(copy.headline).toBe("Sell 10 AAPL to harvest this short-term loss");
-    expect(copy.detail).toMatch(/may trigger a wash sale/i);
-    expect(copy.detail).toMatch(/\$300/);
+    expect(copy.headline).toBe(
+      "10 AAPL shares show a short-term loss you may be able to harvest.",
+    );
+    expect(copy.headline).not.toMatch(/\bSell\b|\bBuy\b/);
+    expect(copy.detail).toMatch(/wash sale may apply/i);
+    expect(copy.detail).toMatch(/Estimated loss \$300/);
+    expect(copy.detail).toMatch(/Estimated tax savings \$66/);
+    expect(copy.detail).toMatch(/year-end harvest check/);
+    expect(copy.detail).not.toMatch(/\bSell\b|\bBuy\b/);
   });
 
   it("shows wash-sale risk warning when flagged", () => {
@@ -428,6 +443,25 @@ describe("HarvestingSuggestions", () => {
     render(<HarvestingSuggestions suggestions={[washRisk]} />);
 
     expect(screen.getByText("Repurchased within 30 days")).toBeInTheDocument();
+  });
+
+  it("does not show a sell instruction inside the wash warning", () => {
+    render(
+      <HarvestingSuggestions
+        suggestions={[
+          {
+            ...baseSuggestion,
+            wash_sale_risk: true,
+            wash_sale_explanation:
+              "Selling now and repurchasing within 30 days would disallow the loss.",
+          },
+        ]}
+      />,
+    );
+    expect(screen.queryByText(/Selling now/)).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/A wash sale may apply. See the year-end harvest check/),
+    ).toBeInTheDocument();
   });
 
   it("hides wash-sale warning when not flagged", () => {
@@ -462,9 +496,10 @@ describe("HarvestingSuggestions", () => {
     ).toBeVisible();
   });
 
-  it("shows replacement candidates when expanded", () => {
+  it("does not name replacement tickers when the card is expanded", () => {
     const withCandidates: HarvestingSuggestion = {
       ...baseSuggestion,
+      ai_explanation: "This lot is already at a loss.",
       replacement_candidates: [
         {
           symbol: "VTI",
@@ -477,9 +512,11 @@ describe("HarvestingSuggestions", () => {
 
     fireEvent.click(screen.getByLabelText("Show more"));
 
-    expect(screen.getByText("VTI")).toBeInTheDocument();
-    expect(screen.getByText("Vanguard Total Market")).toBeInTheDocument();
-    expect(screen.getByText("Similar exposure")).toBeInTheDocument();
+    expect(screen.getByText("This lot is already at a loss.")).toBeVisible();
+    expect(screen.queryByText("VTI")).not.toBeInTheDocument();
+    expect(screen.queryByText("Vanguard Total Market")).not.toBeInTheDocument();
+    expect(screen.queryByText("Similar exposure")).not.toBeInTheDocument();
+    expect(screen.queryByText("Replacements")).not.toBeInTheDocument();
   });
 
   it("says harvest candidates use CSV prices", () => {

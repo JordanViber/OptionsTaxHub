@@ -92,9 +92,15 @@ def test_ira_replacement_is_estimated_and_does_not_change_basis():
     assert chain.permanent_disallowance is True
     assert chain.reconcile_status == "not_on_1099"
     assert chain.hops[0].disallowed_loss == pytest.approx(120)
-    assert "Not on your 1099: cross-account" in chain.plain_english
-    assert "may apply, ask a tax pro" in chain.plain_english
-    assert "No basis carryover" in chain.plain_english
+    assert chain.plain_english == (
+        "Not on your 1099: cross-account. "
+        "An Individual sale of 4 QQQ on Feb 10 lost $120. "
+        "A buy in an IRA (traditional) within 30 days before or after that sale "
+        "covers 4 shares. "
+        "Estimated disallowed amount $120. "
+        "Permanent: a loss washed by an IRA buy is lost for good. "
+        "It does not add to the IRA's basis."
+    )
     assert chain.hops[0].account_name == "Individual"
     assert chain.hops[0].replacement_buys[0].account_name == "IRA (traditional)"
     assert chain.hops[0].replacement_buys[0].explained_basis == pytest.approx(1920)
@@ -295,8 +301,14 @@ def test_sample_keeps_924_and_amd_and_adds_one_ira_example(monkeypatch):
     assert len(cross) == 1
     assert cross[0]["symbol"] == "QQQ"
     assert cross[0]["permanent_disallowance"] is True
-    assert "Not on your 1099: cross-account" in cross[0]["plain_english"]
-    assert "may apply, ask a tax pro" in cross[0]["plain_english"]
+    assert "An Individual sale of 4 QQQ" in cross[0]["plain_english"]
+    assert "A buy in an IRA (traditional)" in cross[0]["plain_english"]
+    assert (
+        "Permanent: a loss washed by an IRA buy is lost for good. "
+        "It does not add to the IRA's basis."
+    ) in cross[0]["plain_english"]
+    assert "A Individual" not in cross[0]["plain_english"]
+    assert "may apply, ask a tax pro" not in cross[0]["plain_english"]
     ira = next(
         lot
         for lot in body["tax_lots"]
@@ -434,8 +446,11 @@ def test_mixed_replacement_keeps_basis_on_the_taxable_buy():
     assert by_account["other"].explained_basis == pytest.approx(1020)
     assert by_account["ira_traditional"].explained_basis == pytest.approx(940)
     assert chains[0].permanent_disallowance is True
-    assert "may apply to $60" in chains[0].plain_english
-    assert "No basis carryover on that amount" in chains[0].plain_english
+    assert "An Individual sale" in chains[0].plain_english
+    assert "an Other/agentic" in chains[0].plain_english
+    assert "an IRA (traditional)" in chains[0].plain_english
+    assert "Permanent: a loss washed by an IRA buy is lost for good." in chains[0].plain_english
+    assert "It does not add to the IRA's basis." in chains[0].plain_english
     assert "$60 is added to the taxable replacement's basis" in chains[0].plain_english
 
 

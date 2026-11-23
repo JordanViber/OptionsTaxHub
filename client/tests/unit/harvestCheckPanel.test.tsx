@@ -98,7 +98,7 @@ describe("HarvestCheckPanel", () => {
     expect(screen.queryByTestId("harvest-check-open-SOFI")).not.toBeInTheDocument();
   });
 
-  it("uses the clean sentence and does not prompt a sale of TSLA", () => {
+  it("keeps the clean sentence and omits TSLA and SPCX rows", () => {
     render(
       <HarvestCheckPanel
         checks={[
@@ -121,6 +121,13 @@ describe("HarvestCheckPanel", () => {
             earliest_clean_sell_date: "2026-09-10",
             safe_rebuy_date: "2026-10-11",
           }),
+          row({
+            symbol: "SPCX",
+            trigger_count: 0,
+            clean: true,
+            triggers: [],
+            line: "No replacement buys found in the 30 days either side. A wash-sale rule may apply, ask a tax pro.",
+          }),
         ]}
         detailOpen
       />,
@@ -128,11 +135,10 @@ describe("HarvestCheckPanel", () => {
     expect(screen.getByTestId("harvest-check-NVDA")).toHaveTextContent(
       "may be clean to harvest",
     );
-    const tsla = screen.getByTestId("harvest-check-TSLA");
-    expect(tsla).not.toHaveTextContent("Sell");
-    expect(tsla).not.toHaveTextContent("may be clean to harvest");
-    expect(tsla).not.toHaveTextContent("Earliest clean sell date");
-    expect(tsla).toHaveTextContent("ask a tax pro");
+    expect(screen.queryByTestId("harvest-check-TSLA")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("harvest-check-SPCX")).not.toBeInTheDocument();
+    expect(screen.queryByText("TSLA")).not.toBeInTheDocument();
+    expect(screen.queryByText("SPCX")).not.toBeInTheDocument();
   });
 
   it("marks an IRA replacement as a permanent disallowance", () => {
