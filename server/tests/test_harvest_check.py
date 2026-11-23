@@ -276,6 +276,27 @@ def test_a_recent_lot_is_not_a_wash_against_its_own_purchase():
     assert row.trigger_count == 0
 
 
+def test_sold_shares_on_the_original_buy_are_not_a_replacement():
+    lot = _lot("SHOP", 4, 18, 10, date(2026, 8, 1))
+    txns = [_buy("SHOP", 10, 18, date(2026, 8, 1))]
+    row = build_harvest_checks([lot], txns, as_of=AS_OF)[0]
+    assert row.clean is True
+    assert row.trigger_count == 0
+
+
+def test_a_same_day_extra_buy_still_counts_after_a_partial_sale():
+    lot = _lot("SHOP", 4, 20, 10, date(2026, 8, 1))
+    txns = [
+        _buy("SHOP", 10, 20, date(2026, 8, 1)),
+        _buy("SHOP", 2, 20, date(2026, 8, 1)),
+    ]
+    row = build_harvest_checks([lot], txns, as_of=AS_OF)[0]
+    assert row.clean is False
+    assert row.trigger_count == 1
+    assert row.disallowed_loss == pytest.approx(20)
+    assert row.triggers[0].quantity == pytest.approx(2)
+
+
 def test_wash_adjusted_basis_still_excludes_the_lots_own_buy():
     lot = _lot("SHOP", 10, 28, 10, date(2026, 8, 1))
     lot.wash_sale_disallowed = 100

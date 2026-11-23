@@ -177,6 +177,52 @@ def _acquisition_fill(lot: TaxLot) -> float:
     return float(lot.cost_basis_per_share)
 
 
+def _matches_lot_fill(txn: Transaction, lot: TaxLot) -> bool:
+    if txn.asset_type != AssetType.STOCK:
+        return False
+    if _account(lot.account_label) != _account(txn.account_label):
+        return False
+    if lot.purchase_date != txn.activity_date:
+        return False
+    return abs(_acquisition_fill(lot) - float(txn.price)) <= 0.02
+
+
+def _own_fill_indexes(
+    transactions: list[Transaction],
+    harvested: list[TaxLot],
+    as_of: date,
+) -> tuple[set[int], set[int]]:
+    """Buys that opened a harvested lot, including shares already sold.
+
+    A partial sale leaves the open lot smaller than the CSV buy. Those
+    sold shares are not a replacement. When several same-day fills cover
+    the lot, the smallest one is the fill this lot came from. Returns
+    the transaction indexes to skip and the lot indexes those fills cover.
+    """
+    used: set[int] = set()
+    covered: set[int] = set()
+    for lot_index, lot in enumerate(harvested):
+        best: int | None = None
+        best_qty = 0.0
+        for txn_index, txn in enumerate(transactions):
+            if txn_index in used:
+                continue
+            if not _in_window(txn.activity_date, as_of):
+                continue
+            if not _matches_lot_fill(txn, lot):
+                continue
+            qty = float(txn.quantity)
+            if qty + _QTY_EPS < float(lot.quantity):
+                continue
+            if best is None or qty < best_qty:
+                best = txn_index
+                best_qty = qty
+        if best is not None:
+            used.add(best)
+            covered.add(lot_index)
+    return used, covered
+
+
 def _exclude_shares_being_sold(
     txn: Transaction,
     harvested: list[TaxLot],
@@ -192,11 +238,7 @@ def _exclude_shares_being_sold(
         room = remaining.get(index, 0.0)
         if room <= _QTY_EPS:
             continue
-        if _account(lot.account_label) != _account(txn.account_label):
-            continue
-        if lot.purchase_date != txn.activity_date:
-            continue
-        if abs(_acquisition_fill(lot) - float(txn.price)) > 0.02:
+        if not _matches_lot_fill(txn, lot):
             continue
         take = min(left, room)
         remaining[index] = room - take
@@ -211,9 +253,15 @@ def _triggers_for(
     as_of: date,
 ) -> list[tuple[Transaction, HarvestBuyKind, float]]:
     sale_accounts = {_account(lot.account_label) for lot in harvested}
-    remaining = {index: float(lot.quantity) for index, lot in enumerate(harvested)}
+    own_fills, covered_lots = _own_fill_indexes(transactions, harvested, as_of)
+    remaining = {
+        index: 0.0 if index in covered_lots else float(lot.quantity)
+        for index, lot in enumerate(harvested)
+    }
     found: list[tuple[Transaction, HarvestBuyKind, float]] = []
-    for txn in transactions:
+    for txn_index, txn in enumerate(transactions):
+        if txn_index in own_fills:
+            continue
         if _symbol(txn.instrument) != symbol:
             continue
         if not _in_window(txn.activity_date, as_of):
