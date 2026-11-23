@@ -20,7 +20,12 @@ import {
   TrendingDown as LossIcon,
 } from "@mui/icons-material";
 import { useState } from "react";
-import type { HarvestingSuggestion, Position, PriceBasis } from "@/lib/types";
+import type {
+  HarvestingSuggestion,
+  Position,
+  PriceBasis,
+  ReplacementCandidate,
+} from "@/lib/types";
 import { pricedNumbersVisible } from "@/lib/priceBasis";
 import PriceAsOfNote from "./PriceAsOfNote";
 import { harvestPromptBlocked } from "@/lib/harvestCheck";
@@ -66,13 +71,46 @@ export const HARVEST_WASH_WINDOW_NOTE =
 const HARVEST_WASH_WARNING =
   "Wash-sale risk detected. A wash sale may apply. See the year-end harvest check.";
 
+const HARVEST_TRADE_IMPERATIVE = /\bSell(?:ing|s)?\b|\bBuy(?:ing)?\b/i;
+
 /** Queue display only. A sell or buy instruction in source copy is not shown. */
 export function harvestQueueWarning(explanation: string | null | undefined): string {
   const text = (explanation || "").trim();
-  if (!text || /\bSell(?:ing|s)?\b|\bBuy(?:ing)?\b/i.test(text)) {
+  if (!text || HARVEST_TRADE_IMPERATIVE.test(text)) {
     return HARVEST_WASH_WARNING;
   }
   return text;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function namesReplacementTicker(
+  text: string,
+  replacements: readonly ReplacementCandidate[] | null | undefined,
+): boolean {
+  return (replacements ?? []).some((candidate) => {
+    const symbol = candidate.symbol.trim();
+    if (
+      symbol.length >= 2 &&
+      new RegExp(`\\b${escapeRegExp(symbol)}\\b`, "i").test(text)
+    ) {
+      return true;
+    }
+    const name = candidate.name.trim();
+    return name.length >= 3 && text.toLowerCase().includes(name.toLowerCase());
+  });
+}
+
+/** Expanded analysis. Trade advice and replacement tickers stay off the card. */
+function harvestQueueAnalysis(
+  explanation: string | null | undefined,
+  replacements: readonly ReplacementCandidate[] | null | undefined,
+): string {
+  const text = (explanation || "").trim();
+  if (!text || namesReplacementTicker(text, replacements)) return "";
+  return harvestQueueWarning(text) === text ? text : "";
 }
 
 /**
@@ -177,7 +215,11 @@ function SuggestionCard({
   const blockedPrompt = harvestPromptBlocked(suggestion.symbol);
   const recommended =
     unknownLoss && !blockedPrompt ? null : getRecommendedActionCopy(suggestion);
-  const hasDetails = !unknownLoss && Boolean(suggestion.ai_explanation);
+  const analysisText = harvestQueueAnalysis(
+    suggestion.ai_explanation,
+    suggestion.replacement_candidates,
+  );
+  const hasDetails = !unknownLoss && Boolean(analysisText);
 
   return (
     <Card
@@ -452,7 +494,7 @@ function SuggestionCard({
                 color="text.secondary"
                 sx={{ lineHeight: 1.6 }}
               >
-                {suggestion.ai_explanation}
+                {analysisText}
               </Typography>
             </Box>
           </Collapse>

@@ -475,25 +475,100 @@ describe("HarvestingSuggestions", () => {
   it("expands card details on click", () => {
     const withDetails: HarvestingSuggestion = {
       ...baseSuggestion,
-      ai_explanation: "Consider selling to harvest losses",
+      ai_explanation: "This lot shows an unrealized loss.",
       replacement_candidates: [
         { symbol: "SPY", name: "S&P 500 ETF", reason: "Broad market exposure" },
       ],
     };
     render(<HarvestingSuggestions suggestions={[withDetails]} />);
 
-    // Details should not be visible initially
     expect(
-      screen.queryByText("Consider selling to harvest losses"),
+      screen.queryByText("This lot shows an unrealized loss."),
     ).not.toBeVisible();
 
-    // Click expand button
     fireEvent.click(screen.getByLabelText("Show more"));
 
-    // Details should now be visible
+    expect(screen.getByText("This lot shows an unrealized loss.")).toBeVisible();
+    expect(screen.queryByText("SPY")).not.toBeInTheDocument();
+    expect(screen.queryByText("S&P 500 ETF")).not.toBeInTheDocument();
+  });
+
+  it("hides trade advice in expanded analysis and still shows neutral text", () => {
+    render(
+      <HarvestingSuggestions
+        suggestions={[
+          {
+            ...baseSuggestion,
+            suggestion_id: "advice",
+            ai_explanation: "Consider selling to harvest losses",
+            replacement_candidates: [
+              {
+                symbol: "QQQ",
+                name: "Invesco QQQ",
+                reason: "Similar exposure",
+              },
+            ],
+          },
+          {
+            ...baseSuggestion,
+            suggestion_id: "buy",
+            symbol: "GOOGL",
+            display_label: "GOOGL",
+            priority: 2,
+            ai_explanation: "Buy a replacement for this lot.",
+          },
+          {
+            ...baseSuggestion,
+            suggestion_id: "ticker",
+            symbol: "MSFT",
+            display_label: "MSFT",
+            priority: 3,
+            ai_explanation: "A comparable holding is Invesco QQQ.",
+            replacement_candidates: [
+              {
+                symbol: "QQQ",
+                name: "Invesco QQQ",
+                reason: "Similar exposure",
+              },
+            ],
+          },
+          {
+            ...baseSuggestion,
+            suggestion_id: "neutral",
+            symbol: "NVDA",
+            display_label: "NVDA",
+            priority: 4,
+            ai_generated: true,
+            ai_explanation: "This lot is already at a loss.",
+          },
+        ]}
+      />,
+    );
+
     expect(
-      screen.getByText("Consider selling to harvest losses"),
-    ).toBeVisible();
+      screen.queryByText("Consider selling to harvest losses"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Buy a replacement for this lot."),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/Invesco QQQ/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/\bQQQ\b/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Show more")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText("Show more"));
+
+    expect(screen.getByText("AI Analysis")).toBeVisible();
+    expect(screen.getByText("This lot is already at a loss.")).toBeVisible();
+    expect(
+      screen.queryByText("Consider selling to harvest losses"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Buy a replacement for this lot."),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/Invesco QQQ/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/\bQQQ\b/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/\bSell\b/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/\bBuy\b/i)).not.toBeInTheDocument();
   });
 
   it("does not name replacement tickers when the card is expanded", () => {
