@@ -334,20 +334,41 @@ def _allocate(
     return disallowed, rows
 
 
-def _split_symbols(transactions: list[Transaction]) -> set[str]:
-    """Symbols whose open lots and buy rows are in different share units.
+def _split_symbols(transactions: list[Transaction], as_of: date) -> set[str]:
+    """Symbols with a pre-split buy still inside the harvest window.
 
-    A split adjusts lot quantity and leaves the original buy quantity.
-    The harvest suggestions already skip those symbols. This check does too,
-    instead of allocating a loss against the pre-split share count.
+    A split multiplies lots that were already open and leaves the CSV buy
+    quantity unchanged. A buy after the split is already in current units,
+    so an older split does not hide the row. A corporate action does not
+    change the share count.
     """
-    return {
-        _symbol(txn.instrument)
-        for txn in transactions
-        if txn.asset_type == AssetType.STOCK
-        and txn.trans_code in (TransCode.SPR, TransCode.OCA)
-        and _symbol(txn.instrument)
-    }
+    latest_split: dict[str, date] = {}
+    for txn in transactions:
+        if txn.asset_type != AssetType.STOCK or txn.trans_code != TransCode.SPR:
+            continue
+        symbol = _symbol(txn.instrument)
+        if not symbol:
+            continue
+        previous = latest_split.get(symbol)
+        if previous is None or txn.activity_date > previous:
+            latest_split[symbol] = txn.activity_date
+    skipped: set[str] = set()
+    for txn in transactions:
+        symbol = _symbol(txn.instrument)
+        split_on = latest_split.get(symbol)
+        if split_on is None or txn.activity_date >= split_on:
+            continue
+        if not _in_window(txn.activity_date, as_of):
+            continue
+        if _kind(txn) not in (
+            "regular_buy",
+            "recurring_buy",
+            "fractional_buy",
+            "dividend_reinvestment",
+        ):
+            continue
+        skipped.add(symbol)
+    return skipped
 
 
 def build_harvest_checks(
@@ -357,7 +378,7 @@ def build_harvest_checks(
     as_of: date,
 ) -> list[HarvestCheck]:
     """One row per ticker that has an open taxable stock loss."""
-    skipped = _split_symbols(transactions)
+    skipped = _split_symbols(transactions, as_of)
     symbols = sorted(
         {
             _symbol(lot.symbol)

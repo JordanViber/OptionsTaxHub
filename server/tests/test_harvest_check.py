@@ -307,14 +307,37 @@ def test_wash_adjusted_basis_still_excludes_the_lots_own_buy():
     assert row.disallowed_loss == 0
 
 
-def test_a_split_symbol_is_omitted_until_quantities_agree():
+def test_an_older_split_keeps_the_post_split_replacement():
     lots = [_lot("XYZ", 20, 10, 5, date(2026, 1, 2))]
     txns = [
         _buy("XYZ", 10, 20, date(2026, 1, 2)),
         _buy("XYZ", 10, 12, date(2026, 8, 1)),
         _buy("XYZ", 10, 0, date(2026, 6, 15), code=TransCode.SPR),
     ]
+    row = build_harvest_checks(lots, txns, as_of=AS_OF)[0]
+    assert row.disallowed_loss == pytest.approx(50)
+    assert row.trigger_count == 1
+
+
+def test_a_pre_split_buy_inside_the_window_is_left_out():
+    lots = [_lot("XYZ", 20, 10, 5, date(2026, 7, 20))]
+    txns = [
+        _buy("XYZ", 10, 20, date(2026, 7, 20)),
+        _buy("XYZ", 10, 0, date(2026, 8, 1), code=TransCode.SPR),
+    ]
     assert build_harvest_checks(lots, txns, as_of=AS_OF) == []
+
+
+def test_a_corporate_action_does_not_hide_the_harvest_row():
+    lots = [_lot("XYZ", 10, 20, 10, date(2026, 6, 1))]
+    txns = [
+        _buy("XYZ", 10, 20, date(2026, 6, 1)),
+        _buy("XYZ", 2, 12, date(2026, 8, 1), "Recurring investment"),
+        _buy("XYZ", 1, 0, date(2026, 3, 1), code=TransCode.OCA),
+    ]
+    row = build_harvest_checks(lots, txns, as_of=AS_OF)[0]
+    assert row.trigger_count == 1
+    assert row.disallowed_loss == pytest.approx(20)
 
 
 def test_snapshot_keeps_full_harvest_rows_for_a_later_unlock():
