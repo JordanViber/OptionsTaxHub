@@ -464,6 +464,126 @@ def test_sold_shares_on_the_original_buy_are_not_a_replacement():
     assert row.trigger_count == 0
 
 
+def test_fully_sold_window_buy_is_not_a_replacement_for_the_remaining_lot():
+    """Codex case, through the CSV lot builder.
+
+    Buy 10 SHOP on Aug 1, buy 5 on Aug 2, sell 12 on Aug 5. Three shares
+    remain from the Aug 2 fill. At $10 on Aug 12 that $30 loss is clean:
+    the Aug 1 buy is already closed, and the Aug 2 fill is the lot itself.
+    """
+    csv_text = (
+        "Activity Date,Process Date,Settle Date,Instrument,Description,Trans Code,Quantity,Price,Amount\n"
+        "08/01/2026,08/01/2026,08/03/2026,SHOP,Shopify,Buy,10,20.00,-200.00\n"
+        "08/02/2026,08/02/2026,08/04/2026,SHOP,Shopify,Buy,5,20.00,-100.00\n"
+        "08/05/2026,08/05/2026,08/07/2026,SHOP,Shopify,Sell,12,25.00,300.00\n"
+    )
+    lots, txns, _warnings, _realized = parse_csv(csv_text)
+    assert [(lot.purchase_date, lot.quantity) for lot in lots] == [
+        (date(2026, 8, 2), 3),
+    ]
+    for lot in lots:
+        lot.current_price = 10
+    priced = compute_lot_metrics(lots, reference_date=AS_OF)
+    row = build_harvest_checks(priced, txns, as_of=AS_OF)[0]
+    assert row.open_loss == pytest.approx(30)
+    assert row.clean is True
+    assert row.disallowed_loss == 0
+    assert row.trigger_count == 0
+    assert row.triggers == []
+    assert [txn.activity_date for txn in txns if txn.trans_code == TransCode.BUY] == [
+        date(2026, 8, 1),
+        date(2026, 8, 2),
+    ]
+    assert row.line == (
+        "No replacement buys found in the 30 days either side; "
+        "may be clean to harvest."
+    )
+
+
+def test_partly_sold_window_buy_counts_only_surviving_shares():
+    """Six of an Aug 1 buy are already sold, so only four shares replace the loss.
+
+    The harvested lot is a different Aug 2 fill, $20 a share under water.
+    Four surviving shares disallow $80, not the original ten shares' $200.
+    """
+    lots = [_lot("SHOP", 10, 30, 10, date(2026, 8, 2))]
+    txns = [
+        _buy("SHOP", 10, 10, date(2026, 8, 1)),
+        _buy("SHOP", 10, 30, date(2026, 8, 2)),
+        _buy("SHOP", 6, 25, date(2026, 8, 5), code=TransCode.SELL),
+    ]
+    row = build_harvest_checks(lots, txns, as_of=AS_OF)[0]
+    assert row.open_loss == pytest.approx(200)
+    assert row.disallowed_loss == pytest.approx(80)
+    assert row.trigger_count == 1
+    assert row.triggers[0].activity_date == date(2026, 8, 1)
+    assert row.triggers[0].share_equivalent == pytest.approx(4)
+    assert row.triggers[0].disallowed_loss == pytest.approx(80)
+    assert row.line == "$80 of your $200 loss may be disallowed"
+
+
+def test_partly_sold_buy_in_another_account_scales_to_surviving_shares():
+    """FIFO stays inside the account that sold.
+
+    The individual lot is still open. The other account bought 10 in the
+    window and sold 6, so 4 shares disallow $40 of the $100 loss.
+    """
+    lots = [_lot("SHOP", 10, 20, 10, date(2026, 6, 1), account="individual")]
+    txns = [
+        _buy("SHOP", 10, 20, date(2026, 6, 1), account="individual"),
+        _buy("SHOP", 10, 15, date(2026, 8, 1), account="other"),
+        _buy("SHOP", 6, 18, date(2026, 8, 5), account="other", code=TransCode.SELL),
+    ]
+    row = build_harvest_checks(lots, txns, as_of=AS_OF)[0]
+    assert row.open_loss == pytest.approx(100)
+    assert row.disallowed_loss == pytest.approx(40)
+    assert row.trigger_count == 1
+    assert row.triggers[0].activity_date == date(2026, 8, 1)
+    assert row.triggers[0].account_label == "other"
+    assert row.triggers[0].share_equivalent == pytest.approx(4)
+    assert row.triggers[0].disallowed_loss == pytest.approx(40)
+
+
+def test_a_post_split_sale_does_not_eat_the_later_replacement():
+    """A 2-for-1 split is applied before the later sale, per the lot builder.
+
+    10 pre-split shares become 20. Selling 15 leaves 5 of that lot. The
+    10-share buy after the split is still entirely open.
+    """
+    split_out = _buy("XYZ", 10, 0, date(2026, 6, 15), code=TransCode.SPR).model_copy(
+        update={"is_quantity_out": True}
+    )
+    split_in = _buy("XYZ", 20, 0, date(2026, 6, 15), code=TransCode.SPR)
+    lots = [_lot("XYZ", 5, 10, 5, date(2026, 1, 2))]
+    txns = [
+        _buy("XYZ", 10, 20, date(2026, 1, 2)),
+        split_out,
+        split_in,
+        _buy("XYZ", 10, 12, date(2026, 8, 1)),
+        _buy("XYZ", 15, 8, date(2026, 8, 5), code=TransCode.SELL),
+    ]
+    row = build_harvest_checks(lots, txns, as_of=AS_OF)[0]
+    assert row.trigger_count == 1
+    assert row.triggers[0].activity_date == date(2026, 8, 1)
+    assert row.triggers[0].share_equivalent == pytest.approx(10)
+    assert row.disallowed_loss == pytest.approx(25)
+
+
+def test_a_buy_after_the_sale_date_still_counts_in_full():
+    """A later window buy is not reduced by a sale after the harvest date."""
+    lots = [_lot("SHOP", 10, 20, 10, date(2026, 6, 1))]
+    txns = [
+        _buy("SHOP", 10, 20, date(2026, 6, 1)),
+        _buy("SHOP", 3, 12, date(2026, 8, 20)),
+        _buy("SHOP", 3, 12, date(2026, 8, 25), code=TransCode.SELL),
+    ]
+    row = build_harvest_checks(lots, txns, as_of=AS_OF)[0]
+    assert row.trigger_count == 1
+    assert row.triggers[0].activity_date == date(2026, 8, 20)
+    assert row.triggers[0].share_equivalent == pytest.approx(3)
+    assert row.disallowed_loss == pytest.approx(30)
+
+
 def test_a_same_day_extra_buy_still_counts_after_a_partial_sale():
     lot = _lot("SHOP", 4, 20, 10, date(2026, 8, 1))
     txns = [
