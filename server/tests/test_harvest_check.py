@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 from datetime import date
 from pathlib import Path
 
@@ -319,6 +320,117 @@ def test_ordinary_and_same_day_buys_disallow_each_lots_own_loss():
     assert row.open_loss == pytest.approx(300)
     assert row.disallowed_loss == pytest.approx(300)
     assert by_account == {"ira_roth": 200, "individual": 100}
+    ira = next(item for item in row.triggers if item.account_label == "ira_roth")
+    assert ira.permanent_disallowance is True
+
+
+def test_same_day_buys_in_two_accounts_cover_two_hundred():
+    """Codex case: an ordinary buy must not steal a lot a same-day buy needs.
+
+    10-share $100 lots in individual and other, a 10-share IRA buy, and
+    same-day buys of 5 in individual and 10 in other. The maximum is $200.
+    """
+    lots = [
+        _lot("QQQ", 10, 20, 10, date(2026, 1, 2), account="individual"),
+        _lot("QQQ", 10, 20, 10, date(2026, 1, 2), account="other"),
+    ]
+    txns = [
+        _buy("QQQ", 10, 12, date(2026, 8, 1), account="ira_roth"),
+        _buy("QQQ", 5, 12, AS_OF, account="individual"),
+        _buy("QQQ", 10, 12, AS_OF, account="other"),
+    ]
+    row = build_harvest_checks(lots, txns, as_of=AS_OF)[0]
+    assert row.disallowed_loss == pytest.approx(200)
+    ira = next(item for item in row.triggers if item.account_label == "ira_roth")
+    assert ira.permanent_disallowance is True
+
+
+def _brute_max_disallowed(
+    lots: list[tuple[int, int]],
+    buys: list[tuple[int, tuple[int, ...]]],
+) -> int:
+    """Maximum dollars from assigning whole shares. lots are (qty, loss)."""
+    per_share = [loss / qty for qty, loss in lots]
+    opening = tuple(qty for qty, _loss in lots)
+
+    def spreads(qty: int, eligible: tuple[int, ...], remaining: tuple[int, ...]):
+        found: list[tuple[int, tuple[int, ...]]] = []
+
+        def walk(index: int, left: int, gained: int, current: list[int]) -> None:
+            if index == len(eligible):
+                found.append((gained, tuple(current)))
+                return
+            lot_index = eligible[index]
+            for take in range(min(left, current[lot_index]) + 1):
+                current[lot_index] -= take
+                walk(
+                    index + 1,
+                    left - take,
+                    gained + per_share[lot_index] * take,
+                    current,
+                )
+                current[lot_index] += take
+
+        walk(0, qty, 0, list(remaining))
+        return found
+
+    cache: dict[tuple[int, tuple[int, ...]], int] = {}
+
+    def best(buy_index: int, remaining: tuple[int, ...]) -> int:
+        key = (buy_index, remaining)
+        if key in cache:
+            return cache[key]
+        if buy_index == len(buys):
+            cache[key] = 0
+            return 0
+        qty, eligible = buys[buy_index]
+        total = 0
+        for gained, nxt in spreads(qty, eligible, remaining):
+            total = max(total, gained + best(buy_index + 1, nxt))
+        cache[key] = total
+        return total
+
+    return best(0, opening)
+
+
+def test_disallowed_loss_matches_the_maximum_assignment():
+    """Small multi-account books never understate a brute-force maximum."""
+    rng = random.Random(170)
+    accounts = ["individual", "other", "joint"]
+    cases = 48
+    for case in range(cases):
+        count = rng.randint(1, 3)
+        chosen = accounts[:count]
+        book: list[TaxLot] = []
+        brute_lots: list[tuple[int, int]] = []
+        for account in chosen:
+            qty = rng.randint(1, 3)
+            per_share = rng.choice([1, 5, 10, 20])
+            book.append(
+                _lot("QQQ", qty, 10 + per_share, 10, date(2026, 1, 2), account=account)
+            )
+            brute_lots.append((qty, per_share * qty))
+        txns: list[Transaction] = []
+        brute_buys: list[tuple[int, tuple[int, ...]]] = []
+        for _ in range(rng.randint(0, 2)):
+            qty = rng.randint(1, 3)
+            account = "ira_roth" if rng.random() < 0.5 else rng.choice(chosen)
+            txns.append(_buy("QQQ", qty, 12, date(2026, 8, 1), account=account))
+            brute_buys.append((qty, tuple(range(count))))
+        for index, account in enumerate(chosen):
+            if rng.random() < 0.6:
+                qty = rng.randint(1, 3)
+                txns.append(_buy("QQQ", qty, 12, AS_OF, account=account))
+                brute_buys.append(
+                    (qty, tuple(lot for lot in range(count) if lot != index))
+                )
+        row = build_harvest_checks(book, txns, as_of=AS_OF)[0]
+        expected = _brute_max_disallowed(brute_lots, brute_buys)
+        got = 0 if row.clean else row.disallowed_loss
+        assert got == pytest.approx(expected), (case, got, expected, brute_lots, brute_buys)
+        for trigger in row.triggers:
+            if trigger.account_label == "ira_roth":
+                assert trigger.permanent_disallowance is True
 
 
 def test_same_day_buy_is_capped_at_the_other_accounts_shares():

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import re
 from datetime import date, timedelta
+from fractions import Fraction
 
 from account_labels import account_display_name, is_ira_account
 from models import (
@@ -325,6 +326,138 @@ def _same_sale_account(txn: Transaction, sale_accounts: set[str], as_of: date) -
     return txn.activity_date == as_of and _account(txn.account_label) in sale_accounts
 
 
+# Share quantities move through the matcher in 1/10000 share units.
+_SHARE_SCALE = 10000
+
+
+def _share_units(quantity: float) -> int:
+    return int(round(float(quantity) * _SHARE_SCALE))
+
+
+def _loss_cents(lot: TaxLot) -> int:
+    return int(round(abs(float(lot.unrealized_pnl or 0)) * 100))
+
+
+def _add_flow_edge(
+    graph: list[list[list[object]]],
+    src: int,
+    dst: int,
+    cap: int,
+    cost: Fraction,
+) -> None:
+    graph[src].append([dst, len(graph[dst]), cap, cost])
+    graph[dst].append([src, len(graph[src]) - 1, 0, -cost])
+
+
+def _matched_loss_cents(
+    buy_units: list[int],
+    buy_eligible: list[list[int]],
+    lot_units: list[int],
+    lot_cents: list[int],
+) -> list[int]:
+    """Maximum disallowed cents, split per buy.
+
+    A same-day buy lists only the lots outside its own account. An ordinary
+    buy, including an IRA buy, lists every lot. Covering a lot-share is worth
+    that lot's own per-share loss, so the weight does not depend on which
+    eligible buy covers it. Min-cost flow finds a maximum-weight assignment
+    and can move an earlier match when a constrained buy needs the lot.
+    An earlier buy wins a tie, by far less than one cent, so a single lot
+    still fills in date order.
+    """
+    buy_count = len(buy_units)
+    lot_count = len(lot_units)
+    if buy_count == 0 or lot_count == 0:
+        return [0] * buy_count
+    source = 0
+    sink = 1
+    buy_node = [2 + index for index in range(buy_count)]
+    lot_node = [2 + buy_count + index for index in range(lot_count)]
+    graph: list[list[list[object]]] = [[] for _ in range(2 + buy_count + lot_count)]
+    for index, units in enumerate(buy_units):
+        if units > 0:
+            _add_flow_edge(graph, source, buy_node[index], units, Fraction(0))
+    for index, units in enumerate(lot_units):
+        if units > 0:
+            _add_flow_edge(graph, lot_node[index], sink, units, Fraction(0))
+    watched: list[tuple[int, int, int, int]] = []
+    for buy_index, units in enumerate(buy_units):
+        if units <= 0:
+            continue
+        for lot_index in buy_eligible[buy_index]:
+            if lot_units[lot_index] <= 0 or lot_cents[lot_index] <= 0:
+                continue
+            # Higher true loss first. The second term only orders equal losses.
+            cost = -Fraction(lot_cents[lot_index], lot_units[lot_index]) - Fraction(
+                buy_count - buy_index, 10**18
+            )
+            _add_flow_edge(
+                graph,
+                buy_node[buy_index],
+                lot_node[lot_index],
+                min(units, lot_units[lot_index]),
+                cost,
+            )
+            watched.append(
+                (
+                    buy_node[buy_index],
+                    len(graph[buy_node[buy_index]]) - 1,
+                    buy_index,
+                    lot_index,
+                )
+            )
+    node_count = len(graph)
+    while True:
+        dist: list[Fraction | None] = [None] * node_count
+        dist[source] = Fraction(0)
+        parent = [(-1, -1)] * node_count
+        for _ in range(node_count - 1):
+            updated = False
+            for node, edges in enumerate(graph):
+                if dist[node] is None:
+                    continue
+                for edge_index, edge in enumerate(edges):
+                    cap = int(edge[2])
+                    if cap <= 0:
+                        continue
+                    nxt = dist[node] + edge[3]
+                    dest = int(edge[0])
+                    if dist[dest] is None or nxt < dist[dest]:
+                        dist[dest] = nxt
+                        parent[dest] = (node, edge_index)
+                        updated = True
+            if not updated:
+                break
+        if dist[sink] is None:
+            break
+        bottleneck = 10**18
+        node = sink
+        while node != source:
+            prev, edge_index = parent[node]
+            bottleneck = min(bottleneck, int(graph[prev][edge_index][2]))
+            node = prev
+        if bottleneck <= 0:
+            break
+        node = sink
+        while node != source:
+            prev, edge_index = parent[node]
+            edge = graph[prev][edge_index]
+            edge[2] = int(edge[2]) - bottleneck
+            reverse = graph[int(edge[0])][int(edge[1])]
+            reverse[2] = int(reverse[2]) + bottleneck
+            node = prev
+    cents = [0] * buy_count
+    for node, edge_index, buy_index, lot_index in watched:
+        edge = graph[node][edge_index]
+        flowed = min(buy_units[buy_index], lot_units[lot_index]) - int(edge[2])
+        if flowed <= 0:
+            continue
+        cents[buy_index] += int(
+            round(Fraction(flowed * lot_cents[lot_index], lot_units[lot_index]))
+        )
+    return cents
+
+
 def _allocate_found(
     found: list[tuple[Transaction, HarvestBuyKind, float]],
     harvested: list[TaxLot],
@@ -333,78 +466,36 @@ def _allocate_found(
     open_loss: float,
     quantity: float,
 ) -> tuple[float, list[HarvestTriggerBuy]]:
-    """Price every buy from each lot's own remaining loss.
+    """Assign replacement shares to lots so the disallowed loss is maximal.
 
-    Ordinary buys run first. They take lots a same-day sale-account buy
-    cannot replace, then the other lots. Same-day buys then take whatever
-    is left in the other accounts. A share is never priced at the ticker
-    average, and a lot's dollars are spent once.
+    ``open_loss`` and ``quantity`` stay in the signature for the caller.
+    The dollars come from the lots that the assignment covers.
     """
     del open_loss, quantity
     sale_accounts = {_account(lot.account_label) for lot in harvested}
-    blocked_accounts = {
-        _account(txn.account_label)
-        for txn, _kind, _shares in found
-        if _same_sale_account(txn, sale_accounts, as_of)
-    }
-    lot_order = sorted(
-        range(len(harvested)),
-        key=lambda index: (
-            0 if _account(harvested[index].account_label) in blocked_accounts else 1,
-            _account(harvested[index].account_label),
-            harvested[index].purchase_date,
-            index,
-        ),
-    )
-    pool_qty = {index: float(lot.quantity) for index, lot in enumerate(harvested)}
-    pool_loss = {
-        index: abs(float(lot.unrealized_pnl or 0))
-        for index, lot in enumerate(harvested)
-    }
-
-    def take_loss(txn: Transaction, shares: float) -> float:
-        eligible = [
-            index
-            for index in lot_order
-            if pool_qty[index] > _QTY_EPS
-            and (
-                not _same_sale_account(txn, sale_accounts, as_of)
-                or _account(harvested[index].account_label) != _account(txn.account_label)
+    eligible: list[list[int]] = []
+    for txn, _kind, _shares in found:
+        if _same_sale_account(txn, sale_accounts, as_of):
+            eligible.append(
+                [
+                    index
+                    for index, lot in enumerate(harvested)
+                    if _account(lot.account_label) != _account(txn.account_label)
+                ]
             )
-        ]
-        left = shares
-        portion = 0.0
-        for index in eligible:
-            if left <= _QTY_EPS:
-                break
-            avail = pool_qty[index]
-            take = min(left, avail)
-            if take >= avail - _QTY_EPS:
-                slice_loss = _cents(pool_loss[index])
-                pool_qty[index] = 0.0
-                pool_loss[index] = 0.0
-            else:
-                slice_loss = _cents(pool_loss[index] * (take / avail))
-                pool_qty[index] = avail - take
-                pool_loss[index] = _cents(pool_loss[index] - slice_loss)
-            portion = _cents(portion + slice_loss)
-            left -= take
-        return portion
-
-    ordinary = [
-        item
-        for item in found
-        if not _same_sale_account(item[0], sale_accounts, as_of)
+        else:
+            eligible.append(list(range(len(harvested))))
+    matched = _matched_loss_cents(
+        [_share_units(shares) for _txn, _kind, shares in found],
+        eligible,
+        [_share_units(lot.quantity) for lot in harvested],
+        [_loss_cents(lot) for lot in harvested],
+    )
+    rows = [
+        _trigger_row(txn, kind, shares, matched[index] / 100)
+        for index, (txn, kind, shares) in enumerate(found)
     ]
-    cross_day = [
-        item for item in found if _same_sale_account(item[0], sale_accounts, as_of)
-    ]
-    priced = {
-        id(txn): _trigger_row(txn, kind, shares, take_loss(txn, shares))
-        for txn, kind, shares in [*ordinary, *cross_day]
-    }
-    ordered = [priced[id(txn)] for txn, _kind, _shares in found]
-    return _cents(sum(row.disallowed_loss for row in ordered)), ordered
+    return _cents(sum(row.disallowed_loss for row in rows)), rows
 
 
 def _split_symbols(transactions: list[Transaction], as_of: date) -> set[str]:
