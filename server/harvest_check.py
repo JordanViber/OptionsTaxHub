@@ -178,7 +178,10 @@ def _acquisition_fill(lot: TaxLot) -> float:
 
 
 def _matches_lot_fill(txn: Transaction, lot: TaxLot) -> bool:
-    if txn.asset_type != AssetType.STOCK:
+    """True when this row is the stock buy that opened the lot."""
+    if txn.trans_code != TransCode.BUY or txn.asset_type != AssetType.STOCK:
+        return False
+    if _symbol(txn.instrument) != _symbol(lot.symbol):
         return False
     if _account(lot.account_label) != _account(txn.account_label):
         return False
@@ -269,15 +272,24 @@ def _triggers_for(
         kind = _kind(txn)
         if kind is None:
             continue
-        same_account = _account(txn.account_label) in sale_accounts
-        # JOR-50 skips a same-account fill on the sale date. JOR-175 keeps
-        # a same-day buy in another account, including an IRA.
-        if txn.activity_date == as_of and same_account:
-            continue
+        buy_account = _account(txn.account_label)
+        # JOR-50 skips a same-account fill on the sale date. A buy in one
+        # sale account still replaces lots held in the other accounts.
+        other_qty: float | None = None
+        if txn.activity_date == as_of and buy_account in sale_accounts:
+            other_qty = sum(
+                float(lot.quantity)
+                for lot in harvested
+                if _account(lot.account_label) != buy_account
+            )
+            if other_qty <= _QTY_EPS:
+                continue
         if kind in ("bought_call", "short_put"):
             shares = _share_equivalent(txn, kind)
         else:
             shares = _exclude_shares_being_sold(txn, harvested, remaining)
+        if other_qty is not None:
+            shares = min(shares, other_qty)
         if shares <= _QTY_EPS:
             continue
         found.append((txn, kind, shares))
@@ -289,6 +301,24 @@ def _triggers_for(
         )
     )
     return found
+
+
+def _trigger_row(
+    txn: Transaction,
+    kind: HarvestBuyKind,
+    shares: float,
+    portion: float,
+) -> HarvestTriggerBuy:
+    return HarvestTriggerBuy(
+        activity_date=txn.activity_date,
+        kind=kind,
+        quantity=round(float(txn.quantity), 4),
+        share_equivalent=round(shares, 4),
+        disallowed_loss=_cents(portion),
+        account_label=txn.account_label or None,
+        account_name=account_display_name(txn.account_label),
+        permanent_disallowance=is_ira_account(txn.account_label),
+    )
 
 
 def _allocate(
@@ -318,20 +348,70 @@ def _allocate(
                 portion = _cents(disallowed * (take / covered))
                 remaining_dollars = _cents(remaining_dollars - portion)
             remaining_shares -= take
-        permanent = is_ira_account(txn.account_label)
-        rows.append(
-            HarvestTriggerBuy(
-                activity_date=txn.activity_date,
-                kind=kind,
-                quantity=round(float(txn.quantity), 4),
-                share_equivalent=round(shares, 4),
-                disallowed_loss=_cents(portion),
-                account_label=txn.account_label or None,
-                account_name=account_display_name(txn.account_label),
-                permanent_disallowance=permanent,
-            )
-        )
+        rows.append(_trigger_row(txn, kind, shares, portion))
     return disallowed, rows
+
+
+def _allocate_found(
+    found: list[tuple[Transaction, HarvestBuyKind, float]],
+    harvested: list[TaxLot],
+    *,
+    as_of: date,
+    open_loss: float,
+    quantity: float,
+) -> tuple[float, list[HarvestTriggerBuy]]:
+    """Ordinary buys share the whole loss. A same-day buy in one sale account
+    is priced only against the losing shares in the other accounts.
+    """
+    sale_accounts = {_account(lot.account_label) for lot in harvested}
+    ordinary: list[tuple[Transaction, HarvestBuyKind, float]] = []
+    cross_day: list[tuple[Transaction, HarvestBuyKind, float]] = []
+    for txn, kind, shares in found:
+        same_sale_account = (
+            txn.activity_date == as_of and _account(txn.account_label) in sale_accounts
+        )
+        if same_sale_account:
+            cross_day.append((txn, kind, shares))
+        else:
+            ordinary.append((txn, kind, shares))
+    disallowed, rows = _allocate(ordinary, open_loss=open_loss, quantity=quantity)
+    room = _cents(open_loss - disallowed)
+    cross_rows: list[HarvestTriggerBuy] = []
+    pool_loss: dict[int, float] = {}
+    pool_qty: dict[int, float] = {}
+    for index, lot in enumerate(harvested):
+        pool_loss[index] = abs(float(lot.unrealized_pnl or 0))
+        pool_qty[index] = float(lot.quantity)
+    for txn, kind, shares in cross_day:
+        eligible = [
+            index
+            for index, lot in enumerate(harvested)
+            if _account(lot.account_label) != _account(txn.account_label)
+        ]
+        pool_loss_left = _cents(sum(pool_loss[index] for index in eligible))
+        pool_qty_left = sum(pool_qty[index] for index in eligible)
+        take = min(shares, pool_qty_left)
+        if pool_qty_left <= _QTY_EPS or pool_loss_left <= 0 or take <= _QTY_EPS:
+            portion = 0.0
+        elif take + _QTY_EPS >= pool_qty_left:
+            portion = pool_loss_left
+        else:
+            portion = _cents(pool_loss_left * (take / pool_qty_left))
+        portion = min(portion, room)
+        if pool_loss_left > _QTY_EPS and pool_qty_left > _QTY_EPS and take > _QTY_EPS:
+            loss_fraction = portion / pool_loss_left if pool_loss_left else 0.0
+            qty_fraction = take / pool_qty_left
+            for index in eligible:
+                pool_loss[index] = pool_loss[index] * (1 - loss_fraction)
+                pool_qty[index] = pool_qty[index] * (1 - qty_fraction)
+        room = _cents(room - portion)
+        cross_rows.append(_trigger_row(txn, kind, shares, portion))
+    by_txn = {id(txn): row for (txn, _kind, _shares), row in zip(ordinary, rows)}
+    by_txn.update(
+        {id(txn): row for (txn, _kind, _shares), row in zip(cross_day, cross_rows)}
+    )
+    ordered = [by_txn[id(txn)] for txn, _kind, _shares in found]
+    return _cents(sum(row.disallowed_loss for row in ordered)), ordered
 
 
 def _split_symbols(transactions: list[Transaction], as_of: date) -> set[str]:
@@ -399,7 +479,13 @@ def build_harvest_checks(
         if open_loss <= 0 or quantity <= _QTY_EPS:
             continue
         found = _triggers_for(symbol, transactions, harvested, as_of)
-        disallowed, triggers = _allocate(found, open_loss=open_loss, quantity=quantity)
+        disallowed, triggers = _allocate_found(
+            found,
+            harvested,
+            as_of=as_of,
+            open_loss=open_loss,
+            quantity=quantity,
+        )
         clean = disallowed <= 0 or not triggers
         blocked = symbol in NO_HARVEST_PROMPT_SYMBOLS
         earliest: date | None = None

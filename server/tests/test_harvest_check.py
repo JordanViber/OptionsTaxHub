@@ -268,6 +268,50 @@ def test_tsla_and_spcx_lines_do_not_prompt_a_sale():
     assert "ask a tax pro" in spcx.line
 
 
+def test_another_symbol_or_a_sell_does_not_take_the_lots_own_fill():
+    lot = _lot("SHOP", 5, 20, 10, date(2026, 8, 1))
+    txns = [
+        _buy("AMD", 5, 20, date(2026, 8, 1)),
+        _buy("SHOP", 5, 20, date(2026, 8, 1), code=TransCode.SELL),
+        _buy("SHOP", 5, 20, date(2026, 8, 1)),
+    ]
+    row = build_harvest_checks([lot], txns, as_of=AS_OF)[0]
+    assert row.clean is True
+    assert row.trigger_count == 0
+
+
+def test_same_day_buy_counts_against_the_other_taxable_account_only():
+    lots = [
+        _lot("QQQ", 10, 30, 10, date(2026, 1, 2), account="individual"),
+        _lot("QQQ", 10, 20, 10, date(2026, 1, 2), account="other"),
+    ]
+    txns = [
+        _buy("QQQ", 10, 30, date(2026, 1, 2), account="individual"),
+        _buy("QQQ", 10, 20, date(2026, 1, 2), account="other"),
+        _buy("QQQ", 2, 12, AS_OF, account="individual"),
+    ]
+    row = build_harvest_checks(lots, txns, as_of=AS_OF)[0]
+    assert row.open_loss == pytest.approx(300)
+    assert row.trigger_count == 1
+    assert row.triggers[0].account_label == "individual"
+    assert row.disallowed_loss == pytest.approx(20)
+
+
+def test_same_day_buy_is_capped_at_the_other_accounts_shares():
+    lots = [
+        _lot("QQQ", 10, 20, 10, date(2026, 1, 2), account="individual"),
+        _lot("QQQ", 2, 30, 10, date(2026, 1, 2), account="other"),
+    ]
+    txns = [
+        _buy("QQQ", 10, 20, date(2026, 1, 2), account="individual"),
+        _buy("QQQ", 2, 30, date(2026, 1, 2), account="other"),
+        _buy("QQQ", 10, 12, AS_OF, account="individual"),
+    ]
+    row = build_harvest_checks(lots, txns, as_of=AS_OF)[0]
+    assert row.triggers[0].share_equivalent == pytest.approx(2)
+    assert row.disallowed_loss == pytest.approx(40)
+
+
 def test_a_recent_lot_is_not_a_wash_against_its_own_purchase():
     lots = [_lot("SHOP", 5, 20, 10, date(2026, 8, 1))]
     txns = [_buy("SHOP", 5, 20, date(2026, 8, 1))]
