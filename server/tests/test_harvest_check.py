@@ -245,28 +245,25 @@ def test_ira_loss_is_not_a_harvest_row():
     assert build_harvest_checks(lots, txns, as_of=AS_OF) == []
 
 
-def test_tsla_and_spcx_lines_do_not_prompt_a_sale():
+def test_tsla_and_spcx_are_omitted_and_other_tickers_keep_their_lines():
     lots = [
         _lot("TSLA", 4, 20, 10, date(2026, 1, 2)),
         _lot("SPCX", 4, 20, 10, date(2026, 1, 2)),
+        _lot("NVDA", 10, 50, 40, date(2026, 5, 1)),
     ]
     txns = [
         _buy("TSLA", 4, 20, date(2026, 1, 2)),
         _buy("TSLA", 1, 12, date(2026, 8, 1)),
         _buy("SPCX", 4, 20, date(2026, 1, 2)),
+        _buy("NVDA", 10, 50, date(2026, 5, 1)),
     ]
     rows = {row.symbol: row for row in build_harvest_checks(lots, txns, as_of=AS_OF)}
-    tsla = rows["TSLA"]
-    assert tsla.clean is False
-    assert tsla.earliest_clean_sell_date is None
-    assert tsla.safe_rebuy_date is None
-    assert "sell" not in tsla.line.lower()
-    assert "harvest" not in tsla.line.lower()
-    assert "ask a tax pro" in tsla.line
-    spcx = rows["SPCX"]
-    assert spcx.clean is True
-    assert "harvest" not in spcx.line.lower()
-    assert "ask a tax pro" in spcx.line
+    assert "TSLA" not in rows
+    assert "SPCX" not in rows
+    assert rows["NVDA"].line == (
+        "No replacement buys found in the 30 days either side; "
+        "may be clean to harvest."
+    )
 
 
 def test_another_symbol_or_a_sell_does_not_take_the_lots_own_fill():
@@ -764,10 +761,10 @@ def test_sample_analyze_keeps_924_amd_chain_and_shows_sofi(monkeypatch):
     ]
     assert [item["disallowed_loss"] for item in sofi["triggers"]] == [20, 5, 75]
 
-    tsla = next(row for row in body["harvest_checks"] if row["symbol"] == "TSLA")
-    assert tsla["clean"] is True
-    assert "harvest" not in tsla["line"].lower()
-    assert "sell" not in tsla["line"].lower()
+    symbols = {row["symbol"] for row in body["harvest_checks"]}
+    assert "TSLA" not in symbols
+    assert "SPCX" not in symbols
+    assert "SOFI" in symbols
     assert all(row["symbol"] != "SGOV" for row in body["harvest_checks"])
 
 

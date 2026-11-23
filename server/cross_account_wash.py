@@ -2,8 +2,8 @@
 
 A loss in one labeled account and a buy of the same stock in another
 account, inside the 61-day window, becomes its own chain. It does not
-enter wash_sale_flags, lot basis, or tax totals. An IRA buy is described
-as a permanent disallowance with no basis carryover.
+enter wash_sale_flags, lot basis, or tax totals. An IRA buy is a
+permanent disallowance: the loss does not add to the IRA's basis.
 
 Same-account uploads, and any book with a single label, return no rows.
 """
@@ -53,6 +53,26 @@ def _fmt_qty(quantity: float) -> str:
     if abs(rounded - round(rounded)) < 1e-9:
         return str(int(round(rounded)))
     return f"{rounded:.4f}".rstrip("0").rstrip(".")
+
+
+_PRE_ARTICLED = frozenset({"this account", "another account"})
+_IRA_PERMANENT_LINE = (
+    "Permanent: a loss washed by an IRA buy is lost for good. "
+    "It does not add to the IRA's basis."
+)
+
+
+def _article_phrase(name: str) -> str:
+    """'an Individual', 'an IRA (traditional)', 'an Other/agentic'."""
+    if name in _PRE_ARTICLED:
+        return name
+    article = "an" if name[:1].lower() in "aeiou" else "a"
+    return f"{article} {name}"
+
+
+def _sentence_phrase(name: str) -> str:
+    phrase = _article_phrase(name)
+    return phrase[:1].upper() + phrase[1:]
 
 
 def _stock_buys(transactions: list[Transaction]) -> list[Transaction]:
@@ -209,7 +229,7 @@ def _plain_english(
 ) -> str:
     text = (
         f"Not on your 1099: cross-account. "
-        f"A {sale_name} sale of {_fmt_qty(sell.quantity)} {_symbol(sell.instrument)} "
+        f"{_sentence_phrase(sale_name)} sale of {_fmt_qty(sell.quantity)} {_symbol(sell.instrument)} "
         f"on {sell.activity_date.strftime('%b')} {sell.activity_date.day} "
         f"lost {_fmt_money(loss)}. "
         f"A buy in {buy_names} within 30 days before or after that sale "
@@ -218,14 +238,11 @@ def _plain_english(
     )
     if permanent_amount > 0 and deferred_amount > 0:
         text += (
-            f" An IRA replacement may apply to {_fmt_money(permanent_amount)}, "
-            f"ask a tax pro. No basis carryover on that amount. "
+            f" {_IRA_PERMANENT_LINE} "
             f"{_fmt_money(deferred_amount)} is added to the taxable replacement's basis."
         )
     elif permanent_amount > 0:
-        text += (
-            " An IRA replacement may apply, ask a tax pro. No basis carryover."
-        )
+        text += f" {_IRA_PERMANENT_LINE}"
     return text
 
 
@@ -333,7 +350,9 @@ def build_cross_account_chains(
         sale_name = account_display_name(sale_label) or "this account"
         buy_names = ", ".join(
             dict.fromkeys(
-                account_display_name(buy.account_label) or "another account"
+                _article_phrase(
+                    account_display_name(buy.account_label) or "another account"
+                )
                 for buy, _take in allocated
             )
         )

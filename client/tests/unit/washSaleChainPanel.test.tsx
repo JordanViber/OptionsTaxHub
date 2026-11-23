@@ -1186,7 +1186,7 @@ describe("WashSaleChainPanel", () => {
     );
 
     const copy =
-      "Not on your 1099: cross-account. Estimated disallowed amount $120. An IRA replacement may apply, ask a tax pro. No basis carryover.";
+      "Not on your 1099: cross-account. An Individual sale of 4 QQQ on Feb 10 lost $120. A buy in an IRA (traditional) within 30 days before or after that sale covers 4 shares. Estimated disallowed amount $120. Permanent: a loss washed by an IRA buy is lost for good. It does not add to the IRA's basis.";
     render(
       <WashSaleChainPanel
         chains={[
@@ -1227,6 +1227,14 @@ describe("WashSaleChainPanel", () => {
     );
 
     expect(screen.getByText("Not on your 1099: cross-account")).toBeInTheDocument();
+    expect(screen.getByTestId("wash-chain-permanent-cross-qqq")).toHaveTextContent(
+      "Permanent",
+    );
+    expect(screen.getByText(/An Individual sale of 4 QQQ/)).toBeInTheDocument();
+    expect(screen.getByText(/a buy in an IRA \(traditional\)/i)).toBeInTheDocument();
+    expect(
+      screen.getAllByText(/Permanent: a loss washed by an IRA buy is lost for good/).length,
+    ).toBeGreaterThan(0);
     expect(screen.getByTestId("wash-chain-account-cross-qqq")).toHaveTextContent(
       "Individual",
     );
@@ -1234,10 +1242,16 @@ describe("WashSaleChainPanel", () => {
       WASH_SALE_CHAIN_DISCLAIMER,
     );
     expect(screen.getByTestId("wash-sale-chain-disclaimer")).toHaveTextContent(
+      "lost for good",
+    );
+    expect(screen.getByTestId("wash-sale-chain-disclaimer")).not.toHaveTextContent(
       "may apply, ask a tax pro",
     );
     fireEvent.click(screen.getByTestId("wash-sale-chain-open-cross-qqq"));
-    expect(screen.getByText(/IRA \(traditional\)/)).toBeInTheDocument();
-    expect(screen.getAllByText(/No basis carryover/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/IRA \(traditional\)/).length).toBeGreaterThan(0);
+    expect(
+      screen.getByTestId("wash-chain-permanent-cross-qqq:h0"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/No basis carryover/)).not.toBeInTheDocument();
   });
 });

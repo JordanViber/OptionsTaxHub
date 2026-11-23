@@ -9,7 +9,7 @@ and its bought calls or short puts count. A different fund, including a
 cash-parking fund, is not a replacement.
 
 This does not rewrite wash flags, lot basis, or tax totals. The sentences
-are informational. TSLA and SPCX never get a harvest or sell prompt.
+are informational. TSLA and SPCX are omitted from the rows.
 """
 
 from __future__ import annotations
@@ -32,8 +32,7 @@ from models import (
 )
 from wash_sale import WASH_SALE_WINDOW_DAYS
 
-# These names never get a harvest or sell prompt. The check can still
-# report a count or a disallowed amount.
+# These names never appear as a harvest-check row or a sell prompt.
 NO_HARVEST_PROMPT_SYMBOLS = frozenset({"TSLA", "SPCX"})
 
 # Pinned so the in-app sample's disallowed amount and clean date do not
@@ -55,10 +54,6 @@ _PUT = re.compile(r"\bputs?\b", re.IGNORECASE)
 _CLEAN_LINE = (
     "No replacement buys found in the 30 days either side; "
     "may be clean to harvest."
-)
-_NO_PROMPT_CLEAN_LINE = (
-    "No replacement buys found in the 30 days either side. "
-    "A wash-sale rule may apply, ask a tax pro."
 )
 
 
@@ -151,14 +146,7 @@ def _harvested_lots(lots: list[TaxLot], as_of: date) -> list[TaxLot]:
     return list(lots)
 
 
-def _line(symbol: str, *, clean: bool, disallowed: float, open_loss: float) -> str:
-    if symbol in NO_HARVEST_PROMPT_SYMBOLS:
-        if clean:
-            return _NO_PROMPT_CLEAN_LINE
-        return (
-            f"{_fmt_money(disallowed)} of your {_fmt_money(open_loss)} loss "
-            "may be disallowed. A wash-sale rule may apply, ask a tax pro."
-        )
+def _line(*, clean: bool, disallowed: float, open_loss: float) -> str:
     if clean:
         return _CLEAN_LINE
     return (
@@ -649,6 +637,8 @@ def build_harvest_checks(
     )
     checks: list[HarvestCheck] = []
     for symbol in symbols:
+        if symbol in NO_HARVEST_PROMPT_SYMBOLS:
+            continue
         losing = _losing_stock_lots(tax_lots, symbol)
         if not losing:
             continue
@@ -666,10 +656,9 @@ def build_harvest_checks(
             quantity=quantity,
         )
         clean = disallowed <= 0 or not triggers
-        blocked = symbol in NO_HARVEST_PROMPT_SYMBOLS
         earliest: date | None = None
         safe: date | None = None
-        if not clean and not blocked:
+        if not clean:
             latest = max(row.activity_date for row in triggers)
             earliest = latest + timedelta(days=WASH_SALE_WINDOW_DAYS + 1)
             safe = earliest + timedelta(days=WASH_SALE_WINDOW_DAYS + 1)
@@ -687,7 +676,6 @@ def build_harvest_checks(
                     row.permanent_disallowance for row in triggers
                 ),
                 line=_line(
-                    symbol,
                     clean=clean,
                     disallowed=disallowed,
                     open_loss=open_loss,
@@ -702,6 +690,8 @@ def redact_harvest_checks(checks: list[HarvestCheck]) -> list[HarvestCheck]:
     """Free view: per-ticker counts. Dollars, dates, and buy rows stay off."""
     redacted: list[HarvestCheck] = []
     for row in checks:
+        if row.symbol in NO_HARVEST_PROMPT_SYMBOLS:
+            continue
         redacted.append(
             row.model_copy(
                 update={

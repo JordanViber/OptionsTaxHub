@@ -23,6 +23,18 @@ import { filingDetailOpen, seasonUnlockEnabled } from "@/lib/seasonUnlock";
 export const WASH_SALE_CHAIN_DISCLAIMER =
   "Educational only — not tax advice. This explains wash sales in this Robinhood export and the 1099-B you imported for this portfolio. It does not see other brokers, other accounts, or IRAs. A wash outside this file will not show up here.";
 
+export const IRA_PERMANENT_COPY =
+  "Permanent: a loss washed by an IRA buy is lost for good. It does not add to the IRA's basis.";
+
+export function crossAccountEstimateNote(permanent: boolean): string {
+  const estimates =
+    " Cross-account rows are estimates from the exports in this run.";
+  if (permanent) {
+    return `${estimates} ${IRA_PERMANENT_COPY}`;
+  }
+  return `${estimates} An IRA replacement may apply, ask a tax pro.`;
+}
+
 const CHAIN_FILTERS = [
   { id: "all", label: "All" },
   { id: "matches", label: "Matches" },
@@ -105,6 +117,23 @@ function formatChainDate(iso: string | null | undefined): string {
 function formatQty(value: number): string {
   if (Number.isInteger(value)) return String(value);
   return String(Math.round(value * 10000) / 10000);
+}
+
+function chainIsPermanent(chain: WashSaleChain): boolean {
+  if (chain.permanent_disallowance) return true;
+  return chain.hops.some((hop) => hop.permanent_disallowance);
+}
+
+function PermanentTag({ id }: Readonly<{ id: string }>) {
+  return (
+    <Chip
+      size="small"
+      color="warning"
+      variant="outlined"
+      label="Permanent"
+      data-testid={`wash-chain-permanent-${id}`}
+    />
+  );
 }
 
 function chipColor(
@@ -368,6 +397,9 @@ function HopDetails({ hop }: Readonly<{ hop: WashSaleHop }>) {
             hop.cross_account,
           )}
         />
+        {hop.permanent_disallowance ? (
+          <PermanentTag id={hop.hop_id} />
+        ) : null}
       </Stack>
       <Typography
         variant="body2"
@@ -467,6 +499,7 @@ export default function WashSaleChainPanel({
   const openChain = chains.find((chain) => chain.chain_id === openId) ?? null;
   const searchable = seasonUnlockEnabled();
   const hasCrossAccount = chains.some((chain) => chain.cross_account);
+  const hasPermanent = chains.some((chain) => chainIsPermanent(chain));
   const needle = query.trim().toLowerCase();
   const visibleChains = searchable
     ? chains.filter((chain) => {
@@ -561,6 +594,9 @@ export default function WashSaleChainPanel({
                   chain.cross_account,
                 )}
               />
+              {chainIsPermanent(chain) ? (
+                <PermanentTag id={chain.chain_id} />
+              ) : null}
               {chain.hops[0]?.account_name && (
                 <Typography
                   variant="caption"
@@ -603,9 +639,7 @@ export default function WashSaleChainPanel({
           sx={{ whiteSpace: "normal", overflowWrap: "anywhere" }}
         >
           {WASH_SALE_CHAIN_DISCLAIMER}
-          {hasCrossAccount
-            ? " Cross-account rows are estimates from the exports in this run. An IRA replacement may apply, ask a tax pro."
-            : ""}
+          {hasCrossAccount ? crossAccountEstimateNote(hasPermanent) : ""}
         </Typography>
       </Stack>
       <Dialog
@@ -650,7 +684,7 @@ export default function WashSaleChainPanel({
               >
                 {WASH_SALE_CHAIN_DISCLAIMER}
                 {openChain.cross_account
-                  ? " Cross-account rows are estimates from the exports in this run. An IRA replacement may apply, ask a tax pro."
+                  ? crossAccountEstimateNote(chainIsPermanent(openChain))
                   : ""}
               </Typography>
             </Stack>

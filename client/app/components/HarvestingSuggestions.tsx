@@ -9,9 +9,6 @@ import {
   Collapse,
   Divider,
   IconButton,
-  List,
-  ListItem,
-  ListItemText,
   Stack,
   Typography,
 } from "@mui/material";
@@ -19,7 +16,6 @@ import {
   ExpandMore as ExpandMoreIcon,
   ExpandLess as ExpandLessIcon,
   AutoAwesome as AiIcon,
-  SwapHoriz as SwapIcon,
   Warning as WarnIcon,
   TrendingDown as LossIcon,
 } from "@mui/icons-material";
@@ -64,27 +60,28 @@ function formatShareCount(quantity: number): string {
   return quantity.toLocaleString("en-US", { maximumFractionDigits: 4 });
 }
 
-function replacementSymbolsLabel(
-  suggestion: HarvestingSuggestion,
-): string | null {
-  const symbols = suggestion.replacement_candidates
-    .map((candidate) => candidate.symbol)
-    .filter(Boolean);
-  if (symbols.length === 0) return null;
-  if (symbols.length === 1) return symbols[0];
-  if (symbols.length === 2) return `${symbols[0]} or ${symbols[1]}`;
-  return `${symbols.slice(0, -1).join(", ")}, or ${symbols[symbols.length - 1]}`;
+export const HARVEST_WASH_WINDOW_NOTE =
+  "Buying the same stock or its options within 30 days may disallow the loss. See the year-end harvest check.";
+
+const HARVEST_WASH_WARNING =
+  "Wash-sale risk detected. A wash sale may apply. See the year-end harvest check.";
+
+/** Queue display only. A sell or buy instruction in source copy is not shown. */
+export function harvestQueueWarning(explanation: string | null | undefined): string {
+  const text = (explanation || "").trim();
+  if (!text || /\bSell(?:ing|s)?\b|\bBuy(?:ing)?\b/i.test(text)) {
+    return HARVEST_WASH_WARNING;
+  }
+  return text;
 }
 
 /**
- * Plain-language harvest action. Always visible — the card used to lead with
- * the ticker and leave the actual "sell this lot" instruction implicit.
+ * Informational harvest note. No trade instruction and no replacement ticker.
  */
 export function getRecommendedActionCopy(suggestion: HarvestingSuggestion): {
   headline: string;
   detail: string;
 } {
-  const qty = formatShareCount(suggestion.quantity);
   const symbol = suggestion.symbol;
   if (harvestPromptBlocked(symbol)) {
     return {
@@ -92,23 +89,25 @@ export function getRecommendedActionCopy(suggestion: HarvestingSuggestion): {
       detail: "This note is informational. It is not a recommendation to trade.",
     };
   }
+  const qty = formatShareCount(suggestion.quantity);
   const term = suggestion.is_long_term ? "long-term" : "short-term";
+  const singular = suggestion.quantity === 1;
+  const noun = singular ? "share" : "shares";
+  const verb = singular ? "shows" : "show";
   const loss = formatCurrency(Math.abs(suggestion.estimated_loss));
   const savings = formatCurrency(Math.abs(suggestion.tax_savings_estimate));
-  const replacements = replacementSymbolsLabel(suggestion);
-  const headline = `Sell ${qty} ${symbol} to harvest this ${term} loss`;
-  const rotate = replacements
-    ? ` To keep similar exposure without buying ${symbol} back, look at ${replacements}.`
-    : ` Do not repurchase ${symbol} (or a substantially identical security) for 31 days.`;
+  const headline = `${qty} ${symbol} ${noun} ${verb} a ${term} loss you may be able to harvest.`;
+  const dollars = `Estimated loss ${loss}. Estimated tax savings ${savings}.`;
+  const windowNote = ` ${HARVEST_WASH_WINDOW_NOTE}`;
   if (suggestion.wash_sale_risk) {
     return {
       headline,
-      detail: `This lot is a harvest candidate, but selling now may trigger a wash sale — read the warning before you act. Estimated loss ${loss}; estimated tax savings ${savings}.${rotate}`,
+      detail: `A wash sale may apply to this lot. ${dollars}${windowNote}`,
     };
   }
   return {
     headline,
-    detail: `Realize about ${loss} of loss for an estimated ${savings} in tax savings.${rotate}`,
+    detail: `${dollars}${windowNote}`,
   };
 }
 
@@ -178,6 +177,7 @@ function SuggestionCard({
   const blockedPrompt = harvestPromptBlocked(suggestion.symbol);
   const recommended =
     unknownLoss && !blockedPrompt ? null : getRecommendedActionCopy(suggestion);
+  const hasDetails = !unknownLoss && Boolean(suggestion.ai_explanation);
 
   return (
     <Card
@@ -224,7 +224,7 @@ function SuggestionCard({
                 )}
               {unknownLoss || blockedPrompt ? null : (
                 <Chip
-                  label="Sell to harvest"
+                  label="Harvest candidate"
                   size="small"
                   color="error"
                   variant="outlined"
@@ -314,7 +314,7 @@ function SuggestionCard({
                     mb: 0.25,
                   }}
                 >
-                  Recommended action
+                  Harvest note
                 </Typography>
                 <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
                   {recommended.headline}
@@ -409,13 +409,15 @@ function SuggestionCard({
             </Stack>
           </Box>
 
-          <IconButton
-            size="small"
-            onClick={() => setExpanded(!expanded)}
-            aria-label={expanded ? "Show less" : "Show more"}
-          >
-            {expanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
-          </IconButton>
+          {hasDetails ? (
+            <IconButton
+              size="small"
+              onClick={() => setExpanded(!expanded)}
+              aria-label={expanded ? "Show less" : "Show more"}
+            >
+              {expanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+            </IconButton>
+          ) : null}
         </Box>
 
         {/* Wash-sale warning */}
@@ -433,17 +435,14 @@ function SuggestionCard({
           >
             <WarnIcon sx={{ color: "warning.main", fontSize: 18, mt: 0.2 }} />
             <Typography variant="caption" sx={{ color: "warning.main" }}>
-              {suggestion.wash_sale_explanation ||
-                "Wash-sale risk detected. Selling this position may trigger wash-sale rules."}
+              {harvestQueueWarning(suggestion.wash_sale_explanation)}
             </Typography>
           </Box>
         )}
 
-        {/* Expandable details */}
-        <Collapse in={expanded}>
-          <Divider sx={{ my: 1.5 }} />
-
-          {!unknownLoss && suggestion.ai_explanation && (
+        {hasDetails ? (
+          <Collapse in={expanded}>
+            <Divider sx={{ my: 1.5 }} />
             <Box sx={{ mb: 2 }}>
               <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>
                 {suggestion.ai_generated ? "AI Analysis" : "Analysis"}
@@ -456,59 +455,8 @@ function SuggestionCard({
                 {suggestion.ai_explanation}
               </Typography>
             </Box>
-          )}
-
-          {!unknownLoss && suggestion.replacement_candidates.length > 0 && (
-            <Box>
-              <Typography
-                variant="subtitle2"
-                sx={{
-                  fontWeight: 600,
-                  mb: 0.5,
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 0.5,
-                }}
-              >
-                <SwapIcon sx={{ fontSize: 16 }} />
-                Replacements
-              </Typography>
-              <Typography
-                variant="caption"
-                color="text.secondary"
-                sx={{ mb: 1, display: "block" }}
-              >
-                A different symbol, so this sale is less likely to be a wash sale
-              </Typography>
-              <List dense disablePadding>
-                {suggestion.replacement_candidates.map((candidate) => (
-                  <ListItem
-                    key={candidate.symbol}
-                    disableGutters
-                    sx={{ py: 0.25 }}
-                  >
-                    <ListItemText
-                      primary={
-                        <Box
-                          sx={{ display: "flex", alignItems: "center", gap: 1 }}
-                        >
-                          <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                            {candidate.symbol}
-                          </Typography>
-                          <Typography variant="caption" color="text.secondary">
-                            {candidate.name}
-                          </Typography>
-                        </Box>
-                      }
-                      secondary={candidate.reason}
-                      slotProps={{ secondary: { variant: "caption" } }}
-                    />
-                  </ListItem>
-                ))}
-              </List>
-            </Box>
-          )}
-        </Collapse>
+          </Collapse>
+        ) : null}
       </CardContent>
     </Card>
   );
@@ -607,7 +555,7 @@ function HarvestTeaserCard({
           aria-hidden
         >
           <Typography variant="body2">
-            Sell quantity and replacement names
+            Share count and wash-sale window
           </Typography>
           <Typography variant="caption" color="text.secondary">
             Lot opened · cost basis · wash-sale dates

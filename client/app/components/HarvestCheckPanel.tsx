@@ -15,6 +15,7 @@ import {
   formatHarvestMoney,
   harvestBuyKindLabel,
   harvestCountLine,
+  harvestPromptBlocked,
   harvestRowShowsDates,
 } from "@/lib/harvestCheck";
 
@@ -114,7 +115,8 @@ export default function HarvestCheckPanel({
   checks,
   detailOpen,
 }: Readonly<{ checks: HarvestCheck[]; detailOpen: boolean }>) {
-  if (checks.length === 0) {
+  const visible = checks.filter((check) => !harvestPromptBlocked(check.symbol));
+  if (visible.length === 0) {
     return null;
   }
   return (
@@ -125,7 +127,7 @@ export default function HarvestCheckPanel({
       <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
         Replacement buys in the 30 days either side of a sale. {HARVEST_TAX_PRO_COPY}
       </Typography>
-      {checks.map((check) => (
+      {visible.map((check) => (
         <HarvestCheckRow key={check.symbol} check={check} detailOpen={detailOpen} />
       ))}
     </Box>
