@@ -72,6 +72,7 @@ from year_close_packet import (
     packet_store_belongs_to_user,
     paid_session_for_user_year,
     remember_analysis,
+    harvest_checks_from_snapshot_payload,
     snapshot_payload_with_wash_sale_chains,
     wash_sale_chains_from_snapshot_payload,
     _analysis_ids_match,
@@ -2151,6 +2152,7 @@ async def _run_portfolio_analysis(
     # A guest keeps them on the in-memory payload so sign-in can persist
     # them. PDF rendering ignores the key.
     durable_chains = full_dump.get("wash_sale_chains") or []
+    durable_harvest_checks = full_dump.get("harvest_checks") or []
     public_result = _public_analysis(
         result,
         keep_lot_rows=keep_lot_rows,
@@ -2206,7 +2208,9 @@ async def _run_portfolio_analysis(
                     user_id,
                     tax_year,
                     snapshot_payload_with_wash_sale_chains(
-                        packet_payload, durable_chains
+                        packet_payload,
+                        durable_chains,
+                        durable_harvest_checks,
                     ),
                 )
             except PacketSnapshotYearConflict:
@@ -2229,7 +2233,9 @@ async def _run_portfolio_analysis(
                         user_id,
                         tax_year,
                         snapshot_payload_with_wash_sale_chains(
-                            packet_payload, durable_chains
+                            packet_payload,
+                            durable_chains,
+                            durable_harvest_checks,
                         ),
                         session_id=result.packet_session_id,
                         paid=True,
@@ -2570,6 +2576,9 @@ def _season_filing_chains(analysis_id: str, user_id: str) -> dict[str, Any]:
     payload = snapshot.get("packet_payload")
     chains, hint = wash_sale_chains_from_snapshot_payload(payload)
     body: dict[str, Any] = {"wash_sale_chains": chains}
+    stored_checks = harvest_checks_from_snapshot_payload(payload)
+    if stored_checks:
+        body["harvest_checks"] = stored_checks
     if hint:
         body["hint"] = hint
     if isinstance(payload, dict):

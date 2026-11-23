@@ -15,6 +15,10 @@ from harvest_check import (
     build_harvest_checks,
     redact_harvest_checks,
 )
+from year_close_packet import (
+    harvest_checks_from_snapshot_payload,
+    snapshot_payload_with_wash_sale_chains,
+)
 from harvesting import compute_lot_metrics
 from ledger import SAMPLE_FIXTURE_PRICES
 from models import AssetType, HarvestCheck, PortfolioAnalysis, TaxLot, Transaction, TransCode
@@ -270,6 +274,41 @@ def test_a_recent_lot_is_not_a_wash_against_its_own_purchase():
     row = build_harvest_checks(lots, txns, as_of=AS_OF)[0]
     assert row.clean is True
     assert row.trigger_count == 0
+
+
+def test_wash_adjusted_basis_still_excludes_the_lots_own_buy():
+    lot = _lot("SHOP", 10, 28, 10, date(2026, 8, 1))
+    lot.wash_sale_disallowed = 100
+    txns = [_buy("SHOP", 10, 18, date(2026, 8, 1))]
+    row = build_harvest_checks([lot], txns, as_of=AS_OF)[0]
+    assert row.clean is True
+    assert row.trigger_count == 0
+    assert row.disallowed_loss == 0
+
+
+def test_a_split_symbol_is_omitted_until_quantities_agree():
+    lots = [_lot("XYZ", 20, 10, 5, date(2026, 1, 2))]
+    txns = [
+        _buy("XYZ", 10, 20, date(2026, 1, 2)),
+        _buy("XYZ", 10, 12, date(2026, 8, 1)),
+        _buy("XYZ", 10, 0, date(2026, 6, 15), code=TransCode.SPR),
+    ]
+    assert build_harvest_checks(lots, txns, as_of=AS_OF) == []
+
+
+def test_snapshot_keeps_full_harvest_rows_for_a_later_unlock():
+    lots, txns = _sofi_book()
+    full = build_harvest_checks(lots, txns, as_of=AS_OF)
+    stored = [row.model_dump(mode="json") for row in full]
+    payload = snapshot_payload_with_wash_sale_chains(
+        {"analysis_id": "a"},
+        [],
+        stored,
+    )
+    restored = harvest_checks_from_snapshot_payload(payload)
+    assert restored[0]["disallowed_loss"] == pytest.approx(100)
+    assert restored[0]["triggers"]
+    assert harvest_checks_from_snapshot_payload({"analysis_id": "a"}) == []
 
 
 def test_redact_keeps_the_count_and_drops_dollars_and_dates():

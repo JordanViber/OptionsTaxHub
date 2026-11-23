@@ -957,11 +957,34 @@ describe("api hooks", () => {
 
       expect(result.chains).toEqual([chain]);
       expect(result.hint).toBeNull();
+      expect(result.harvestChecks).toBeUndefined();
       const call = (globalThis.fetch as jest.Mock).mock.calls[0];
       expect(call[0]).toContain(
         "/api/portfolio/analysis/analysis-test-1/wash-sale-chains",
       );
       expect(call[1].headers.Authorization).toBe("Bearer mock-jwt-token");
+    });
+
+    it("fetchWashSaleChains returns stored harvest rows with the chains", async () => {
+      const check = {
+        symbol: "SOFI",
+        trigger_count: 1,
+        clean: false,
+        line: "$20 of your $100 loss may be disallowed",
+        triggers: [],
+        as_of: "2026-08-12",
+      };
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          wash_sale_chains: [],
+          harvest_checks: [check],
+        }),
+      } as Response);
+
+      const result = await fetchWashSaleChains("analysis-test-1");
+
+      expect(result.harvestChecks).toEqual([check]);
     });
 
     it("fetchWashSaleChains returns the re-analyze hint when chains are absent", async () => {

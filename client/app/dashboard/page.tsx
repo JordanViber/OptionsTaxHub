@@ -1751,8 +1751,14 @@ export default function DashboardPage() {
     Boolean(washChainAnalysisId) &&
     !washChainIsSample &&
     (seasonGateOn ? seasonUnlocked : packetPaid);
+  const harvestStillCounted =
+    seasonGateOn &&
+    seasonUnlocked &&
+    (displayedAnalysis?.harvest_checks ?? []).some((row) => !row.line);
   const needsFilingDetail =
-    washChainCount === 0 || (seasonGateOn && seasonUnlocked && lotRowsMissing);
+    washChainCount === 0 ||
+    (seasonGateOn && seasonUnlocked && lotRowsMissing) ||
+    harvestStillCounted;
   const displayedAnalysisRef = useRef(displayedAnalysis);
   displayedAnalysisRef.current = displayedAnalysis;
   useEffect(() => {
@@ -1789,6 +1795,14 @@ export default function DashboardPage() {
             lotMatchRowsMissing(base.lot_match_report)
           ) {
             next = { ...next, lot_match_report: result.lotMatchReport };
+            changed = true;
+          }
+          if (
+            result.harvestChecks &&
+            result.harvestChecks.length > 0 &&
+            (base.harvest_checks ?? []).some((row) => !row.line)
+          ) {
+            next = { ...next, harvest_checks: result.harvestChecks };
             changed = true;
           }
           if (!changed) return current;

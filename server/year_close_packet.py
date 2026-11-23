@@ -30,6 +30,9 @@ PACKET_AMOUNT_CENTS = 4900
 # equality ignore it. A paid snapshot saved before this key existed asks the
 # client to re-analyze instead of erroring.
 WASH_SALE_CHAINS_SNAPSHOT_KEY = "wash_sale_chains"
+# Full harvest rows for a later season unlock. The public analyze body
+# may only have counts. PDF text ignores this key.
+HARVEST_CHECKS_SNAPSHOT_KEY = "harvest_checks"
 WASH_SALE_CHAINS_REANALYZE_HINT = "Re-analyze to see wash-sale chains"
 PACKET_PRODUCT_NAME = "Year-close packet"
 PACKET_METADATA_PRODUCT = "year_close_packet"
@@ -671,24 +674,41 @@ def lot_match_plain_text(payload: dict[str, Any]) -> str:
 
 
 def _without_wash_sale_chains(payload: dict[str, Any]) -> dict[str, Any]:
-    """Drop display chains so PDF text and verification see the prior shape."""
-    if WASH_SALE_CHAINS_SNAPSHOT_KEY not in payload:
+    """Drop display chains and harvest rows so PDF text sees the prior shape."""
+    if (
+        WASH_SALE_CHAINS_SNAPSHOT_KEY not in payload
+        and HARVEST_CHECKS_SNAPSHOT_KEY not in payload
+    ):
         return payload
     trimmed = dict(payload)
     trimmed.pop(WASH_SALE_CHAINS_SNAPSHOT_KEY, None)
+    trimmed.pop(HARVEST_CHECKS_SNAPSHOT_KEY, None)
     return trimmed
 
 
 def snapshot_payload_with_wash_sale_chains(
     payload: dict[str, Any],
     chains: Any,
+    harvest_checks: Any = None,
 ) -> dict[str, Any]:
     """Copy display chains onto the durable snapshot. Does not mutate the PDF payload."""
     if not isinstance(payload, dict) or not isinstance(chains, list):
         return payload
     merged = deepcopy(payload)
     merged[WASH_SALE_CHAINS_SNAPSHOT_KEY] = deepcopy(chains)
+    if isinstance(harvest_checks, list):
+        merged[HARVEST_CHECKS_SNAPSHOT_KEY] = deepcopy(harvest_checks)
     return merged
+
+
+def harvest_checks_from_snapshot_payload(payload: Any) -> list[Any]:
+    """Full harvest rows stored beside the chains. A missing key stays empty."""
+    if not isinstance(payload, dict):
+        return []
+    checks = payload.get(HARVEST_CHECKS_SNAPSHOT_KEY)
+    if not isinstance(checks, list):
+        return []
+    return deepcopy(checks)
 
 
 def wash_sale_chains_from_snapshot_payload(
@@ -1031,9 +1051,13 @@ def remember_analysis(analysis_id: str, user_id: str, analysis: dict[str, Any]) 
     # ignores the key. A missing key stays missing. An empty list is kept.
     if not str(user_id or "").strip():
         chains = analysis.get(WASH_SALE_CHAINS_SNAPSHOT_KEY)
-        if isinstance(chains, list):
+        checks = analysis.get(HARVEST_CHECKS_SNAPSHOT_KEY)
+        if isinstance(chains, list) or isinstance(checks, list):
             payload = dict(payload)
+        if isinstance(chains, list):
             payload[WASH_SALE_CHAINS_SNAPSHOT_KEY] = deepcopy(chains)
+        if isinstance(checks, list):
+            payload[HARVEST_CHECKS_SNAPSHOT_KEY] = deepcopy(checks)
     record = _new_packet_record(
         user_id,
         payload=payload,
@@ -1134,6 +1158,7 @@ def _public_packet_payload(payload: dict[str, Any]) -> dict[str, Any]:
     public = deepcopy(payload)
     # Display chains are not part of the guest-claim or counts comparison.
     public.pop(WASH_SALE_CHAINS_SNAPSHOT_KEY, None)
+    public.pop(HARVEST_CHECKS_SNAPSHOT_KEY, None)
     report = public.get("lot_match_report")
     if isinstance(report, dict):
         for key in _PACKET_LOT_LIST_KEYS:

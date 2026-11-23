@@ -164,6 +164,19 @@ def _line(symbol: str, *, clean: bool, disallowed: float, open_loss: float) -> s
     )
 
 
+def _acquisition_fill(lot: TaxLot) -> float:
+    """Buy price before a wash-sale basis add-on.
+
+    ``adjust_lots_for_wash_sales`` raises ``cost_basis_per_share``. The
+    CSV fill is still the price on the buy that created the lot.
+    """
+    quantity = float(lot.quantity)
+    disallowed = float(lot.wash_sale_disallowed or 0)
+    if quantity > _QTY_EPS and disallowed > 0:
+        return float(lot.cost_basis_per_share) - (disallowed / quantity)
+    return float(lot.cost_basis_per_share)
+
+
 def _exclude_shares_being_sold(
     txn: Transaction,
     harvested: list[TaxLot],
@@ -183,7 +196,7 @@ def _exclude_shares_being_sold(
             continue
         if lot.purchase_date != txn.activity_date:
             continue
-        if abs(float(lot.cost_basis_per_share) - float(txn.price)) > 0.02:
+        if abs(_acquisition_fill(lot) - float(txn.price)) > 0.02:
             continue
         take = min(left, room)
         remaining[index] = room - take
@@ -273,6 +286,22 @@ def _allocate(
     return disallowed, rows
 
 
+def _split_symbols(transactions: list[Transaction]) -> set[str]:
+    """Symbols whose open lots and buy rows are in different share units.
+
+    A split adjusts lot quantity and leaves the original buy quantity.
+    The harvest suggestions already skip those symbols. This check does too,
+    instead of allocating a loss against the pre-split share count.
+    """
+    return {
+        _symbol(txn.instrument)
+        for txn in transactions
+        if txn.asset_type == AssetType.STOCK
+        and txn.trans_code in (TransCode.SPR, TransCode.OCA)
+        and _symbol(txn.instrument)
+    }
+
+
 def build_harvest_checks(
     tax_lots: list[TaxLot],
     transactions: list[Transaction],
@@ -280,11 +309,14 @@ def build_harvest_checks(
     as_of: date,
 ) -> list[HarvestCheck]:
     """One row per ticker that has an open taxable stock loss."""
+    skipped = _split_symbols(transactions)
     symbols = sorted(
         {
             _symbol(lot.symbol)
             for lot in tax_lots
-            if lot.asset_type == AssetType.STOCK and _symbol(lot.symbol)
+            if lot.asset_type == AssetType.STOCK
+            and _symbol(lot.symbol)
+            and _symbol(lot.symbol) not in skipped
         }
     )
     checks: list[HarvestCheck] = []
