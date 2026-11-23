@@ -297,6 +297,30 @@ def test_same_day_buy_counts_against_the_other_taxable_account_only():
     assert row.disallowed_loss == pytest.approx(20)
 
 
+def test_ordinary_and_same_day_buys_disallow_each_lots_own_loss():
+    """An IRA buy and a same-day taxable buy must not share a ticker average.
+
+    The 10-share IRA buy replaces the $200 individual lot. The same-day
+    individual buy replaces the $100 lot in the other account. The loss
+    is $300, not the $250 blended figure.
+    """
+    lots = [
+        _lot("QQQ", 10, 30, 10, date(2026, 1, 2), account="individual"),
+        _lot("QQQ", 10, 20, 10, date(2026, 1, 2), account="other"),
+    ]
+    txns = [
+        _buy("QQQ", 10, 30, date(2026, 1, 2), account="individual"),
+        _buy("QQQ", 10, 20, date(2026, 1, 2), account="other"),
+        _buy("QQQ", 10, 12, date(2026, 8, 1), account="ira_roth"),
+        _buy("QQQ", 10, 12, AS_OF, account="individual"),
+    ]
+    row = build_harvest_checks(lots, txns, as_of=AS_OF)[0]
+    by_account = {item.account_label: item.disallowed_loss for item in row.triggers}
+    assert row.open_loss == pytest.approx(300)
+    assert row.disallowed_loss == pytest.approx(300)
+    assert by_account == {"ira_roth": 200, "individual": 100}
+
+
 def test_same_day_buy_is_capped_at_the_other_accounts_shares():
     lots = [
         _lot("QQQ", 10, 20, 10, date(2026, 1, 2), account="individual"),

@@ -321,35 +321,8 @@ def _trigger_row(
     )
 
 
-def _allocate(
-    found: list[tuple[Transaction, HarvestBuyKind, float]],
-    *,
-    open_loss: float,
-    quantity: float,
-) -> tuple[float, list[HarvestTriggerBuy]]:
-    covered = min(quantity, sum(shares for _txn, _kind, shares in found))
-    if covered <= _QTY_EPS or open_loss <= 0:
-        disallowed = 0.0
-    elif covered + _QTY_EPS >= quantity:
-        disallowed = _cents(open_loss)
-    else:
-        disallowed = _cents(open_loss * (covered / quantity))
-    remaining_shares = covered
-    remaining_dollars = disallowed
-    rows: list[HarvestTriggerBuy] = []
-    for txn, kind, shares in found:
-        if remaining_shares <= _QTY_EPS or disallowed <= 0:
-            portion = 0.0
-        else:
-            take = min(shares, remaining_shares)
-            if take >= remaining_shares - _QTY_EPS:
-                portion = remaining_dollars
-            else:
-                portion = _cents(disallowed * (take / covered))
-                remaining_dollars = _cents(remaining_dollars - portion)
-            remaining_shares -= take
-        rows.append(_trigger_row(txn, kind, shares, portion))
-    return disallowed, rows
+def _same_sale_account(txn: Transaction, sale_accounts: set[str], as_of: date) -> bool:
+    return txn.activity_date == as_of and _account(txn.account_label) in sale_accounts
 
 
 def _allocate_found(
@@ -360,57 +333,77 @@ def _allocate_found(
     open_loss: float,
     quantity: float,
 ) -> tuple[float, list[HarvestTriggerBuy]]:
-    """Ordinary buys share the whole loss. A same-day buy in one sale account
-    is priced only against the losing shares in the other accounts.
+    """Price every buy from each lot's own remaining loss.
+
+    Ordinary buys run first. They take lots a same-day sale-account buy
+    cannot replace, then the other lots. Same-day buys then take whatever
+    is left in the other accounts. A share is never priced at the ticker
+    average, and a lot's dollars are spent once.
     """
+    del open_loss, quantity
     sale_accounts = {_account(lot.account_label) for lot in harvested}
-    ordinary: list[tuple[Transaction, HarvestBuyKind, float]] = []
-    cross_day: list[tuple[Transaction, HarvestBuyKind, float]] = []
-    for txn, kind, shares in found:
-        same_sale_account = (
-            txn.activity_date == as_of and _account(txn.account_label) in sale_accounts
-        )
-        if same_sale_account:
-            cross_day.append((txn, kind, shares))
-        else:
-            ordinary.append((txn, kind, shares))
-    disallowed, rows = _allocate(ordinary, open_loss=open_loss, quantity=quantity)
-    room = _cents(open_loss - disallowed)
-    cross_rows: list[HarvestTriggerBuy] = []
-    pool_loss: dict[int, float] = {}
-    pool_qty: dict[int, float] = {}
-    for index, lot in enumerate(harvested):
-        pool_loss[index] = abs(float(lot.unrealized_pnl or 0))
-        pool_qty[index] = float(lot.quantity)
-    for txn, kind, shares in cross_day:
+    blocked_accounts = {
+        _account(txn.account_label)
+        for txn, _kind, _shares in found
+        if _same_sale_account(txn, sale_accounts, as_of)
+    }
+    lot_order = sorted(
+        range(len(harvested)),
+        key=lambda index: (
+            0 if _account(harvested[index].account_label) in blocked_accounts else 1,
+            _account(harvested[index].account_label),
+            harvested[index].purchase_date,
+            index,
+        ),
+    )
+    pool_qty = {index: float(lot.quantity) for index, lot in enumerate(harvested)}
+    pool_loss = {
+        index: abs(float(lot.unrealized_pnl or 0))
+        for index, lot in enumerate(harvested)
+    }
+
+    def take_loss(txn: Transaction, shares: float) -> float:
         eligible = [
             index
-            for index, lot in enumerate(harvested)
-            if _account(lot.account_label) != _account(txn.account_label)
+            for index in lot_order
+            if pool_qty[index] > _QTY_EPS
+            and (
+                not _same_sale_account(txn, sale_accounts, as_of)
+                or _account(harvested[index].account_label) != _account(txn.account_label)
+            )
         ]
-        pool_loss_left = _cents(sum(pool_loss[index] for index in eligible))
-        pool_qty_left = sum(pool_qty[index] for index in eligible)
-        take = min(shares, pool_qty_left)
-        if pool_qty_left <= _QTY_EPS or pool_loss_left <= 0 or take <= _QTY_EPS:
-            portion = 0.0
-        elif take + _QTY_EPS >= pool_qty_left:
-            portion = pool_loss_left
-        else:
-            portion = _cents(pool_loss_left * (take / pool_qty_left))
-        portion = min(portion, room)
-        if pool_loss_left > _QTY_EPS and pool_qty_left > _QTY_EPS and take > _QTY_EPS:
-            loss_fraction = portion / pool_loss_left if pool_loss_left else 0.0
-            qty_fraction = take / pool_qty_left
-            for index in eligible:
-                pool_loss[index] = pool_loss[index] * (1 - loss_fraction)
-                pool_qty[index] = pool_qty[index] * (1 - qty_fraction)
-        room = _cents(room - portion)
-        cross_rows.append(_trigger_row(txn, kind, shares, portion))
-    by_txn = {id(txn): row for (txn, _kind, _shares), row in zip(ordinary, rows)}
-    by_txn.update(
-        {id(txn): row for (txn, _kind, _shares), row in zip(cross_day, cross_rows)}
-    )
-    ordered = [by_txn[id(txn)] for txn, _kind, _shares in found]
+        left = shares
+        portion = 0.0
+        for index in eligible:
+            if left <= _QTY_EPS:
+                break
+            avail = pool_qty[index]
+            take = min(left, avail)
+            if take >= avail - _QTY_EPS:
+                slice_loss = _cents(pool_loss[index])
+                pool_qty[index] = 0.0
+                pool_loss[index] = 0.0
+            else:
+                slice_loss = _cents(pool_loss[index] * (take / avail))
+                pool_qty[index] = avail - take
+                pool_loss[index] = _cents(pool_loss[index] - slice_loss)
+            portion = _cents(portion + slice_loss)
+            left -= take
+        return portion
+
+    ordinary = [
+        item
+        for item in found
+        if not _same_sale_account(item[0], sale_accounts, as_of)
+    ]
+    cross_day = [
+        item for item in found if _same_sale_account(item[0], sale_accounts, as_of)
+    ]
+    priced = {
+        id(txn): _trigger_row(txn, kind, shares, take_loss(txn, shares))
+        for txn, kind, shares in [*ordinary, *cross_day]
+    }
+    ordered = [priced[id(txn)] for txn, _kind, _shares in found]
     return _cents(sum(row.disallowed_loss for row in ordered)), ordered
 
 
