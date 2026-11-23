@@ -12,6 +12,7 @@ import type {
   RhStatusResponse,
   WashSaleChain,
   LotMatchReport,
+  HarvestCheck,
 } from "@/lib/types";
 import { getSession } from "./supabase";
 
@@ -123,6 +124,8 @@ export function useUploadPortfolio() {
 interface AnalyzePortfolioParams {
   file: File;
   supplemental1099File?: File;
+  extraFiles?: File[];
+  accountLabels?: string[];
   filingStatus?: FilingStatus;
   estimatedIncome?: number;
   taxYear?: number;
@@ -249,6 +252,12 @@ async function analyzePortfolio(
   formData.append("file", params.file);
   if (params.supplemental1099File) {
     formData.append("supplemental_1099", params.supplemental1099File);
+  }
+  for (const extra of params.extraFiles ?? []) {
+    formData.append("extra_files", extra);
+  }
+  for (const label of params.accountLabels ?? []) {
+    formData.append("account_labels", label);
   }
 
   const url = apiPath(analyzePortfolioPath(params));
@@ -612,6 +621,7 @@ export type WashSaleChainsResult = {
   chains: WashSaleChain[];
   hint: string | null;
   lotMatchReport?: LotMatchReport | null;
+  harvestChecks?: HarvestCheck[];
 };
 
 function isLotMatchReport(value: unknown): value is LotMatchReport {
@@ -650,6 +660,7 @@ export async function fetchWashSaleChains(
     wash_sale_chains?: unknown;
     hint?: unknown;
     lot_match_report?: unknown;
+    harvest_checks?: unknown;
   };
   try {
     body = await response.json();
@@ -666,10 +677,15 @@ export async function fetchWashSaleChains(
   const lotMatchReport = isLotMatchReport(body?.lot_match_report)
     ? body.lot_match_report
     : null;
-  if (!lotMatchReport) {
-    return { chains, hint };
-  }
-  return { chains, hint, lotMatchReport };
+  const harvestChecks = Array.isArray(body?.harvest_checks)
+    ? (body.harvest_checks as HarvestCheck[])
+    : undefined;
+  return {
+    chains,
+    hint,
+    ...(lotMatchReport ? { lotMatchReport } : {}),
+    ...(harvestChecks && harvestChecks.length > 0 ? { harvestChecks } : {}),
+  };
 }
 
 /** Year receipt while SEASON_UNLOCK is on. False on a miss, a guest, or an error. */

@@ -25,8 +25,8 @@ const suggestion: HarvestingSuggestion = {
 };
 
 const losingPosition: Position = {
-  symbol: "TSLA",
-  display_label: "TSLA",
+  symbol: "NVDA",
+  display_label: "NVDA",
   quantity: 16,
   avg_cost_basis: 350,
   total_cost_basis: 5600,
@@ -40,7 +40,7 @@ const losingPosition: Position = {
   asset_type: "stock",
   tax_lots: [
     {
-      symbol: "TSLA",
+      symbol: "NVDA",
       quantity: 16,
       cost_basis_per_share: 350,
       total_cost_basis: 5600,
@@ -69,7 +69,7 @@ describe("buildHarvestTeasers", () => {
   it("falls back to losing lots when suggestions are empty", () => {
     const teasers = buildHarvestTeasers([], [losingPosition]);
     expect(teasers).toHaveLength(1);
-    expect(teasers[0].symbol).toBe("TSLA");
+    expect(teasers[0].symbol).toBe("NVDA");
     expect(teasers[0].estimatedLoss).toBe(480);
     expect(teasers[0].taxSavings).toBeNull();
     expect(teasers[0].washSaleRisk).toBe(true);
@@ -81,6 +81,19 @@ describe("buildHarvestTeasers", () => {
     ]);
     expect(teasers).toHaveLength(1);
     expect(teasers[0].estimatedLoss).toBe(480);
+  });
+
+  it("drops TSLA and SPCX from suggestions and from the position fallback", () => {
+    const blocked = buildHarvestTeasers(
+      [{ ...suggestion, symbol: "TSLA", suggestion_id: "TSLA-1" }],
+      [losingPosition],
+    );
+    expect(blocked).toHaveLength(0);
+    const fallback = buildHarvestTeasers([], [
+      { ...losingPosition, symbol: "SPCX", display_label: "SPCX" },
+      losingPosition,
+    ]);
+    expect(fallback.map((row) => row.symbol)).toEqual(["NVDA"]);
   });
 
   it("returns nothing for an all-gain book", () => {

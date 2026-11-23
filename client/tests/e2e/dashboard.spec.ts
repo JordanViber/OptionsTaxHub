@@ -432,16 +432,18 @@ test.describe("Dashboard Tabs & Components", () => {
     // Click expand button
     await page.getByRole("button", { name: "Show more" }).click();
 
-    // AI Analysis section
+    // AI Analysis section. Replacement tickers stay off the queue.
     await expect(page.getByText("AI Analysis")).toBeVisible();
     await expect(
       page.getByText("Consider harvesting this loss for tax savings."),
     ).toBeVisible();
 
-    await expect(page.getByText("Replacements")).toBeVisible();
-    await expect(page.getByText("QQQ", { exact: true })).toBeVisible();
-    await expect(page.getByText("Invesco QQQ Trust")).toBeVisible();
-    await expect(page.getByText("Tech sector ETF")).toBeVisible();
+    await expect(page.getByText("Replacements")).toHaveCount(0);
+    await expect(page.getByText("Invesco QQQ Trust")).toHaveCount(0);
+    await expect(page.getByText("Tech sector ETF")).toHaveCount(0);
+    await expect(
+      page.getByText(/Buying the same stock or its options within 30 days/),
+    ).toBeVisible();
 
     // Collapse it again
     await page.getByRole("button", { name: "Show less" }).click();
@@ -454,9 +456,10 @@ test.describe("Dashboard Tabs & Components", () => {
     await uploadTestCsv(page);
     await page.getByRole('tab', { name: /Harvest queue/ }).click();
 
-    // Wash-sale inline warning box
+    // A sell instruction in the source warning is not shown on the queue.
+    await expect(page.getByText(/selling now/i)).toHaveCount(0);
     await expect(
-      page.getByText(/Repurchased within 30 days/),
+      page.getByText(/A wash sale may apply. See the year-end harvest check/),
     ).toBeVisible();
   });
 

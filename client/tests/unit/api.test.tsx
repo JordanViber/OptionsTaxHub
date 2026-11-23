@@ -412,6 +412,43 @@ describe("api hooks", () => {
       expect(body.get("supplemental_1099")).toBe(supplemental1099File);
     });
 
+    it("sends extra Robinhood exports with account labels", async () => {
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          positions: [],
+          suggestions: [],
+          wash_sale_flags: [],
+          summary: {},
+        }),
+      } as Response);
+
+      const file = new File(["one"], "individual.csv", { type: "text/csv" });
+      const ira = new File(["two"], "ira.csv", { type: "text/csv" });
+      const wrapper = createWrapper();
+      const { result } = renderHook(() => useAnalyzePortfolio(), { wrapper });
+
+      await act(async () => {
+        result.current.mutate({
+          file,
+          extraFiles: [ira],
+          accountLabels: ["individual", "ira_traditional"],
+        });
+      });
+
+      await waitFor(() => {
+        expect(result.current.isSuccess).toBe(true);
+      });
+
+      const body = (globalThis.fetch as jest.Mock).mock.calls[0][1].body as FormData;
+      expect(body.get("file")).toBe(file);
+      expect(body.getAll("extra_files")).toEqual([ira]);
+      expect(body.getAll("account_labels")).toEqual([
+        "individual",
+        "ira_traditional",
+      ]);
+    });
+
     it("handles analyze errors with detail message", async () => {
       const file = new File(["content"], "test.csv", { type: "text/csv" });
 
@@ -920,11 +957,34 @@ describe("api hooks", () => {
 
       expect(result.chains).toEqual([chain]);
       expect(result.hint).toBeNull();
+      expect(result.harvestChecks).toBeUndefined();
       const call = (globalThis.fetch as jest.Mock).mock.calls[0];
       expect(call[0]).toContain(
         "/api/portfolio/analysis/analysis-test-1/wash-sale-chains",
       );
       expect(call[1].headers.Authorization).toBe("Bearer mock-jwt-token");
+    });
+
+    it("fetchWashSaleChains returns stored harvest rows with the chains", async () => {
+      const check = {
+        symbol: "SOFI",
+        trigger_count: 1,
+        clean: false,
+        line: "$20 of your $100 loss may be disallowed",
+        triggers: [],
+        as_of: "2026-08-12",
+      };
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          wash_sale_chains: [],
+          harvest_checks: [check],
+        }),
+      } as Response);
+
+      const result = await fetchWashSaleChains("analysis-test-1");
+
+      expect(result.harvestChecks).toEqual([check]);
     });
 
     it("fetchWashSaleChains returns the re-analyze hint when chains are absent", async () => {

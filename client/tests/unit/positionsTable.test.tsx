@@ -1249,7 +1249,7 @@ describe("PositionsTable compact layout (~390px)", () => {
 
 describe("getPositionHarvestLabel", () => {
   const base: Position = {
-    symbol: "TSLA",
+    symbol: "AAPL",
     quantity: 16,
     avg_cost_basis: 350,
     total_cost_basis: 5600,
@@ -1278,6 +1278,18 @@ describe("getPositionHarvestLabel", () => {
   it("returns null for a gain", () => {
     expect(
       getPositionHarvestLabel({ ...base, unrealized_pnl: 200 }),
+    ).toBeNull();
+  });
+
+  it("never marks TSLA or SPCX as a harvest candidate", () => {
+    expect(getPositionHarvestLabel({ ...base, symbol: "TSLA" })).toBeNull();
+    expect(getPositionHarvestLabel({ ...base, symbol: "SPCX" })).toBeNull();
+    expect(
+      getPositionHarvestLabel({
+        ...base,
+        symbol: "TSLA",
+        wash_sale_risk: true,
+      }),
     ).toBeNull();
   });
 });

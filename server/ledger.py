@@ -8,22 +8,28 @@ FIFO is replayed on the combined book.
 from __future__ import annotations
 
 import hashlib
-from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date
 from typing import Any, Optional
 
+from account_labels import is_ira_account
 from models import Transaction
 
 SAMPLE_CSV_FILENAMES = frozenset({"sample-robinhood-transactions.csv"})
 SAMPLE_1099_FILENAMES = frozenset({"sample-robinhood-1099-2026.pdf"})
 # SHA-256 of client/public sample fixtures. Filenames are not trusted.
 SAMPLE_CSV_SHA256 = (
-    "b7928619296c9f38d26f770f6a08a473dea4ae6c045d0dd05aff7c79aaace146"
+    "19e099efe5d478750d3dab4f5d3cbf5e25763bac538bba399dfe36e7c5a43f79"
 )
 SAMPLE_1099_SHA256 = (
     "16a2d2af4b80c4fed6febf6e798489911f27a0acbb17d0733a77f0baf0096ba8"
 )
+# Optional CSVs the in-app sample may attach. Any other extra file is a
+# real upload and must not inherit the sample exemption.
+SAMPLE_EXTRA_CSV_SHA256 = frozenset({
+    "b67106939c445430c585ccd78ce1d5070ef3dd131b8a21877e22cf82fc55b82f",
+    "8ae64f765d8bede5c62b5bc427a7ba37c32af86e936afe29037212474f11a3c7",
+})
 # Snapshot quotes for the in-app 2026 sample so Open sample does not wait on Yahoo.
 SAMPLE_FIXTURE_PRICES = {
     "AAPL": 315.0,
@@ -32,7 +38,10 @@ SAMPLE_FIXTURE_PRICES = {
     "MSFT": 505.0,
     "NVDA": 228.0,
     "SPY": 771.0,
+    "SOFI": 10.0,
     "TSLA": 355.0,
+    # Open lot on the sample IRA replacement. Unused by the single-file sample.
+    "QQQ": 510.0,
 }
 
 
@@ -69,14 +78,30 @@ def is_trusted_sample_1099_bytes(contents: bytes | None) -> bool:
     return sha256_hex(contents) == SAMPLE_1099_SHA256
 
 
+def is_trusted_sample_extra_bytes(contents: bytes | None) -> bool:
+    if not contents:
+        return False
+    canonical_contents = contents.replace(b"\r\n", b"\n")
+    return sha256_hex(canonical_contents) in SAMPLE_EXTRA_CSV_SHA256
+
+
 def is_trusted_in_app_sample(
     csv_bytes: bytes | None,
     pdf_bytes: bytes | None,
+    extra_csvs: list[bytes] | None = None,
 ) -> bool:
-    """True only when both uploads are the checked-in public sample fixtures."""
-    return is_trusted_sample_csv_bytes(csv_bytes) and is_trusted_sample_1099_bytes(
-        pdf_bytes
-    )
+    """True only when every upload is a checked-in public sample fixture.
+
+    Extra files are optional. A file that is not one of those fixtures
+    keeps the run on the normal unpaid path, even when the primary CSV
+    and 1099 are the sample.
+    """
+    if not (
+        is_trusted_sample_csv_bytes(csv_bytes)
+        and is_trusted_sample_1099_bytes(pdf_bytes)
+    ):
+        return False
+    return all(is_trusted_sample_extra_bytes(extra) for extra in (extra_csvs or []))
 
 
 def transaction_fingerprint(txn: Transaction) -> tuple:
@@ -95,6 +120,7 @@ def transaction_fingerprint(txn: Transaction) -> tuple:
         description,
         bool(txn.is_quantity_out),
         asset_type,
+        (txn.account_label or ""),
     )
 
 
@@ -150,11 +176,42 @@ class MergeResult:
     last_activity_date: Optional[date]
 
 
+def _fingerprint_without_account(txn: Transaction) -> tuple:
+    return transaction_fingerprint(txn)[:-1]
+
+
+def _legacy_account_label(
+    prior: list[Transaction],
+    incoming: list[Transaction],
+    base: tuple,
+) -> str | None:
+    """The one account a blank legacy row may adopt for this trade.
+
+    A saved unlabeled row matches a later labeled copy of the same trade
+    only when every labeled copy of that trade names the same account.
+    Two accounts with the same fill are left distinct.
+    """
+    labels: set[str] = set()
+    for txn in list(prior) + list(incoming):
+        if _fingerprint_without_account(txn) != base:
+            continue
+        label = txn.account_label or ""
+        if label:
+            labels.add(label)
+    if len(labels) == 1:
+        return next(iter(labels))
+    return None
+
+
 def merge_transaction_books(
     prior: list[Transaction],
     incoming: list[Transaction],
 ) -> MergeResult:
-    """Union two books. Identical overlapping rows are kept once (multiset max)."""
+    """Union two books. Identical overlapping rows are kept once (multiset max).
+
+    An unlabeled saved row and a labeled re-upload of that same trade are
+    one row. The kept row takes the label. A different account stays added.
+    """
     prior_list = list(prior or [])
     incoming_list = list(incoming or [])
     if not prior_list:
@@ -178,36 +235,97 @@ def merge_transaction_books(
             last_activity_date=last,
         )
 
-    prior_counts = Counter(transaction_fingerprint(t) for t in prior_list)
-    incoming_counts = Counter(transaction_fingerprint(t) for t in incoming_list)
-    incoming_by_fp: dict[tuple, list[Transaction]] = defaultdict(list)
+    used_prior: set[int] = set()
+    upgraded: dict[int, Transaction] = {}
+    added_txns: list[Transaction] = []
+    already = 0
+
+    def take_prior(matches) -> tuple[int, Transaction] | None:
+        for index, txn in enumerate(prior_list):
+            if index in used_prior:
+                continue
+            if matches(txn):
+                used_prior.add(index)
+                return index, txn
+        return None
+
     for txn in incoming_list:
-        incoming_by_fp[transaction_fingerprint(txn)].append(txn)
-
-    merged = list(prior_list)
-    added = 0
-    for fingerprint, incoming_n in incoming_counts.items():
-        extra = incoming_n - prior_counts.get(fingerprint, 0)
-        if extra <= 0:
+        fingerprint = transaction_fingerprint(txn)
+        exact = take_prior(lambda prior_txn, fp=fingerprint: transaction_fingerprint(prior_txn) == fp)
+        if exact is not None:
+            already += 1
             continue
-        for txn in incoming_by_fp[fingerprint][:extra]:
-            merged.append(txn)
-            added += 1
+        base = _fingerprint_without_account(txn)
+        allowed = _legacy_account_label(prior_list, incoming_list, base)
+        incoming_label = txn.account_label or ""
+        if allowed is None or incoming_label not in ("", allowed):
+            added_txns.append(txn)
+            continue
+        legacy = take_prior(
+            lambda prior_txn, trade=base, label=allowed, incoming_label=incoming_label: (
+                _fingerprint_without_account(prior_txn) == trade
+                and (prior_txn.account_label or "") in ("", label)
+                and (prior_txn.account_label or "") != incoming_label
+            )
+        )
+        if legacy is None:
+            added_txns.append(txn)
+            continue
+        index, prior_txn = legacy
+        kept_label = incoming_label or (prior_txn.account_label or "") or allowed
+        if (prior_txn.account_label or "") != kept_label:
+            upgraded[index] = prior_txn.model_copy(update={"account_label": kept_label})
+        already += 1
 
-    already = sum(
-        min(prior_counts[fp], incoming_counts[fp])
-        for fp in incoming_counts
-        if fp in prior_counts
-    )
+    merged = [upgraded.get(index, txn) for index, txn in enumerate(prior_list)]
+    merged.extend(added_txns)
+    merged = _settle_unlabeled_leftovers(merged)
     first, last = _date_bounds(merged)
     return MergeResult(
         transactions=merged,
-        added=added,
+        added=len(added_txns),
         already_in_book=already,
         gap_days=gap_days_between(prior_list, incoming_list),
         first_activity_date=first,
         last_activity_date=last,
     )
+
+
+def _settle_unlabeled_leftovers(merged: list[Transaction]) -> list[Transaction]:
+    """Keep a legacy unlabeled row from becoming a second account.
+
+    A blank row whose fill was re-uploaded under one label takes that label.
+    The same fill under two labels drops the blank copy. Older unlabeled
+    rows adopt the only taxable label in the book, so a continuation plus
+    an IRA file stays one taxable account. Two taxable labels are not guessed.
+    """
+    taxable_labels: list[str] = []
+    labeled_bases: dict[tuple, set[str]] = {}
+    for txn in merged:
+        label = txn.account_label or ""
+        if not label:
+            continue
+        if not is_ira_account(label) and label not in taxable_labels:
+            taxable_labels.append(label)
+        labeled_bases.setdefault(_fingerprint_without_account(txn), set()).add(label)
+    sole = taxable_labels[0] if len(taxable_labels) == 1 else None
+    kept: list[Transaction] = []
+    for txn in merged:
+        label = txn.account_label or ""
+        if label:
+            kept.append(txn)
+            continue
+        labels = labeled_bases.get(_fingerprint_without_account(txn), set())
+        if len(labels) > 1:
+            continue
+        if len(labels) == 1:
+            kept.append(txn.model_copy(update={"account_label": next(iter(labels))}))
+            continue
+        if sole:
+            kept.append(txn.model_copy(update={"account_label": sole}))
+            continue
+        kept.append(txn)
+    return kept
 
 
 HISTORICAL_BOOK_UNRECOVERABLE_WARNING = (

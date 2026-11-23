@@ -22,6 +22,7 @@ import {
   ExpandMore as ExpandIcon,
   Warning as WarnIcon,
 } from "@mui/icons-material";
+import { harvestPromptBlocked } from "@/lib/harvestCheck";
 import type { Position, PriceBasis, TaxLot, WashSaleFlag } from "@/lib/types";
 import { pricedNumbersVisible } from "@/lib/priceBasis";
 import PriceAsOfNote from "./PriceAsOfNote";
@@ -136,6 +137,9 @@ function LotLedgerLegend() {
 export function getPositionHarvestLabel(
   position: Position,
 ): "Candidate" | "Wait" | null {
+  if (harvestPromptBlocked(position.symbol)) {
+    return null;
+  }
   const lots = position.tax_lots ?? [];
   const lotLoss = lots.some(
     (lot) => lot.unrealized_pnl != null && lot.unrealized_pnl < 0,
@@ -538,6 +542,14 @@ function CompactLotCard({
           <Typography variant="body2" sx={{ fontWeight: 700, minWidth: 0 }}>
             {formatAcquiredDate(lot.purchase_date)}
           </Typography>
+          {lot.account_name && (
+            <Typography
+              variant="caption"
+              data-testid={`tax-lot-account-${position.symbol}-${index}`}
+            >
+              {lot.account_name}
+            </Typography>
+          )}
           <TermChip isLong={lot.is_long_term} />
         </Stack>
         <Typography variant="body2" sx={{ mt: 0.75 }}>
@@ -583,6 +595,7 @@ export function TaxLotsPanel({
 }>) {
   const priceHeading = priceBasis?.live ? "Current" : "Price";
   const lots: TaxLot[] = position.tax_lots ?? [];
+  const showAccount = lots.some((lot) => Boolean(lot.account_name));
   const compact = useCompactLayout();
 
   return (
@@ -628,6 +641,7 @@ export function TaxLotsPanel({
           >
             <TableHead>
               <TableRow>
+                {showAccount && <TableCell>Account</TableCell>}
                 <TableCell>Acquired</TableCell>
                 <TableCell align="right">Qty</TableCell>
                 <TableCell align="right">Cost / share</TableCell>
@@ -651,6 +665,13 @@ export function TaxLotsPanel({
                     <TableRow
                       data-testid={`tax-lot-${position.symbol}-${index}`}
                     >
+                      {showAccount && (
+                        <TableCell
+                          data-testid={`tax-lot-account-${position.symbol}-${index}`}
+                        >
+                          {lot.account_name || "—"}
+                        </TableCell>
+                      )}
                       <TableCell sx={{ whiteSpace: "normal" }}>
                         {formatAcquiredDate(lot.purchase_date)}
                       </TableCell>

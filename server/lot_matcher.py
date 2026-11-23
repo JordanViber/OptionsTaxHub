@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from account_labels import is_ira_account
 from csv_parser import RealizedEvent
 from models import AssetType, Form1099BLot, LotMatchReport, LotMatchRow
 from year_close_packet import is_same_year_1099_compare
@@ -181,7 +182,9 @@ def _realized_in_tax_year(
     return [
         event
         for event in realized or []
-        if event.sale_date is not None and event.sale_date.year == tax_year
+        if event.sale_date is not None
+        and event.sale_date.year == tax_year
+        and not is_ira_account(getattr(event, "account_label", None))
     ]
 
 

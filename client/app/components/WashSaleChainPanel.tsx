@@ -23,6 +23,18 @@ import { filingDetailOpen, seasonUnlockEnabled } from "@/lib/seasonUnlock";
 export const WASH_SALE_CHAIN_DISCLAIMER =
   "Educational only — not tax advice. This explains wash sales in this Robinhood export and the 1099-B you imported for this portfolio. It does not see other brokers, other accounts, or IRAs. A wash outside this file will not show up here.";
 
+export const IRA_PERMANENT_COPY =
+  "Permanent: a loss washed by an IRA buy is lost for good. It does not add to the IRA's basis.";
+
+export function crossAccountEstimateNote(permanent: boolean): string {
+  const estimates =
+    " Cross-account rows are estimates from the exports in this run.";
+  if (permanent) {
+    return `${estimates} ${IRA_PERMANENT_COPY}`;
+  }
+  return `${estimates} An IRA replacement may apply, ask a tax pro.`;
+}
+
 const CHAIN_FILTERS = [
   { id: "all", label: "All" },
   { id: "matches", label: "Matches" },
@@ -59,10 +71,22 @@ export function formatChainDollars(value: number): string {
   });
 }
 
+export function crossAccountWashCountText(count: number): string | null {
+  if (!Number.isFinite(count) || count <= 0) return null;
+  if (count === 1) {
+    return "1 cross-account wash event is not on your 1099.";
+  }
+  return `${count} cross-account wash events are not on your 1099.`;
+}
+
 export function washChainStatusLabel(
   status: string,
   difference: number | null | undefined,
+  crossAccount = false,
 ): string {
+  if (crossAccount && status === "not_on_1099") {
+    return "Not on your 1099: cross-account";
+  }
   if (status === "matches") return "Matches";
   if (status === "differs") {
     return `Differs by ${formatChainDollars(difference ?? 0)}`;
@@ -93,6 +117,23 @@ function formatChainDate(iso: string | null | undefined): string {
 function formatQty(value: number): string {
   if (Number.isInteger(value)) return String(value);
   return String(Math.round(value * 10000) / 10000);
+}
+
+function chainIsPermanent(chain: WashSaleChain): boolean {
+  if (chain.permanent_disallowance) return true;
+  return chain.hops.some((hop) => hop.permanent_disallowance);
+}
+
+function PermanentTag({ id }: Readonly<{ id: string }>) {
+  return (
+    <Chip
+      size="small"
+      color="warning"
+      variant="outlined"
+      label="Permanent"
+      data-testid={`wash-chain-permanent-${id}`}
+    />
+  );
 }
 
 function chipColor(
@@ -350,8 +391,15 @@ function HopDetails({ hop }: Readonly<{ hop: WashSaleHop }>) {
         <Chip
           size="small"
           color={chipColor(hop.reconcile_status)}
-          label={washChainStatusLabel(hop.reconcile_status, hop.difference)}
+          label={washChainStatusLabel(
+            hop.reconcile_status,
+            hop.difference,
+            hop.cross_account,
+          )}
         />
+        {hop.permanent_disallowance ? (
+          <PermanentTag id={hop.hop_id} />
+        ) : null}
       </Stack>
       <Typography
         variant="body2"
@@ -368,6 +416,7 @@ function HopDetails({ hop }: Readonly<{ hop: WashSaleHop }>) {
         }}
       >
         <Fact label="Symbol" value={hop.symbol} />
+        {hop.account_name && <Fact label="Account" value={hop.account_name} />}
         <Fact label="Sale date" value={formatChainDate(hop.sale_date)} />
         <Fact label="Quantity" value={formatQty(hop.sale_quantity)} />
         {hop.proceeds != null && (
@@ -409,7 +458,9 @@ function HopDetails({ hop }: Readonly<{ hop: WashSaleHop }>) {
                   variant="body2"
                   sx={{ whiteSpace: "normal", overflowWrap: "anywhere" }}
                 >
-                  {formatChainDate(buy.activity_date)} · {formatQty(buy.allocated_quantity)}
+                  {formatChainDate(buy.activity_date)}
+                  {buy.account_name ? ` · ${buy.account_name}` : ""} ·{" "}
+                  {formatQty(buy.allocated_quantity)}
                   {` · explained basis ${formatUsd(buy.explained_basis)}`}
                 </Typography>
               ),
@@ -447,6 +498,8 @@ export default function WashSaleChainPanel({
   const [filter, setFilter] = useState<ChainFilterId>("all");
   const openChain = chains.find((chain) => chain.chain_id === openId) ?? null;
   const searchable = seasonUnlockEnabled();
+  const hasCrossAccount = chains.some((chain) => chain.cross_account);
+  const hasPermanent = chains.some((chain) => chainIsPermanent(chain));
   const needle = query.trim().toLowerCase();
   const visibleChains = searchable
     ? chains.filter((chain) => {
@@ -538,8 +591,20 @@ export default function WashSaleChainPanel({
                 label={washChainStatusLabel(
                   chain.reconcile_status,
                   chain.difference,
+                  chain.cross_account,
                 )}
               />
+              {chainIsPermanent(chain) ? (
+                <PermanentTag id={chain.chain_id} />
+              ) : null}
+              {chain.hops[0]?.account_name && (
+                <Typography
+                  variant="caption"
+                  data-testid={`wash-chain-account-${chain.chain_id}`}
+                >
+                  {chain.hops[0].account_name}
+                </Typography>
+              )}
             </Stack>
             <Typography
               variant="body2"
@@ -574,6 +639,7 @@ export default function WashSaleChainPanel({
           sx={{ whiteSpace: "normal", overflowWrap: "anywhere" }}
         >
           {WASH_SALE_CHAIN_DISCLAIMER}
+          {hasCrossAccount ? crossAccountEstimateNote(hasPermanent) : ""}
         </Typography>
       </Stack>
       <Dialog
@@ -617,6 +683,9 @@ export default function WashSaleChainPanel({
                 sx={{ whiteSpace: "normal", overflowWrap: "anywhere" }}
               >
                 {WASH_SALE_CHAIN_DISCLAIMER}
+                {openChain.cross_account
+                  ? crossAccountEstimateNote(chainIsPermanent(openChain))
+                  : ""}
               </Typography>
             </Stack>
           )}

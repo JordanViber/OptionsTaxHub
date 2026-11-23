@@ -20,6 +20,7 @@ from typing import Optional
 
 import pandas as pd
 
+from account_labels import account_display_name, group_by_account
 from models import AssetType, TaxLot, Transaction, TransCode
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,8 @@ class RealizedEvent:
     purchase_date: Optional[date] = None
     settle_date: Optional[date] = None
     asset_type: AssetType = AssetType.STOCK
+    # Empty on a single unlabeled upload. IRA closes stay out of taxable totals.
+    account_label: Optional[str] = None
 
 
 # Column name constants (avoid duplication)
@@ -404,6 +407,8 @@ def _add_lot(
         # live quote arrives (options: last premium; stock: purchase price).
         current_price=txn.price,
         price_kind="fill",
+        account_label=txn.account_label or None,
+        account_name=account_display_name(txn.account_label),
     )
     if symbol not in open_lots:
         open_lots[symbol] = []
@@ -509,6 +514,7 @@ def _close_lots_fifo(
             purchase_date=oldest_lot.purchase_date,
             settle_date=txn.settle_date,
             asset_type=oldest_lot.asset_type,
+            account_label=txn.account_label or oldest_lot.account_label or None,
         ))
 
         if oldest_lot.quantity <= remaining_to_sell:
@@ -663,6 +669,25 @@ def _process_transaction(
 
 
 def transactions_to_tax_lots(transactions: list[Transaction]) -> tuple[list[TaxLot], list[str], list[RealizedEvent]]:
+    """FIFO each labeled account on its own, then concatenate the open lots.
+
+    One label, or no labels, is a single book and matches the historical path.
+    """
+    groups = group_by_account(transactions)
+    if len(groups) <= 1:
+        return _transactions_to_tax_lots_one(transactions)
+    lots: list[TaxLot] = []
+    warnings: list[str] = []
+    realized: list[RealizedEvent] = []
+    for group in groups:
+        group_lots, group_warnings, group_realized = _transactions_to_tax_lots_one(group)
+        lots.extend(group_lots)
+        warnings.extend(group_warnings)
+        realized.extend(group_realized)
+    return lots, warnings, realized
+
+
+def _transactions_to_tax_lots_one(transactions: list[Transaction]) -> tuple[list[TaxLot], list[str], list[RealizedEvent]]:
     """
     Aggregate Robinhood transactions into TaxLot positions using FIFO.
 
@@ -769,6 +794,48 @@ def parse_csv(file_content: str) -> tuple[list[TaxLot], list[Transaction], list[
                   list of errors/warnings, list of RealizedEvent objects).
         For simplified CSVs, transactions and realized lists will be empty.
     """
+    return parse_labeled_exports([(file_content, None)])
+
+
+def parse_labeled_exports(
+    parts: list[tuple[str, str | None]],
+) -> tuple[list[TaxLot], list[Transaction], list[str], list[RealizedEvent]]:
+    """Parse one or more CSV texts. Labels partition FIFO when they differ.
+
+    A single unlabeled text uses the same parse as a historical upload.
+    """
+    if len(parts) == 1 and not parts[0][1]:
+        return _parse_csv_text(parts[0][0])
+
+    errors: list[str] = []
+    transactions: list[Transaction] = []
+    simple_lots: list[TaxLot] = []
+    for text, label in parts:
+        lots, txns, errs, _realized = _parse_csv_text(text)
+        errors.extend(errs)
+        if txns:
+            if label:
+                txns = [
+                    txn.model_copy(update={"account_label": label}) for txn in txns
+                ]
+            transactions.extend(txns)
+        elif lots and label:
+            name = account_display_name(label)
+            simple_lots.extend(
+                lot.model_copy(
+                    update={"account_label": label, "account_name": name}
+                )
+                for lot in lots
+            )
+        elif lots:
+            simple_lots.extend(lots)
+    if not transactions:
+        return simple_lots, [], errors, []
+    tax_lots, lot_warnings, realized = transactions_to_tax_lots(transactions)
+    return tax_lots + simple_lots, transactions, errors + lot_warnings, realized
+
+
+def _parse_csv_text(file_content: str) -> tuple[list[TaxLot], list[Transaction], list[str], list[RealizedEvent]]:
     try:
         df = pd.read_csv(io.StringIO(file_content), on_bad_lines="skip")
     except Exception as e:

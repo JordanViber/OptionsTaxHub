@@ -50,11 +50,15 @@ import ServiceWorkerRegistration from "../components/ServiceWorkerRegistration";
 import TaxDisclaimer from "../components/TaxDisclaimer";
 import PortfolioSummaryCards from "../components/PortfolioSummaryCards";
 import PositionsTable from "../components/PositionsTable";
+import HarvestCheckPanel from "../components/HarvestCheckPanel";
 import HarvestingSuggestions from "../components/HarvestingSuggestions";
 import WashSaleWarning from "../components/WashSaleWarning";
 import WashSaleChainPanel, {
+  crossAccountWashCountText,
   washChainsVisible,
 } from "../components/WashSaleChainPanel";
+import AccountExportsField from "../components/AccountExportsField";
+import type { AccountExport } from "@/lib/accountLabels";
 import {
   useAnalyzePortfolio,
   useTaxProfile,
@@ -86,6 +90,7 @@ import {
   isUnknown1099Year,
   redactUnpaidLotMatch,
 } from "@/lib/supplemental1099";
+import { harvestDetailOpen, harvestPromptBlocked } from "@/lib/harvestCheck";
 import { filingDetailOpen, seasonUnlockEnabled } from "@/lib/seasonUnlock";
 import YearClosePacketPanel, {
   isYearClosePacketPaid,
@@ -171,6 +176,10 @@ const SAMPLE_CSV_URL = "/sample-robinhood-transactions.csv";
 const SAMPLE_CSV_FILENAME = "sample-robinhood-transactions.csv";
 const SAMPLE_1099_URL = "/sample-robinhood-1099-2026.pdf";
 const SAMPLE_1099_FILENAME = "sample-robinhood-1099-2026.pdf";
+const SAMPLE_TAXABLE_URL = "/sample-cross-account-taxable.csv";
+const SAMPLE_TAXABLE_FILENAME = "sample-cross-account-taxable.csv";
+const SAMPLE_IRA_URL = "/sample-robinhood-ira.csv";
+const SAMPLE_IRA_FILENAME = "sample-robinhood-ira.csv";
 const SAMPLE_FETCH_TIMEOUT_MESSAGE = "Could not load the 2026 sample.";
 const ORIGIN_RESUME_WAIT_MS = 12_000;
 const ORIGIN_RESUME_RETRY_MS = 3_000;
@@ -182,11 +191,29 @@ function isAbortError(error: unknown): boolean {
   );
 }
 
+async function fetchOptionalSampleCsv(
+  url: string,
+  filename: string,
+  signal: AbortSignal,
+): Promise<File | null> {
+  try {
+    const response = await fetch(url, { signal });
+    if (!response.ok) return null;
+    const blob = await response.blob();
+    if (!blob.size) return null;
+    return new File([blob], filename, { type: "text/csv" });
+  } catch (error) {
+    if (isAbortError(error)) throw error;
+    return null;
+  }
+}
+
 async function fetchSampleCsvAnd1099(
   externalSignal?: AbortSignal,
 ): Promise<{
   csvFile: File;
   form1099File: File;
+  accountExports?: AccountExport[];
 }> {
   const controller = new AbortController();
   const timeoutId = setTimeout(
@@ -216,11 +243,29 @@ async function fetchSampleCsvAnd1099(
       csvResponse.blob(),
       pdfResponse.blob(),
     ]);
+    const csvFile = new File([csvBlob], SAMPLE_CSV_FILENAME, { type: "text/csv" });
+    const [taxable, ira] = await Promise.all([
+      fetchOptionalSampleCsv(
+        SAMPLE_TAXABLE_URL,
+        SAMPLE_TAXABLE_FILENAME,
+        controller.signal,
+      ),
+      fetchOptionalSampleCsv(SAMPLE_IRA_URL, SAMPLE_IRA_FILENAME, controller.signal),
+    ]);
+    const accountExports =
+      taxable && ira
+        ? [
+            { file: csvFile, label: "individual" as const },
+            { file: taxable, label: "individual" as const },
+            { file: ira, label: "ira_traditional" as const },
+          ]
+        : undefined;
     return {
-      csvFile: new File([csvBlob], SAMPLE_CSV_FILENAME, { type: "text/csv" }),
+      csvFile,
       form1099File: new File([pdfBlob], SAMPLE_1099_FILENAME, {
         type: "application/pdf",
       }),
+      accountExports,
     };
   } catch (error) {
     if (isAbortError(error)) {
@@ -580,10 +625,13 @@ function getRecommendedNextSteps(
     }
     return steps;
   }
-  const lossSuggestions = analysis.suggestions.filter(
+  const visibleSuggestions = analysis.suggestions.filter(
+    (suggestion) => !harvestPromptBlocked(suggestion.symbol),
+  );
+  const lossSuggestions = visibleSuggestions.filter(
     (suggestion) => suggestion.action !== "REVIEW" && !suggestion.price_note,
   );
-  const unknownLossCount = analysis.suggestions.length - lossSuggestions.length;
+  const unknownLossCount = visibleSuggestions.length - lossSuggestions.length;
   if (lossSuggestions.length > 0) {
     steps.push(
       `Start with the ${lossSuggestions.length} ${lossSuggestions.length === 1 ? "lot" : "lots"} in the harvest queue.`,
@@ -943,7 +991,10 @@ function ResultsSection({
   );
   const harvestTotals = harvestTeaserTotals(harvestTeasers);
   const realSuggestionCount = displayedAnalysis.suggestions.filter(
-    (suggestion) => suggestion.action !== "REVIEW" && !suggestion.price_note,
+    (suggestion) =>
+      !harvestPromptBlocked(suggestion.symbol) &&
+      suggestion.action !== "REVIEW" &&
+      !suggestion.price_note,
   ).length;
   const suggestionTabCount = packetUnlocked
     ? realSuggestionCount
@@ -1056,6 +1107,28 @@ function ResultsSection({
           />
         )}
 
+        {(() => {
+          const countText = crossAccountWashCountText(
+            displayedAnalysis.cross_account_wash_count ?? 0,
+          );
+          const detailOpen = washChainsVisible(
+            displayedAnalysis,
+            packetUnlocked,
+            seasonUnlocked,
+          );
+          if (!countText || detailOpen) return null;
+          return (
+            <Alert
+              severity="info"
+              variant="outlined"
+              data-testid="cross-account-wash-count"
+              sx={{ mt: 1 }}
+            >
+              {countText}
+            </Alert>
+          );
+        })()}
+
         {washChainsVisible(displayedAnalysis, packetUnlocked, seasonUnlocked) && (
           <WashSaleChainPanel chains={washSaleChains} />
         )}
@@ -1070,6 +1143,11 @@ function ResultsSection({
           </Alert>
         )}
       </Box>
+
+      <HarvestCheckPanel
+        checks={displayedAnalysis.harvest_checks ?? []}
+        detailOpen={harvestDetailOpen(displayedAnalysis, seasonUnlocked)}
+      />
 
       <Card
         data-testid="tax-section-harvest"
@@ -1266,18 +1344,24 @@ function rerunPortfolioAnalysisWithSupplement({
   supplementalFile,
   clearAnalysis,
   runPortfolioAnalysis,
+  accountExports = null,
 }: {
   csvFile: File | null;
   supplementalFile?: File | null;
   clearAnalysis: () => void;
-  runPortfolioAnalysis: (csvFile: File, supplementalFile?: File | null) => void;
+  runPortfolioAnalysis: (
+    csvFile: File,
+    supplementalFile?: File | null,
+    accountExports?: AccountExport[] | null,
+  ) => void;
+  accountExports?: AccountExport[] | null;
 }) {
   if (!csvFile) {
     return;
   }
 
   clearAnalysis();
-  runPortfolioAnalysis(csvFile, supplementalFile);
+  runPortfolioAnalysis(csvFile, supplementalFile, accountExports);
 }
 
 function handleCsvInputChange({
@@ -1427,6 +1511,7 @@ export default function DashboardPage() {
   const [activeTab, setActiveTab] = useState(0);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [lastUploadedCsv, setLastUploadedCsv] = useState<File | null>(null);
+  const accountExportsRef = useRef<AccountExport[] | null>(null);
   const [supplemental1099File, setSupplemental1099File] = useState<File | null>(
     null,
   );
@@ -1666,8 +1751,14 @@ export default function DashboardPage() {
     Boolean(washChainAnalysisId) &&
     !washChainIsSample &&
     (seasonGateOn ? seasonUnlocked : packetPaid);
+  const harvestStillCounted =
+    seasonGateOn &&
+    seasonUnlocked &&
+    (displayedAnalysis?.harvest_checks ?? []).some((row) => !row.line);
   const needsFilingDetail =
-    washChainCount === 0 || (seasonGateOn && seasonUnlocked && lotRowsMissing);
+    washChainCount === 0 ||
+    (seasonGateOn && seasonUnlocked && lotRowsMissing) ||
+    harvestStillCounted;
   const displayedAnalysisRef = useRef(displayedAnalysis);
   displayedAnalysisRef.current = displayedAnalysis;
   useEffect(() => {
@@ -1704,6 +1795,14 @@ export default function DashboardPage() {
             lotMatchRowsMissing(base.lot_match_report)
           ) {
             next = { ...next, lot_match_report: result.lotMatchReport };
+            changed = true;
+          }
+          if (
+            result.harvestChecks &&
+            result.harvestChecks.length > 0 &&
+            (base.harvest_checks ?? []).some((row) => !row.line)
+          ) {
+            next = { ...next, harvest_checks: result.harvestChecks };
             changed = true;
           }
           if (!changed) return current;
@@ -1804,19 +1903,27 @@ export default function DashboardPage() {
   const runPortfolioAnalysis = (
     csvFile: File,
     supplementalFile: File | null = supplemental1099File,
+    accountExports?: AccountExport[] | null,
   ) => {
-    const sample =
-      csvFile.name === "sample-robinhood-transactions.csv";
+    const labeled =
+      accountExports && accountExports.length >= 2 ? accountExports : null;
+    accountExportsRef.current = labeled;
+    const primary = labeled ? labeled[0].file : csvFile;
+    const sample = primary.name === "sample-robinhood-transactions.csv";
     setIsSampleRun(sample);
     setPacketPaid(false);
     setSampleLoadError(null);
-    setLastUploadedCsv(csvFile);
+    setLastUploadedCsv(primary);
     const mergeMode =
       sample || replaceBook ? "replace" : "auto";
     analyzePortfolio(
       {
-        file: csvFile,
+        file: primary,
         supplemental1099File: supplementalFile ?? undefined,
+        extraFiles: labeled
+          ? labeled.slice(1).map((item) => item.file)
+          : undefined,
+        accountLabels: labeled ? labeled.map((item) => item.label) : undefined,
         filingStatus: taxProfile?.filing_status || "single",
         estimatedIncome: taxProfile?.estimated_annual_income || 75000,
         taxYear: taxProfile?.tax_year || 2026,
@@ -1867,7 +1974,7 @@ export default function DashboardPage() {
               sessionStorage.setItem(GUEST_UNSAVED_KEY, "1");
               sessionStorage.setItem(
                 GUEST_UNSAVED_FILENAME_KEY,
-                csvFile.name || "guest-run.csv",
+                primary.name || "guest-run.csv",
               );
             } catch {
               // ignore
@@ -1896,16 +2003,15 @@ export default function DashboardPage() {
       try {
         setSampleLoadError(null);
         setSampleLoading(true);
-        const { csvFile, form1099File } = await fetchSampleCsvAnd1099(
-          abort.signal,
-        );
+        const { csvFile, form1099File, accountExports } =
+          await fetchSampleCsvAnd1099(abort.signal);
         clearCurrentAnalysisView({
           setLoadedAnalysis,
           setAnalysisSource,
         });
         setForceEmpty(false);
         setSupplemental1099File(form1099File);
-        runPortfolioAnalysis(csvFile, form1099File);
+        runPortfolioAnalysis(csvFile, form1099File, accountExports);
       } catch (err) {
         setSampleLoading(false);
         clearPacketResumeSessionMarkers();
@@ -1946,9 +2052,8 @@ export default function DashboardPage() {
 
     void (async () => {
       try {
-        const { csvFile, form1099File } = await fetchSampleCsvAnd1099(
-          abort.signal,
-        );
+        const { csvFile, form1099File, accountExports } =
+          await fetchSampleCsvAnd1099(abort.signal);
         if (cancelled || sampleAnalyzeStartedRef.current) {
           if (cancelled) {
             setSampleLoading(false);
@@ -1962,7 +2067,7 @@ export default function DashboardPage() {
         });
         setForceEmpty(false);
         setSupplemental1099File(form1099File);
-        runPortfolioAnalysis(csvFile, form1099File);
+        runPortfolioAnalysis(csvFile, form1099File, accountExports);
       } catch (err) {
         sampleAnalyzeStartedRef.current = false;
         setSampleLoading(false);
@@ -2094,6 +2199,7 @@ export default function DashboardPage() {
               setAnalysisSource,
             }),
           runPortfolioAnalysis,
+          accountExports: accountExportsRef.current,
         });
       }
     }
@@ -2111,6 +2217,7 @@ export default function DashboardPage() {
       rerunPortfolioAnalysisWithSupplement({
         csvFile: lastUploadedCsv,
         supplementalFile: null,
+        accountExports: accountExportsRef.current,
         clearAnalysis: () =>
           clearCurrentAnalysisView({
             setLoadedAnalysis,
@@ -2817,6 +2924,22 @@ export default function DashboardPage() {
                       : "Robinhood transaction export or simplified portfolio CSV"}
                   </Typography>
                 </Box>
+
+                <AccountExportsField
+                  disabled={analyzing}
+                  onAnalyze={(exports) => {
+                    setForceEmpty(false);
+                    clearCurrentAnalysisView({
+                      setLoadedAnalysis,
+                      setAnalysisSource,
+                    });
+                    runPortfolioAnalysis(
+                      exports[0].file,
+                      supplemental1099File,
+                      exports,
+                    );
+                  }}
+                />
 
                 {Boolean(tradeBook && confirmedUserId) && (
                   <FormControlLabel

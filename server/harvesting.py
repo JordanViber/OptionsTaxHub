@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 from datetime import date
 
+from account_labels import group_by_account, is_ira_account
 from models import (
     AssetType,
     HarvestingSuggestion,
@@ -32,6 +33,7 @@ from models import (
     TransCode,
 )
 from tax_engine import calculate_tax_savings, get_capital_loss_limit
+from harvest_check import NO_HARVEST_PROMPT_SYMBOLS
 from wash_sale import check_prospective_wash_sale_risk, detect_wash_sales, adjust_lots_for_wash_sales
 
 logger = logging.getLogger(__name__)
@@ -377,6 +379,22 @@ def _fifo_cost_basis_for_sell(
 
 
 def _compute_realized_gains(transactions: list[Transaction], tax_year: int | None = None) -> float:
+    """Sum taxable realized gains, with FIFO kept inside each account.
+
+    An earlier buy in another account is not the cost basis of this sale.
+    IRA gains are not on the taxable return, so they do not raise the harvest target.
+    """
+    if not transactions:
+        return 0.0
+    total = 0.0
+    for group in group_by_account(transactions):
+        if group and is_ira_account(getattr(group[0], "account_label", None)):
+            continue
+        total += _compute_realized_gains_one(group, tax_year)
+    return round(total, 2)
+
+
+def _compute_realized_gains_one(transactions: list[Transaction], tax_year: int | None = None) -> float:
     """
     Estimate total realized gains from sell transactions for the specified tax year.
 
@@ -392,8 +410,6 @@ def _compute_realized_gains(transactions: list[Transaction], tax_year: int | Non
     """
     if not transactions:
         return 0.0
-
-    from models import TransCode
 
     buys = sorted(
         [t for t in transactions if t.trans_code in (TransCode.BUY, TransCode.BTO)],
@@ -511,6 +527,9 @@ def generate_suggestions(
     risky_candidates: list[HarvestingSuggestion] = []
 
     def _append_lot(lot: TaxLot, *, fill: bool) -> None:
+        # TSLA and SPCX never become a sell or harvest prompt.
+        if (lot.symbol or "").strip().upper() in NO_HARVEST_PROMPT_SYMBOLS:
+            return
         pnl = lot.unrealized_pnl or 0.0
         # A purchase fill is not a market price, so a negative number here
         # is another lot's fill, not a loss to harvest.

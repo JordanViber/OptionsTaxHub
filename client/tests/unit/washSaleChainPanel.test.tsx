@@ -1,6 +1,7 @@
 import { render, screen, fireEvent } from "@testing-library/react";
 import WashSaleChainPanel, {
   WASH_SALE_CHAIN_DISCLAIMER,
+  crossAccountWashCountText,
   washChainsVisible,
   washChainStatusLabel,
   washSaleWindowText,
@@ -1170,5 +1171,87 @@ describe("WashSaleChainPanel", () => {
     ).not.toBeInTheDocument();
     expect(screen.getByText("1099 wash adjustment")).toBeInTheDocument();
     expect(screen.getByText("$25.00")).toBeInTheDocument();
+  });
+
+  it("labels a cross-account IRA replacement without changing the default disclaimer", () => {
+    expect(crossAccountWashCountText(0)).toBeNull();
+    expect(crossAccountWashCountText(1)).toBe(
+      "1 cross-account wash event is not on your 1099.",
+    );
+    expect(crossAccountWashCountText(2)).toBe(
+      "2 cross-account wash events are not on your 1099.",
+    );
+    expect(washChainStatusLabel("not_on_1099", null, true)).toBe(
+      "Not on your 1099: cross-account",
+    );
+
+    const copy =
+      "Not on your 1099: cross-account. An Individual sale of 4 QQQ on Feb 10 lost $120. A buy in an IRA (traditional) within 30 days before or after that sale covers 4 shares. Estimated disallowed amount $120. Permanent: a loss washed by an IRA buy is lost for good. It does not add to the IRA's basis.";
+    render(
+      <WashSaleChainPanel
+        chains={[
+          {
+            chain_id: "cross-qqq",
+            symbol: "QQQ",
+            reconcile_status: "not_on_1099",
+            cross_account: true,
+            permanent_disallowance: true,
+            plain_english: copy,
+            hops: [
+              hop({
+                hop_id: "cross-qqq:h0",
+                symbol: "QQQ",
+                sale_date: "2026-02-10",
+                plain_english: copy,
+                reconcile_status: "not_on_1099",
+                account_name: "Individual",
+                cross_account: true,
+                permanent_disallowance: true,
+                replacement_buys: [
+                  {
+                    activity_date: "2026-02-20",
+                    quantity: 4,
+                    price: 480,
+                    cash_cost: 1920,
+                    allocated_quantity: 4,
+                    allocated_disallowed: 120,
+                    explained_basis: 1920,
+                    account_name: "IRA (traditional)",
+                  },
+                ],
+              }),
+            ],
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("Not on your 1099: cross-account")).toBeInTheDocument();
+    expect(screen.getByTestId("wash-chain-permanent-cross-qqq")).toHaveTextContent(
+      "Permanent",
+    );
+    expect(screen.getByText(/An Individual sale of 4 QQQ/)).toBeInTheDocument();
+    expect(screen.getByText(/a buy in an IRA \(traditional\)/i)).toBeInTheDocument();
+    expect(
+      screen.getAllByText(/Permanent: a loss washed by an IRA buy is lost for good/).length,
+    ).toBeGreaterThan(0);
+    expect(screen.getByTestId("wash-chain-account-cross-qqq")).toHaveTextContent(
+      "Individual",
+    );
+    expect(screen.getByTestId("wash-sale-chain-disclaimer")).toHaveTextContent(
+      WASH_SALE_CHAIN_DISCLAIMER,
+    );
+    expect(screen.getByTestId("wash-sale-chain-disclaimer")).toHaveTextContent(
+      "lost for good",
+    );
+    expect(screen.getByTestId("wash-sale-chain-disclaimer")).not.toHaveTextContent(
+      "may apply, ask a tax pro",
+    );
+    fireEvent.click(screen.getByTestId("wash-sale-chain-open-cross-qqq"));
+    expect(screen.getAllByText(/IRA \(traditional\)/).length).toBeGreaterThan(0);
+    expect(
+      screen.getByTestId("wash-chain-permanent-cross-qqq:h0"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/No basis carryover/)).not.toBeInTheDocument();
   });
 });
