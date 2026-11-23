@@ -687,3 +687,33 @@ def test_shares_sold_after_the_loss_were_open_on_the_sale_date():
     assert len(chains) == 1
     assert chains[0].hops[0].disallowed_loss == pytest.approx(100)
     assert chains[0].hops[0].replacement_buys[0].allocated_quantity == pytest.approx(10)
+
+
+def test_fifo_sale_releases_only_the_reserved_shares():
+    """The IRA sale closes the shares Feb 3 reserved, and Feb 10 keeps the rest.
+
+    Individual buys 10 XYZ at $100 and sells 5 at $90 on Feb 3 and Feb 10.
+    The IRA buys 10 on Feb 1 and sells 5 on Feb 5. Each taxable sale is a
+    $50 permanent disallowance.
+    """
+    transactions = [
+        _txn("XYZ", TransCode.BUY, date(2026, 1, 1), 10, 100, "individual"),
+        _txn("XYZ", TransCode.BUY, date(2026, 2, 1), 10, 95, "ira_traditional"),
+        _txn("XYZ", TransCode.SELL, date(2026, 2, 3), 5, 90, "individual"),
+        _txn("XYZ", TransCode.SELL, date(2026, 2, 5), 5, 95, "ira_traditional"),
+        _txn("XYZ", TransCode.SELL, date(2026, 2, 10), 5, 90, "individual"),
+    ]
+    chains = build_cross_account_chains(transactions, [], tax_year=2026)
+    assert [(chain.hops[0].sale_date, chain.hops[0].disallowed_loss) for chain in chains] == [
+        (date(2026, 2, 3), 50),
+        (date(2026, 2, 10), 50),
+    ]
+    assert all(chain.permanent_disallowance for chain in chains)
+    assert [
+        (buy.activity_date, buy.account_label, buy.allocated_quantity)
+        for chain in chains
+        for buy in chain.hops[0].replacement_buys
+    ] == [
+        (date(2026, 2, 1), "ira_traditional", 5),
+        (date(2026, 2, 1), "ira_traditional", 5),
+    ]
