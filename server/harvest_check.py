@@ -20,7 +20,7 @@ from fractions import Fraction
 from itertools import groupby
 
 from account_labels import account_display_name, account_key, is_ira_account
-from csv_parser import _intraday_rank
+from csv_parser import _close_lots_fifo, _intraday_rank
 from models import (
     AssetType,
     HarvestBuyKind,
@@ -329,6 +329,125 @@ def _shares_still_held(
     return held
 
 
+def _contract_text(txn: Transaction) -> str:
+    return (txn.description or "").strip()
+
+
+def _opens_option_lot(txn: Transaction) -> bool:
+    if txn.trans_code in (TransCode.BTO, TransCode.STO):
+        return True
+    return txn.trans_code == TransCode.BUY and txn.asset_type == AssetType.OPTION
+
+
+def _closes_option_lot(txn: Transaction) -> bool:
+    if txn.trans_code in (
+        TransCode.STC,
+        TransCode.BTC,
+        TransCode.OEXP,
+        TransCode.OASGN,
+        TransCode.OEXCS,
+    ):
+        return True
+    return txn.trans_code == TransCode.SELL and txn.asset_type == AssetType.OPTION
+
+
+def _option_close_prefers_short(txn: Transaction) -> bool | None:
+    """Which leg a close takes, same as the lot builder."""
+    if txn.trans_code in (TransCode.BTC, TransCode.OASGN):
+        return True
+    if txn.trans_code in (TransCode.STC, TransCode.OEXCS):
+        return False
+    return None
+
+
+def _append_option_lot(
+    open_lots: dict[str, list[TaxLot]],
+    lot_row: dict[int, int],
+    txn_index: int,
+    txn: Transaction,
+) -> None:
+    key = _contract_text(txn)
+    lot = TaxLot(
+        symbol=_symbol(txn.instrument),
+        description=txn.description or "",
+        quantity=float(txn.quantity),
+        cost_basis_per_share=float(txn.price),
+        total_cost_basis=(
+            float(txn.price) * float(txn.quantity) * _OPTION_SHARE_MULTIPLIER
+        ),
+        purchase_date=txn.activity_date,
+        asset_type=AssetType.OPTION,
+        contract_label=key or None,
+        is_short_position=txn.trans_code == TransCode.STO,
+        account_label=txn.account_label,
+    )
+    open_lots.setdefault(key, []).append(lot)
+    # The closer mutates this lot in place. The id still names the open.
+    lot_row[id(lot)] = txn_index
+
+
+def _option_shares_still_open(
+    transactions: list[Transaction],
+    symbol: str,
+    as_of: date,
+) -> dict[int, float]:
+    """Share-equivalent still open at ``as_of``, keyed by the opening row.
+
+    Each account is FIFO in the lot builder's order. Closes on or before
+    ``as_of`` go through ``_close_lots_fifo`` for that contract description.
+    """
+    symbol = _symbol(symbol)
+    order: list[str] = []
+    buckets: dict[str, list[tuple[int, Transaction]]] = {}
+    for index, txn in enumerate(transactions):
+        key = account_key(txn)
+        if key not in buckets:
+            order.append(key)
+            buckets[key] = []
+        buckets[key].append((index, txn))
+
+    held: dict[int, float] = {}
+    for key in order:
+        ordered = [
+            item
+            for item in sorted(
+                buckets[key],
+                key=lambda item: (
+                    item[1].activity_date,
+                    item[1].process_date or item[1].activity_date,
+                    item[1].settle_date or item[1].activity_date,
+                    _intraday_rank(item[1]),
+                    -item[0],
+                ),
+            )
+            if item[1].activity_date <= as_of
+        ]
+        open_lots: dict[str, list[TaxLot]] = {}
+        lot_row: dict[int, int] = {}
+        for index, txn in ordered:
+            if _symbol(txn.instrument) != symbol:
+                continue
+            if _opens_option_lot(txn):
+                _append_option_lot(open_lots, lot_row, index, txn)
+                continue
+            if not _closes_option_lot(txn):
+                continue
+            _close_lots_fifo(
+                open_lots,
+                _contract_text(txn),
+                txn,
+                [],
+                [],
+                prefer_short=_option_close_prefers_short(txn),
+            )
+        for lots in open_lots.values():
+            for lot in lots:
+                shares = float(lot.quantity) * _OPTION_SHARE_MULTIPLIER
+                if shares > _QTY_EPS:
+                    held[lot_row[id(lot)]] = shares
+    return held
+
+
 def _triggers_for(
     symbol: str,
     transactions: list[Transaction],
@@ -338,6 +457,7 @@ def _triggers_for(
     sale_accounts = {_account(lot.account_label) for lot in harvested}
     own_fills, covered_lots = _own_fill_indexes(transactions, harvested, as_of)
     still_held = _shares_still_held(transactions, symbol, as_of)
+    option_held = _option_shares_still_open(transactions, symbol, as_of)
     remaining = {
         index: 0.0 if index in covered_lots else float(lot.quantity)
         for index, lot in enumerate(harvested)
@@ -367,6 +487,9 @@ def _triggers_for(
                 continue
         if kind in ("bought_call", "short_put"):
             shares = _share_equivalent(txn, kind)
+            # This fill counts only for contracts still open on the sale date.
+            if txn.activity_date <= as_of:
+                shares = min(shares, option_held.get(txn_index, 0.0))
         else:
             shares = _exclude_shares_being_sold(txn, harvested, remaining)
             # This fill counts only for shares still open on the sale date.
