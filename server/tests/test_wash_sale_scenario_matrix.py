@@ -443,7 +443,7 @@ def _json_chain_matches(chain: dict, expected: dict) -> bool:
 
 @pytest.mark.parametrize("row", ROWS, ids=[row["id"] for row in ROWS])
 def test_wash_sale_scenario_matrix(row, monkeypatch):
-    assert len(ROWS) == 24
+    assert len(ROWS) == 25
     source = row["inputs"]["source"]
     if row["inputs"].get("supplemental_1099", "") and str(
         row["inputs"].get("supplemental_1099")
