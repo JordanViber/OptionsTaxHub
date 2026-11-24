@@ -618,6 +618,69 @@ def test_fully_closed_bought_call_is_not_a_replacement():
         )
 
 
+def test_robinhood_expiration_prefix_closes_the_bought_call():
+    """OEXP text is 'Option Expiration for {contract}', not the bare label.
+
+    A different strike under that same prefix stays open. The underlying
+    alone is not the contract.
+    """
+    lots = [_lot("AMD", 10, 20, 10, date(2026, 5, 1))]
+    call = "AMD 9/18/2026 Call $15.00"
+    opened = _buy(
+        "AMD",
+        1,
+        2,
+        date(2026, 8, 1),
+        call,
+        code=TransCode.BTO,
+        asset=AssetType.OPTION,
+    )
+    stock = _buy("AMD", 10, 20, date(2026, 5, 1))
+    expired = build_harvest_checks(
+        lots,
+        [
+            stock,
+            opened,
+            _buy(
+                "AMD",
+                1,
+                0,
+                date(2026, 8, 5),
+                f"Option Expiration for {call}",
+                code=TransCode.OEXP,
+                asset=AssetType.OPTION,
+            ),
+        ],
+        as_of=AS_OF,
+    )[0]
+    assert expired.clean is True
+    assert expired.trigger_count == 0
+    assert expired.disallowed_loss == 0
+    assert expired.triggers == []
+
+    other_strike = build_harvest_checks(
+        lots,
+        [
+            stock,
+            opened,
+            _buy(
+                "AMD",
+                1,
+                0,
+                date(2026, 8, 5),
+                "Option Expiration for AMD 9/18/2026 Call $20.00",
+                code=TransCode.OEXP,
+                asset=AssetType.OPTION,
+            ),
+        ],
+        as_of=AS_OF,
+    )[0]
+    assert other_strike.clean is False
+    assert other_strike.trigger_count == 1
+    assert other_strike.triggers[0].share_equivalent == pytest.approx(100)
+    assert other_strike.disallowed_loss == pytest.approx(100)
+
+
 def test_same_day_close_listed_first_still_closes_the_bought_call():
     """Newest-first rows open the call before the same-day STC."""
     lots = [_lot("AMD", 10, 20, 10, date(2026, 5, 1))]

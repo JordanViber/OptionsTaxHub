@@ -329,8 +329,18 @@ def _shares_still_held(
     return held
 
 
+# Robinhood expiration rows are "Option Expiration for {contract}".
+# Opens, STC, BTC, assignment, and exercise use the contract alone.
+_OEXP_CONTRACT_PREFIX = "Option Expiration for "
+
+
 def _contract_text(txn: Transaction) -> str:
-    return (txn.description or "").strip()
+    """Contract label used to pair an option close with its open."""
+    text = (txn.description or "").strip()
+    if txn.trans_code != TransCode.OEXP or not text.startswith(_OEXP_CONTRACT_PREFIX):
+        return text
+    rest = text[len(_OEXP_CONTRACT_PREFIX):].strip()
+    return rest or text
 
 
 def _opens_option_lot(txn: Transaction) -> bool:
