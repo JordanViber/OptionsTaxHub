@@ -27,22 +27,13 @@ interface WashSaleWarningProps {
 
 const SALE_QTY_EPS = 1e-4;
 
-function leavesDisallowedTotal(
-  status: string | null | undefined,
-  reason: string | null | undefined,
-): boolean {
-  return status === "not_compared" || reason === "unallocated";
-}
-
 function quietHops(chains: WashSaleChain[] | undefined): WashSaleHop[] {
   const hops: WashSaleHop[] = [];
   for (const chain of chains ?? []) {
     if (chain.cross_account) continue;
     for (const hop of chain.hops) {
       if (hop.cross_account) continue;
-      if (!leavesDisallowedTotal(hop.reconcile_status, hop.not_compared_reason)) {
-        continue;
-      }
+      if (hop.not_compared_reason !== "unallocated") continue;
       hops.push(hop);
     }
   }

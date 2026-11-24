@@ -6434,10 +6434,8 @@ def test_sold_lot_inside_the_window_is_not_the_replacement():
     """The shares that were sold are not shown as the replacement buy.
 
     Buy 10 AAPL at $100 on Jun 1, sell 10 at $80 on Jun 20, buy 10 at $90
-    on Jun 25. No 1099. The Jun 25 buy is allocated and named. Jun 1 is
-    the closed lot, so it is not allocated and not called the replacement.
-    The engine's adjusted basis was priced off that closed lot, so it is
-    not labeled as the Jun 25 buy's basis.
+    on Jun 25. No 1099. The Jun 25 buy is the replacement. Jun 1 is the
+    closed lot, so it is not allocated and not called the replacement.
     """
     txns = [
         _txn("AAPL", TransCode.BUY, date(2026, 6, 1), 10, 100),
@@ -6446,8 +6444,9 @@ def test_sold_lot_inside_the_window_is_not_the_replacement():
     ]
     flags = detect_wash_sales(txns, tax_year=2026)
     assert len(flags) == 1
-    assert flags[0].repurchase_date == date(2026, 6, 1)
-    assert flags[0].adjusted_cost_basis == pytest.approx(1200)
+    assert flags[0].repurchase_date == date(2026, 6, 25)
+    assert flags[0].repurchase_quantity == pytest.approx(10)
+    assert flags[0].adjusted_cost_basis == pytest.approx(1100)
     before = copy.deepcopy(txns)
     chains = _build(
         transactions=txns,
@@ -6462,14 +6461,11 @@ def test_sold_lot_inside_the_window_is_not_the_replacement():
     assert hop.replacement_buys[0].allocated_quantity == pytest.approx(10)
     assert hop.replacement_buys[0].allocated_disallowed == pytest.approx(200)
     assert hop.replacement_buys[0].explained_basis == pytest.approx(1100)
-    assert hop.replacement_buys[0].explained_basis != pytest.approx(
-        flags[0].adjusted_cost_basis
-    )
-    assert hop.engine_adjusted_cost_basis is None
+    assert hop.engine_adjusted_cost_basis == pytest.approx(1100)
     assert "Jun 25" in hop.plain_english
     assert "Jun 1" not in hop.plain_english
     assert "moved into" in hop.plain_english
-    assert flags[0].adjusted_cost_basis == pytest.approx(1200)
+    assert flags[0].adjusted_cost_basis == pytest.approx(1100)
     assert flags[0].disallowed_loss == pytest.approx(200)
     assert [(txn.activity_date, txn.quantity, txn.price) for txn in txns] == [
         (txn.activity_date, txn.quantity, txn.price) for txn in before
@@ -6823,11 +6819,11 @@ def test_unique_same_day_subset_drops_only_the_closed_shares():
 
 
 def test_post_sale_buys_short_of_repurchase_quantity_stay_quiet():
-    """50 closed pre-sale shares plus 50 bought after do not cover a 100-share repurchase.
+    """A later 50-share buy replaces only the shares FIFO has not consumed.
 
-    The sale closed the Jun 1 lot. The Jun 25 buy is only half of
-    repurchase_quantity. It is not allocated, the disallowance is not
-    parked on it, and the sentence does not say the loss moved into a basis.
+    The sale closes the Jan 1 and Jun 1 lots. Those shares are not the
+    replacement. The Jun 25 buy is still open, so half the $2,000 loss is
+    disallowed and the hop names that buy.
     """
     sale = date(2026, 6, 20)
     opened = date(2026, 6, 1)
@@ -6842,14 +6838,11 @@ def test_post_sale_buys_short_of_repurchase_quantity_stay_quiet():
     assert len(flags) == 1
     flag = flags[0]
     assert flag.sale_quantity == pytest.approx(100)
-    assert flag.repurchase_quantity == pytest.approx(100)
-    assert flag.repurchase_date == opened
-    assert flag.disallowed_loss == pytest.approx(2000)
-    assert flag.adjusted_cost_basis == pytest.approx(7000)
+    assert flag.repurchase_quantity == pytest.approx(50)
+    assert flag.repurchase_date == later
+    assert flag.disallowed_loss == pytest.approx(1000)
+    assert flag.adjusted_cost_basis == pytest.approx(5500)
     before_txns = copy.deepcopy(txns)
-    before_loss = flag.disallowed_loss
-    before_basis = flag.adjusted_cost_basis
-    before_qty = flag.repurchase_quantity
     chains = _build(
         transactions=txns,
         wash_sale_flags=flags,
@@ -6861,21 +6854,14 @@ def test_post_sale_buys_short_of_repurchase_quantity_stay_quiet():
     assert len(chains) == 1
     hop = chains[0].hops[0]
     assert hop.reconcile_status == "not_compared"
-    assert hop.replacement_buys == []
-    assert hop.engine_adjusted_cost_basis is None
-    assert all(buy.allocated_quantity == 0 for buy in hop.replacement_buys)
-    assert all(buy.allocated_disallowed == 0 for buy in hop.replacement_buys)
-    assert all(buy.explained_basis == 0 for buy in hop.replacement_buys)
-    assert "moved into" not in hop.plain_english
-    assert "basis" not in hop.plain_english.lower()
-    assert "Jun 25" not in hop.plain_english
-    assert "$6,500" not in hop.plain_english
-    assert "$5,500" not in hop.plain_english
-    assert flag.disallowed_loss == pytest.approx(before_loss)
-    assert flag.adjusted_cost_basis == pytest.approx(before_basis)
-    assert flag.repurchase_quantity == pytest.approx(before_qty)
-    assert flag.disallowed_loss == pytest.approx(2000)
-    assert flag.adjusted_cost_basis == pytest.approx(7000)
+    assert [buy.activity_date for buy in hop.replacement_buys] == [later]
+    assert hop.replacement_buys[0].allocated_quantity == pytest.approx(50)
+    assert hop.replacement_buys[0].allocated_disallowed == pytest.approx(1000)
+    assert hop.engine_adjusted_cost_basis == pytest.approx(5500)
+    assert "Jun 25" in hop.plain_english
+    assert "moved into" in hop.plain_english
+    assert flag.disallowed_loss == pytest.approx(1000)
+    assert flag.adjusted_cost_basis == pytest.approx(5500)
     assert [(txn.activity_date, txn.quantity, txn.price) for txn in txns] == [
         (txn.activity_date, txn.quantity, txn.price) for txn in before_txns
     ]
@@ -6884,10 +6870,9 @@ def test_post_sale_buys_short_of_repurchase_quantity_stay_quiet():
 def test_prior_sale_lot_is_not_published_when_replacement_cannot_be_allocated():
     """Buy 80 on May 25, sell them Jun 1, buy 100 Jun 5, sell those Jun 20.
 
-    Jun 20's window still holds the May 25 lot that Jun 1 already closed.
-    Those 80 shares do not cover the repurchase, so the hop does not publish
-    the engine basis (priced off that $10,000 lot), a tacked date, or
-    carryover days, and it does not call a missing split illustrative.
+    Jun 20 closes the Jun 5 lot. The May 25 shares were already sold, so
+    they are not a replacement and Jun 20 is not a wash. Jun 1's replacement
+    is the Jun 5 buy that was still open that day.
     """
     may = date(2026, 5, 25)
     june_sale = date(2026, 6, 1)
@@ -6900,11 +6885,13 @@ def test_prior_sale_lot_is_not_published_when_replacement_cannot_be_allocated():
         _txn("AAPL", TransCode.SELL, june_later, 100, 90),
     ]
     flags = detect_wash_sales(txns, tax_year=2026)
-    later_flag = next(flag for flag in flags if flag.sale_date == june_later)
-    assert later_flag.repurchase_date == may
-    assert later_flag.adjusted_cost_basis == pytest.approx(12000)
+    assert [flag.sale_date for flag in flags] == [june_sale]
+    earlier_flag = flags[0]
+    assert earlier_flag.repurchase_date == june_buy
+    assert earlier_flag.repurchase_quantity == pytest.approx(80)
+    assert earlier_flag.disallowed_loss == pytest.approx(2000)
+    assert earlier_flag.adjusted_cost_basis == pytest.approx(10800)
     before = copy.deepcopy(txns)
-    before_basis = later_flag.adjusted_cost_basis
     chains = _build(
         transactions=txns,
         wash_sale_flags=flags,
@@ -6913,22 +6900,13 @@ def test_prior_sale_lot_is_not_published_when_replacement_cannot_be_allocated():
             _event("AAPL", june_later, 100, 11000, 9000, june_buy),
         ],
     )
-    hop = next(
-        chain.hops[0] for chain in chains if chain.hops[0].sale_date == june_later
-    )
-    assert hop.replacement_buys == []
-    assert hop.engine_adjusted_cost_basis is None
-    assert hop.tacked_acquisition_date is None
-    assert hop.carryover_days is None
-    assert hop.not_compared_reason == "unallocated"
-    assert hop.reconcile_status == "not_compared"
-    assert "illustrative" not in hop.plain_english
-    earlier = next(
-        chain.hops[0] for chain in chains if chain.hops[0].sale_date == june_sale
-    )
+    assert [chain.hops[0].sale_date for chain in chains] == [june_sale]
+    earlier = chains[0].hops[0]
     assert earlier.not_compared_reason != "unidentified"
     assert [buy.activity_date for buy in earlier.replacement_buys] == [june_buy]
-    assert later_flag.adjusted_cost_basis == pytest.approx(before_basis)
+    assert earlier.replacement_buys[0].allocated_quantity == pytest.approx(80)
+    assert "illustrative" not in earlier.plain_english
+    assert earlier_flag.adjusted_cost_basis == pytest.approx(10800)
     assert [(txn.activity_date, txn.quantity, txn.price) for txn in txns] == [
         (txn.activity_date, txn.quantity, txn.price) for txn in before
     ]

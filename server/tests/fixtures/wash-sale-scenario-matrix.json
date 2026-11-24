@@ -1,0 +1,2789 @@
+{
+  "title": "JOR-206 wash-sale scenario matrix",
+  "for": "OptionsTaxHub PR #280 fix round (one Jordan/Orion-approved round)",
+  "base": "staging a4b844190993d69ab4fb79cdcdec24890b74893d",
+  "written": "2026-11-23T19:25:00-06:00",
+  "timezone": "America/Chicago",
+  "row_count": 24,
+  "round_rules": {
+    "every_row_must_pass": true,
+    "if_gate_finds_a_keep": "Stop. Do not kick another round. Report BLOCKED to Orion.",
+    "protected": "Do not retarget any row marked protected:true, including $924 / NVDA 384 / TSLA 240 / AMD 300 reconcile matches, QQQ IRA $120 Permanent, $50+$50, partly-sold $40, and harvest_checks 4 rows with SOFI $100.",
+    "no_code_in_this_document_task": true
+  },
+  "conventions": {
+    "tax_year_default": 2026,
+    "window": "Inclusive 30 days before through 30 days after the sale date (WASH_SALE_WINDOW_DAYS=30). Apr 1 2026 \u2212 30d = Mar 2; Apr 1 + 30d = May 1.",
+    "same_day_same_account": "Excluded (b.activity_date != sell.activity_date). Do not change this rule.",
+    "same_day_cross_account": "Counts (see S20).",
+    "self_lot": "Shares this sale (or earlier sales) already closed via FIFO are not a repurchase. Only unconsumed window shares count toward repurchase_quantity and disallowed_loss. Count cumulative used_buy_quantities, not only this sale's closed_now versus the buy's original quantity.",
+    "radar": "WashSaleWarning totals wash_sale_flags after dropping a flag only when it matches a same-account hop with not_compared_reason='unallocated'. Do not drop no_1099, matches, differs, or other reconciliation statuses. dashboard/page.tsx passes chains={washSaleChains} and locked={!packetUnlocked}.",
+    "cross_account_not_in_radar": "Cross-account estimates are not wash_sale_flags and must not be added to the radar total (same split as $924 vs QQQ $120). They appear in wash_sale_chains with cross_account=true and in cross_account_wash_count.",
+    "ira": "ira_traditional and ira_roth are Permanent; the loss does not add to the IRA lot's basis.",
+    "other_taxable": "label 'other' (Other/agentic) is deferred; explained_basis includes the disallowed amount.",
+    "values_confirmed_at": "staging a4b8441, by running detect_wash_sales / build_cross_account_chains (flags=[] where the self-lot bug would otherwise interfere) and the sample harvest check."
+  },
+  "rows": [
+    {
+      "id": "S01",
+      "name": "Mira's XLE files: short-held taxable lot + partly sold IRA",
+      "why_it_matters": "The HOLD repro. The Individual lot is bought 30 days before it is sold, so a4b8441 treats that closed lot as its own $100 replacement, marks the hop unallocated, and zeroes remaining_loss before the 5 still-open IRA shares can form a $50 Permanent chain. #280 already fixes this exact book; the new round must keep it green.",
+      "protected": false,
+      "tax_year": 2026,
+      "caught_keep": null,
+      "inputs": {
+        "source": "files",
+        "files": [
+          {
+            "path": "/workspace/walk-1123/jor206-taxable.csv",
+            "label": "individual"
+          },
+          {
+            "path": "/workspace/walk-1123/jor206-ira.csv",
+            "label": "ira_traditional"
+          }
+        ],
+        "fixture_copies": [
+          "server/tests/fixtures/jor206-taxable.csv",
+          "server/tests/fixtures/jor206-ira.csv"
+        ],
+        "supplemental_1099": null,
+        "transactions": [
+          {
+            "account_label": "individual",
+            "account_type": "taxable",
+            "account_name": "Individual",
+            "symbol": "XLE",
+            "side": "buy",
+            "qty": 10,
+            "price": 100,
+            "date": "2026-03-02"
+          },
+          {
+            "account_label": "individual",
+            "account_type": "taxable",
+            "account_name": "Individual",
+            "symbol": "XLE",
+            "side": "sell",
+            "qty": 10,
+            "price": 90,
+            "date": "2026-04-01"
+          },
+          {
+            "account_label": "ira_traditional",
+            "account_type": "ira",
+            "account_name": "IRA (traditional)",
+            "symbol": "XLE",
+            "side": "buy",
+            "qty": 10,
+            "price": 95,
+            "date": "2026-03-16"
+          },
+          {
+            "account_label": "ira_traditional",
+            "account_type": "ira",
+            "account_name": "IRA (traditional)",
+            "symbol": "XLE",
+            "side": "sell",
+            "qty": 5,
+            "price": 96,
+            "date": "2026-03-25"
+          }
+        ]
+      },
+      "expected": {
+        "same_account_flags": {
+          "count": 0,
+          "items": []
+        },
+        "same_account_chains": [],
+        "cross_account_chains": [
+          {
+            "symbol": "XLE",
+            "sale_date": "2026-04-01",
+            "sale_quantity": 10,
+            "disallowed_loss": 50,
+            "cross_account": true,
+            "permanent_disallowance": true,
+            "reconcile_status": "not_on_1099",
+            "not_compared_reason": "",
+            "account_label": "individual",
+            "account_name": "Individual",
+            "allocated_shares": 5,
+            "plain_english": "Not on your 1099: cross-account. An Individual sale of 10 XLE on Apr 1 lost $100. A buy in an IRA (traditional) within 30 days before or after that sale covers 5 shares. Estimated disallowed amount $50. Permanent: a loss washed by an IRA buy is lost for good. It does not add to the IRA's basis.",
+            "replacement_buys": [
+              {
+                "activity_date": "2026-03-16",
+                "allocated_quantity": 5,
+                "account_label": "ira_traditional",
+                "account_name": "IRA (traditional)",
+                "allocated_disallowed": 50,
+                "explained_basis": 475
+              }
+            ]
+          }
+        ],
+        "radar": {
+          "total": 0,
+          "event_count": 0,
+          "tickers": [],
+          "visible": false,
+          "note": "WashSaleWarning sums wash_sale_flags after dropping only hops with not_compared_reason='unallocated'. Do not drop no_1099 / matches / differs. Cross-account estimates are not added to this total."
+        },
+        "locked_teaser": {
+          "shows_radar": false,
+          "tickers": [],
+          "hides_amounts": true,
+          "note": "No same-account flags, so the radar (and locked teaser) do not render. Cross-account count may still appear in the chain panel."
+        },
+        "notes": "Confirmed at staging a4b8441 by calling build_cross_account_chains with flags=[] (the desired engine once the self-lot flag is gone). explained_basis 475 is 5\u00d7$95; the IRA lot must not receive the $50. Radar stays at $0 because cross-account estimates are not wash_sale_flags (same rule as the $924 / QQQ split)."
+      },
+      "tests": {
+        "keep": [
+          "server/tests/test_cross_account_wash.py::test_jor206_short_held_taxable_lot_does_not_block_the_ira_chain"
+        ],
+        "add": [
+          "optional API/analyze test posting the two fixtures with labels individual + ira_traditional"
+        ]
+      }
+    },
+    {
+      "id": "S02",
+      "name": "Mira taxable file alone: no self-lot flag at the 30-day edge",
+      "why_it_matters": "Apr 1 minus 30 days is Mar 2, so the opening buy sits on the inclusive window edge. Those shares are the lot this sale closed, so they are not a repurchase. A taxable-only upload must not invent a $100 flag, an unallocated hop, or a $100 radar total.",
+      "protected": false,
+      "tax_year": 2026,
+      "caught_keep": null,
+      "inputs": {
+        "source": "files",
+        "files": [
+          {
+            "path": "/workspace/walk-1123/jor206-taxable.csv",
+            "label": "individual"
+          }
+        ],
+        "supplemental_1099": null,
+        "transactions": [
+          {
+            "account_label": "individual",
+            "account_type": "taxable",
+            "account_name": "Individual",
+            "symbol": "XLE",
+            "side": "buy",
+            "qty": 10,
+            "price": 100,
+            "date": "2026-03-02"
+          },
+          {
+            "account_label": "individual",
+            "account_type": "taxable",
+            "account_name": "Individual",
+            "symbol": "XLE",
+            "side": "sell",
+            "qty": 10,
+            "price": 90,
+            "date": "2026-04-01"
+          }
+        ]
+      },
+      "expected": {
+        "same_account_flags": {
+          "count": 0,
+          "items": []
+        },
+        "same_account_chains": [],
+        "cross_account_chains": [],
+        "radar": {
+          "total": 0,
+          "event_count": 0,
+          "tickers": [],
+          "visible": false,
+          "note": "WashSaleWarning sums wash_sale_flags after dropping only hops with not_compared_reason='unallocated'. Do not drop no_1099 / matches / differs. Cross-account estimates are not added to this total."
+        },
+        "locked_teaser": {
+          "shows_radar": false,
+          "tickers": [],
+          "hides_amounts": true,
+          "note": "No same-account flags, so the radar (and locked teaser) do not render. Cross-account count may still appear in the chain panel."
+        },
+        "notes": "This is also the self-lot \u00d7 inclusive-30-day-edge case. Loss is $100 and is allowed."
+      },
+      "tests": {
+        "keep": [
+          "server/tests/test_wash_sale.py::TestDetectWashSales::test_short_held_lot_is_not_its_own_replacement"
+        ],
+        "add": []
+      }
+    },
+    {
+      "id": "S03",
+      "name": "Split close of the short-held lot, 5 IRA shares still open",
+      "why_it_matters": "Bugbot #4673911809 / KEEP 2. The #280 skip only fired when this sale's closed_now covered each window buy's original quantity. Selling 5 on Mar 10 and 5 on Apr 1 leaves closed_now=5 against a 10-share buy, so a4b8441 and #280 both emit two $50 self-lot flags and no IRA chain. Once those flags are gone, #278 reservations already produce two $50 Permanent chains (confirmed at a4b8441 with flags=[]).",
+      "protected": false,
+      "tax_year": 2026,
+      "caught_keep": "4673911809",
+      "inputs": {
+        "source": "transactions",
+        "supplemental_1099": null,
+        "transactions": [
+          {
+            "account_label": "individual",
+            "account_type": "taxable",
+            "account_name": "Individual",
+            "symbol": "XLE",
+            "side": "buy",
+            "qty": 10,
+            "price": 100,
+            "date": "2026-03-02"
+          },
+          {
+            "account_label": "individual",
+            "account_type": "taxable",
+            "account_name": "Individual",
+            "symbol": "XLE",
+            "side": "sell",
+            "qty": 5,
+            "price": 90,
+            "date": "2026-03-10"
+          },
+          {
+            "account_label": "individual",
+            "account_type": "taxable",
+            "account_name": "Individual",
+            "symbol": "XLE",
+            "side": "sell",
+            "qty": 5,
+            "price": 90,
+            "date": "2026-04-01"
+          },
+          {
+            "account_label": "ira_traditional",
+            "account_type": "ira",
+            "account_name": "IRA (traditional)",
+            "symbol": "XLE",
+            "side": "buy",
+            "qty": 10,
+            "price": 95,
+            "date": "2026-03-16"
+          },
+          {
+            "account_label": "ira_traditional",
+            "account_type": "ira",
+            "account_name": "IRA (traditional)",
+            "symbol": "XLE",
+            "side": "sell",
+            "qty": 5,
+            "price": 96,
+            "date": "2026-03-25"
+          }
+        ]
+      },
+      "expected": {
+        "same_account_flags": {
+          "count": 0,
+          "items": []
+        },
+        "same_account_chains": [],
+        "cross_account_chains": [
+          {
+            "symbol": "XLE",
+            "sale_date": "2026-03-10",
+            "sale_quantity": 5,
+            "disallowed_loss": 50,
+            "cross_account": true,
+            "permanent_disallowance": true,
+            "reconcile_status": "not_on_1099",
+            "not_compared_reason": "",
+            "account_label": "individual",
+            "account_name": "Individual",
+            "allocated_shares": 5,
+            "plain_english": "Not on your 1099: cross-account. An Individual sale of 5 XLE on Mar 10 lost $50. A buy in an IRA (traditional) within 30 days before or after that sale covers 5 shares. Estimated disallowed amount $50. Permanent: a loss washed by an IRA buy is lost for good. It does not add to the IRA's basis.",
+            "replacement_buys": [
+              {
+                "activity_date": "2026-03-16",
+                "allocated_quantity": 5,
+                "account_label": "ira_traditional",
+                "account_name": "IRA (traditional)",
+                "allocated_disallowed": 50,
+                "explained_basis": 475
+              }
+            ]
+          },
+          {
+            "symbol": "XLE",
+            "sale_date": "2026-04-01",
+            "sale_quantity": 5,
+            "disallowed_loss": 50,
+            "cross_account": true,
+            "permanent_disallowance": true,
+            "reconcile_status": "not_on_1099",
+            "not_compared_reason": "",
+            "account_label": "individual",
+            "account_name": "Individual",
+            "allocated_shares": 5,
+            "plain_english": "Not on your 1099: cross-account. An Individual sale of 5 XLE on Apr 1 lost $50. A buy in an IRA (traditional) within 30 days before or after that sale covers 5 shares. Estimated disallowed amount $50. Permanent: a loss washed by an IRA buy is lost for good. It does not add to the IRA's basis.",
+            "replacement_buys": [
+              {
+                "activity_date": "2026-03-16",
+                "allocated_quantity": 5,
+                "account_label": "ira_traditional",
+                "account_name": "IRA (traditional)",
+                "allocated_disallowed": 50,
+                "explained_basis": 475
+              }
+            ]
+          }
+        ],
+        "radar": {
+          "total": 0,
+          "event_count": 0,
+          "tickers": [],
+          "visible": false,
+          "note": "WashSaleWarning sums wash_sale_flags after dropping only hops with not_compared_reason='unallocated'. Do not drop no_1099 / matches / differs. Cross-account estimates are not added to this total."
+        },
+        "locked_teaser": {
+          "shows_radar": false,
+          "tickers": [],
+          "hides_amounts": true,
+          "note": "No same-account flags, so the radar (and locked teaser) do not render. Cross-account count may still appear in the chain panel."
+        },
+        "notes": "The Mar 16 IRA buy is after the first taxable sale; post-sale buys still count, and the Mar 25 IRA sale does not shrink the Mar 10 replacement (same rule as test_shares_sold_after_the_loss_were_open_on_the_sale_date). The Feb 3 / Feb 10 $50+$50 book is the same reservation shape with an opening lot outside the window."
+      },
+      "tests": {
+        "keep": [],
+        "add": [
+          "server/tests/test_cross_account_wash.py::test_split_close_of_short_held_lot_does_not_block_two_ira_chains"
+        ]
+      }
+    },
+    {
+      "id": "S04",
+      "name": "Split close of the short-held lot, no IRA",
+      "why_it_matters": "Control for S03. After both 5-share sales, nothing is still held in any account, so there is no replacement and no wash. Today's engine still emits two $50 self-lot flags.",
+      "protected": false,
+      "tax_year": 2026,
+      "caught_keep": "4673911809",
+      "inputs": {
+        "source": "transactions",
+        "supplemental_1099": null,
+        "transactions": [
+          {
+            "account_label": "individual",
+            "account_type": "taxable",
+            "account_name": "Individual",
+            "symbol": "XLE",
+            "side": "buy",
+            "qty": 10,
+            "price": 100,
+            "date": "2026-03-02"
+          },
+          {
+            "account_label": "individual",
+            "account_type": "taxable",
+            "account_name": "Individual",
+            "symbol": "XLE",
+            "side": "sell",
+            "qty": 5,
+            "price": 90,
+            "date": "2026-03-10"
+          },
+          {
+            "account_label": "individual",
+            "account_type": "taxable",
+            "account_name": "Individual",
+            "symbol": "XLE",
+            "side": "sell",
+            "qty": 5,
+            "price": 90,
+            "date": "2026-04-01"
+          }
+        ]
+      },
+      "expected": {
+        "same_account_flags": {
+          "count": 0,
+          "items": []
+        },
+        "same_account_chains": [],
+        "cross_account_chains": [],
+        "radar": {
+          "total": 0,
+          "event_count": 0,
+          "tickers": [],
+          "visible": false,
+          "note": "WashSaleWarning sums wash_sale_flags after dropping only hops with not_compared_reason='unallocated'. Do not drop no_1099 / matches / differs. Cross-account estimates are not added to this total."
+        },
+        "locked_teaser": {
+          "shows_radar": false,
+          "tickers": [],
+          "hides_amounts": true,
+          "note": "No same-account flags, so the radar (and locked teaser) do not render. Cross-account count may still appear in the chain panel."
+        },
+        "notes": "Both losses are allowed. No unallocated hops either."
+      },
+      "tests": {
+        "keep": [],
+        "add": [
+          "server/tests/test_wash_sale.py::test_split_close_of_short_held_lot_is_not_its_own_replacement"
+        ]
+      }
+    },
+    {
+      "id": "S05",
+      "name": "Closed short-held lot plus a still-open window buy of 5",
+      "why_it_matters": "A different lot bought in the window and still held must still flag, and only those unconsumed shares count. #280 kept the closed lot in total_repurchase_qty, so a later buy of 5 would over-disallow $200 of a $200 loss. The closed lot must not be the repurchase date or inflate the quantity.",
+      "protected": false,
+      "tax_year": 2026,
+      "caught_keep": "4673911809-qty",
+      "inputs": {
+        "source": "transactions",
+        "supplemental_1099": null,
+        "transactions": [
+          {
+            "account_label": "individual",
+            "account_type": "taxable",
+            "account_name": "Individual",
+            "symbol": "AAPL",
+            "side": "buy",
+            "qty": 10,
+            "price": 100,
+            "date": "2026-06-01"
+          },
+          {
+            "account_label": "individual",
+            "account_type": "taxable",
+            "account_name": "Individual",
+            "symbol": "AAPL",
+            "side": "sell",
+            "qty": 10,
+            "price": 80,
+            "date": "2026-06-20"
+          },
+          {
+            "account_label": "individual",
+            "account_type": "taxable",
+            "account_name": "Individual",
+            "symbol": "AAPL",
+            "side": "buy",
+            "qty": 5,
+            "price": 90,
+            "date": "2026-06-25"
+          }
+        ]
+      },
+      "expected": {
+        "same_account_flags": {
+          "count": 1,
+          "items": [
+            {
+              "symbol": "AAPL",
+              "sale_date": "2026-06-20",
+              "sale_quantity": 10,
+              "disallowed_loss": 100,
+              "repurchase_date": "2026-06-25",
+              "repurchase_quantity": 5,
+              "account_label": "individual",
+              "adjusted_cost_basis": 550
+            }
+          ]
+        },
+        "same_account_chains": [
+          {
+            "symbol": "AAPL",
+            "sale_date": "2026-06-20",
+            "sale_quantity": 10,
+            "disallowed_loss": 100,
+            "cross_account": false,
+            "permanent_disallowance": false,
+            "reconcile_status": "not_compared",
+            "not_compared_reason": "no_1099",
+            "account_label": "individual",
+            "account_name": "Individual",
+            "allocated_shares": 5,
+            "plain_english": null,
+            "replacement_buys": [
+              {
+                "activity_date": "2026-06-25",
+                "allocated_quantity": 5,
+                "account_label": "individual",
+                "account_name": "Individual",
+                "allocated_disallowed": 100
+              }
+            ]
+          }
+        ],
+        "cross_account_chains": [],
+        "radar": {
+          "total": 100,
+          "event_count": 1,
+          "tickers": [
+            "AAPL"
+          ],
+          "visible": true,
+          "note": "WashSaleWarning sums wash_sale_flags after dropping only hops with not_compared_reason='unallocated'. Do not drop no_1099 / matches / differs. Cross-account estimates are not added to this total."
+        },
+        "locked_teaser": {
+          "shows_radar": true,
+          "tickers": [
+            "AAPL"
+          ],
+          "hides_amounts": true,
+          "note": "When packet_unlocked is false, show ticker chips and the event/ticker count, but not dollar amounts."
+        },
+        "notes": "Loss is $200; replacement qty 5 of 10 \u2192 $100 disallowed. adjusted_cost_basis is 5\u00d7$90 + $100 = $550 on the still-open lot. test_open_window_buy_still_counts_beside_the_closed_lot uses a later buy of 10 (so $200 is the right amount) but currently asserts repurchase_date=2026-06-01 (the closed lot). Retarget that test's repurchase date/basis to the still-open Jun 25 lot; do not keep the closed lot in repurchase_quantity. Hop is no_1099 because this book has no 1099; that hop must stay on the radar (see S12)."
+      },
+      "tests": {
+        "keep": [],
+        "add": [
+          "server/tests/test_wash_sale.py::test_open_window_buy_counts_only_unconsumed_shares",
+          "Retarget repurchase_date in test_open_window_buy_still_counts_beside_the_closed_lot to 2026-06-25"
+        ]
+      }
+    },
+    {
+      "id": "S06",
+      "name": "Partial close that leaves 5 of the same lot open: not a wash",
+      "why_it_matters": "Rev. Rul. 56-602: shares from the same purchase that you still hold are not replacement shares for the part you sold. Selling 5 of a 10-share lot at a loss while holding the other 5 is NOT a wash. This matches S03 (the split close never self-replaces). Corrected by Chloe; it supersedes the executor's first draft.",
+      "protected": false,
+      "tax_year": 2026,
+      "caught_keep": null,
+      "inputs": {
+        "source": "transactions",
+        "supplemental_1099": null,
+        "transactions": [
+          {
+            "account_label": "individual",
+            "account_type": "taxable",
+            "account_name": "Individual",
+            "symbol": "XLE",
+            "side": "buy",
+            "qty": 10,
+            "price": 100,
+            "date": "2026-03-02"
+          },
+          {
+            "account_label": "individual",
+            "account_type": "taxable",
+            "account_name": "Individual",
+            "symbol": "XLE",
+            "side": "sell",
+            "qty": 5,
+            "price": 90,
+            "date": "2026-03-10"
+          }
+        ]
+      },
+      "expected": {
+        "same_account_flags": {
+          "count": 0,
+          "items": []
+        },
+        "same_account_chains": [],
+        "cross_account_chains": [],
+        "radar": {
+          "total": 0,
+          "event_count": 0,
+          "tickers": [],
+          "visible": false,
+          "note": "No flag, so nothing on the radar."
+        },
+        "locked_teaser": {
+          "shows_radar": false,
+          "tickers": [],
+          "hides_amounts": true,
+          "note": "No wash, so no teaser chip."
+        },
+        "notes": "a4b8441 currently flags $50 here (a false self-lot flag, the same bug family as Mira's XLE). The fix must return no flag. A buy from a DIFFERENT lot inside the window still counts (S05, S07)."
+      },
+      "tests": {
+        "keep": [],
+        "add": [
+          "server/tests/test_wash_sale.py::test_partial_close_same_lot_remainder_is_not_a_replacement"
+        ]
+      }
+    },
+    {
+      "id": "S07",
+      "name": "Multi-lot sale: FIFO partly consumes the window buy",
+      "why_it_matters": "A 15-share sale closes an older out-of-window lot of 10 and 5 of a 10-share window lot. Only the 5 unconsumed window shares are a replacement. a4b8441 counts the full window lot of 10 and disallows $100 of a $150 loss; the right amount is $50.",
+      "protected": false,
+      "tax_year": 2026,
+      "caught_keep": "4673911809-fifo",
+      "inputs": {
+        "source": "transactions",
+        "supplemental_1099": null,
+        "transactions": [
+          {
+            "account_label": "individual",
+            "account_type": "taxable",
+            "account_name": "Individual",
+            "symbol": "XLE",
+            "side": "buy",
+            "qty": 10,
+            "price": 100,
+            "date": "2026-01-01"
+          },
+          {
+            "account_label": "individual",
+            "account_type": "taxable",
+            "account_name": "Individual",
+            "symbol": "XLE",
+            "side": "buy",
+            "qty": 10,
+            "price": 100,
+            "date": "2026-03-02"
+          },
+          {
+            "account_label": "individual",
+            "account_type": "taxable",
+            "account_name": "Individual",
+            "symbol": "XLE",
+            "side": "sell",
+            "qty": 15,
+            "price": 90,
+            "date": "2026-04-01"
+          }
+        ]
+      },
+      "expected": {
+        "same_account_flags": {
+          "count": 1,
+          "items": [
+            {
+              "symbol": "XLE",
+              "sale_date": "2026-04-01",
+              "sale_quantity": 15,
+              "disallowed_loss": 50,
+              "repurchase_date": "2026-03-02",
+              "repurchase_quantity": 5,
+              "account_label": "individual",
+              "adjusted_cost_basis": 550
+            }
+          ]
+        },
+        "same_account_chains": [
+          {
+            "symbol": "XLE",
+            "sale_date": "2026-04-01",
+            "sale_quantity": 15,
+            "disallowed_loss": 50,
+            "cross_account": false,
+            "permanent_disallowance": false,
+            "reconcile_status": "not_compared",
+            "not_compared_reason": "no_1099",
+            "account_label": "individual",
+            "account_name": "Individual",
+            "allocated_shares": 5,
+            "plain_english": null,
+            "replacement_buys": [
+              {
+                "activity_date": "2026-03-02",
+                "allocated_quantity": 5,
+                "account_label": "individual",
+                "account_name": "Individual",
+                "allocated_disallowed": 50
+              }
+            ]
+          }
+        ],
+        "cross_account_chains": [],
+        "radar": {
+          "total": 50,
+          "event_count": 1,
+          "tickers": [
+            "XLE"
+          ],
+          "visible": true,
+          "note": "WashSaleWarning sums wash_sale_flags after dropping only hops with not_compared_reason='unallocated'. Do not drop no_1099 / matches / differs. Cross-account estimates are not added to this total."
+        },
+        "locked_teaser": {
+          "shows_radar": true,
+          "tickers": [
+            "XLE"
+          ],
+          "hides_amounts": true,
+          "note": "When packet_unlocked is false, show ticker chips and the event/ticker count, but not dollar amounts."
+        },
+        "notes": "Loss = 15\u00d7$10 = $150. Unconsumed window qty = 5. Disallowed = 150\u00d7(5/15) = $50. The Jan 1 lot is outside the window (Apr 1\u221230 = Mar 2) and is fully closed; it is not a repurchase. adjusted_cost_basis 5\u00d7$100 + $50 = $550 on the remaining Mar 2 shares."
+      },
+      "tests": {
+        "keep": [],
+        "add": [
+          "server/tests/test_wash_sale.py::test_fifo_partial_consume_of_window_buy_counts_only_unconsumed_shares"
+        ]
+      }
+    },
+    {
+      "id": "S08",
+      "name": "Self-lot at day 30 plus a later in-window replacement",
+      "why_it_matters": "Combines the inclusive 30-day edge with a real replacement. The Mar 2 buy is on the window edge but is the lot just closed, so it must not count. The May 1 buy is exactly 30 days after the sale and must be the sole repurchase, at full quantity.",
+      "protected": false,
+      "tax_year": 2026,
+      "caught_keep": null,
+      "inputs": {
+        "source": "transactions",
+        "supplemental_1099": null,
+        "transactions": [
+          {
+            "account_label": "individual",
+            "account_type": "taxable",
+            "account_name": "Individual",
+            "symbol": "XLE",
+            "side": "buy",
+            "qty": 10,
+            "price": 100,
+            "date": "2026-03-02"
+          },
+          {
+            "account_label": "individual",
+            "account_type": "taxable",
+            "account_name": "Individual",
+            "symbol": "XLE",
+            "side": "sell",
+            "qty": 10,
+            "price": 90,
+            "date": "2026-04-01"
+          },
+          {
+            "account_label": "individual",
+            "account_type": "taxable",
+            "account_name": "Individual",
+            "symbol": "XLE",
+            "side": "buy",
+            "qty": 10,
+            "price": 95,
+            "date": "2026-05-01"
+          }
+        ]
+      },
+      "expected": {
+        "same_account_flags": {
+          "count": 1,
+          "items": [
+            {
+              "symbol": "XLE",
+              "sale_date": "2026-04-01",
+              "sale_quantity": 10,
+              "disallowed_loss": 100,
+              "repurchase_date": "2026-05-01",
+              "repurchase_quantity": 10,
+              "account_label": "individual",
+              "adjusted_cost_basis": 1050
+            }
+          ]
+        },
+        "same_account_chains": [
+          {
+            "symbol": "XLE",
+            "sale_date": "2026-04-01",
+            "sale_quantity": 10,
+            "disallowed_loss": 100,
+            "cross_account": false,
+            "permanent_disallowance": false,
+            "reconcile_status": "not_compared",
+            "not_compared_reason": "no_1099",
+            "account_label": "individual",
+            "account_name": "Individual",
+            "allocated_shares": 10,
+            "plain_english": null,
+            "replacement_buys": [
+              {
+                "activity_date": "2026-05-01",
+                "allocated_quantity": 10,
+                "account_label": "individual",
+                "account_name": "Individual",
+                "allocated_disallowed": 100
+              }
+            ]
+          }
+        ],
+        "cross_account_chains": [],
+        "radar": {
+          "total": 100,
+          "event_count": 1,
+          "tickers": [
+            "XLE"
+          ],
+          "visible": true,
+          "note": "WashSaleWarning sums wash_sale_flags after dropping only hops with not_compared_reason='unallocated'. Do not drop no_1099 / matches / differs. Cross-account estimates are not added to this total."
+        },
+        "locked_teaser": {
+          "shows_radar": true,
+          "tickers": [
+            "XLE"
+          ],
+          "hides_amounts": true,
+          "note": "When packet_unlocked is false, show ticker chips and the event/ticker count, but not dollar amounts."
+        },
+        "notes": "adjusted_cost_basis 10\u00d7$95 + $100 = $1,050. no_1099 stays on the radar."
+      },
+      "tests": {
+        "keep": [],
+        "add": [
+          "server/tests/test_wash_sale.py::test_self_lot_at_day_30_does_not_steal_a_later_window_buy"
+        ]
+      }
+    },
+    {
+      "id": "S09",
+      "name": "Taxable loss replaced by an IRA (traditional) buy \u2014 $120 Permanent",
+      "why_it_matters": "Protected JOR-175 / JOR-206 cross-account path. Same-account flags stay empty, the $120 is Permanent, and the IRA lot's basis is not increased.",
+      "protected": true,
+      "tax_year": 2026,
+      "caught_keep": null,
+      "inputs": {
+        "source": "transactions",
+        "supplemental_1099": null,
+        "transactions": [
+          {
+            "account_label": "individual",
+            "account_type": "taxable",
+            "account_name": "Individual",
+            "symbol": "QQQ",
+            "side": "buy",
+            "qty": 4,
+            "price": 500,
+            "date": "2026-01-06"
+          },
+          {
+            "account_label": "individual",
+            "account_type": "taxable",
+            "account_name": "Individual",
+            "symbol": "QQQ",
+            "side": "sell",
+            "qty": 4,
+            "price": 470,
+            "date": "2026-02-10"
+          },
+          {
+            "account_label": "ira_traditional",
+            "account_type": "ira",
+            "account_name": "IRA (traditional)",
+            "symbol": "QQQ",
+            "side": "buy",
+            "qty": 4,
+            "price": 480,
+            "date": "2026-02-20"
+          }
+        ]
+      },
+      "expected": {
+        "same_account_flags": {
+          "count": 0,
+          "items": []
+        },
+        "same_account_chains": [],
+        "cross_account_chains": [
+          {
+            "symbol": "QQQ",
+            "sale_date": "2026-02-10",
+            "sale_quantity": 4,
+            "disallowed_loss": 120,
+            "cross_account": true,
+            "permanent_disallowance": true,
+            "reconcile_status": "not_on_1099",
+            "not_compared_reason": "",
+            "account_label": "individual",
+            "account_name": "Individual",
+            "allocated_shares": 4,
+            "plain_english": "Not on your 1099: cross-account. An Individual sale of 4 QQQ on Feb 10 lost $120. A buy in an IRA (traditional) within 30 days before or after that sale covers 4 shares. Estimated disallowed amount $120. Permanent: a loss washed by an IRA buy is lost for good. It does not add to the IRA's basis.",
+            "replacement_buys": [
+              {
+                "activity_date": "2026-02-20",
+                "allocated_quantity": 4,
+                "account_label": "ira_traditional",
+                "account_name": "IRA (traditional)",
+                "allocated_disallowed": 120,
+                "explained_basis": 1920
+              }
+            ]
+          }
+        ],
+        "radar": {
+          "total": 0,
+          "event_count": 0,
+          "tickers": [],
+          "visible": false,
+          "note": "WashSaleWarning sums wash_sale_flags after dropping only hops with not_compared_reason='unallocated'. Do not drop no_1099 / matches / differs. Cross-account estimates are not added to this total."
+        },
+        "locked_teaser": {
+          "shows_radar": false,
+          "tickers": [],
+          "hides_amounts": true,
+          "note": "No same-account flags, so the radar (and locked teaser) do not render. Cross-account count may still appear in the chain panel."
+        },
+        "notes": "Protected: do not retarget. IRA total_cost_basis stays $1,920; wash_sale_disallowed on that lot is 0."
+      },
+      "tests": {
+        "keep": [
+          "server/tests/test_cross_account_wash.py::test_ira_replacement_is_estimated_and_does_not_change_basis"
+        ],
+        "add": []
+      }
+    },
+    {
+      "id": "S10",
+      "name": "Taxable loss replaced by an IRA (Roth) buy \u2014 $120 Permanent",
+      "why_it_matters": "Roth is in IRA_ACCOUNT_LABELS and must be Permanent, same as traditional, with no basis add. Same-day cross-account Roth is already covered by an existing test; this row uses a buy 10 days after the sale so it is not same-day-specific.",
+      "protected": false,
+      "tax_year": 2026,
+      "caught_keep": null,
+      "inputs": {
+        "source": "transactions",
+        "supplemental_1099": null,
+        "transactions": [
+          {
+            "account_label": "individual",
+            "account_type": "taxable",
+            "account_name": "Individual",
+            "symbol": "QQQ",
+            "side": "buy",
+            "qty": 4,
+            "price": 500,
+            "date": "2026-01-06"
+          },
+          {
+            "account_label": "individual",
+            "account_type": "taxable",
+            "account_name": "Individual",
+            "symbol": "QQQ",
+            "side": "sell",
+            "qty": 4,
+            "price": 470,
+            "date": "2026-02-10"
+          },
+          {
+            "account_label": "ira_roth",
+            "account_type": "ira",
+            "account_name": "IRA (Roth)",
+            "symbol": "QQQ",
+            "side": "buy",
+            "qty": 4,
+            "price": 480,
+            "date": "2026-02-20"
+          }
+        ]
+      },
+      "expected": {
+        "same_account_flags": {
+          "count": 0,
+          "items": []
+        },
+        "same_account_chains": [],
+        "cross_account_chains": [
+          {
+            "symbol": "QQQ",
+            "sale_date": "2026-02-10",
+            "sale_quantity": 4,
+            "disallowed_loss": 120,
+            "cross_account": true,
+            "permanent_disallowance": true,
+            "reconcile_status": "not_on_1099",
+            "not_compared_reason": "",
+            "account_label": "individual",
+            "account_name": "Individual",
+            "allocated_shares": 4,
+            "plain_english": "Not on your 1099: cross-account. An Individual sale of 4 QQQ on Feb 10 lost $120. A buy in an IRA (Roth) within 30 days before or after that sale covers 4 shares. Estimated disallowed amount $120. Permanent: a loss washed by an IRA buy is lost for good. It does not add to the IRA's basis.",
+            "replacement_buys": [
+              {
+                "activity_date": "2026-02-20",
+                "allocated_quantity": 4,
+                "account_label": "ira_roth",
+                "account_name": "IRA (Roth)",
+                "allocated_disallowed": 120,
+                "explained_basis": 1920
+              }
+            ]
+          }
+        ],
+        "radar": {
+          "total": 0,
+          "event_count": 0,
+          "tickers": [],
+          "visible": false,
+          "note": "WashSaleWarning sums wash_sale_flags after dropping only hops with not_compared_reason='unallocated'. Do not drop no_1099 / matches / differs. Cross-account estimates are not added to this total."
+        },
+        "locked_teaser": {
+          "shows_radar": false,
+          "tickers": [],
+          "hides_amounts": true,
+          "note": "No same-account flags, so the radar (and locked teaser) do not render. Cross-account count may still appear in the chain panel."
+        },
+        "notes": "Confirmed at a4b8441. Roth lot basis stays $1,920."
+      },
+      "tests": {
+        "keep": [
+          "server/tests/test_cross_account_wash.py::test_same_day_buy_in_another_account_is_flagged (same-day Roth variant, $120 Permanent)"
+        ],
+        "add": [
+          "server/tests/test_cross_account_wash.py::test_roth_replacement_is_permanent_and_does_not_change_basis"
+        ]
+      }
+    },
+    {
+      "id": "S11",
+      "name": "Taxable loss replaced by an Other/agentic buy \u2014 $120 deferred",
+      "why_it_matters": "The other taxable account (label 'other') is deferred, not Permanent. The $120 is added to the replacement lot's basis. Confirmed at a4b8441.",
+      "protected": false,
+      "tax_year": 2026,
+      "caught_keep": null,
+      "inputs": {
+        "source": "transactions",
+        "supplemental_1099": null,
+        "transactions": [
+          {
+            "account_label": "individual",
+            "account_type": "taxable",
+            "account_name": "Individual",
+            "symbol": "QQQ",
+            "side": "buy",
+            "qty": 4,
+            "price": 500,
+            "date": "2026-01-06"
+          },
+          {
+            "account_label": "individual",
+            "account_type": "taxable",
+            "account_name": "Individual",
+            "symbol": "QQQ",
+            "side": "sell",
+            "qty": 4,
+            "price": 470,
+            "date": "2026-02-10"
+          },
+          {
+            "account_label": "other",
+            "account_type": "taxable",
+            "account_name": "Other/agentic",
+            "symbol": "QQQ",
+            "side": "buy",
+            "qty": 4,
+            "price": 480,
+            "date": "2026-02-20"
+          }
+        ]
+      },
+      "expected": {
+        "same_account_flags": {
+          "count": 0,
+          "items": []
+        },
+        "same_account_chains": [],
+        "cross_account_chains": [
+          {
+            "symbol": "QQQ",
+            "sale_date": "2026-02-10",
+            "sale_quantity": 4,
+            "disallowed_loss": 120,
+            "cross_account": true,
+            "permanent_disallowance": false,
+            "reconcile_status": "not_on_1099",
+            "not_compared_reason": "",
+            "account_label": "individual",
+            "account_name": "Individual",
+            "allocated_shares": 4,
+            "plain_english": "Not on your 1099: cross-account. An Individual sale of 4 QQQ on Feb 10 lost $120. A buy in an Other/agentic within 30 days before or after that sale covers 4 shares. Estimated disallowed amount $120.",
+            "replacement_buys": [
+              {
+                "activity_date": "2026-02-20",
+                "allocated_quantity": 4,
+                "account_label": "other",
+                "account_name": "Other/agentic",
+                "allocated_disallowed": 120,
+                "explained_basis": 2040
+              }
+            ]
+          }
+        ],
+        "radar": {
+          "total": 0,
+          "event_count": 0,
+          "tickers": [],
+          "visible": false,
+          "note": "WashSaleWarning sums wash_sale_flags after dropping only hops with not_compared_reason='unallocated'. Do not drop no_1099 / matches / differs. Cross-account estimates are not added to this total."
+        },
+        "locked_teaser": {
+          "shows_radar": false,
+          "tickers": [],
+          "hides_amounts": true,
+          "note": "No same-account flags, so the radar (and locked teaser) do not render. Cross-account count may still appear in the chain panel."
+        },
+        "notes": "explained_basis 4\u00d7$480 + $120 = $2,040. The product copy for a deferred-only chain (confirmed at a4b8441) does not include the 'Permanent: \u2026' sentence or the '$120 is added to the taxable replacement's basis' clause; that clause appears on the mixed IRA+other book in test_mixed_replacement_keeps_basis_on_the_taxable_buy. Do not invent new deferred-only copy in this round. Keep test_mixed_replacement\u2026"
+      },
+      "tests": {
+        "keep": [
+          "server/tests/test_cross_account_wash.py::test_mixed_replacement_keeps_basis_on_the_taxable_buy"
+        ],
+        "add": [
+          "server/tests/test_cross_account_wash.py::test_other_taxable_replacement_is_deferred_and_adds_basis"
+        ]
+      }
+    },
+    {
+      "id": "S12",
+      "name": "CSV-only no_1099 TSLA $1,000 stays on the radar and locked teaser",
+      "why_it_matters": "Codex #4673886897 and Bugbot #4673911797 / KEEP 1. A valid allocated wash with no same-year 1099 is not_compared / no_1099. #280 quieted every not_compared hop, so this $1,000 disappeared from the radar and the locked teaser. Suppression must be limited to unallocated.",
+      "protected": false,
+      "tax_year": 2026,
+      "caught_keep": "4673886897",
+      "inputs": {
+        "source": "transactions",
+        "supplemental_1099": null,
+        "transactions": [
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "TSLA",
+            "side": "buy",
+            "qty": 10,
+            "price": 300,
+            "date": "2026-06-01"
+          },
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "TSLA",
+            "side": "sell",
+            "qty": 10,
+            "price": 200,
+            "date": "2026-07-15"
+          },
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "TSLA",
+            "side": "buy",
+            "qty": 10,
+            "price": 210,
+            "date": "2026-08-01"
+          }
+        ]
+      },
+      "expected": {
+        "same_account_flags": {
+          "count": 1,
+          "items": [
+            {
+              "symbol": "TSLA",
+              "sale_date": "2026-07-15",
+              "sale_quantity": 10,
+              "disallowed_loss": 1000,
+              "repurchase_date": "2026-08-01",
+              "repurchase_quantity": 10,
+              "account_label": null,
+              "adjusted_cost_basis": 3100
+            }
+          ]
+        },
+        "same_account_chains": [
+          {
+            "symbol": "TSLA",
+            "sale_date": "2026-07-15",
+            "sale_quantity": 10,
+            "disallowed_loss": 1000,
+            "cross_account": false,
+            "permanent_disallowance": false,
+            "reconcile_status": "not_compared",
+            "not_compared_reason": "no_1099",
+            "account_label": null,
+            "account_name": null,
+            "allocated_shares": 10,
+            "plain_english": null,
+            "replacement_buys": [
+              {
+                "activity_date": "2026-08-01",
+                "allocated_quantity": 10,
+                "account_label": null,
+                "allocated_disallowed": 1000
+              }
+            ]
+          }
+        ],
+        "cross_account_chains": [],
+        "radar": {
+          "total": 1000,
+          "event_count": 1,
+          "tickers": [
+            "TSLA"
+          ],
+          "visible": true,
+          "note": "WashSaleWarning sums wash_sale_flags after dropping only hops with not_compared_reason='unallocated'. Do not drop no_1099 / matches / differs. Cross-account estimates are not added to this total."
+        },
+        "locked_teaser": {
+          "shows_radar": true,
+          "tickers": [
+            "TSLA"
+          ],
+          "hides_amounts": true,
+          "note": "When packet_unlocked is false, show ticker chips and the event/ticker count, but not dollar amounts."
+        },
+        "notes": "Confirmed at a4b8441 and on #280: flag $1,000, hop not_compared/no_1099, adjusted_cost_basis 10\u00d7$210 + $1,000 = $3,100. Unlocked radar must show 'Wash-sale radar (1 event across 1 ticker)' and 'Total disallowed loss: $1,000.00'. Locked teaser must still render with a TSLA chip and must not hide the event entirely. Do not suggest selling TSLA anywhere in harvest copy."
+      },
+      "tests": {
+        "keep": [],
+        "add": [
+          "client/tests/unit/washSaleWarning.test.tsx \u2014 no_1099 hop stays in the disallowed total and in the locked teaser",
+          "optional: server chain build on this book asserts not_compared/no_1099 and a $1,000 flag"
+        ]
+      }
+    },
+    {
+      "id": "S13",
+      "name": "Unallocated synthetic flag is hidden from the radar and stays quiet on a 1099",
+      "why_it_matters": "The radar should drop only flags whose matching same-account hop is unallocated. Keep the existing chain test that injects a synthetic self-lot flag (detect_wash_sales now returns []) and asserts not_compared / unallocated, no basis, no 1099 comparison.",
+      "protected": false,
+      "tax_year": 2026,
+      "caught_keep": null,
+      "inputs": {
+        "source": "transactions_plus_synthetic_flag",
+        "supplemental_1099": "same-year 1099 row for the AAPL sale with wash_sale_disallowed=0 (see existing test fixtures in test_wash_sale_chain.py)",
+        "transactions": [
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "AAPL",
+            "side": "buy",
+            "qty": 10,
+            "price": 100,
+            "date": "2026-05-20"
+          },
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "AAPL",
+            "side": "sell",
+            "qty": 10,
+            "price": 80,
+            "date": "2026-06-01"
+          }
+        ],
+        "synthetic_flag": {
+          "symbol": "AAPL",
+          "sale_date": "2026-06-01",
+          "sale_quantity": 10,
+          "disallowed_loss": 200,
+          "repurchase_date": "2026-05-20",
+          "repurchase_quantity": 10,
+          "account_label": null,
+          "adjusted_cost_basis": 1200
+        }
+      },
+      "expected": {
+        "same_account_flags": {
+          "count": 0,
+          "items": [],
+          "note": "detect_wash_sales on this book is []. The synthetic flag is only an input to the chain builder."
+        },
+        "same_account_chains": [
+          {
+            "symbol": "AAPL",
+            "sale_date": "2026-06-01",
+            "sale_quantity": 10,
+            "disallowed_loss": 200,
+            "cross_account": false,
+            "permanent_disallowance": false,
+            "reconcile_status": "not_compared",
+            "not_compared_reason": "unallocated",
+            "account_label": null,
+            "account_name": null,
+            "allocated_shares": 0,
+            "plain_english": "This sale's replacement shares could not be allocated, so it was not compared.",
+            "replacement_buys": []
+          }
+        ],
+        "cross_account_chains": [],
+        "radar": {
+          "total": 0,
+          "event_count": 0,
+          "tickers": [],
+          "visible": false,
+          "note": "WashSaleWarning sums wash_sale_flags after dropping only hops with not_compared_reason='unallocated'. Do not drop no_1099 / matches / differs. Cross-account estimates are not added to this total."
+        },
+        "locked_teaser": {
+          "shows_radar": false,
+          "tickers": [],
+          "hides_amounts": true,
+          "note": "No same-account flags, so the radar (and locked teaser) do not render. Cross-account count may still appear in the chain panel."
+        },
+        "notes": "Keep test_all_filtered_window_buys_are_unallocated. Do not compare this hop to the $0 1099 wash column. engine_adjusted_cost_basis, tacked dates, form_1099_wash, and difference stay None. Copy must not include $200 or 'illustrative'."
+      },
+      "tests": {
+        "keep": [
+          "server/tests/test_wash_sale_chain.py::test_all_filtered_window_buys_are_unallocated"
+        ],
+        "add": []
+      }
+    },
+    {
+      "id": "S14",
+      "name": "Unallocated is hidden beside a no_1099 wash that must stay on the radar",
+      "why_it_matters": "The row that would have caught KEEP 1 in the Jest test. #280's test only covered unallocated next to a matches hop. A no_1099 hop plus an unallocated hop in the same panel must keep the no_1099 amount and drop only the unallocated one.",
+      "protected": false,
+      "tax_year": 2026,
+      "caught_keep": "4673886897",
+      "inputs": {
+        "source": "component_props",
+        "supplemental_1099": null,
+        "transactions": [
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "TSLA",
+            "side": "buy",
+            "qty": 10,
+            "price": 300,
+            "date": "2026-06-01"
+          },
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "TSLA",
+            "side": "sell",
+            "qty": 10,
+            "price": 200,
+            "date": "2026-07-15"
+          },
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "TSLA",
+            "side": "buy",
+            "qty": 10,
+            "price": 210,
+            "date": "2026-08-01"
+          }
+        ],
+        "component_flags": [
+          {
+            "symbol": "TSLA",
+            "sale_date": "2026-07-15",
+            "sale_quantity": 10,
+            "disallowed_loss": 1000,
+            "repurchase_date": "2026-08-01",
+            "repurchase_quantity": 10,
+            "account_label": null
+          },
+          {
+            "symbol": "XLE",
+            "sale_date": "2026-04-01",
+            "sale_quantity": 10,
+            "disallowed_loss": 100,
+            "repurchase_date": "2026-03-02",
+            "repurchase_quantity": 10,
+            "account_label": "individual"
+          }
+        ],
+        "component_chains": [
+          {
+            "symbol": "TSLA",
+            "reconcile_status": "not_compared",
+            "not_compared_reason": "no_1099",
+            "cross_account": false,
+            "disallowed_loss": 1000,
+            "sale_date": "2026-07-15",
+            "sale_quantity": 10
+          },
+          {
+            "symbol": "XLE",
+            "reconcile_status": "not_compared",
+            "not_compared_reason": "unallocated",
+            "cross_account": false,
+            "disallowed_loss": 100,
+            "sale_date": "2026-04-01",
+            "sale_quantity": 10
+          }
+        ]
+      },
+      "expected": {
+        "same_account_flags": {
+          "count": 2,
+          "items": [
+            {
+              "symbol": "TSLA",
+              "sale_date": "2026-07-15",
+              "sale_quantity": 10,
+              "disallowed_loss": 1000,
+              "repurchase_date": "2026-08-01",
+              "repurchase_quantity": 10,
+              "account_label": null
+            },
+            {
+              "symbol": "XLE",
+              "sale_date": "2026-04-01",
+              "sale_quantity": 10,
+              "disallowed_loss": 100,
+              "repurchase_date": "2026-03-02",
+              "repurchase_quantity": 10,
+              "account_label": "individual"
+            }
+          ],
+          "note": "Both flags are present in the payload; the radar filter drops only XLE."
+        },
+        "same_account_chains": [],
+        "cross_account_chains": [],
+        "radar": {
+          "total": 1000,
+          "event_count": 1,
+          "tickers": [
+            "TSLA"
+          ],
+          "visible": true,
+          "note": "WashSaleWarning sums wash_sale_flags after dropping only hops with not_compared_reason='unallocated'. Do not drop no_1099 / matches / differs. Cross-account estimates are not added to this total."
+        },
+        "locked_teaser": {
+          "shows_radar": true,
+          "tickers": [
+            "TSLA"
+          ],
+          "hides_amounts": true,
+          "note": "Locked teaser shows TSLA only, not XLE, and hides $1,000. It must not return null."
+        },
+        "notes": "Also keep the existing Jest case: AAPL matches $500 + XLE unallocated $100 + a cross-account unallocated hop that must not hide the AAPL flag \u2192 radar $500, 1 event, AAPL only."
+      },
+      "tests": {
+        "keep": [
+          "client/tests/unit/washSaleWarning.test.tsx \u2014 leaves Not compared flags out of the disallowed total (unallocated case; keep, do not broaden it to all not_compared)"
+        ],
+        "add": [
+          "client/tests/unit/washSaleWarning.test.tsx \u2014 no_1099 stays in the total when an unallocated hop is also present, including locked={true}"
+        ]
+      }
+    },
+    {
+      "id": "S15",
+      "name": "Replacement exactly 30 days before the sale counts (not a self-lot)",
+      "why_it_matters": "Inclusive window edge. Apr 1 \u2212 30 = Mar 2. The sold lot was opened Jan 1, so the Mar 2 buy is a real replacement.",
+      "protected": false,
+      "tax_year": 2026,
+      "caught_keep": null,
+      "inputs": {
+        "source": "transactions",
+        "supplemental_1099": null,
+        "transactions": [
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "MSFT",
+            "side": "buy",
+            "qty": 10,
+            "price": 100,
+            "date": "2026-01-01"
+          },
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "MSFT",
+            "side": "sell",
+            "qty": 10,
+            "price": 90,
+            "date": "2026-04-01"
+          },
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "MSFT",
+            "side": "buy",
+            "qty": 10,
+            "price": 95,
+            "date": "2026-03-02"
+          }
+        ]
+      },
+      "expected": {
+        "same_account_flags": {
+          "count": 1,
+          "items": [
+            {
+              "symbol": "MSFT",
+              "sale_date": "2026-04-01",
+              "sale_quantity": 10,
+              "disallowed_loss": 100,
+              "repurchase_date": "2026-03-02",
+              "repurchase_quantity": 10,
+              "account_label": null,
+              "adjusted_cost_basis": 1050
+            }
+          ]
+        },
+        "same_account_chains": [
+          {
+            "symbol": "MSFT",
+            "sale_date": "2026-04-01",
+            "sale_quantity": 10,
+            "disallowed_loss": 100,
+            "cross_account": false,
+            "permanent_disallowance": false,
+            "reconcile_status": "not_compared",
+            "not_compared_reason": "no_1099",
+            "account_label": null,
+            "account_name": null,
+            "allocated_shares": 10,
+            "plain_english": null,
+            "replacement_buys": [
+              {
+                "activity_date": "2026-03-02",
+                "allocated_quantity": 10,
+                "allocated_disallowed": 100
+              }
+            ]
+          }
+        ],
+        "cross_account_chains": [],
+        "radar": {
+          "total": 100,
+          "event_count": 1,
+          "tickers": [
+            "MSFT"
+          ],
+          "visible": true,
+          "note": "WashSaleWarning sums wash_sale_flags after dropping only hops with not_compared_reason='unallocated'. Do not drop no_1099 / matches / differs. Cross-account estimates are not added to this total."
+        },
+        "locked_teaser": {
+          "shows_radar": true,
+          "tickers": [
+            "MSFT"
+          ],
+          "hides_amounts": true,
+          "note": "When packet_unlocked is false, show ticker chips and the event/ticker count, but not dollar amounts."
+        },
+        "notes": "Confirmed at a4b8441. Contrast with S02, where the Mar 2 buy is the lot being sold."
+      },
+      "tests": {
+        "keep": [],
+        "add": [
+          "server/tests/test_wash_sale.py::test_repurchase_exactly_30_days_before_counts"
+        ]
+      }
+    },
+    {
+      "id": "S16",
+      "name": "Replacement exactly 30 days after the sale counts",
+      "why_it_matters": "Inclusive window edge. Apr 1 + 30 = May 1.",
+      "protected": false,
+      "tax_year": 2026,
+      "caught_keep": null,
+      "inputs": {
+        "source": "transactions",
+        "supplemental_1099": null,
+        "transactions": [
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "MSFT",
+            "side": "buy",
+            "qty": 10,
+            "price": 100,
+            "date": "2026-01-01"
+          },
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "MSFT",
+            "side": "sell",
+            "qty": 10,
+            "price": 90,
+            "date": "2026-04-01"
+          },
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "MSFT",
+            "side": "buy",
+            "qty": 10,
+            "price": 95,
+            "date": "2026-05-01"
+          }
+        ]
+      },
+      "expected": {
+        "same_account_flags": {
+          "count": 1,
+          "items": [
+            {
+              "symbol": "MSFT",
+              "sale_date": "2026-04-01",
+              "sale_quantity": 10,
+              "disallowed_loss": 100,
+              "repurchase_date": "2026-05-01",
+              "repurchase_quantity": 10,
+              "account_label": null,
+              "adjusted_cost_basis": 1050
+            }
+          ]
+        },
+        "same_account_chains": [
+          {
+            "symbol": "MSFT",
+            "sale_date": "2026-04-01",
+            "sale_quantity": 10,
+            "disallowed_loss": 100,
+            "cross_account": false,
+            "permanent_disallowance": false,
+            "reconcile_status": "not_compared",
+            "not_compared_reason": "no_1099",
+            "account_label": null,
+            "account_name": null,
+            "allocated_shares": 10,
+            "plain_english": null,
+            "replacement_buys": [
+              {
+                "activity_date": "2026-05-01",
+                "allocated_quantity": 10,
+                "allocated_disallowed": 100
+              }
+            ]
+          }
+        ],
+        "cross_account_chains": [],
+        "radar": {
+          "total": 100,
+          "event_count": 1,
+          "tickers": [
+            "MSFT"
+          ],
+          "visible": true,
+          "note": "WashSaleWarning sums wash_sale_flags after dropping only hops with not_compared_reason='unallocated'. Do not drop no_1099 / matches / differs. Cross-account estimates are not added to this total."
+        },
+        "locked_teaser": {
+          "shows_radar": true,
+          "tickers": [
+            "MSFT"
+          ],
+          "hides_amounts": true,
+          "note": "When packet_unlocked is false, show ticker chips and the event/ticker count, but not dollar amounts."
+        },
+        "notes": "Confirmed at a4b8441."
+      },
+      "tests": {
+        "keep": [],
+        "add": [
+          "server/tests/test_wash_sale.py::test_repurchase_exactly_30_days_after_counts"
+        ]
+      }
+    },
+    {
+      "id": "S17",
+      "name": "Replacement 31 days before the sale does not count",
+      "why_it_matters": "Apr 1 \u2212 31 = Mar 1, outside the inclusive window.",
+      "protected": false,
+      "tax_year": 2026,
+      "caught_keep": null,
+      "inputs": {
+        "source": "transactions",
+        "supplemental_1099": null,
+        "transactions": [
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "MSFT",
+            "side": "buy",
+            "qty": 10,
+            "price": 100,
+            "date": "2026-01-01"
+          },
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "MSFT",
+            "side": "sell",
+            "qty": 10,
+            "price": 90,
+            "date": "2026-04-01"
+          },
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "MSFT",
+            "side": "buy",
+            "qty": 10,
+            "price": 95,
+            "date": "2026-03-01"
+          }
+        ]
+      },
+      "expected": {
+        "same_account_flags": {
+          "count": 0,
+          "items": []
+        },
+        "same_account_chains": [],
+        "cross_account_chains": [],
+        "radar": {
+          "total": 0,
+          "event_count": 0,
+          "tickers": [],
+          "visible": false,
+          "note": "WashSaleWarning sums wash_sale_flags after dropping only hops with not_compared_reason='unallocated'. Do not drop no_1099 / matches / differs. Cross-account estimates are not added to this total."
+        },
+        "locked_teaser": {
+          "shows_radar": false,
+          "tickers": [],
+          "hides_amounts": true,
+          "note": "No same-account flags, so the radar (and locked teaser) do not render. Cross-account count may still appear in the chain panel."
+        },
+        "notes": "Confirmed at a4b8441. Loss of $100 is allowed."
+      },
+      "tests": {
+        "keep": [],
+        "add": [
+          "server/tests/test_wash_sale.py::test_repurchase_31_days_before_does_not_count"
+        ]
+      }
+    },
+    {
+      "id": "S18",
+      "name": "Replacement 31 days after the sale does not count",
+      "why_it_matters": "Apr 1 + 31 = May 2, outside the inclusive window.",
+      "protected": false,
+      "tax_year": 2026,
+      "caught_keep": null,
+      "inputs": {
+        "source": "transactions",
+        "supplemental_1099": null,
+        "transactions": [
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "MSFT",
+            "side": "buy",
+            "qty": 10,
+            "price": 100,
+            "date": "2026-01-01"
+          },
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "MSFT",
+            "side": "sell",
+            "qty": 10,
+            "price": 90,
+            "date": "2026-04-01"
+          },
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "MSFT",
+            "side": "buy",
+            "qty": 10,
+            "price": 95,
+            "date": "2026-05-02"
+          }
+        ]
+      },
+      "expected": {
+        "same_account_flags": {
+          "count": 0,
+          "items": []
+        },
+        "same_account_chains": [],
+        "cross_account_chains": [],
+        "radar": {
+          "total": 0,
+          "event_count": 0,
+          "tickers": [],
+          "visible": false,
+          "note": "WashSaleWarning sums wash_sale_flags after dropping only hops with not_compared_reason='unallocated'. Do not drop no_1099 / matches / differs. Cross-account estimates are not added to this total."
+        },
+        "locked_teaser": {
+          "shows_radar": false,
+          "tickers": [],
+          "hides_amounts": true,
+          "note": "No same-account flags, so the radar (and locked teaser) do not render. Cross-account count may still appear in the chain panel."
+        },
+        "notes": "Confirmed at a4b8441."
+      },
+      "tests": {
+        "keep": [],
+        "add": [
+          "server/tests/test_wash_sale.py::test_repurchase_31_days_after_does_not_count"
+        ]
+      }
+    },
+    {
+      "id": "S19",
+      "name": "Same-day same-account buy is excluded",
+      "why_it_matters": "Current product rule: _find_qualifying_repurchases drops b.activity_date == sell.activity_date in the same account. Do not change this rule in this round.",
+      "protected": false,
+      "tax_year": 2026,
+      "caught_keep": null,
+      "inputs": {
+        "source": "transactions",
+        "supplemental_1099": null,
+        "transactions": [
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "MSFT",
+            "side": "buy",
+            "qty": 10,
+            "price": 100,
+            "date": "2026-01-01"
+          },
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "MSFT",
+            "side": "sell",
+            "qty": 10,
+            "price": 90,
+            "date": "2026-04-01"
+          },
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "MSFT",
+            "side": "buy",
+            "qty": 10,
+            "price": 95,
+            "date": "2026-04-01"
+          }
+        ]
+      },
+      "expected": {
+        "same_account_flags": {
+          "count": 0,
+          "items": []
+        },
+        "same_account_chains": [],
+        "cross_account_chains": [],
+        "radar": {
+          "total": 0,
+          "event_count": 0,
+          "tickers": [],
+          "visible": false,
+          "note": "WashSaleWarning sums wash_sale_flags after dropping only hops with not_compared_reason='unallocated'. Do not drop no_1099 / matches / differs. Cross-account estimates are not added to this total."
+        },
+        "locked_teaser": {
+          "shows_radar": false,
+          "tickers": [],
+          "hides_amounts": true,
+          "note": "No same-account flags, so the radar (and locked teaser) do not render. Cross-account count may still appear in the chain panel."
+        },
+        "notes": "Confirmed at a4b8441. The Jan 1 lot is also not a window repurchase (69 days before). Keep TestFindQualifyingRepurchases.test_same_day_excluded."
+      },
+      "tests": {
+        "keep": [
+          "server/tests/test_wash_sale.py::TestFindQualifyingRepurchases::test_same_day_excluded"
+        ],
+        "add": [
+          "server/tests/test_wash_sale.py::test_same_day_same_account_buy_is_not_a_flag"
+        ]
+      }
+    },
+    {
+      "id": "S20",
+      "name": "Same-day buy in another account still counts (Roth $120 Permanent)",
+      "why_it_matters": "Same-day exclusion is same-account only. A Roth buy on the sale date is a cross-account replacement. Existing protected-adjacent test; do not retarget.",
+      "protected": true,
+      "tax_year": 2026,
+      "caught_keep": null,
+      "inputs": {
+        "source": "transactions",
+        "supplemental_1099": null,
+        "transactions": [
+          {
+            "account_label": "individual",
+            "account_type": "taxable",
+            "account_name": "Individual",
+            "symbol": "QQQ",
+            "side": "buy",
+            "qty": 4,
+            "price": 500,
+            "date": "2026-01-06"
+          },
+          {
+            "account_label": "individual",
+            "account_type": "taxable",
+            "account_name": "Individual",
+            "symbol": "QQQ",
+            "side": "sell",
+            "qty": 4,
+            "price": 470,
+            "date": "2026-02-10"
+          },
+          {
+            "account_label": "ira_roth",
+            "account_type": "ira",
+            "account_name": "IRA (Roth)",
+            "symbol": "QQQ",
+            "side": "buy",
+            "qty": 4,
+            "price": 480,
+            "date": "2026-02-10"
+          }
+        ]
+      },
+      "expected": {
+        "same_account_flags": {
+          "count": 0,
+          "items": []
+        },
+        "same_account_chains": [],
+        "cross_account_chains": [
+          {
+            "symbol": "QQQ",
+            "sale_date": "2026-02-10",
+            "sale_quantity": 4,
+            "disallowed_loss": 120,
+            "cross_account": true,
+            "permanent_disallowance": true,
+            "reconcile_status": "not_on_1099",
+            "not_compared_reason": "",
+            "account_label": "individual",
+            "account_name": "Individual",
+            "allocated_shares": 4,
+            "plain_english": null,
+            "replacement_buys": [
+              {
+                "activity_date": "2026-02-10",
+                "allocated_quantity": 4,
+                "account_label": "ira_roth",
+                "account_name": "IRA (Roth)",
+                "allocated_disallowed": 120
+              }
+            ]
+          }
+        ],
+        "radar": {
+          "total": 0,
+          "event_count": 0,
+          "tickers": [],
+          "visible": false,
+          "note": "WashSaleWarning sums wash_sale_flags after dropping only hops with not_compared_reason='unallocated'. Do not drop no_1099 / matches / differs. Cross-account estimates are not added to this total."
+        },
+        "locked_teaser": {
+          "shows_radar": false,
+          "tickers": [],
+          "hides_amounts": true,
+          "note": "No same-account flags, so the radar (and locked teaser) do not render. Cross-account count may still appear in the chain panel."
+        },
+        "notes": "Protected: do not retarget test_same_day_buy_in_another_account_is_flagged."
+      },
+      "tests": {
+        "keep": [
+          "server/tests/test_cross_account_wash.py::test_same_day_buy_in_another_account_is_flagged"
+        ],
+        "add": []
+      }
+    },
+    {
+      "id": "S21",
+      "name": "Protected sample: $924 wash, AMD matches, harvest 4 rows with SOFI $100",
+      "why_it_matters": "Release and prod-check contract. This round must not retarget any of these numbers or the AMD chain copy.",
+      "protected": true,
+      "tax_year": 2026,
+      "caught_keep": null,
+      "inputs": {
+        "source": "files",
+        "files": [
+          {
+            "path": "client/public/sample-robinhood-transactions.csv",
+            "label": null
+          }
+        ],
+        "supplemental_1099": "client/public/sample-robinhood-1099-2026.pdf",
+        "analyze_query": "filing_status=single&estimated_income=75000&tax_year=2026",
+        "transactions": [
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "AAPL",
+            "side": "buy",
+            "qty": 10,
+            "price": 185.5,
+            "date": "2025-07-01"
+          },
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "TSLA",
+            "side": "buy",
+            "qty": 4,
+            "price": 420,
+            "date": "2026-01-10"
+          },
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "NVDA",
+            "side": "buy",
+            "qty": 12,
+            "price": 280,
+            "date": "2026-01-15"
+          },
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "META",
+            "side": "buy",
+            "qty": 4,
+            "price": 720,
+            "date": "2026-01-20"
+          },
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "NVDA",
+            "side": "sell",
+            "qty": 12,
+            "price": 248,
+            "date": "2026-02-18"
+          },
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "NVDA",
+            "side": "buy",
+            "qty": 12,
+            "price": 252,
+            "date": "2026-03-04"
+          },
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "AAPL",
+            "side": "buy",
+            "qty": 5,
+            "price": 172.2,
+            "date": "2026-03-10"
+          },
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "TSLA",
+            "side": "sell",
+            "qty": 4,
+            "price": 360,
+            "date": "2026-03-20"
+          },
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "SPY",
+            "side": "buy",
+            "qty": 4,
+            "price": 820,
+            "date": "2026-03-21"
+          },
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "TSLA",
+            "side": "buy",
+            "qty": 4,
+            "price": 365,
+            "date": "2026-04-08"
+          },
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "NVDA",
+            "side": "buy",
+            "qty": 40,
+            "price": 465,
+            "date": "2026-05-01"
+          },
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "SOFI",
+            "side": "buy",
+            "qty": 10,
+            "price": 20,
+            "date": "2026-06-01"
+          },
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "AMD",
+            "side": "buy",
+            "qty": 10,
+            "price": 150,
+            "date": "2026-06-01"
+          },
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "MSFT",
+            "side": "buy",
+            "qty": 8,
+            "price": 415,
+            "date": "2026-06-02"
+          },
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "AMD",
+            "side": "sell",
+            "qty": 10,
+            "price": 120,
+            "date": "2026-07-15"
+          },
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "AMD",
+            "side": "buy",
+            "qty": 10,
+            "price": 125,
+            "date": "2026-07-24"
+          },
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "SOFI",
+            "side": "buy",
+            "qty": 2,
+            "price": 18,
+            "date": "2026-08-01"
+          },
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "SOFI",
+            "side": "buy",
+            "qty": 0.5,
+            "price": 12,
+            "date": "2026-08-05"
+          },
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "SOFI",
+            "side": "bto",
+            "qty": 1,
+            "price": 1.5,
+            "date": "2026-08-10",
+            "description": "SOFI 12/18/2026 Call $15.00"
+          },
+          {
+            "account_label": null,
+            "account_type": "taxable_unlabeled",
+            "account_name": null,
+            "symbol": "MSFT",
+            "side": "buy",
+            "qty": 2,
+            "price": 420,
+            "date": "2026-08-12"
+          }
+        ]
+      },
+      "expected": {
+        "same_account_flags": {
+          "count": 3,
+          "items": [
+            {
+              "symbol": "NVDA",
+              "sale_date": "2026-02-18",
+              "sale_quantity": 12,
+              "disallowed_loss": 384,
+              "repurchase_date": "2026-03-04",
+              "repurchase_quantity": 12,
+              "account_label": null
+            },
+            {
+              "symbol": "TSLA",
+              "sale_date": "2026-03-20",
+              "sale_quantity": 4,
+              "disallowed_loss": 240,
+              "repurchase_date": "2026-04-08",
+              "repurchase_quantity": 4,
+              "account_label": null
+            },
+            {
+              "symbol": "AMD",
+              "sale_date": "2026-07-15",
+              "sale_quantity": 10,
+              "disallowed_loss": 300,
+              "repurchase_date": "2026-07-24",
+              "repurchase_quantity": 10,
+              "account_label": null
+            }
+          ],
+          "total_disallowed": 924
+        },
+        "same_account_chains": [
+          {
+            "symbol": "NVDA",
+            "reconcile_status": "matches",
+            "disallowed_loss": 384,
+            "cross_account": false
+          },
+          {
+            "symbol": "TSLA",
+            "reconcile_status": "matches",
+            "disallowed_loss": 240,
+            "cross_account": false
+          },
+          {
+            "symbol": "AMD",
+            "reconcile_status": "matches",
+            "disallowed_loss": 300,
+            "cross_account": false,
+            "plain_english": "You sold 10 AMD at a $300 loss on Jul 15 and bought 10 back on Jul 24, so $300 moved into the new lot's basis. This matches your 1099 wash adjustment of $300.",
+            "original_purchase_date": "2026-06-01",
+            "proceeds": 1200,
+            "cost_basis": 1500,
+            "engine_adjusted_cost_basis": 1550,
+            "form_1099_wash": 300,
+            "replacement_buys": [
+              {
+                "activity_date": "2026-07-24",
+                "quantity": 10
+              }
+            ]
+          }
+        ],
+        "cross_account_chains": [],
+        "radar": {
+          "total": 924,
+          "event_count": 3,
+          "tickers": [
+            "NVDA",
+            "TSLA",
+            "AMD"
+          ],
+          "visible": true,
+          "note": "WashSaleWarning sums wash_sale_flags after dropping only hops with not_compared_reason='unallocated'. Do not drop no_1099 / matches / differs. Cross-account estimates are not added to this total."
+        },
+        "locked_teaser": {
+          "shows_radar": true,
+          "tickers": [
+            "NVDA",
+            "TSLA",
+            "AMD"
+          ],
+          "hides_amounts": true,
+          "note": "Trusted sample_run may still show chain and harvest detail through washChainsVisible / sample_run even when packet_unlocked is false. Do not retarget that visibility. The $924 flag total itself is protected."
+        },
+        "harvest_checks": {
+          "count": 4,
+          "as_of": "2026-08-12",
+          "symbols": [
+            "META",
+            "NVDA",
+            "SOFI",
+            "SPY"
+          ],
+          "excluded_symbols": [
+            "TSLA",
+            "SPCX",
+            "SGOV"
+          ],
+          "sofi": {
+            "open_loss": 100,
+            "disallowed_loss": 100,
+            "line": "$100 of your $100 loss may be disallowed",
+            "earliest_clean_sell_date": "2026-09-10",
+            "safe_rebuy_date": "2026-10-11",
+            "triggers": [
+              {
+                "kind": "recurring_buy",
+                "disallowed_loss": 20
+              },
+              {
+                "kind": "dividend_reinvestment",
+                "disallowed_loss": 5
+              },
+              {
+                "kind": "bought_call",
+                "disallowed_loss": 75
+              }
+            ]
+          },
+          "other_rows_confirmed_at_a4b8441": [
+            {
+              "symbol": "META",
+              "open_loss": 596,
+              "disallowed_loss": 0
+            },
+            {
+              "symbol": "NVDA",
+              "open_loss": 10152,
+              "disallowed_loss": 0
+            },
+            {
+              "symbol": "SPY",
+              "open_loss": 196,
+              "disallowed_loss": 0
+            }
+          ]
+        },
+        "other": {
+          "sample_run": true,
+          "season_detail": null,
+          "errors": [],
+          "broker_wash": 924,
+          "no_sell_prompts_for": [
+            "TSLA",
+            "SPCX"
+          ]
+        },
+        "notes": "Protected: do not retarget. Confirmed at staging a4b8441."
+      },
+      "tests": {
+        "keep": [
+          "server/tests/test_wash_sale_chain.py::test_sample_2026_wash_total_stays_924_and_amd_chain",
+          "server/tests/test_harvest_check.py::test_sample_analyze_keeps_924_amd_chain_and_shows_sofi"
+        ],
+        "add": []
+      }
+    },
+    {
+      "id": "S22",
+      "name": "Protected sample + cross-account files: $924 unchanged and QQQ IRA $120 Permanent",
+      "why_it_matters": "The guest multi-file sample must keep the engine total at $924 and add one Permanent QQQ IRA chain of $120, without adding that $120 to wash_sale_flags or the radar.",
+      "protected": true,
+      "tax_year": 2026,
+      "caught_keep": null,
+      "inputs": {
+        "source": "files",
+        "files": [
+          {
+            "path": "client/public/sample-robinhood-transactions.csv",
+            "label": "individual"
+          },
+          {
+            "path": "client/public/sample-cross-account-taxable.csv",
+            "label": "individual"
+          },
+          {
+            "path": "client/public/sample-robinhood-ira.csv",
+            "label": "ira_traditional"
+          }
+        ],
+        "supplemental_1099": "client/public/sample-robinhood-1099-2026.pdf",
+        "analyze_query": "filing_status=single&estimated_income=75000&tax_year=2026",
+        "transactions": [
+          {
+            "account_label": "individual",
+            "account_type": "taxable",
+            "account_name": "Individual",
+            "symbol": "QQQ",
+            "side": "buy",
+            "qty": 4,
+            "price": 500,
+            "date": "2026-01-06"
+          },
+          {
+            "account_label": "individual",
+            "account_type": "taxable",
+            "account_name": "Individual",
+            "symbol": "QQQ",
+            "side": "sell",
+            "qty": 4,
+            "price": 470,
+            "date": "2026-02-10"
+          },
+          {
+            "account_label": "ira_traditional",
+            "account_type": "ira",
+            "account_name": "IRA (traditional)",
+            "symbol": "QQQ",
+            "side": "buy",
+            "qty": 4,
+            "price": 480,
+            "date": "2026-02-20"
+          }
+        ],
+        "transactions_note": "Plus the full sample book from S21, all labeled individual except the IRA file."
+      },
+      "expected": {
+        "same_account_flags": {
+          "count": 3,
+          "items": [
+            {
+              "symbol": "NVDA",
+              "sale_date": "2026-02-18",
+              "sale_quantity": 12,
+              "disallowed_loss": 384,
+              "repurchase_date": "2026-03-04",
+              "repurchase_quantity": 12,
+              "account_label": "individual"
+            },
+            {
+              "symbol": "TSLA",
+              "sale_date": "2026-03-20",
+              "sale_quantity": 4,
+              "disallowed_loss": 240,
+              "repurchase_date": "2026-04-08",
+              "repurchase_quantity": 4,
+              "account_label": "individual"
+            },
+            {
+              "symbol": "AMD",
+              "sale_date": "2026-07-15",
+              "sale_quantity": 10,
+              "disallowed_loss": 300,
+              "repurchase_date": "2026-07-24",
+              "repurchase_quantity": 10,
+              "account_label": "individual"
+            }
+          ],
+          "total_disallowed": 924,
+          "symbols": [
+            "AMD",
+            "NVDA",
+            "TSLA"
+          ]
+        },
+        "same_account_chains": [
+          {
+            "symbol": "AMD",
+            "reconcile_status": "matches",
+            "disallowed_loss": 300,
+            "plain_english": "You sold 10 AMD at a $300 loss on Jul 15 and bought 10 back on Jul 24, so $300 moved into the new lot's basis. This matches your 1099 wash adjustment of $300.",
+            "replacement_buys": [
+              {
+                "activity_date": "2026-07-24"
+              }
+            ]
+          }
+        ],
+        "cross_account_chains": [
+          {
+            "symbol": "QQQ",
+            "sale_date": "2026-02-10",
+            "sale_quantity": 4,
+            "disallowed_loss": 120,
+            "cross_account": true,
+            "permanent_disallowance": true,
+            "reconcile_status": "not_on_1099",
+            "not_compared_reason": "",
+            "account_label": "individual",
+            "account_name": "Individual",
+            "allocated_shares": 4,
+            "plain_english": "Not on your 1099: cross-account. An Individual sale of 4 QQQ on Feb 10 lost $120. A buy in an IRA (traditional) within 30 days before or after that sale covers 4 shares. Estimated disallowed amount $120. Permanent: a loss washed by an IRA buy is lost for good. It does not add to the IRA's basis.",
+            "replacement_buys": [
+              {
+                "activity_date": "2026-02-20",
+                "allocated_quantity": 4,
+                "account_label": "ira_traditional",
+                "account_name": "IRA (traditional)",
+                "allocated_disallowed": 120,
+                "explained_basis": 1920
+              }
+            ]
+          }
+        ],
+        "radar": {
+          "total": 924,
+          "event_count": 3,
+          "tickers": [
+            "NVDA",
+            "TSLA",
+            "AMD"
+          ],
+          "visible": true,
+          "note": "WashSaleWarning sums wash_sale_flags after dropping only hops with not_compared_reason='unallocated'. Do not drop no_1099 / matches / differs. Cross-account estimates are not added to this total."
+        },
+        "locked_teaser": {
+          "shows_radar": true,
+          "tickers": [
+            "NVDA",
+            "TSLA",
+            "AMD"
+          ],
+          "hides_amounts": true,
+          "note": "QQQ is not a radar ticker; it is the cross-account chain. IRA lot basis stays $1,920 and wash_sale_disallowed is 0."
+        },
+        "other": {
+          "sample_run": true,
+          "cross_account_wash_count": 1
+        },
+        "notes": "Protected: do not retarget."
+      },
+      "tests": {
+        "keep": [
+          "server/tests/test_cross_account_wash.py::test_sample_keeps_924_and_amd_and_adds_one_ira_example"
+        ],
+        "add": []
+      }
+    },
+    {
+      "id": "S23",
+      "name": "Protected $50+$50: FIFO reservation releases only reserved IRA shares",
+      "why_it_matters": "The #278 KEEP case. Two Individual sales share one partly sold IRA lot. Each is a $50 Permanent chain. The Individual opening buy is Jan 1, 40 days before Feb 10, so there is no self-lot flag.",
+      "protected": true,
+      "tax_year": 2026,
+      "caught_keep": null,
+      "inputs": {
+        "source": "transactions",
+        "supplemental_1099": null,
+        "transactions": [
+          {
+            "account_label": "individual",
+            "account_type": "taxable",
+            "account_name": "Individual",
+            "symbol": "XYZ",
+            "side": "buy",
+            "qty": 10,
+            "price": 100,
+            "date": "2026-01-01"
+          },
+          {
+            "account_label": "ira_traditional",
+            "account_type": "ira",
+            "account_name": "IRA (traditional)",
+            "symbol": "XYZ",
+            "side": "buy",
+            "qty": 10,
+            "price": 95,
+            "date": "2026-02-01"
+          },
+          {
+            "account_label": "individual",
+            "account_type": "taxable",
+            "account_name": "Individual",
+            "symbol": "XYZ",
+            "side": "sell",
+            "qty": 5,
+            "price": 90,
+            "date": "2026-02-03"
+          },
+          {
+            "account_label": "ira_traditional",
+            "account_type": "ira",
+            "account_name": "IRA (traditional)",
+            "symbol": "XYZ",
+            "side": "sell",
+            "qty": 5,
+            "price": 95,
+            "date": "2026-02-05"
+          },
+          {
+            "account_label": "individual",
+            "account_type": "taxable",
+            "account_name": "Individual",
+            "symbol": "XYZ",
+            "side": "sell",
+            "qty": 5,
+            "price": 90,
+            "date": "2026-02-10"
+          }
+        ]
+      },
+      "expected": {
+        "same_account_flags": {
+          "count": 0,
+          "items": []
+        },
+        "same_account_chains": [],
+        "cross_account_chains": [
+          {
+            "symbol": "XYZ",
+            "sale_date": "2026-02-03",
+            "sale_quantity": 5,
+            "disallowed_loss": 50,
+            "cross_account": true,
+            "permanent_disallowance": true,
+            "reconcile_status": "not_on_1099",
+            "not_compared_reason": "",
+            "account_label": "individual",
+            "account_name": "Individual",
+            "allocated_shares": 5,
+            "plain_english": "Not on your 1099: cross-account. An Individual sale of 5 XYZ on Feb 3 lost $50. A buy in an IRA (traditional) within 30 days before or after that sale covers 5 shares. Estimated disallowed amount $50. Permanent: a loss washed by an IRA buy is lost for good. It does not add to the IRA's basis.",
+            "replacement_buys": [
+              {
+                "activity_date": "2026-02-01",
+                "allocated_quantity": 5,
+                "account_label": "ira_traditional",
+                "allocated_disallowed": 50
+              }
+            ]
+          },
+          {
+            "symbol": "XYZ",
+            "sale_date": "2026-02-10",
+            "sale_quantity": 5,
+            "disallowed_loss": 50,
+            "cross_account": true,
+            "permanent_disallowance": true,
+            "reconcile_status": "not_on_1099",
+            "not_compared_reason": "",
+            "account_label": "individual",
+            "account_name": "Individual",
+            "allocated_shares": 5,
+            "plain_english": "Not on your 1099: cross-account. An Individual sale of 5 XYZ on Feb 10 lost $50. A buy in an IRA (traditional) within 30 days before or after that sale covers 5 shares. Estimated disallowed amount $50. Permanent: a loss washed by an IRA buy is lost for good. It does not add to the IRA's basis.",
+            "replacement_buys": [
+              {
+                "activity_date": "2026-02-01",
+                "allocated_quantity": 5,
+                "account_label": "ira_traditional",
+                "allocated_disallowed": 50
+              }
+            ]
+          }
+        ],
+        "radar": {
+          "total": 0,
+          "event_count": 0,
+          "tickers": [],
+          "visible": false,
+          "note": "WashSaleWarning sums wash_sale_flags after dropping only hops with not_compared_reason='unallocated'. Do not drop no_1099 / matches / differs. Cross-account estimates are not added to this total."
+        },
+        "locked_teaser": {
+          "shows_radar": false,
+          "tickers": [],
+          "hides_amounts": true,
+          "note": "No same-account flags, so the radar (and locked teaser) do not render. Cross-account count may still appear in the chain panel."
+        },
+        "notes": "Protected: do not retarget. Opening Individual buy is outside the 30-day window (Jan 1 \u2192 Feb 10 is 40 days)."
+      },
+      "tests": {
+        "keep": [
+          "server/tests/test_cross_account_wash.py::test_fifo_sale_releases_only_the_reserved_shares"
+        ],
+        "add": []
+      }
+    },
+    {
+      "id": "S24",
+      "name": "Protected partly-sold IRA replacement counts only the 4 shares still open ($40)",
+      "why_it_matters": "The #278 surviving-shares case. IRA buys 10 on Feb 1 and sells 6 on Feb 2; the Individual $100 loss on Feb 10 is washed by the 4 shares still open \u2192 $40 Permanent.",
+      "protected": true,
+      "tax_year": 2026,
+      "caught_keep": null,
+      "inputs": {
+        "source": "transactions",
+        "supplemental_1099": null,
+        "transactions": [
+          {
+            "account_label": "individual",
+            "account_type": "taxable",
+            "account_name": "Individual",
+            "symbol": "XYZ",
+            "side": "buy",
+            "qty": 10,
+            "price": 100,
+            "date": "2026-01-01"
+          },
+          {
+            "account_label": "individual",
+            "account_type": "taxable",
+            "account_name": "Individual",
+            "symbol": "XYZ",
+            "side": "sell",
+            "qty": 10,
+            "price": 90,
+            "date": "2026-02-10"
+          },
+          {
+            "account_label": "ira_traditional",
+            "account_type": "ira",
+            "account_name": "IRA (traditional)",
+            "symbol": "XYZ",
+            "side": "buy",
+            "qty": 10,
+            "price": 95,
+            "date": "2026-02-01"
+          },
+          {
+            "account_label": "ira_traditional",
+            "account_type": "ira",
+            "account_name": "IRA (traditional)",
+            "symbol": "XYZ",
+            "side": "sell",
+            "qty": 6,
+            "price": 95,
+            "date": "2026-02-02"
+          }
+        ]
+      },
+      "expected": {
+        "same_account_flags": {
+          "count": 0,
+          "items": []
+        },
+        "same_account_chains": [],
+        "cross_account_chains": [
+          {
+            "symbol": "XYZ",
+            "sale_date": "2026-02-10",
+            "sale_quantity": 10,
+            "disallowed_loss": 40,
+            "cross_account": true,
+            "permanent_disallowance": true,
+            "reconcile_status": "not_on_1099",
+            "not_compared_reason": "",
+            "account_label": "individual",
+            "account_name": "Individual",
+            "allocated_shares": 4,
+            "plain_english": "Not on your 1099: cross-account. An Individual sale of 10 XYZ on Feb 10 lost $100. A buy in an IRA (traditional) within 30 days before or after that sale covers 4 shares. Estimated disallowed amount $40. Permanent: a loss washed by an IRA buy is lost for good. It does not add to the IRA's basis.",
+            "replacement_buys": [
+              {
+                "activity_date": "2026-02-01",
+                "quantity": 10,
+                "allocated_quantity": 4,
+                "account_label": "ira_traditional",
+                "allocated_disallowed": 40
+              }
+            ]
+          }
+        ],
+        "radar": {
+          "total": 0,
+          "event_count": 0,
+          "tickers": [],
+          "visible": false,
+          "note": "WashSaleWarning sums wash_sale_flags after dropping only hops with not_compared_reason='unallocated'. Do not drop no_1099 / matches / differs. Cross-account estimates are not added to this total."
+        },
+        "locked_teaser": {
+          "shows_radar": false,
+          "tickers": [],
+          "hides_amounts": true,
+          "note": "No same-account flags, so the radar (and locked teaser) do not render. Cross-account count may still appear in the chain panel."
+        },
+        "notes": "Protected: do not retarget. Individual opening buy is outside the window."
+      },
+      "tests": {
+        "keep": [
+          "server/tests/test_cross_account_wash.py::test_partly_sold_replacement_counts_only_shares_still_open"
+        ],
+        "add": []
+      }
+    }
+  ]
+}

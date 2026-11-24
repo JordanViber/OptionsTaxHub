@@ -19,7 +19,7 @@ import logging
 from datetime import date, timedelta
 
 from account_labels import group_by_account, is_ira_account
-from models import TaxLot, Transaction, TransCode, WashSaleFlag
+from models import AssetType, TaxLot, Transaction, TransCode, WashSaleFlag
 
 logger = logging.getLogger(__name__)
 
@@ -64,13 +64,16 @@ def _compute_sale_loss(
 def _find_qualifying_repurchases(
     sell: Transaction,
     buys_sorted: list[Transaction],
-    closed_quantities: dict[int, float] | None = None,
+    used_quantities: dict[int, float] | None = None,
+    consumed_now: dict[int, float] | None = None,
 ) -> list[tuple[int, Transaction]]:
     """Find repurchases within the 61-day wash-sale window around a sale.
 
-    When every window buy is the lot this sale just closed, there is no
-    replacement. A window buy this sale left open still counts, and any
-    closed lot stays in that total.
+    Same-day buys in this account are excluded. Callers that pass cumulative
+    FIFO use drop shares already consumed. The unsold remainder of the only
+    lot this sale closed is not a replacement (Rev. Rul. 56-602). A different
+    lot's unconsumed shares still count, including the open remainder of a
+    window lot when this sale also closed another lot.
     """
     window_start = sell.activity_date - timedelta(days=WASH_SALE_WINDOW_DAYS)
     window_end = sell.activity_date + timedelta(days=WASH_SALE_WINDOW_DAYS)
@@ -82,15 +85,27 @@ def _find_qualifying_repurchases(
         and window_start <= b.activity_date <= window_end
         and b.activity_date != sell.activity_date
     ]
-    closed = closed_quantities or {}
-    if not closed or not qualifying:
+    if used_quantities is None:
         return qualifying
-    if all(
-        closed.get(index, 0.0) >= buy.quantity - 1e-9
+
+    open_buys = [
+        (index, buy)
         for index, buy in qualifying
-    ):
-        return []
-    return qualifying
+        if buy.quantity - used_quantities.get(index, 0.0) > 1e-9
+    ]
+    touched = [
+        index
+        for index, quantity in (consumed_now or {}).items()
+        if quantity > 1e-9
+    ]
+    if len(touched) > 1:
+        return open_buys
+    consumed = consumed_now or {}
+    return [
+        (index, buy)
+        for index, buy in open_buys
+        if consumed.get(index, 0.0) <= 1e-9
+    ]
 
 
 def _build_wash_sale_explanation(
@@ -201,12 +216,17 @@ def _detect_wash_sales_one(
         qualifying = _find_qualifying_repurchases(
             sell,
             buys_sorted,
+            used_buy_quantities,
             closed_now,
         )
         if not qualifying:
             continue
 
-        total_repurchase_qty = sum(b.quantity for _, b in qualifying)
+        unconsumed = {
+            index: buy.quantity - used_buy_quantities.get(index, 0.0)
+            for index, buy in qualifying
+        }
+        total_repurchase_qty = sum(unconsumed.values())
         if total_repurchase_qty >= sell.quantity:
             disallowed_loss = loss
         else:
@@ -217,8 +237,9 @@ def _detect_wash_sales_one(
             continue
 
         earliest_repurchase = min(qualifying, key=lambda x: x[1].activity_date)
-        repurchase_txn = earliest_repurchase[1]
-        original_cost = repurchase_txn.price * min(repurchase_txn.quantity, sell.quantity)
+        repurchase_index, repurchase_txn = earliest_repurchase
+        replacement_qty = min(unconsumed[repurchase_index], sell.quantity)
+        original_cost = repurchase_txn.price * replacement_qty
         adjusted_cost = original_cost + disallowed_loss
 
         explanation = _build_wash_sale_explanation(sell, repurchase_txn, loss, disallowed_loss)
@@ -321,6 +342,17 @@ def adjust_lots_for_wash_sales(
                 per_share_adjustment = flag.disallowed_loss / lot.quantity if lot.quantity > 0 else 0
                 lot.cost_basis_per_share += per_share_adjustment
                 lot.total_cost_basis = lot.cost_basis_per_share * lot.quantity
+                if lot.current_price is not None:
+                    multiplier = 100 if lot.asset_type == AssetType.OPTION else 1
+                    if lot.is_short_position:
+                        pnl = lot.cost_basis_per_share - lot.current_price
+                    else:
+                        pnl = lot.current_price - lot.cost_basis_per_share
+                    lot.unrealized_pnl = round(pnl * lot.quantity * multiplier, 2)
+                    if lot.total_cost_basis > 0:
+                        lot.unrealized_pnl_pct = round(
+                            (lot.unrealized_pnl / lot.total_cost_basis) * 100, 2
+                        )
                 logger.info(
                     f"Adjusted cost basis for {lot.symbol} lot "
                     f"(purchased {lot.purchase_date}): "

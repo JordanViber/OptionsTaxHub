@@ -130,9 +130,10 @@ class TestDetectWashSales:
         ]
         flags = detect_wash_sales(txns, tax_year=2026)
         assert len(flags) == 1
-        assert flags[0].repurchase_date == date(2026, 6, 1)
+        assert flags[0].repurchase_date == date(2026, 6, 25)
+        assert flags[0].repurchase_quantity == pytest.approx(10)
         assert flags[0].disallowed_loss == pytest.approx(200)
-        assert flags[0].adjusted_cost_basis == pytest.approx(1200)
+        assert flags[0].adjusted_cost_basis == pytest.approx(1100)
 
     def test_zero_cent_disallowed_loss_is_suppressed(self):
         """Sub-cent wash-sale noise should not create a user-facing flag."""
