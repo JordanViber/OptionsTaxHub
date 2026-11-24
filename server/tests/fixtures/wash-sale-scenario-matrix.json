@@ -4,7 +4,7 @@
   "base": "staging a4b844190993d69ab4fb79cdcdec24890b74893d",
   "written": "2026-11-23T19:25:00-06:00",
   "timezone": "America/Chicago",
-  "row_count": 24,
+  "row_count": 25,
   "round_rules": {
     "every_row_must_pass": true,
     "if_gate_finds_a_keep": "Stop. Do not kick another round. Report BLOCKED to Orion.",
@@ -2783,6 +2783,138 @@
           "server/tests/test_cross_account_wash.py::test_partly_sold_replacement_counts_only_shares_still_open"
         ],
         "add": []
+      }
+    },
+    {
+      "id": "S25",
+      "name": "Same-account wash reserves the open replacement, not the closed self-lot",
+      "why_it_matters": "Account A buys 10 on Feb 1, sells them at a loss on Feb 10, and replaces them on Feb 12. That $100 wash belongs on the Feb 12 lot. Account B's Feb 15 loss must not estimate another $100 against those same shares.",
+      "protected": false,
+      "tax_year": 2026,
+      "caught_keep": null,
+      "inputs": {
+        "source": "transactions",
+        "supplemental_1099": null,
+        "transactions": [
+          {
+            "account_label": "individual",
+            "account_type": "taxable",
+            "account_name": "Individual",
+            "symbol": "XYZ",
+            "side": "buy",
+            "qty": 10,
+            "price": 100,
+            "date": "2026-02-01"
+          },
+          {
+            "account_label": "individual",
+            "account_type": "taxable",
+            "account_name": "Individual",
+            "symbol": "XYZ",
+            "side": "sell",
+            "qty": 10,
+            "price": 90,
+            "date": "2026-02-10"
+          },
+          {
+            "account_label": "individual",
+            "account_type": "taxable",
+            "account_name": "Individual",
+            "symbol": "XYZ",
+            "side": "buy",
+            "qty": 10,
+            "price": 95,
+            "date": "2026-02-12"
+          },
+          {
+            "account_label": "other",
+            "account_type": "taxable",
+            "account_name": "Other/agentic",
+            "symbol": "XYZ",
+            "side": "buy",
+            "qty": 10,
+            "price": 100,
+            "date": "2026-02-02"
+          },
+          {
+            "account_label": "other",
+            "account_type": "taxable",
+            "account_name": "Other/agentic",
+            "symbol": "XYZ",
+            "side": "sell",
+            "qty": 10,
+            "price": 90,
+            "date": "2026-02-15"
+          }
+        ]
+      },
+      "expected": {
+        "same_account_flags": {
+          "count": 1,
+          "items": [
+            {
+              "symbol": "XYZ",
+              "sale_date": "2026-02-10",
+              "sale_quantity": 10,
+              "disallowed_loss": 100,
+              "repurchase_date": "2026-02-12",
+              "repurchase_quantity": 10,
+              "account_label": "individual",
+              "adjusted_cost_basis": 1050
+            }
+          ]
+        },
+        "same_account_chains": [
+          {
+            "symbol": "XYZ",
+            "sale_date": "2026-02-10",
+            "sale_quantity": 10,
+            "disallowed_loss": 100,
+            "cross_account": false,
+            "permanent_disallowance": false,
+            "reconcile_status": "not_compared",
+            "not_compared_reason": "no_1099",
+            "account_label": "individual",
+            "account_name": "Individual",
+            "allocated_shares": 10,
+            "plain_english": "You sold 10 XYZ at a $100 loss on Feb 10 and bought 10 back on Feb 12, so $100 moved into the new lot's basis. No same-year 1099-B was compared for this sale.",
+            "replacement_buys": [
+              {
+                "activity_date": "2026-02-12",
+                "allocated_quantity": 10,
+                "account_label": "individual",
+                "account_name": "Individual",
+                "allocated_disallowed": 100
+              }
+            ]
+          }
+        ],
+        "cross_account_chains": [],
+        "radar": {
+          "total": 100,
+          "event_count": 1,
+          "tickers": [
+            "XYZ"
+          ],
+          "visible": true,
+          "note": "WashSaleWarning sums wash_sale_flags after dropping only hops with not_compared_reason='unallocated'. Do not drop no_1099 / matches / differs. Cross-account estimates are not added to this total."
+        },
+        "locked_teaser": {
+          "shows_radar": true,
+          "tickers": [
+            "XYZ"
+          ],
+          "hides_amounts": true,
+          "note": "The same-account $100 stays on the radar. B's loss is not a cross-account estimate."
+        },
+        "notes": "A keeps the $100 wash on the Feb 12 lot (10 x $95 + $100 = $1,050). The Feb 1 self-lot is closed and must not absorb the reservation. B gets no $100 cross-account estimate against those Feb 12 shares."
+      },
+      "tests": {
+        "keep": [],
+        "add": [
+          "server/tests/test_cross_account_wash.py::test_closed_self_lot_does_not_take_the_same_account_reservation",
+          "server/tests/test_wash_sale_scenario_matrix.py::test_wash_sale_scenario_matrix[S25]"
+        ]
       }
     }
   ]

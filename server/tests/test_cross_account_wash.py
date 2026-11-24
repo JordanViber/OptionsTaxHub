@@ -749,3 +749,29 @@ def test_fifo_sale_releases_only_the_reserved_shares():
         (date(2026, 2, 1), "ira_traditional", 5),
         (date(2026, 2, 1), "ira_traditional", 5),
     ]
+
+
+def test_closed_self_lot_does_not_take_the_same_account_reservation():
+    """A's Feb 12 replacement keeps the wash. B cannot claim those shares.
+
+    Individual buys 10 XYZ on Feb 1, sells them at a loss on Feb 10, and
+    buys 10 back on Feb 12. Other buys 10 on Feb 2 and sells them at a loss
+    on Feb 15. The Feb 1 lot is already closed, so the $100 same-account
+    wash reserves the Feb 12 fill.
+    """
+    transactions = [
+        _txn("XYZ", TransCode.BUY, date(2026, 2, 1), 10, 100, "individual"),
+        _txn("XYZ", TransCode.BUY, date(2026, 2, 2), 10, 100, "other"),
+        _txn("XYZ", TransCode.SELL, date(2026, 2, 10), 10, 90, "individual"),
+        _txn("XYZ", TransCode.BUY, date(2026, 2, 12), 10, 95, "individual"),
+        _txn("XYZ", TransCode.SELL, date(2026, 2, 15), 10, 90, "other"),
+    ]
+    flags = detect_wash_sales(transactions, tax_year=2026)
+    assert len(flags) == 1
+    flag = flags[0]
+    assert flag.account_label == "individual"
+    assert flag.sale_date == date(2026, 2, 10)
+    assert flag.repurchase_date == date(2026, 2, 12)
+    assert flag.repurchase_quantity == pytest.approx(10)
+    assert flag.disallowed_loss == pytest.approx(100)
+    assert build_cross_account_chains(transactions, flags, tax_year=2026) == []

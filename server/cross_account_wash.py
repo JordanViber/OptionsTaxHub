@@ -29,7 +29,11 @@ from models import (
     WashSaleFlag,
     WashSaleHop,
 )
-from wash_sale import WASH_SALE_WINDOW_DAYS, _compute_sale_loss
+from wash_sale import (
+    WASH_SALE_WINDOW_DAYS,
+    _compute_sale_loss,
+    _find_qualifying_repurchases,
+)
 
 _BUY_CODES = (TransCode.BUY, TransCode.BTO)
 _SELL_CODES = (TransCode.SELL, TransCode.STC)
@@ -181,52 +185,110 @@ def _reserved_shares(reservations: dict[int, list[tuple[date, float]]], index: i
     return sum(qty for _when, qty in reservations.get(index, []))
 
 
+def _detector_open_replacements(
+    group: list[Transaction],
+    tax_year: int | None,
+) -> list[tuple[Transaction, list[tuple[Transaction, float]]]]:
+    """Sales that get a same-account flag, with the open fills they matched.
+
+    Same sale order and closed-lot exclusion as ``_detect_wash_sales_one``.
+    The unsold remainder of the only lot a sale closed is not a replacement.
+    """
+    buys = [txn for txn in group if txn.trans_code in _BUY_CODES]
+    sells = [txn for txn in group if txn.trans_code in _SELL_CODES]
+    if tax_year is not None:
+        sells = [txn for txn in sells if txn.activity_date.year == tax_year]
+    buys_sorted = sorted(buys, key=lambda txn: txn.activity_date)
+    sells_sorted = sorted(sells, key=lambda txn: txn.activity_date)
+    flagged: list[tuple[Transaction, list[tuple[Transaction, float]]]] = []
+    used: dict[int, float] = {}
+    for sell in sells_sorted:
+        used_before = dict(used)
+        loss = _compute_sale_loss(sell, buys_sorted, used)
+        if loss <= 0:
+            continue
+        closed_now = {
+            index: used[index] - used_before.get(index, 0.0)
+            for index in used
+            if used[index] - used_before.get(index, 0.0) > 1e-9
+        }
+        qualifying = _find_qualifying_repurchases(
+            sell,
+            buys_sorted,
+            used,
+            closed_now,
+        )
+        if not qualifying:
+            continue
+        unconsumed = {
+            index: buy.quantity - used.get(index, 0.0)
+            for index, buy in qualifying
+        }
+        total = sum(unconsumed.values())
+        disallowed = loss if total >= sell.quantity else loss * (total / sell.quantity)
+        if round(disallowed, 2) <= 0:
+            continue
+        opens = [
+            (buy, unconsumed[index])
+            for index, buy in qualifying
+            if unconsumed[index] > 1e-9 and buy.asset_type == AssetType.STOCK
+        ]
+        flagged.append((sell, opens))
+    return flagged
+
+
 def _flag_reservations(
     groups: list[list[Transaction]],
     flags: list[WashSaleFlag],
     txn_index: dict[int, int],
+    tax_year: int | None,
 ) -> dict[int, list[tuple[date, float]]]:
     """Shares a same-account wash flag already uses, dated on the flag sale.
 
-    ``repurchase_quantity`` is every same-account buy in the 61-day window,
-    while ``repurchase_date`` is only the earliest of those fills. Walk the
-    window buys in date order and reserve up to that quantity. A later loss
-    in another account can take only the shares the flag did not already claim.
+    ``repurchase_quantity`` is the still-open replacement, not every window
+    buy. Reserve those fills in date order. A closed self-lot does not take
+    the reservation. A later loss in another account can take only the shares
+    this flag did not already claim.
     """
     reserved: dict[int, list[tuple[date, float]]] = {}
+    sales_by_label: dict[
+        str, list[tuple[Transaction, list[tuple[Transaction, float]]]]
+    ] = {}
+    cursor: dict[str, int] = {}
+    for group in groups:
+        label = group[0].account_label or ""
+        sales_by_label[label] = _detector_open_replacements(group, tax_year)
+        cursor[label] = 0
     for flag in flags:
         need = float(flag.repurchase_quantity or 0)
         if need <= _QTY_EPS:
             continue
         label = getattr(flag, "account_label", None) or ""
-        symbol = _symbol(flag.symbol)
-        window_start = flag.sale_date - timedelta(days=WASH_SALE_WINDOW_DAYS)
-        window_end = flag.sale_date + timedelta(days=WASH_SALE_WINDOW_DAYS)
-        for group in groups:
-            if not group or (group[0].account_label or "") != label:
+        sales = sales_by_label.get(label, [])
+        start = cursor.get(label, 0)
+        match_at = next(
+            (
+                index
+                for index in range(start, len(sales))
+                if _flag_matches_sale(flag, sales[index][0])
+            ),
+            None,
+        )
+        if match_at is None:
+            continue
+        cursor[label] = match_at + 1
+        for txn, open_qty in sales[match_at][1]:
+            if need <= _QTY_EPS:
+                break
+            index = txn_index.get(id(txn))
+            if index is None:
                 continue
-            buys = [
-                txn
-                for txn in group
-                if txn.trans_code in _BUY_CODES
-                and txn.asset_type == AssetType.STOCK
-                and _symbol(txn.instrument) == symbol
-                and window_start <= txn.activity_date <= window_end
-                and txn.activity_date != flag.sale_date
-            ]
-            buys.sort(key=lambda txn: txn.activity_date)
-            for txn in buys:
-                if need <= _QTY_EPS:
-                    break
-                index = txn_index.get(id(txn))
-                if index is None:
-                    continue
-                room = txn.quantity - _reserved_shares(reserved, index)
-                take = min(room, need)
-                if take <= _QTY_EPS:
-                    continue
-                reserved.setdefault(index, []).append((flag.sale_date, take))
-                need -= take
+            room = min(open_qty, txn.quantity - _reserved_shares(reserved, index))
+            take = min(room, need)
+            if take <= _QTY_EPS:
+                continue
+            reserved.setdefault(index, []).append((flag.sale_date, take))
+            need -= take
     return reserved
 
 
@@ -425,7 +487,7 @@ def build_cross_account_chains(
     # can cover a loss in another account, and only once. A later sale in the
     # replacement account releases the reserved shares it closes.
     txn_index = {id(txn): index for index, txn in enumerate(transactions)}
-    reservations = _flag_reservations(groups, flags, txn_index)
+    reservations = _flag_reservations(groups, flags, txn_index, tax_year)
     held_on_date: dict[tuple[str, date], dict[int, float]] = {}
     planned: list[tuple[Transaction, list[Transaction], float, float, float]] = []
     for group in groups:
