@@ -664,16 +664,20 @@ def _buy_label(
     quantity: float,
     prefer: str | None,
 ) -> str | None:
+    dated = [
+        txn
+        for txn in transactions
+        if txn.trans_code in _BUY_CODES
+        and _symbol(txn.instrument) == _symbol(symbol)
+        and txn.activity_date == activity_date
+    ]
+    exact = [txn for txn in dated if _qty_close(txn.quantity, quantity)]
+    # A partial remainder is stored as fewer shares than the original buy.
+    pool = exact or [
+        txn for txn in dated if float(txn.quantity) + _QTY_EPS >= float(quantity)
+    ]
     labels: list[str] = []
-    for txn in transactions:
-        if txn.trans_code not in _BUY_CODES:
-            continue
-        if _symbol(txn.instrument) != _symbol(symbol):
-            continue
-        if txn.activity_date != activity_date:
-            continue
-        if not _qty_close(txn.quantity, quantity):
-            continue
+    for txn in pool:
         label = txn.account_label or ""
         if label and label not in labels:
             labels.append(label)

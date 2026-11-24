@@ -14,14 +14,53 @@ import {
   ExpandMore as ExpandMoreIcon,
   Warning as WarnIcon,
 } from "@mui/icons-material";
-import type { WashSaleFlag } from "@/lib/types";
+import type { WashSaleChain, WashSaleFlag, WashSaleHop } from "@/lib/types";
 import { WASH_WINDOW_EXPLANATION } from "@/lib/supplemental1099";
 import GlossaryHint from "./GlossaryHint";
 
 interface WashSaleWarningProps {
   flags: WashSaleFlag[];
+  chains?: WashSaleChain[];
   taxYear?: number;
   locked?: boolean;
+}
+
+const SALE_QTY_EPS = 1e-4;
+
+function quietHops(chains: WashSaleChain[] | undefined): WashSaleHop[] {
+  const hops: WashSaleHop[] = [];
+  for (const chain of chains ?? []) {
+    if (chain.cross_account) continue;
+    for (const hop of chain.hops) {
+      if (hop.cross_account) continue;
+      if (hop.not_compared_reason !== "unallocated") continue;
+      hops.push(hop);
+    }
+  }
+  return hops;
+}
+
+function matchesQuietHop(flag: WashSaleFlag, hop: WashSaleHop): boolean {
+  return (
+    hop.symbol === flag.symbol &&
+    hop.sale_date.slice(0, 10) === flag.sale_date.slice(0, 10) &&
+    Math.abs(hop.sale_quantity - flag.sale_quantity) <= SALE_QTY_EPS &&
+    Math.abs(hop.disallowed_loss - flag.disallowed_loss) < 0.01
+  );
+}
+
+function flagsInDisallowedTotal(
+  flags: WashSaleFlag[],
+  chains: WashSaleChain[] | undefined,
+): WashSaleFlag[] {
+  const quiet = quietHops(chains);
+  return flags.filter((flag) => {
+    if (Math.abs(flag.disallowed_loss) < 0.01) return false;
+    const index = quiet.findIndex((hop) => matchesQuietHop(flag, hop));
+    if (index < 0) return true;
+    quiet.splice(index, 1);
+    return false;
+  });
 }
 
 /**
@@ -33,14 +72,13 @@ interface WashSaleWarningProps {
  */
 export default function WashSaleWarning({
   flags,
+  chains,
   taxYear,
   locked = false,
 }: Readonly<WashSaleWarningProps>) {
   const [expanded, setExpanded] = useState<string | false>(false);
 
-  const meaningfulFlags = flags.filter(
-    (flag) => Math.abs(flag.disallowed_loss) >= 0.01,
-  );
+  const meaningfulFlags = flagsInDisallowedTotal(flags, chains);
 
   if (meaningfulFlags.length === 0) return null;
 
