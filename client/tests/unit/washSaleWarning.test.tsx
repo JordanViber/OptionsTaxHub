@@ -1,6 +1,6 @@
 import { render, screen, fireEvent } from "@testing-library/react";
 import WashSaleWarning from "../../app/components/WashSaleWarning";
-import type { WashSaleFlag } from "../../lib/types";
+import type { WashSaleChain, WashSaleFlag, WashSaleHop } from "../../lib/types";
 
 const baseFlag: WashSaleFlag = {
   symbol: "AAPL",
@@ -195,6 +195,69 @@ describe("WashSaleWarning", () => {
     // Both tickers still visible
     expect(screen.getByText("AAPL")).toBeInTheDocument();
     expect(screen.getByText("MSFT")).toBeInTheDocument();
+  });
+
+  it("leaves Not compared flags out of the disallowed total", () => {
+    const quiet: WashSaleFlag = {
+      ...baseFlag,
+      symbol: "XLE",
+      sale_date: "2026-04-01",
+      sale_quantity: 10,
+      disallowed_loss: 100,
+      explanation: "Could not be allocated",
+    };
+    const hop = (
+      flag: WashSaleFlag,
+      status: WashSaleHop["reconcile_status"],
+      reason = "",
+    ): WashSaleHop => ({
+      hop_id: `${flag.symbol}-h0`,
+      hop_index: 0,
+      symbol: flag.symbol,
+      sale_date: flag.sale_date,
+      sale_quantity: flag.sale_quantity,
+      proceeds: 900,
+      cost_basis: 1000,
+      loss: flag.disallowed_loss,
+      replacement_buys: [],
+      disallowed_loss: flag.disallowed_loss,
+      plain_english: flag.explanation,
+      reconcile_status: status,
+      not_compared_reason: reason,
+    });
+    const chain = (
+      flag: WashSaleFlag,
+      status: WashSaleChain["reconcile_status"],
+      reason = "",
+      crossAccount = false,
+    ): WashSaleChain => ({
+      chain_id: flag.symbol,
+      symbol: flag.symbol,
+      reconcile_status: status,
+      plain_english: flag.explanation,
+      cross_account: crossAccount,
+      hops: [{ ...hop(flag, status, reason), cross_account: crossAccount }],
+    });
+
+    render(
+      <WashSaleWarning
+        flags={[baseFlag, quiet]}
+        chains={[
+          chain(baseFlag, "matches"),
+          chain(quiet, "not_compared", "unallocated"),
+          chain(baseFlag, "not_compared", "unallocated", true),
+        ]}
+      />,
+    );
+
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent("Total disallowed loss: $500.00");
+    expect(alert).toHaveTextContent("$500.00 disallowed");
+    expect(alert).toHaveTextContent("Wash-sale radar (1 event across 1 ticker)");
+    expect(alert).not.toHaveTextContent("$100.00");
+    expect(alert).not.toHaveTextContent("$600.00");
+    expect(screen.getByText("AAPL")).toBeInTheDocument();
+    expect(screen.queryByText("XLE")).not.toBeInTheDocument();
   });
 
   it("shows ticker chips without amounts when the packet is locked", () => {

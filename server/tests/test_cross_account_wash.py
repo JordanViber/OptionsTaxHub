@@ -588,3 +588,190 @@ def test_labeled_parse_matches_the_public_sample_files():
     assert not any("Unrecognized" in error for error in errors)
     labels = {txn.account_label for txn in transactions if txn.instrument == "QQQ"}
     assert labels == {"individual", "ira_traditional"}
+
+
+def _xyz_loss_book() -> list[Transaction]:
+    """Individual buys 10 XYZ at $100 and sells them at $90. The loss is $100."""
+    return [
+        _txn("XYZ", TransCode.BUY, date(2026, 1, 1), 10, 100, "individual"),
+        _txn("XYZ", TransCode.SELL, date(2026, 2, 10), 10, 90, "individual"),
+    ]
+
+
+def test_replacement_bought_and_sold_before_the_loss_is_not_a_wash():
+    """An IRA round trip before the loss leaves no shares to disallow.
+
+    Codex example: the IRA buys 10 on Feb 1 and sells them on Feb 2. The
+    Feb 10 taxable sale has no replacement left, so it is not a permanent
+    disallowance.
+    """
+    transactions = _xyz_loss_book() + [
+        _txn("XYZ", TransCode.BUY, date(2026, 2, 1), 10, 95, "ira_traditional"),
+        _txn("XYZ", TransCode.SELL, date(2026, 2, 2), 10, 95, "ira_traditional"),
+    ]
+    assert build_cross_account_chains(transactions, [], tax_year=2026) == []
+
+
+def test_partly_sold_replacement_counts_only_shares_still_open():
+    """Buy 10 and sell 6 before the loss. The 4 shares still open count."""
+    transactions = _xyz_loss_book() + [
+        _txn("XYZ", TransCode.BUY, date(2026, 2, 1), 10, 95, "ira_traditional"),
+        _txn("XYZ", TransCode.SELL, date(2026, 2, 2), 6, 95, "ira_traditional"),
+    ]
+    chains = build_cross_account_chains(transactions, [], tax_year=2026)
+    assert len(chains) == 1
+    hop = chains[0].hops[0]
+    buy = hop.replacement_buys[0]
+    assert chains[0].permanent_disallowance is True
+    assert hop.disallowed_loss == pytest.approx(40)
+    assert buy.account_label == "ira_traditional"
+    assert buy.quantity == pytest.approx(10)
+    assert buy.allocated_quantity == pytest.approx(4)
+    assert buy.allocated_disallowed == pytest.approx(40)
+    assert hop.plain_english == (
+        "Not on your 1099: cross-account. "
+        "An Individual sale of 10 XYZ on Feb 10 lost $100. "
+        "A buy in an IRA (traditional) within 30 days before or after that sale "
+        "covers 4 shares. "
+        "Estimated disallowed amount $40. "
+        "Permanent: a loss washed by an IRA buy is lost for good. "
+        "It does not add to the IRA's basis."
+    )
+
+
+def test_a_sale_in_one_account_does_not_close_another_accounts_lots():
+    """Other's Feb 4 sale closes Other's own buy. The IRA's Feb 1 buy stays open.
+
+    One FIFO book would let the Feb 10 sale close that IRA lot and leave
+    Other's Feb 3 buy as the replacement. The IRA's 10 shares are the replacement.
+    """
+    transactions = _xyz_loss_book() + [
+        _txn("XYZ", TransCode.BUY, date(2026, 2, 1), 10, 95, "ira_traditional"),
+        _txn("XYZ", TransCode.BUY, date(2026, 2, 3), 10, 80, "other"),
+        _txn("XYZ", TransCode.SELL, date(2026, 2, 4), 10, 90, "other"),
+    ]
+    chains = build_cross_account_chains(transactions, [], tax_year=2026)
+    assert len(chains) == 1
+    hop = chains[0].hops[0]
+    assert hop.disallowed_loss == pytest.approx(100)
+    assert [buy.account_label for buy in hop.replacement_buys] == ["ira_traditional"]
+    assert hop.replacement_buys[0].allocated_quantity == pytest.approx(10)
+
+
+def test_older_shares_in_the_same_account_absorb_the_sale():
+    """A sale closes the oldest lot in that account, not the window fill.
+
+    The Jan 5 buy is outside the 30-day window. Selling 6 of it leaves the
+    Feb 1 fill intact, so all 10 window shares still replace the loss.
+    """
+    transactions = _xyz_loss_book() + [
+        _txn("XYZ", TransCode.BUY, date(2026, 1, 5), 10, 90, "ira_traditional"),
+        _txn("XYZ", TransCode.BUY, date(2026, 2, 1), 10, 95, "ira_traditional"),
+        _txn("XYZ", TransCode.SELL, date(2026, 2, 2), 6, 95, "ira_traditional"),
+    ]
+    chains = build_cross_account_chains(transactions, [], tax_year=2026)
+    assert len(chains) == 1
+    buy = chains[0].hops[0].replacement_buys[0]
+    assert buy.activity_date == date(2026, 2, 1)
+    assert buy.allocated_quantity == pytest.approx(10)
+    assert chains[0].hops[0].disallowed_loss == pytest.approx(100)
+
+
+def test_shares_sold_after_the_loss_were_open_on_the_sale_date():
+    """A disposition after the taxable sale does not shrink the replacement."""
+    transactions = _xyz_loss_book() + [
+        _txn("XYZ", TransCode.BUY, date(2026, 2, 1), 10, 95, "ira_traditional"),
+        _txn("XYZ", TransCode.SELL, date(2026, 2, 20), 10, 95, "ira_traditional"),
+    ]
+    chains = build_cross_account_chains(transactions, [], tax_year=2026)
+    assert len(chains) == 1
+    assert chains[0].hops[0].disallowed_loss == pytest.approx(100)
+    assert chains[0].hops[0].replacement_buys[0].allocated_quantity == pytest.approx(10)
+
+
+def test_jor206_short_held_taxable_lot_does_not_block_the_ira_chain():
+    """Mira's books: the sold XLE lot is not a $100 wash, and 5 IRA shares are.
+
+    The Individual buy on Mar 2 is the lot sold on Apr 1. It was held 30
+    days, so it used to become its own replacement and zero the loss before
+    the IRA's 5 shares still open on the sale date could disallow $50.
+    """
+    fixtures = Path(__file__).parent / "fixtures"
+    taxable = (fixtures / "jor206-taxable.csv").read_text(encoding="utf-8")
+    ira = (fixtures / "jor206-ira.csv").read_text(encoding="utf-8")
+    _lots, alone, errors, _realized = parse_labeled_exports([(taxable, "individual")])
+    assert not any("Unrecognized" in error for error in errors)
+    assert detect_wash_sales(alone, tax_year=2026) == []
+
+    _lots, transactions, errors, _realized = parse_labeled_exports(
+        [(taxable, "individual"), (ira, "ira_traditional")]
+    )
+    assert not any("Unrecognized" in error for error in errors)
+    flags = detect_wash_sales(transactions, tax_year=2026)
+    assert flags == []
+    chains = build_cross_account_chains(transactions, flags, tax_year=2026)
+    assert len(chains) == 1
+    chain = chains[0]
+    assert chain.cross_account is True
+    assert chain.permanent_disallowance is True
+    assert chain.hops[0].disallowed_loss == pytest.approx(50)
+    assert chain.hops[0].replacement_buys[0].allocated_quantity == pytest.approx(5)
+    assert chain.hops[0].replacement_buys[0].account_label == "ira_traditional"
+    assert "Permanent:" in chain.plain_english
+    assert "Estimated disallowed amount $50." in chain.plain_english
+
+
+def test_fifo_sale_releases_only_the_reserved_shares():
+    """The IRA sale closes the shares Feb 3 reserved, and Feb 10 keeps the rest.
+
+    Individual buys 10 XYZ at $100 and sells 5 at $90 on Feb 3 and Feb 10.
+    The IRA buys 10 on Feb 1 and sells 5 on Feb 5. Each taxable sale is a
+    $50 permanent disallowance.
+    """
+    transactions = [
+        _txn("XYZ", TransCode.BUY, date(2026, 1, 1), 10, 100, "individual"),
+        _txn("XYZ", TransCode.BUY, date(2026, 2, 1), 10, 95, "ira_traditional"),
+        _txn("XYZ", TransCode.SELL, date(2026, 2, 3), 5, 90, "individual"),
+        _txn("XYZ", TransCode.SELL, date(2026, 2, 5), 5, 95, "ira_traditional"),
+        _txn("XYZ", TransCode.SELL, date(2026, 2, 10), 5, 90, "individual"),
+    ]
+    chains = build_cross_account_chains(transactions, [], tax_year=2026)
+    assert [(chain.hops[0].sale_date, chain.hops[0].disallowed_loss) for chain in chains] == [
+        (date(2026, 2, 3), 50),
+        (date(2026, 2, 10), 50),
+    ]
+    assert all(chain.permanent_disallowance for chain in chains)
+    assert [
+        (buy.activity_date, buy.account_label, buy.allocated_quantity)
+        for chain in chains
+        for buy in chain.hops[0].replacement_buys
+    ] == [
+        (date(2026, 2, 1), "ira_traditional", 5),
+        (date(2026, 2, 1), "ira_traditional", 5),
+    ]
+
+
+def test_closed_self_lot_does_not_take_the_same_account_reservation():
+    """A's Feb 12 replacement keeps the wash. B cannot claim those shares.
+
+    Individual buys 10 XYZ on Feb 1, sells them at a loss on Feb 10, and
+    buys 10 back on Feb 12. Other buys 10 on Feb 2 and sells them at a loss
+    on Feb 15. The Feb 1 lot is already closed, so the $100 same-account
+    wash reserves the Feb 12 fill.
+    """
+    transactions = [
+        _txn("XYZ", TransCode.BUY, date(2026, 2, 1), 10, 100, "individual"),
+        _txn("XYZ", TransCode.BUY, date(2026, 2, 2), 10, 100, "other"),
+        _txn("XYZ", TransCode.SELL, date(2026, 2, 10), 10, 90, "individual"),
+        _txn("XYZ", TransCode.BUY, date(2026, 2, 12), 10, 95, "individual"),
+        _txn("XYZ", TransCode.SELL, date(2026, 2, 15), 10, 90, "other"),
+    ]
+    flags = detect_wash_sales(transactions, tax_year=2026)
+    assert len(flags) == 1
+    flag = flags[0]
+    assert flag.account_label == "individual"
+    assert flag.sale_date == date(2026, 2, 10)
+    assert flag.repurchase_date == date(2026, 2, 12)
+    assert flag.repurchase_quantity == pytest.approx(10)
+    assert flag.disallowed_loss == pytest.approx(100)
+    assert build_cross_account_chains(transactions, flags, tax_year=2026) == []

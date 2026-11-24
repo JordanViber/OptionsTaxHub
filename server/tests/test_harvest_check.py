@@ -581,6 +581,300 @@ def test_a_buy_after_the_sale_date_still_counts_in_full():
     assert row.disallowed_loss == pytest.approx(30)
 
 
+def test_fully_closed_bought_call_is_not_a_replacement():
+    """A call sold, exercised, or expired before the sale date is not a replacement."""
+    lots = [_lot("AMD", 10, 20, 10, date(2026, 5, 1))]
+    call = "AMD 9/18/2026 Call $15.00"
+    for code in (TransCode.STC, TransCode.OEXP, TransCode.OEXCS):
+        txns = [
+            _buy("AMD", 10, 20, date(2026, 5, 1)),
+            _buy(
+                "AMD",
+                1,
+                2,
+                date(2026, 8, 1),
+                call,
+                code=TransCode.BTO,
+                asset=AssetType.OPTION,
+            ),
+            _buy(
+                "AMD",
+                1,
+                1,
+                date(2026, 8, 5),
+                call,
+                code=code,
+                asset=AssetType.OPTION,
+            ),
+        ]
+        row = build_harvest_checks(lots, txns, as_of=AS_OF)[0]
+        assert row.clean is True, code
+        assert row.trigger_count == 0, code
+        assert row.disallowed_loss == 0, code
+        assert row.triggers == [], code
+        assert row.line == (
+            "No replacement buys found in the 30 days either side; "
+            "may be clean to harvest."
+        )
+
+
+def test_robinhood_expiration_prefix_closes_the_bought_call():
+    """OEXP text is 'Option Expiration for {contract}', not the bare label.
+
+    A different strike under that same prefix stays open. The underlying
+    alone is not the contract.
+    """
+    lots = [_lot("AMD", 10, 20, 10, date(2026, 5, 1))]
+    call = "AMD 9/18/2026 Call $15.00"
+    opened = _buy(
+        "AMD",
+        1,
+        2,
+        date(2026, 8, 1),
+        call,
+        code=TransCode.BTO,
+        asset=AssetType.OPTION,
+    )
+    stock = _buy("AMD", 10, 20, date(2026, 5, 1))
+    expired = build_harvest_checks(
+        lots,
+        [
+            stock,
+            opened,
+            _buy(
+                "AMD",
+                1,
+                0,
+                date(2026, 8, 5),
+                f"Option Expiration for {call}",
+                code=TransCode.OEXP,
+                asset=AssetType.OPTION,
+            ),
+        ],
+        as_of=AS_OF,
+    )[0]
+    assert expired.clean is True
+    assert expired.trigger_count == 0
+    assert expired.disallowed_loss == 0
+    assert expired.triggers == []
+
+    other_strike = build_harvest_checks(
+        lots,
+        [
+            stock,
+            opened,
+            _buy(
+                "AMD",
+                1,
+                0,
+                date(2026, 8, 5),
+                "Option Expiration for AMD 9/18/2026 Call $20.00",
+                code=TransCode.OEXP,
+                asset=AssetType.OPTION,
+            ),
+        ],
+        as_of=AS_OF,
+    )[0]
+    assert other_strike.clean is False
+    assert other_strike.trigger_count == 1
+    assert other_strike.triggers[0].share_equivalent == pytest.approx(100)
+    assert other_strike.disallowed_loss == pytest.approx(100)
+
+
+def test_same_day_close_listed_first_still_closes_the_bought_call():
+    """Newest-first rows open the call before the same-day STC."""
+    lots = [_lot("AMD", 10, 20, 10, date(2026, 5, 1))]
+    call = "AMD 9/18/2026 Call $15.00"
+    day = date(2026, 8, 1)
+    txns = [
+        _buy("AMD", 10, 20, date(2026, 5, 1)),
+        _buy("AMD", 1, 1, day, call, code=TransCode.STC, asset=AssetType.OPTION),
+        _buy("AMD", 1, 2, day, call, code=TransCode.BTO, asset=AssetType.OPTION),
+    ]
+    row = build_harvest_checks(lots, txns, as_of=AS_OF)[0]
+    assert row.clean is True
+    assert row.trigger_count == 0
+    assert row.disallowed_loss == 0
+
+
+def test_partly_closed_short_put_counts_only_the_remaining_share_equivalent():
+    """One of two short puts is closed. Only 100 shares remain open.
+
+    Two contracts would be 200 shares. The loss is $10 a share on 300
+    shares, so the open contract disallows $1,000, not $2,000.
+    """
+    lots = [_lot("AMD", 300, 20, 10, date(2026, 5, 1))]
+    put = "AMD 9/18/2026 Put $12.00"
+    for code in (TransCode.BTC, TransCode.OASGN):
+        txns = [
+            _buy("AMD", 300, 20, date(2026, 5, 1)),
+            _buy(
+                "AMD",
+                2,
+                1.5,
+                date(2026, 8, 1),
+                put,
+                code=TransCode.STO,
+                asset=AssetType.OPTION,
+            ),
+            _buy(
+                "AMD",
+                1,
+                0.4,
+                date(2026, 8, 5),
+                put,
+                code=code,
+                asset=AssetType.OPTION,
+            ),
+        ]
+        row = build_harvest_checks(lots, txns, as_of=AS_OF)[0]
+        assert row.open_loss == pytest.approx(3000), code
+        assert row.trigger_count == 1, code
+        assert row.triggers[0].kind == "short_put", code
+        assert row.triggers[0].activity_date == date(2026, 8, 1), code
+        assert row.triggers[0].quantity == pytest.approx(2), code
+        assert row.triggers[0].share_equivalent == pytest.approx(100), code
+        assert row.disallowed_loss == pytest.approx(1000), code
+        assert row.line == "$1,000 of your $3,000 loss may be disallowed", code
+
+
+def test_option_opened_after_the_sale_date_still_counts_in_full():
+    """A later close does not reduce a call opened after the sale date."""
+    lots = [_lot("AMD", 200, 20, 10, date(2026, 5, 1))]
+    call = "AMD 9/18/2026 Call $15.00"
+    txns = [
+        _buy("AMD", 200, 20, date(2026, 5, 1)),
+        _buy(
+            "AMD",
+            1,
+            2,
+            date(2026, 8, 20),
+            call,
+            code=TransCode.BTO,
+            asset=AssetType.OPTION,
+        ),
+        _buy(
+            "AMD",
+            1,
+            1,
+            date(2026, 8, 25),
+            call,
+            code=TransCode.STC,
+            asset=AssetType.OPTION,
+        ),
+    ]
+    row = build_harvest_checks(lots, txns, as_of=AS_OF)[0]
+    assert row.trigger_count == 1
+    assert row.triggers[0].activity_date == date(2026, 8, 20)
+    assert row.triggers[0].quantity == pytest.approx(1)
+    assert row.triggers[0].share_equivalent == pytest.approx(100)
+    assert row.disallowed_loss == pytest.approx(1000)
+
+
+def test_a_close_of_another_contract_leaves_the_bought_call_open():
+    lots = [_lot("AMD", 200, 20, 10, date(2026, 1, 2))]
+    txns = [
+        _buy("AMD", 200, 20, date(2026, 1, 2)),
+        _buy(
+            "AMD",
+            1,
+            2,
+            date(2026, 8, 1),
+            "AMD 9/18/2026 Call $15.00",
+            code=TransCode.BTO,
+            asset=AssetType.OPTION,
+        ),
+        _buy(
+            "AMD",
+            1,
+            1,
+            date(2026, 8, 5),
+            "AMD 9/18/2026 Call $20.00",
+            code=TransCode.STC,
+            asset=AssetType.OPTION,
+        ),
+    ]
+    row = build_harvest_checks(lots, txns, as_of=AS_OF)[0]
+    assert row.trigger_count == 1
+    assert row.triggers[0].activity_date == date(2026, 8, 1)
+    assert row.triggers[0].share_equivalent == pytest.approx(100)
+    assert row.disallowed_loss == pytest.approx(1000)
+
+
+def test_an_earlier_open_of_the_same_call_absorbs_the_close():
+    """FIFO closes the May call. The August call is still open."""
+    lots = [_lot("AMD", 200, 20, 10, date(2026, 1, 2))]
+    call = "AMD 9/18/2026 Call $15.00"
+    txns = [
+        _buy("AMD", 200, 20, date(2026, 1, 2)),
+        _buy(
+            "AMD",
+            1,
+            3,
+            date(2026, 5, 1),
+            call,
+            code=TransCode.BTO,
+            asset=AssetType.OPTION,
+        ),
+        _buy(
+            "AMD",
+            1,
+            2,
+            date(2026, 8, 1),
+            call,
+            code=TransCode.BTO,
+            asset=AssetType.OPTION,
+        ),
+        _buy(
+            "AMD",
+            1,
+            1,
+            date(2026, 8, 5),
+            call,
+            code=TransCode.STC,
+            asset=AssetType.OPTION,
+        ),
+    ]
+    row = build_harvest_checks(lots, txns, as_of=AS_OF)[0]
+    assert row.trigger_count == 1
+    assert row.triggers[0].activity_date == date(2026, 8, 1)
+    assert row.triggers[0].share_equivalent == pytest.approx(100)
+    assert row.disallowed_loss == pytest.approx(1000)
+
+
+def test_a_close_in_another_account_does_not_close_the_bought_call():
+    lots = [_lot("AMD", 200, 20, 10, date(2026, 1, 2), account="individual")]
+    call = "AMD 9/18/2026 Call $15.00"
+    txns = [
+        _buy("AMD", 200, 20, date(2026, 1, 2), account="individual"),
+        _buy(
+            "AMD",
+            1,
+            2,
+            date(2026, 8, 1),
+            call,
+            code=TransCode.BTO,
+            asset=AssetType.OPTION,
+            account="individual",
+        ),
+        _buy(
+            "AMD",
+            1,
+            1,
+            date(2026, 8, 5),
+            call,
+            code=TransCode.STC,
+            asset=AssetType.OPTION,
+            account="other",
+        ),
+    ]
+    row = build_harvest_checks(lots, txns, as_of=AS_OF)[0]
+    assert row.trigger_count == 1
+    assert row.triggers[0].account_label == "individual"
+    assert row.triggers[0].share_equivalent == pytest.approx(100)
+    assert row.disallowed_loss == pytest.approx(1000)
+
+
 def test_a_same_day_extra_buy_still_counts_after_a_partial_sale():
     lot = _lot("SHOP", 4, 20, 10, date(2026, 8, 1))
     txns = [

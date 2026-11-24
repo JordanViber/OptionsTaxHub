@@ -10,9 +10,16 @@ Same-account uploads, and any book with a single label, return no rows.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import date, timedelta
 
-from account_labels import account_display_name, group_by_account, is_ira_account
+from account_labels import (
+    account_display_name,
+    account_key,
+    group_by_account,
+    is_ira_account,
+)
+from csv_parser import _intraday_rank
+from harvest_check import _shares_still_held, _split_ratio
 from models import (
     AssetType,
     Transaction,
@@ -22,7 +29,11 @@ from models import (
     WashSaleFlag,
     WashSaleHop,
 )
-from wash_sale import WASH_SALE_WINDOW_DAYS, _compute_sale_loss
+from wash_sale import (
+    WASH_SALE_WINDOW_DAYS,
+    _compute_sale_loss,
+    _find_qualifying_repurchases,
+)
 
 _BUY_CODES = (TransCode.BUY, TransCode.BTO)
 _SELL_CODES = (TransCode.SELL, TransCode.STC)
@@ -170,50 +181,263 @@ def _assign_same_account_disallowed(
     return assigned
 
 
-def _consumed_by_same_account_flags(
+def _reserved_shares(reservations: dict[int, list[tuple[date, float]]], index: int) -> float:
+    return sum(qty for _when, qty in reservations.get(index, []))
+
+
+def _detector_open_replacements(
+    group: list[Transaction],
+    tax_year: int | None,
+) -> list[tuple[Transaction, list[tuple[Transaction, float]]]]:
+    """Sales that get a same-account flag, with the open fills they matched.
+
+    Same sale order and closed-lot exclusion as ``_detect_wash_sales_one``.
+    The unsold remainder of the only lot a sale closed is not a replacement.
+    """
+    buys = [txn for txn in group if txn.trans_code in _BUY_CODES]
+    sells = [txn for txn in group if txn.trans_code in _SELL_CODES]
+    if tax_year is not None:
+        sells = [txn for txn in sells if txn.activity_date.year == tax_year]
+    buys_sorted = sorted(buys, key=lambda txn: txn.activity_date)
+    sells_sorted = sorted(sells, key=lambda txn: txn.activity_date)
+    flagged: list[tuple[Transaction, list[tuple[Transaction, float]]]] = []
+    used: dict[int, float] = {}
+    for sell in sells_sorted:
+        used_before = dict(used)
+        loss = _compute_sale_loss(sell, buys_sorted, used)
+        if loss <= 0:
+            continue
+        closed_now = {
+            index: used[index] - used_before.get(index, 0.0)
+            for index in used
+            if used[index] - used_before.get(index, 0.0) > 1e-9
+        }
+        qualifying = _find_qualifying_repurchases(
+            sell,
+            buys_sorted,
+            used,
+            closed_now,
+        )
+        if not qualifying:
+            continue
+        unconsumed = {
+            index: buy.quantity - used.get(index, 0.0)
+            for index, buy in qualifying
+        }
+        total = sum(unconsumed.values())
+        disallowed = loss if total >= sell.quantity else loss * (total / sell.quantity)
+        if round(disallowed, 2) <= 0:
+            continue
+        opens = [
+            (buy, unconsumed[index])
+            for index, buy in qualifying
+            if unconsumed[index] > 1e-9 and buy.asset_type == AssetType.STOCK
+        ]
+        flagged.append((sell, opens))
+    return flagged
+
+
+def _flag_reservations(
     groups: list[list[Transaction]],
     flags: list[WashSaleFlag],
-) -> dict[int, float]:
-    """Shares a same-account wash flag already uses as its replacement.
+    txn_index: dict[int, int],
+    tax_year: int | None,
+) -> dict[int, list[tuple[date, float]]]:
+    """Shares a same-account wash flag already uses, dated on the flag sale.
 
-    ``repurchase_quantity`` is every same-account buy in the 61-day window,
-    while ``repurchase_date`` is only the earliest of those fills. Walk the
-    window buys in date order and reserve up to that quantity. A later loss
-    in another account can take only the shares the flag did not already claim.
+    ``repurchase_quantity`` is the still-open replacement, not every window
+    buy. Reserve those fills in date order. A closed self-lot does not take
+    the reservation. A later loss in another account can take only the shares
+    this flag did not already claim.
     """
-    consumed: dict[int, float] = {}
+    reserved: dict[int, list[tuple[date, float]]] = {}
+    sales_by_label: dict[
+        str, list[tuple[Transaction, list[tuple[Transaction, float]]]]
+    ] = {}
+    cursor: dict[str, int] = {}
+    for group in groups:
+        label = group[0].account_label or ""
+        sales_by_label[label] = _detector_open_replacements(group, tax_year)
+        cursor[label] = 0
     for flag in flags:
         need = float(flag.repurchase_quantity or 0)
         if need <= _QTY_EPS:
             continue
         label = getattr(flag, "account_label", None) or ""
-        symbol = _symbol(flag.symbol)
-        window_start = flag.sale_date - timedelta(days=WASH_SALE_WINDOW_DAYS)
-        window_end = flag.sale_date + timedelta(days=WASH_SALE_WINDOW_DAYS)
-        for group in groups:
-            if not group or (group[0].account_label or "") != label:
+        sales = sales_by_label.get(label, [])
+        start = cursor.get(label, 0)
+        match_at = next(
+            (
+                index
+                for index in range(start, len(sales))
+                if _flag_matches_sale(flag, sales[index][0])
+            ),
+            None,
+        )
+        if match_at is None:
+            continue
+        cursor[label] = match_at + 1
+        for txn, open_qty in sales[match_at][1]:
+            if need <= _QTY_EPS:
+                break
+            index = txn_index.get(id(txn))
+            if index is None:
                 continue
-            buys = [
-                txn
-                for txn in group
-                if txn.trans_code in _BUY_CODES
-                and txn.asset_type == AssetType.STOCK
-                and _symbol(txn.instrument) == symbol
-                and window_start <= txn.activity_date <= window_end
-                and txn.activity_date != flag.sale_date
-            ]
-            buys.sort(key=lambda txn: txn.activity_date)
-            for txn in buys:
-                if need <= _QTY_EPS:
-                    break
-                already = consumed.get(id(txn), 0.0)
-                room = txn.quantity - already
-                take = min(room, need)
-                if take <= _QTY_EPS:
+            room = min(open_qty, txn.quantity - _reserved_shares(reserved, index))
+            take = min(room, need)
+            if take <= _QTY_EPS:
+                continue
+            reserved.setdefault(index, []).append((flag.sale_date, take))
+            need -= take
+    return reserved
+
+
+def _fifo_sort_key(item: tuple[int, Transaction]) -> tuple:
+    txn = item[1]
+    return (
+        txn.activity_date,
+        txn.process_date or txn.activity_date,
+        txn.settle_date or txn.activity_date,
+        _intraday_rank(txn),
+        -item[0],
+    )
+
+
+def _close_oldest_lots(open_lots: list[list[float]], quantity: float) -> None:
+    """Close oldest shares. Reserved shares sit at the front of each lot."""
+    remaining = round(float(quantity), 6)
+    while remaining > 0 and open_lots:
+        lot = open_lots[0]
+        qty = float(lot[1])
+        if qty <= remaining:
+            remaining = round(remaining - qty, 6)
+            open_lots.pop(0)
+            continue
+        reserved = float(lot[2])
+        lot[2] = round(reserved - min(reserved, remaining), 6)
+        lot[1] = round(qty - remaining, 6)
+        remaining = 0
+
+
+def _reserve_open_shares(open_lots: list[list[float]], index: int, quantity: float) -> None:
+    """Mark the oldest still-unreserved shares of one fill."""
+    need = float(quantity)
+    for lot in open_lots:
+        if int(lot[0]) != index or need <= _QTY_EPS:
+            continue
+        room = float(lot[1]) - float(lot[2])
+        if room <= _QTY_EPS:
+            continue
+        take = min(room, need)
+        lot[2] = round(float(lot[2]) + take, 6)
+        need -= take
+
+
+def _unreserved_open_shares(
+    transactions: list[Transaction],
+    symbol: str,
+    as_of: date,
+    reservations: dict[int, list[tuple[date, float]]],
+) -> dict[int, float]:
+    """Shares of each fill still open on ``as_of`` and not still reserved.
+
+    Per-account FIFO, splits, and same-day order match ``_shares_still_held``.
+    A reservation applies once its fill exists, on the later of the two
+    dates, after that day's trades. A later sale closes reserved shares
+    before unreserved shares of the same fill.
+    """
+    symbol = _symbol(symbol)
+    buckets: dict[str, list[tuple[int, Transaction]]] = {}
+    order: list[str] = []
+    for index, txn in enumerate(transactions):
+        key = account_key(txn)
+        if key not in buckets:
+            order.append(key)
+            buckets[key] = []
+        buckets[key].append((index, txn))
+
+    effective: dict[int, list[tuple[date, float]]] = {}
+    for index, rows in reservations.items():
+        buy_day = transactions[index].activity_date
+        dated: list[tuple[date, float]] = []
+        for when, qty in rows:
+            # A flag can claim a fill the loss has not reached yet. Apply it
+            # on this date so those still-open shares stay reserved.
+            day = when if when >= buy_day else buy_day
+            if day > as_of:
+                day = as_of
+            dated.append((day, qty))
+        effective[index] = dated
+
+    free: dict[int, float] = {}
+    for key in order:
+        ordered = [
+            item
+            for item in sorted(buckets[key], key=_fifo_sort_key)
+            if item[1].activity_date <= as_of
+        ]
+        by_day: dict[date, list[tuple[int, Transaction]]] = {}
+        for item in ordered:
+            by_day.setdefault(item[1].activity_date, []).append(item)
+        account_indexes = {index for index, _txn in buckets[key]}
+        for index in account_indexes:
+            for when, _qty in effective.get(index, []):
+                if when <= as_of:
+                    by_day.setdefault(when, [])
+        open_lots: list[list[float]] = []
+        for day in sorted(by_day):
+            day_list = by_day[day]
+            ratio = _split_ratio(
+                [
+                    txn
+                    for _index, txn in day_list
+                    if txn.trans_code == TransCode.SPR and _symbol(txn.instrument) == symbol
+                ]
+            )
+            if ratio is not None:
+                open_lots = [
+                    [index, round(qty * ratio, 6), round(reserved * ratio, 6)]
+                    for index, qty, reserved in open_lots
+                ]
+            for index, txn in day_list:
+                if _symbol(txn.instrument) != symbol or txn.asset_type != AssetType.STOCK:
                     continue
-                consumed[id(txn)] = already + take
-                need -= take
-    return consumed
+                if txn.trans_code == TransCode.BUY:
+                    open_lots.append([index, round(float(txn.quantity), 6), 0.0])
+                elif txn.trans_code == TransCode.SELL:
+                    _close_oldest_lots(open_lots, txn.quantity)
+            for index in account_indexes:
+                for when, qty in effective.get(index, []):
+                    if when == day:
+                        _reserve_open_shares(open_lots, index, qty)
+        for index, qty, reserved in open_lots:
+            left = float(qty) - float(reserved)
+            if left > _QTY_EPS:
+                free[int(index)] = free.get(int(index), 0.0) + left
+    return free
+
+
+def _available_replacement_qty(
+    txn: Transaction,
+    txn_index: int | None,
+    sale_date: date,
+    held: dict[int, float],
+    unreserved: dict[int, float],
+    reservations: dict[int, list[tuple[date, float]]],
+) -> float:
+    """Shares of this fill that can still replace a loss sold on ``sale_date``.
+
+    A stock buy on or before the sale counts only for shares still open and
+    not still reserved. A later sale drops a reservation only for the
+    reserved shares it closed. A buy after the sale counts in full, less
+    every reservation already recorded: selling it later does not unwind
+    this loss. Stock BTO rows stay at the fill quantity.
+    """
+    if txn_index is None:
+        return 0.0
+    if txn.trans_code == TransCode.BUY and txn.activity_date <= sale_date:
+        return min(held.get(txn_index, 0.0), unreserved.get(txn_index, 0.0))
+    return float(txn.quantity) - _reserved_shares(reservations, txn_index)
 
 
 def _plain_english(
@@ -260,8 +484,11 @@ def build_cross_account_chains(
     flags = list(wash_sale_flags or [])
     chains: list[WashSaleChain] = []
     # Same-account flags already claim their replacement shares. What remains
-    # can cover a loss in another account, and only once.
-    consumed = _consumed_by_same_account_flags(groups, flags)
+    # can cover a loss in another account, and only once. A later sale in the
+    # replacement account releases the reserved shares it closes.
+    txn_index = {id(txn): index for index, txn in enumerate(transactions)}
+    reservations = _flag_reservations(groups, flags, txn_index, tax_year)
+    held_on_date: dict[tuple[str, date], dict[int, float]] = {}
     planned: list[tuple[Transaction, list[Transaction], float, float, float]] = []
     for group in groups:
         # A loss inside an IRA is not deducted, so it is not a wash to disallow.
@@ -306,6 +533,18 @@ def build_cross_account_chains(
     for sell, group, loss, remaining_loss, shares_left in planned:
         window_start = sell.activity_date - timedelta(days=WASH_SALE_WINDOW_DAYS)
         window_end = sell.activity_date + timedelta(days=WASH_SALE_WINDOW_DAYS)
+        symbol = _symbol(sell.instrument)
+        held_key = (symbol, sell.activity_date)
+        held = held_on_date.get(held_key)
+        if held is None:
+            held = _shares_still_held(transactions, symbol, sell.activity_date)
+            held_on_date[held_key] = held
+        unreserved = _unreserved_open_shares(
+            transactions,
+            symbol,
+            sell.activity_date,
+            reservations,
+        )
         replacements: list[Transaction] = []
         for other in groups:
             if other is group:
@@ -315,13 +554,20 @@ def build_cross_account_chains(
                     continue
                 if txn.asset_type != AssetType.STOCK:
                     continue
-                if _symbol(txn.instrument) != _symbol(sell.instrument):
+                if _symbol(txn.instrument) != symbol:
                     continue
                 # A same-day buy in another account cannot be the lot this
                 # sale closed. It stays inside the replacement window.
                 if not window_start <= txn.activity_date <= window_end:
                     continue
-                remaining_qty = txn.quantity - consumed.get(id(txn), 0.0)
+                remaining_qty = _available_replacement_qty(
+                    txn,
+                    txn_index.get(id(txn)),
+                    sell.activity_date,
+                    held,
+                    unreserved,
+                    reservations,
+                )
                 if remaining_qty <= _QTY_EPS:
                     continue
                 replacements.append(txn)
@@ -333,12 +579,21 @@ def build_cross_account_chains(
         for txn in replacements:
             if still <= _QTY_EPS:
                 break
-            remaining_qty = txn.quantity - consumed.get(id(txn), 0.0)
+            index = txn_index.get(id(txn))
+            remaining_qty = _available_replacement_qty(
+                txn,
+                index,
+                sell.activity_date,
+                held,
+                unreserved,
+                reservations,
+            )
             take = min(still, remaining_qty)
-            if take <= _QTY_EPS:
+            if take <= _QTY_EPS or index is None:
                 continue
             allocated.append((txn, take))
-            consumed[id(txn)] = consumed.get(id(txn), 0.0) + take
+            reservations.setdefault(index, []).append((sell.activity_date, take))
+            unreserved[index] = max(0.0, unreserved.get(index, 0.0) - take)
             still -= take
         covered = shares_left - still
         if covered <= _QTY_EPS:
@@ -386,7 +641,6 @@ def build_cross_account_chains(
         permanent_amount = _cents(permanent_amount)
         deferred_amount = _cents(max(0.0, estimated - permanent_amount))
         permanent = permanent_amount > 0
-        symbol = _symbol(sell.instrument)
         chain_id = (
             f"cross-{symbol}-{sell.activity_date.isoformat()}-"
             f"{sale_label or 'account'}-{len(chains)}"
@@ -472,16 +726,20 @@ def _buy_label(
     quantity: float,
     prefer: str | None,
 ) -> str | None:
+    dated = [
+        txn
+        for txn in transactions
+        if txn.trans_code in _BUY_CODES
+        and _symbol(txn.instrument) == _symbol(symbol)
+        and txn.activity_date == activity_date
+    ]
+    exact = [txn for txn in dated if _qty_close(txn.quantity, quantity)]
+    # A partial remainder is stored as fewer shares than the original buy.
+    pool = exact or [
+        txn for txn in dated if float(txn.quantity) + _QTY_EPS >= float(quantity)
+    ]
     labels: list[str] = []
-    for txn in transactions:
-        if txn.trans_code not in _BUY_CODES:
-            continue
-        if _symbol(txn.instrument) != _symbol(symbol):
-            continue
-        if txn.activity_date != activity_date:
-            continue
-        if not _qty_close(txn.quantity, quantity):
-            continue
+    for txn in pool:
         label = txn.account_label or ""
         if label and label not in labels:
             labels.append(label)
