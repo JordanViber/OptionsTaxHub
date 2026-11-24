@@ -1041,7 +1041,19 @@ def test_chain_copy_covers_remaining_branches():
         _txn("IBM", TransCode.BUY, date(2025, 12, 20), 10, 100),
         _txn("IBM", TransCode.SELL, date(2026, 1, 10), 10, 80),
     ]
-    presale_flags = detect_wash_sales(presale, tax_year=2026)
+    assert detect_wash_sales(presale, tax_year=2026) == []
+    presale_flags = [
+        WashSaleFlag(
+            symbol="IBM",
+            sale_date=date(2026, 1, 10),
+            sale_quantity=10,
+            sale_loss=200,
+            repurchase_date=date(2025, 12, 20),
+            repurchase_quantity=10,
+            disallowed_loss=200,
+            adjusted_cost_basis=1200,
+        )
+    ]
     presale_chains = _build(transactions=presale, wash_sale_flags=presale_flags)
     assert "Dec 20, 2025" in presale_chains[0].plain_english
     assert "Jan 10, 2026" in presale_chains[0].plain_english
@@ -1377,9 +1389,21 @@ def test_chain_copy_covers_remaining_branches():
         _txn("ORCL", TransCode.BUY, date(2025, 12, 28), 6, 100),
         _txn("ORCL", TransCode.SELL, date(2026, 1, 10), 10, 80),
     ]
+    assert detect_wash_sales(presale_two, tax_year=2026) == []
     presale_two_chains = _build(
         transactions=presale_two,
-        wash_sale_flags=detect_wash_sales(presale_two, tax_year=2026),
+        wash_sale_flags=[
+            WashSaleFlag(
+                symbol="ORCL",
+                sale_date=date(2026, 1, 10),
+                sale_quantity=10,
+                sale_loss=200,
+                repurchase_date=date(2025, 12, 20),
+                repurchase_quantity=10,
+                disallowed_loss=200,
+                adjusted_cost_basis=600,
+            )
+        ],
     )
     assert " and " in presale_two_chains[0].plain_english
     assert "Dec 20, 2025" in presale_two_chains[0].plain_english
@@ -6992,12 +7016,11 @@ def test_unallocated_sale_does_not_take_the_sibling_1099_row():
 
 
 def test_all_filtered_window_buys_are_unallocated():
-    """Every window buy is the lot this sale closed, so nothing remains.
+    """The lot this sale closed is not a wash flag.
 
-    The engine still flags that pre-sale buy as a repurchase. Leaving the
-    hop comparable would report the full disallowance against a same-year
-    1099 row whose wash column is $0. An empty survivor list stays quiet
-    with no basis and no comparison.
+    A supplied flag that still names that lot stays unallocated. Comparing
+    it to a same-year 1099 row whose wash column is $0 would report the
+    full disallowance. An empty survivor list stays quiet.
     """
     opened = date(2026, 5, 20)
     sale = date(2026, 6, 1)
@@ -7005,9 +7028,19 @@ def test_all_filtered_window_buys_are_unallocated():
         _txn("AAPL", TransCode.BUY, opened, 10, 100),
         _txn("AAPL", TransCode.SELL, sale, 10, 80),
     ]
-    flags = detect_wash_sales(txns, tax_year=2026)
-    assert len(flags) == 1
-    assert flags[0].disallowed_loss == pytest.approx(200)
+    assert detect_wash_sales(txns, tax_year=2026) == []
+    flags = [
+        WashSaleFlag(
+            symbol="AAPL",
+            sale_date=sale,
+            sale_quantity=10,
+            sale_loss=200,
+            repurchase_date=opened,
+            repurchase_quantity=10,
+            disallowed_loss=200,
+            adjusted_cost_basis=1200,
+        )
+    ]
     before = copy.deepcopy(txns)
     chains = _build(
         transactions=txns,

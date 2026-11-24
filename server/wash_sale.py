@@ -64,18 +64,33 @@ def _compute_sale_loss(
 def _find_qualifying_repurchases(
     sell: Transaction,
     buys_sorted: list[Transaction],
+    closed_quantities: dict[int, float] | None = None,
 ) -> list[tuple[int, Transaction]]:
-    """Find repurchases within the 61-day wash-sale window around a sale."""
+    """Find repurchases within the 61-day wash-sale window around a sale.
+
+    When every window buy is the lot this sale just closed, there is no
+    replacement. A window buy this sale left open still counts, and any
+    closed lot stays in that total.
+    """
     window_start = sell.activity_date - timedelta(days=WASH_SALE_WINDOW_DAYS)
     window_end = sell.activity_date + timedelta(days=WASH_SALE_WINDOW_DAYS)
 
-    return [
+    qualifying = [
         (i, b)
         for i, b in enumerate(buys_sorted)
         if b.instrument == sell.instrument
         and window_start <= b.activity_date <= window_end
         and b.activity_date != sell.activity_date
     ]
+    closed = closed_quantities or {}
+    if not closed or not qualifying:
+        return qualifying
+    if all(
+        closed.get(index, 0.0) >= buy.quantity - 1e-9
+        for index, buy in qualifying
+    ):
+        return []
+    return qualifying
 
 
 def _build_wash_sale_explanation(
@@ -173,11 +188,21 @@ def _detect_wash_sales_one(
     used_buy_quantities: dict[int, float] = {}
 
     for sell in sells_sorted:
+        used_before = dict(used_buy_quantities)
         loss = _compute_sale_loss(sell, buys_sorted, used_buy_quantities)
         if loss <= 0:
             continue
 
-        qualifying = _find_qualifying_repurchases(sell, buys_sorted)
+        closed_now = {
+            index: used_buy_quantities[index] - used_before.get(index, 0.0)
+            for index in used_buy_quantities
+            if used_buy_quantities[index] - used_before.get(index, 0.0) > 1e-9
+        }
+        qualifying = _find_qualifying_repurchases(
+            sell,
+            buys_sorted,
+            closed_now,
+        )
         if not qualifying:
             continue
 

@@ -1102,6 +1102,7 @@ function ResultsSection({
         {displayedAnalysis.wash_sale_flags.length > 0 && (
           <WashSaleWarning
             flags={displayedAnalysis.wash_sale_flags}
+            chains={washSaleChains}
             taxYear={displayedAnalysis.tax_profile?.tax_year}
             locked={!packetUnlocked}
           />

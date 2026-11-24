@@ -689,6 +689,38 @@ def test_shares_sold_after_the_loss_were_open_on_the_sale_date():
     assert chains[0].hops[0].replacement_buys[0].allocated_quantity == pytest.approx(10)
 
 
+def test_jor206_short_held_taxable_lot_does_not_block_the_ira_chain():
+    """Mira's books: the sold XLE lot is not a $100 wash, and 5 IRA shares are.
+
+    The Individual buy on Mar 2 is the lot sold on Apr 1. It was held 30
+    days, so it used to become its own replacement and zero the loss before
+    the IRA's 5 shares still open on the sale date could disallow $50.
+    """
+    fixtures = Path(__file__).parent / "fixtures"
+    taxable = (fixtures / "jor206-taxable.csv").read_text(encoding="utf-8")
+    ira = (fixtures / "jor206-ira.csv").read_text(encoding="utf-8")
+    _lots, alone, errors, _realized = parse_labeled_exports([(taxable, "individual")])
+    assert not any("Unrecognized" in error for error in errors)
+    assert detect_wash_sales(alone, tax_year=2026) == []
+
+    _lots, transactions, errors, _realized = parse_labeled_exports(
+        [(taxable, "individual"), (ira, "ira_traditional")]
+    )
+    assert not any("Unrecognized" in error for error in errors)
+    flags = detect_wash_sales(transactions, tax_year=2026)
+    assert flags == []
+    chains = build_cross_account_chains(transactions, flags, tax_year=2026)
+    assert len(chains) == 1
+    chain = chains[0]
+    assert chain.cross_account is True
+    assert chain.permanent_disallowance is True
+    assert chain.hops[0].disallowed_loss == pytest.approx(50)
+    assert chain.hops[0].replacement_buys[0].allocated_quantity == pytest.approx(5)
+    assert chain.hops[0].replacement_buys[0].account_label == "ira_traditional"
+    assert "Permanent:" in chain.plain_english
+    assert "Estimated disallowed amount $50." in chain.plain_english
+
+
 def test_fifo_sale_releases_only_the_reserved_shares():
     """The IRA sale closes the shares Feb 3 reserved, and Feb 10 keeps the rest.
 

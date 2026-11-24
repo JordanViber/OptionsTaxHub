@@ -113,6 +113,27 @@ class TestDetectWashSales:
         assert len(flags) == 1
         assert flags[0].symbol == "NVDA"
 
+    def test_short_held_lot_is_not_its_own_replacement(self):
+        """Selling the only lot inside 30 days is not a wash of itself."""
+        txns = [
+            self._make_txn("XLE", TransCode.BUY, date(2026, 3, 2), 10, 100),
+            self._make_txn("XLE", TransCode.SELL, date(2026, 4, 1), 10, 90),
+        ]
+        assert detect_wash_sales(txns, tax_year=2026) == []
+
+    def test_open_window_buy_still_counts_beside_the_closed_lot(self):
+        """A later buy that is still held stays a replacement."""
+        txns = [
+            self._make_txn("AAPL", TransCode.BUY, date(2026, 6, 1), 10, 100),
+            self._make_txn("AAPL", TransCode.SELL, date(2026, 6, 20), 10, 80),
+            self._make_txn("AAPL", TransCode.BUY, date(2026, 6, 25), 10, 90),
+        ]
+        flags = detect_wash_sales(txns, tax_year=2026)
+        assert len(flags) == 1
+        assert flags[0].repurchase_date == date(2026, 6, 1)
+        assert flags[0].disallowed_loss == pytest.approx(200)
+        assert flags[0].adjusted_cost_basis == pytest.approx(1200)
+
     def test_zero_cent_disallowed_loss_is_suppressed(self):
         """Sub-cent wash-sale noise should not create a user-facing flag."""
         txns = [
